@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": false,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "types": ["bun", "@cloudflare/workers-types"],
+    "baseUrl": ".",
+    "paths": {
+      "@ripple/core": ["packages/core/src/index.ts"],
+      "@ripple/core/*": ["packages/core/src/*"],
+      "@ripple/client": ["packages/client/src/index.ts"]
+    }
+  },
+  "include": [
+    "alchemy.run.ts",
+    "packages/*/src/**/*.ts",
+    "packages/*/test/**/*.ts",
+    "bench/**/*.ts",
+    "test/**/*.ts"
+  ],
+  "exclude": ["node_modules", ".alchemy", "dist"]
+}

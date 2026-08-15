@@ -1,0 +1,7 @@
+node_modules/
+.alchemy/
+dist/
+*.log
+.env
+.env.*
+FABLE_TASK.md

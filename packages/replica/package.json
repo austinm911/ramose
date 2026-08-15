@@ -1,0 +1,10 @@
+{
+  "name": "@ripple/replica",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Ripple QueryReplica Durable Object: long-lived novelty subscriber (WS to the Transactor), hot-segment cache, basis/novelty endpoint for Workers.",
+  "main": "src/index.ts",
+  "exports": { ".": "./src/index.ts", "./*": "./src/*" },
+  "dependencies": { "@ripple/core": "workspace:*", "@ripple/storage": "workspace:*", "@ripple/transactor": "workspace:*" }
+}

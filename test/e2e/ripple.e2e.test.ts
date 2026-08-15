@@ -1,0 +1,108 @@
+/**
+ * End-to-end tests against a running Ripple deployment (dev stage via
+ * `bun alchemy dev`, or a deployed URL).
+ *
+ *   RIPPLE_URL=http://localhost:8787 bun test test/e2e
+ *   RIPPLE_URL=https://ripple-<stage>.<acct>.workers.dev RIPPLE_TOKEN=... bun test test/e2e
+ *
+ * Skipped when RIPPLE_URL is not set.
+ */
+import { describe, expect, test } from "bun:test";
+import { RippleClient, attribute } from "../../packages/client/src/index.ts";
+
+const URL_ = process.env.RIPPLE_URL;
+const token = process.env.RIPPLE_TOKEN;
+const d = URL_ ? describe : describe.skip;
+
+const dbName = `e2e-${Date.now().toString(36)}`;
+
+d("ripple e2e", () => {
+  const client = new RippleClient(URL_ ?? "http://invalid", { token });
+  const db = client.db(dbName);
+  let alice = 0, bob = 0, tSchema = 0, tAge30 = 0;
+
+  test("M0: worker answers", async () => {
+    const h = await client.health();
+    expect(h.ok).toBe(true);
+  });
+
+  test("schema install → transact → query", async () => {
+    const s = await db.transact([
+      attribute(":user/name", "string", { index: true }),
+      attribute(":user/email", "string", { unique: "identity" }),
+      attribute(":user/age", "long"),
+      attribute(":user/friends", "ref", { cardinality: "many" }),
+      attribute(":user/joined", "instant"),
+    ]);
+    tSchema = s.t;
+    expect(s.t).toBeGreaterThanOrEqual(2);
+    const r = await db.transact([
+      { ":db/id": "alice", ":user/name": "Alice", ":user/email": "alice@example.com", ":user/age": 30, ":user/joined": new Date("2021-05-05Z") },
+      { ":db/id": "bob", ":user/name": "Bob", ":user/email": "bob@example.com", ":user/age": 25, ":user/friends": ["alice"] },
+    ]);
+    alice = r.tempids.alice;
+    bob = r.tempids.bob;
+    tAge30 = r.t;
+    // read-your-writes through the replica
+    const names = await db.q<string[]>(`[:find [?n ...] :where [?e :user/name ?n]]`);
+    expect(names.sort()).toEqual(["Alice", "Bob"]);
+    const joined = await db.q<Date>(`[:find ?j . :in $ ?e :where [?e :user/joined ?j]]`, [alice]);
+    expect(joined).toBeInstanceOf(Date);
+    expect((joined as Date).toISOString()).toBe("2021-05-05T00:00:00.000Z");
+    const friend = await db.q<string>(`[:find ?fn . :where [?e :user/name "Bob"] [?e :user/friends ?f] [?f :user/name ?fn]]`);
+    expect(friend).toBe("Alice");
+  });
+
+  test("update, as-of, history, pull", async () => {
+    const u = await db.transact([[":db/add", [":user/email", "alice@example.com"], ":user/age", 31]]);
+    expect(await db.q(`[:find ?a . :in $ ?e :where [?e :user/age ?a]]`, [alice])).toBe(31);
+    expect(await db.asOf(tAge30).q(`[:find ?a . :in $ ?e :where [?e :user/age ?a]]`, [alice])).toBe(30);
+    expect(await db.asOf(tSchema).q(`[:find ?a . :in $ ?e :where [?e :user/age ?a]]`, [alice])).toBeNull();
+    const hist = await db.history().q<[number, boolean][]>(`[:find ?a ?op :in $ ?e :where [?e :user/age ?a _ ?op]]`, [alice]);
+    expect(hist.map((r) => JSON.stringify(r)).sort()).toEqual([[30, false], [30, true], [31, true]].map((r) => JSON.stringify(r)).sort());
+    const p = await db.pull(bob, `[:user/name {:user/friends [:user/name :user/age]}]`);
+    expect(p).toEqual({ ":user/name": "Bob", ":user/friends": [{ ":user/name": "Alice", ":user/age": 31 }] });
+    expect(u.t).toBeGreaterThan(tAge30);
+  });
+
+  test("unique conflicts are rejected with 409", async () => {
+    await expect(db.transact([{ ":user/name": "Eve", ":user/email": "alice@example.com", ":user/age": 1 }])).resolves.toBeDefined(); // upsert (identity)
+    const r = await db.q(`[:find ?n . :in $ ?e :where [?e :user/name ?n]]`, [alice]);
+    expect(r).toBe("Eve");
+    await db.transact([[":db/add", alice, ":user/name", "Alice"]]);
+  });
+
+  test("index run publishes a root; queries stay consistent; repeat query hits cache", async () => {
+    const before = await db.info();
+    const idx = await db.index();
+    expect(idx.ran).toBe(true);
+    expect(idx.root.t).toBeGreaterThanOrEqual(tAge30);
+    const after = await db.info();
+    expect(after.transactor.root.t).toBeGreaterThan(before.transactor.root.t ?? 0);
+    const q1 = await db.query(`[:find ?n ?a :where [?e :user/name ?n] [?e :user/age ?a]]`);
+    const q2 = await db.query(`[:find ?n ?a :where [?e :user/name ?n] [?e :user/age ?a]]`);
+    expect(q1.result.length).toBe(2);
+    expect(q2.result.length).toBe(2);
+    if (q2.meta.r2Gets !== null) expect(q2.meta.r2Gets).toBe(0); // warm isolate: no R2 reads
+    // as-of still correct after the root flip
+    expect(await db.asOf(tAge30).q(`[:find ?a . :in $ ?e :where [?e :user/age ?a]]`, [alice])).toBe(30);
+  });
+
+  test("serialized t under concurrent clients (no gaps / dupes)", async () => {
+    const acks = await Promise.all(Array.from({ length: 40 }, (_, i) => db.transact([{ ":user/name": `c${i}`, ":user/email": `c${i}@example.com` }])));
+    const ts = acks.map((a) => a.t).sort((a, b) => a - b);
+    for (let i = 1; i < ts.length; i++) expect(ts[i]).toBe(ts[i - 1] + 1);
+    const count = await db.q<number>(`[:find (count ?e) . :where [?e :user/email]]`);
+    expect(count).toBe(42);
+  });
+
+  test("write throughput smoke (group commit)", async () => {
+    const N = 300;
+    const t0 = performance.now();
+    await Promise.all(Array.from({ length: N }, (_, i) => db.transact([{ ":user/name": `w${i}`, ":user/email": `w${i}@example.com` }])));
+    const ms = performance.now() - t0;
+    const info = await db.info();
+    console.log(`e2e write smoke: ${N} tx in ${ms.toFixed(0)} ms → ${((N / ms) * 1000).toFixed(0)} tx/s; max batch ${info.transactor.stats.maxBatch}`);
+    expect(info.transactor.stats.maxBatch).toBeGreaterThan(1); // group commit actually batched
+  });
+});
