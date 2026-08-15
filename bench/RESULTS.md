@@ -44,6 +44,13 @@ with one novelty subscriber receiving every frame:
 **Gate: ≥ 500 tx/s sustained with group commit → PASS.** The durable log is
 verified contiguous after each run (`t` = 1..N, no gaps/dupes).
 
+Through the full local stack (`bun alchemy dev`: Worker → Transactor DO with
+SQLite storage, miniflare emulation; `RIPPLE_URL=… bun run bench/write-do.bench.ts 64 5`):
+
+| clients | tx/s | ack p50 | ack p99 | batches | avg batch | max batch |
+|---|---|---|---|---|---|---|
+| 64 | 1,744 | 27 ms | 117 ms | 570 | 15.4 | 35 |
+
 Correctness (`bun test packages/transactor`): contiguous `t` under 500
 concurrent clients; storage-fault injection → batch all-or-nothing, instance
 aborted, restart continues with no gaps/dupes; novelty frames + resume /
