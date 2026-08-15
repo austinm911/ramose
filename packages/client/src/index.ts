@@ -39,6 +39,13 @@ export class RippleError extends Error {
   }
 }
 
+/** Drop undefined fields (JSON encoding would otherwise send them as null). */
+function compact<T extends Record<string, unknown>>(o: T): Partial<T> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(o)) if (v !== undefined) out[k] = v;
+  return out as Partial<T>;
+}
+
 export class RippleClient {
   readonly base: string;
   private readonly f: typeof fetch;
@@ -110,11 +117,11 @@ export class RippleDb {
   }
 
   query<T = any>(query: string | object, inputs: unknown[] = [], opts: { explain?: boolean } = {}): Promise<QueryResponse<T>> {
-    return this.client.request<QueryResponse<T>>("POST", this.path("/query"), { query, inputs, asOf: this.asOfT, history: this.hist || undefined, explain: opts.explain });
+    return this.client.request<QueryResponse<T>>("POST", this.path("/query"), compact({ query, inputs, asOf: this.asOfT, history: this.hist || undefined, explain: opts.explain }));
   }
 
   async pull<T = Record<string, unknown> | null>(eid: number | string | [string, unknown], pattern: string | unknown[]): Promise<T> {
-    const r = await this.client.request<{ result: T }>("POST", this.path("/pull"), { eid, pattern, asOf: this.asOfT, history: this.hist || undefined });
+    const r = await this.client.request<{ result: T }>("POST", this.path("/pull"), compact({ eid, pattern, asOf: this.asOfT, history: this.hist || undefined }));
     return r.result;
   }
 

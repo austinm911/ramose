@@ -28,7 +28,9 @@
     "typescript": "^5.6.0"
   },
   "dependencies": {
+    "@effect/platform-bun": ">=4.0.0-beta.105",
+    "@effect/platform-node": ">=4.0.0-beta.105",
     "alchemy": "latest",
-    "effect": "latest"
+    "effect": ">=4.0.0-beta.105"
   }
 }

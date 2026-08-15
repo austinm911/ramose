@@ -48,6 +48,8 @@ export async function dbFromBasis(store: NodeSource, basis: Basis, opts: { asOf?
   if (!sp) {
     sp = deriveSchema(store, roots);
     schemaCache.set(key, sp);
+    // never cache a failure (a transient read error would poison every db sharing this root hash)
+    sp.catch(() => schemaCache.delete(key));
     if (schemaCache.size > 32) schemaCache.delete(schemaCache.keys().next().value as string);
   }
   const rootSchema = await sp;
@@ -57,7 +59,7 @@ export async function dbFromBasis(store: NodeSource, basis: Basis, opts: { asOf?
   const novelty = new Novelty();
   novelty.add(allDatoms, (a) => schema.isAvet(a), (a) => schema.isVaet(a));
   let db = new Db({ store, roots, novelty, basisT: basis.t, schema, nextEid: basis.root.next_eid });
-  if (opts.asOf !== undefined) db = db.asOf(opts.asOf);
+  if (typeof opts.asOf === "number") db = db.asOf(opts.asOf);
   if (opts.history) db = db.history();
   return db;
 }

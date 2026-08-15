@@ -1,88 +1,62 @@
 /**
- * Ripple infrastructure (Alchemy, Effect-based API).
+ * Ripple infrastructure — Alchemy (Effect-based API, alchemy 2.x).
  *
- * One Worker (the peer, which also exports both DO classes — single-script
- * pattern), two SQLite-backed Durable Object namespaces, one R2 bucket bound
- * to the Worker and (through the same script) to both DO classes.
+ * One Worker (the peer; it also exports both Durable Object classes —
+ * single-script pattern), two SQLite-backed Durable Object namespaces, one R2
+ * bucket bound to the Worker and therefore reachable from both DO classes.
+ *
+ * The Worker is an *async* Worker (plain `export default { fetch }` +
+ * `export { TransactorDO, QueryReplicaDO }` from the entrypoint); bindings
+ * are declared with `env` and typed via `Cloudflare.InferEnv`. New Durable
+ * Object classes are created SQLite-backed by Alchemy.
  *
  *   bun alchemy dev                 # local dev (miniflare emulates R2 + DOs)
- *   bun alchemy deploy              # deploy to the $USER stage
- *   bun alchemy deploy --stage prod # deploy to prod
+ *   bun alchemy deploy              # deploy to the current stage (default: $USER)
+ *   bun alchemy deploy --stage prod
  *   bun alchemy destroy
  *
- * ⚠️  VERIFY AGAINST THE LIVE DOCS BEFORE THE FIRST DEPLOY.
- * This file follows the Effect-based Alchemy API as described in the spec
- * (`Alchemy.Stack`, `Cloudflare.Worker`, `Cloudflare.DurableObject`,
- * `Cloudflare.R2Bucket`). The environment this was authored in had no network
- * access, so https://alchemy.run/llms.txt could not be consulted; if the
- * import names or option keys differ, adjust them here — nothing else in the
- * repository depends on the Alchemy API. The legacy (async-resource) shape is
- * kept at the bottom as a fallback for reference.
+ * Verified against https://alchemy.run/llms.txt, /cloudflare/compute/workers
+ * and /cloudflare/compute/durable-objects for alchemy 2.0.0-beta.72.
  */
 
-import { Alchemy } from "alchemy";
-import { Cloudflare } from "alchemy/cloudflare";
-import { Effect } from "effect";
+import * as Alchemy from "alchemy";
+import * as Cloudflare from "alchemy/Cloudflare";
+import * as Effect from "effect/Effect";
 
 const stage = process.env.ALCHEMY_STAGE ?? process.env.STAGE ?? process.env.USER ?? "dev";
 
-export default Alchemy.Stack(
-  "ripple",
-  Effect.gen(function* () {
-    // Content-addressed segment/log/root storage. Everything except root/current is immutable.
-    const store = yield* Cloudflare.R2Bucket("ripple-store", {
-      name: `ripple-store-${stage}`,
-      adopt: true,
-    });
+/** Content-addressed segment / log / root storage. Everything except `root/current` is immutable. */
+export const Store = Cloudflare.R2.Bucket("Store");
 
-    // One Transactor per logical database (single writer); N QueryReplicas per database.
-    const transactor = Cloudflare.DurableObject("ripple-transactor", {
-      className: "TransactorDO",
-      sqlite: true,
-    });
-    const replica = Cloudflare.DurableObject("ripple-replica", {
-      className: "QueryReplicaDO",
-      sqlite: true,
-    });
+/** One Transactor per logical database (single writer); N QueryReplicas per database. */
+export const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "TransactorDO" });
+export const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
 
-    const worker = yield* Cloudflare.Worker("ripple", {
-      name: `ripple-${stage}`,
-      entrypoint: "./packages/worker/src/index.ts",
-      compatibilityDate: "2025-06-01",
-      compatibilityFlags: ["nodejs_compat"],
-      url: true,
-      bindings: {
-        STORE: store,
-        TRANSACTOR: transactor,
-        REPLICA: replica,
-        RIPPLE_STAGE: stage,
-        // RIPPLE_TOKENS: '{"*":"<token>"}'  ← set via `alchemy.secret(...)` / stage env for prod
-      },
-    });
-
-    yield* Effect.log(`ripple (${stage}) → ${worker.url}`);
-    return { url: worker.url, bucket: store.name };
-  }),
-);
-
-/*
-// Legacy async-resource style (Alchemy < Effect migration), for reference:
-import alchemy from "alchemy";
-import { DurableObjectNamespace, R2Bucket, Worker } from "alchemy/cloudflare";
-const app = await alchemy("ripple", { stage });
-const store = await R2Bucket("ripple-store", { name: `ripple-store-${stage}`, adopt: true });
-const worker = await Worker("ripple", {
-  name: `ripple-${stage}`,
-  entrypoint: "./packages/worker/src/index.ts",
-  compatibilityFlags: ["nodejs_compat"],
-  url: true,
-  bindings: {
-    STORE: store,
-    TRANSACTOR: DurableObjectNamespace("ripple-transactor", { className: "TransactorDO", sqlite: true }),
-    REPLICA: DurableObjectNamespace("ripple-replica", { className: "QueryReplicaDO", sqlite: true }),
+export const Worker = Cloudflare.Worker("Worker", {
+  main: "./packages/worker/src/index.ts",
+  compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
+  env: {
+    STORE: Store,
+    TRANSACTOR: Transactor,
+    REPLICA: Replica,
     RIPPLE_STAGE: stage,
+    // RIPPLE_TOKENS: Config.redacted("RIPPLE_TOKENS")  ← per-db bearer tokens for prod
   },
 });
-console.log(worker.url);
-await app.finalize();
-*/
+
+/** Typed `env` for the Worker entrypoint (mirrors packages/transactor/src/env.ts#RippleEnv). */
+export type WorkerEnv = Cloudflare.InferEnv<typeof Worker>;
+
+export default Alchemy.Stack(
+  "ripple",
+  {
+    providers: Cloudflare.providers(),
+    // State lives in Cloudflare by default; ALCHEMY_STATE=local keeps a file
+    // store instead (offline `bun alchemy dev` against the local emulation).
+    state: process.env.ALCHEMY_STATE === "local" ? Alchemy.localState() : Cloudflare.state(),
+  },
+  Effect.gen(function* () {
+    const worker = yield* Worker;
+    return { url: worker.url };
+  }),
+);

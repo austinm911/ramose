@@ -28,7 +28,7 @@ import {
   pull as runPull,
   toJson,
 } from "@ripple/core";
-import { R2NodeStore, readCurrentRoot, readLogSince, type ByteTier } from "@ripple/storage";
+import { type R2Like, R2NodeStore, dbPrefix, prefixedBucket, readCurrentRoot, readLogSince, type ByteTier } from "@ripple/storage";
 import type { RippleEnv } from "@ripple/transactor";
 import { type Basis, dbFromBasis, makeBasis } from "./basis.ts";
 
@@ -82,13 +82,20 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
   private async boot(): Promise<void> {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS novelty (t INTEGER PRIMARY KEY, tx_instant INTEGER NOT NULL, datoms BLOB NOT NULL)`);
-    this.store = new R2NodeStore(this.env.STORE, { codec: gzipCodec, maxNodes: 4096, tier: new SqliteTier(this.sql) });
     this.dbName = this.getMeta<string>("db");
+    if (this.dbName) this.bindStore(this.dbName);
     this.root = this.getMeta<RootRecord>("root");
     if (this.root) {
       const rows = this.sql.exec(`SELECT t, tx_instant, datoms FROM novelty WHERE t > ? ORDER BY t`, this.root.t).toArray();
       this.entries = rows.map((r) => decodeLogChunk(new Uint8Array(r.datoms as ArrayBuffer))[0]);
     }
+  }
+
+  /** Per-database view of the bucket (all keys under db/<name>/). */
+  private bucket!: R2Like;
+  private bindStore(db: string): void {
+    this.bucket = prefixedBucket(this.env.STORE, dbPrefix(db));
+    this.store = new R2NodeStore(this.bucket, { codec: gzipCodec, maxNodes: 4096, tier: new SqliteTier(this.sql) });
   }
 
   private getMeta<T>(k: string): T | undefined {
@@ -161,7 +168,7 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
   private async fillGap(from: number, to: number): Promise<void> {
     if (!this.dbName) return;
     const stub = this.env.TRANSACTOR.get(this.env.TRANSACTOR.idFromName(this.dbName));
-    const res = await stub.fetch(`https://transactor/log?from=${from}&to=${to}`);
+    const res = await stub.fetch(`https://transactor/log?from=${from}&to=${to}&db=${encodeURIComponent(this.dbName)}`);
     if (res.ok) {
       const body = (await res.json()) as { earliestLogT: number; entries: any[] };
       if (body.earliestLogT !== 0 && body.earliestLogT <= from + 1) {
@@ -178,10 +185,10 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
   /** Read log/ chunks from R2 for t in (from, to] and apply in order. */
   private async catchUpFromR2(from: number, to = Number.MAX_SAFE_INTEGER): Promise<void> {
     if (!this.root) {
-      const rec = await readCurrentRoot(this.env.STORE);
+      const rec = await readCurrentRoot(this.bucket);
       if (rec) this.adoptRoot(rec);
     }
-    const entries = await readLogSince(this.env.STORE, Math.max(from, this.basisT), to, gzipCodec);
+    const entries = await readLogSince(this.bucket, Math.max(from, this.basisT), to, gzipCodec);
     for (const e of entries) if (e.t === this.basisT + 1) this.appendEntry(e);
   }
 
@@ -189,18 +196,18 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
   private async ensureConnected(): Promise<void> {
     if (this.ws && (this.ws.readyState === 1 /* OPEN */ || this.ws.readyState === 0)) return;
     if (this.connecting) return this.connecting;
-    this.connecting = this.connect().finally(() => (this.connecting = undefined));
+    this.connecting = this.connectUpstream().finally(() => (this.connecting = undefined));
     return this.connecting;
   }
 
-  private async connect(): Promise<void> {
+  private async connectUpstream(): Promise<void> {
     if (!this.dbName) throw new Error("replica has no db assigned");
     if (!this.root) {
-      const rec = await readCurrentRoot(this.env.STORE);
+      const rec = await readCurrentRoot(this.bucket);
       if (rec) this.adoptRoot(rec);
     }
     const stub = this.env.TRANSACTOR.get(this.env.TRANSACTOR.idFromName(this.dbName));
-    const res = await stub.fetch(`https://transactor/subscribe?from=${this.basisT}`, { headers: { Upgrade: "websocket" } });
+    const res = await stub.fetch(`https://transactor/subscribe?from=${this.basisT}&db=${encodeURIComponent(this.dbName)}`, { headers: { Upgrade: "websocket" } });
     const ws = res.webSocket;
     if (!ws) throw new Error(`transactor did not upgrade (status ${res.status})`);
     ws.accept();
@@ -252,8 +259,10 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
     const url = new URL(request.url);
     const dbParam = url.searchParams.get("db");
     if (dbParam && dbParam !== this.dbName) {
+      if (this.dbName !== undefined) return json({ error: `replica already bound to database ${this.dbName}` }, 409);
       this.dbName = dbParam;
       this.setMeta("db", dbParam);
+      this.bindStore(dbParam);
     }
     if (!this.dbName) return json({ error: "missing ?db=" }, 400);
     try {
@@ -270,7 +279,7 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
           if (!this.root) return json({ error: "database has no root yet" }, 503);
           const body = fromJson(await request.json()) as { query: unknown; inputs?: unknown[]; asOf?: number; history?: boolean; pull?: { eid: number; pattern: unknown } };
           const basis = makeBasis(this.dbName, this.root, this.entries);
-          const db = await dbFromBasis(this.store, basis, { asOf: body.asOf, history: body.history });
+          const db = await dbFromBasis(this.store, basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
           this.stats.queries++;
           if (body.pull) return json({ t: basis.t, result: await runPull(db, body.pull.eid, body.pull.pattern as any) });
           const result = await runQuery(db, body.query as any, body.inputs ?? []);

@@ -30,6 +30,29 @@ import {
 } from "@ripple/core";
 
 export const IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable";
+
+/**
+ * Every logical database lives under its own key prefix in the shared bucket
+ * (`db/<name>/seg/…`, `db/<name>/root/current`, …). Segments are still
+ * content-addressed *within* a database; not sharing them across databases
+ * keeps per-database GC (mark & sweep against that database's roots) safe.
+ */
+export const dbPrefix = (db: string) => `db/${db}/`;
+
+/** View of `bucket` where every key is under `prefix` (list results are un-prefixed). */
+export function prefixedBucket(bucket: R2Like, prefix: string): R2Like {
+  const k = (key: string) => prefix + key;
+  return {
+    get: (key) => bucket.get(k(key)),
+    put: (key, value, options) => bucket.put(k(key), value, options),
+    head: (key) => bucket.head(k(key)),
+    delete: (keys) => bucket.delete(Array.isArray(keys) ? keys.map(k) : k(keys)),
+    list: async (options = {}) => {
+      const page = await bucket.list({ ...options, prefix: prefix + (options.prefix ?? "") });
+      return { ...page, objects: page.objects.map((o) => ({ ...o, key: o.key.slice(prefix.length) })) };
+    },
+  };
+}
 export const ROOT_CACHE_CONTROL = "no-store";
 
 /** Minimal structural type for an R2 bucket binding (avoids a hard dep on workers-types at type level). */
@@ -126,26 +149,46 @@ export class R2NodeStore implements NodeStore {
 
   private async loadUncached(ref: NodeRef): Promise<TreeNode> {
     const key = objectKey(ref.kind, ref.hash);
+    // Lower tiers first; a body that fails to decode there is treated as a
+    // miss (corrupt/truncated cache entry) and we fall through to R2 —
+    // content addressing means R2 is always authoritative.
     let body: Uint8Array | undefined;
     if (this.tier) {
       body = await this.tier.get(key);
-      if (body) this.stats.tierHits++;
+      if (body && body.length > 0) {
+        try {
+          const node = await deserializeNode(body, this.codec);
+          this.stats.tierHits++;
+          this.remember(ref.hash, node);
+          return node;
+        } catch {
+          /* fall through */
+        }
+      }
     }
-    if (!body && this.cache) {
+    if (this.cache) {
       body = await this.cache.match(key);
-      if (body) this.stats.cacheHits++;
+      if (body && body.length > 0) {
+        try {
+          const node = await deserializeNode(body, this.codec);
+          this.stats.cacheHits++;
+          this.remember(ref.hash, node);
+          return node;
+        } catch {
+          /* fall through */
+        }
+      }
     }
-    if (!body) {
-      const obj = await this.bucket.get(key);
-      if (!obj) throw new Error(`R2NodeStore: missing object ${key}`);
-      body = new Uint8Array(await obj.arrayBuffer());
-      this.stats.r2Gets++;
-      this.stats.bytesRead += body.length;
-      // populate lower tiers (best effort, don't await failures)
-      if (this.cache) this.cache.put(key, body).catch(() => undefined);
-      if (this.tier) await Promise.resolve(this.tier.put(key, body)).catch(() => undefined);
-    }
+    const obj = await this.bucket.get(key);
+    if (!obj) throw new Error(`R2NodeStore: missing object ${key}`);
+    body = new Uint8Array(await obj.arrayBuffer());
+    this.stats.r2Gets++;
+    this.stats.bytesRead += body.length;
     const node = await deserializeNode(body, this.codec);
+    // populate lower tiers (best effort, don't await failures). Hand them a
+    // copy: a Response/SQL binding may detach or retain the buffer.
+    if (this.cache) this.cache.put(key, body.slice()).catch(() => undefined);
+    if (this.tier) await Promise.resolve(this.tier.put(key, body.slice())).catch(() => undefined);
     this.remember(ref.hash, node);
     return node;
   }
@@ -160,7 +203,7 @@ export class R2NodeStore implements NodeStore {
       this.stats.r2Puts++;
       this.stats.bytesWritten += body.length;
     } else this.stats.r2PutSkipped++;
-    if (this.tier) await Promise.resolve(this.tier.put(key, body)).catch(() => undefined);
+    if (this.tier) await Promise.resolve(this.tier.put(key, body.slice())).catch(() => undefined);
     this.remember(ref.hash, node);
     return ref;
   }
@@ -179,9 +222,17 @@ export class R2NodeStore implements NodeStore {
 export function cacheApiTier(cache: any /* Cache */, origin = "https://ripple-cache.invalid"): CacheTier {
   return {
     async match(key) {
-      const res = await cache.match(new Request(`${origin}/${key}`));
+      const req = new Request(`${origin}/${key}`);
+      const res = await cache.match(req);
       if (!res) return undefined;
-      return new Uint8Array(await res.arrayBuffer());
+      const body = new Uint8Array(await res.arrayBuffer());
+      // Guard against a truncated/empty cached body (seen with the local emulator): treat as a miss.
+      const declared = Number(res.headers.get("content-length") ?? body.length);
+      if (body.length === 0 || (Number.isFinite(declared) && declared !== body.length)) {
+        Promise.resolve(cache.delete(req)).catch(() => undefined);
+        return undefined;
+      }
+      return body;
     },
     async put(key, body) {
       await cache.put(

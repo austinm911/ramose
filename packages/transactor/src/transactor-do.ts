@@ -12,6 +12,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { toJson } from "@ripple/core";
+import { dbPrefix, prefixedBucket } from "@ripple/storage";
 import { type RippleEnv, envInt } from "./env.ts";
 import { DEFAULT_CONFIG, type SocketLike, type TransactorConfig, type TransactorHost } from "./host.ts";
 import { Transactor, type TxAck } from "./transactor.ts";
@@ -33,13 +34,24 @@ export function configFromEnv(env: RippleEnv): TransactorConfig {
 
 export class TransactorDO extends DurableObject<RippleEnv> {
   private readonly core: Transactor;
+  private dbName: string | undefined;
 
   constructor(ctx: DurableObjectState, env: RippleEnv) {
     super(ctx, env);
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
+    const row = ctx.storage.sql.exec(`SELECT v FROM meta WHERE k = 'db'`).toArray()[0];
+    if (row) this.dbName = JSON.parse(row.v as string) as string;
+    const self = this;
     const host: TransactorHost = {
+      get dbName() {
+        if (!self.dbName) throw new Error("transactor has no database assigned (pass ?db=<name>)");
+        return self.dbName;
+      },
       sql: ctx.storage.sql,
       transactionSync: (fn) => ctx.storage.transactionSync(fn),
-      bucket: env.STORE,
+      get bucket() {
+        return prefixedBucket(env.STORE, dbPrefix(host.dbName));
+      },
       sockets: () => ctx.getWebSockets() as unknown as SocketLike[],
       getAlarm: () => ctx.storage.getAlarm(),
       setAlarm: (time) => ctx.storage.setAlarm(time),
@@ -55,7 +67,16 @@ export class TransactorDO extends DurableObject<RippleEnv> {
     return this.core;
   }
 
-  transact(tx: unknown[]): Promise<TxAck> {
+  /** Bind this object to a database name (idempotent; persisted). */
+  assign(db: string): void {
+    if (this.dbName === db) return;
+    if (this.dbName !== undefined) throw new Error(`transactor already bound to database ${this.dbName}`);
+    this.dbName = db;
+    this.ctx.storage.sql.exec(`INSERT OR REPLACE INTO meta (k, v) VALUES ('db', ?)`, JSON.stringify(db));
+  }
+
+  transact(db: string, tx: unknown[]): Promise<TxAck> {
+    this.assign(db);
     return this.core.init().then(() => this.core.transact(tx));
   }
 
@@ -75,8 +96,17 @@ export class TransactorDO extends DurableObject<RippleEnv> {
   }
 
   override async fetch(request: Request): Promise<Response> {
-    await this.core.init();
     const url = new URL(request.url);
+    const db = url.searchParams.get("db");
+    if (db) {
+      try {
+        this.assign(db);
+      } catch (err) {
+        return new Response(JSON.stringify({ error: String(err) }), { status: 409, headers: { "content-type": "application/json" } });
+      }
+    }
+    if (!this.dbName) return new Response(JSON.stringify({ error: "missing ?db=" }), { status: 400, headers: { "content-type": "application/json" } });
+    await this.core.init();
     if (url.pathname === "/subscribe") {
       if (request.headers.get("Upgrade") !== "websocket") return new Response("expected websocket", { status: 426 });
       const from = Number(url.searchParams.get("from") ?? "0");

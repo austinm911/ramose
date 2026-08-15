@@ -80,6 +80,8 @@ export function sqliteLike(db: Database): SqlLike {
 }
 
 export interface HarnessOptions {
+  /** logical database name */
+  dbName?: string;
   /** sqlite file path (default: in-memory) */
   file?: string;
   config?: Partial<TransactorConfig>;
@@ -89,6 +91,7 @@ export interface HarnessOptions {
 }
 
 export class Harness implements TransactorHost {
+  readonly dbName: string;
   readonly db: Database;
   readonly sql: SqlLike;
   readonly bucket: MemoryBucket;
@@ -102,6 +105,7 @@ export class Harness implements TransactorHost {
   transactor: Transactor;
 
   constructor(opts: HarnessOptions = {}, bucket?: MemoryBucket) {
+    this.dbName = opts.dbName ?? "test";
     this.db = new Database(opts.file ?? ":memory:");
     // file-backed: WAL + fsync on every commit (so group commit pays for real durability)
     this.db.exec(opts.file ? "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;" : "PRAGMA synchronous = OFF;");

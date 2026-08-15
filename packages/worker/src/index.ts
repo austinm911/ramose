@@ -72,16 +72,17 @@ export default {
     if (!authorized(env, db, request)) return json({ error: "unauthorized" }, 401);
 
     const transactor = () => env.TRANSACTOR.get(env.TRANSACTOR.idFromName(db));
+    const txUrl = (path: string) => `https://transactor${path}${path.includes("?") ? "&" : "?"}db=${encodeURIComponent(db)}`;
     const t0 = Date.now();
 
     try {
       // ---- writes → Transactor DO
       if (rest === "/transact" && request.method === "POST") {
-        const res = await transactor().fetch("https://transactor/transact", { method: "POST", body: await request.text(), headers: { "content-type": "application/json" } });
+        const res = await transactor().fetch(txUrl("/transact"), { method: "POST", body: await request.text(), headers: { "content-type": "application/json" } });
         return new Response(res.body, { status: res.status, headers: { "content-type": "application/json", ...CORS, "x-ripple-ms": String(Date.now() - t0) } });
       }
       if (rest.startsWith("/admin/") && request.method === "POST") {
-        const res = await transactor().fetch(`https://transactor${rest}`, { method: "POST" });
+        const res = await transactor().fetch(txUrl(rest), { method: "POST" });
         return new Response(res.body, { status: res.status, headers: { "content-type": "application/json", ...CORS } });
       }
 
@@ -90,8 +91,8 @@ export default {
         const body = fromJson(await request.json()) as { query: unknown; inputs?: unknown[]; asOf?: number; history?: boolean; explain?: boolean };
         if (!body?.query) return json({ error: "body must be { query, inputs? }" }, 400);
         const basis = await fetchBasis(env, db, request);
-        const store = segmentSource(env);
-        const dbv = await dbFromBasis(store, basis, { asOf: body.asOf, history: body.history });
+        const store = segmentSource(env, db);
+        const dbv = await dbFromBasis(store, basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
         const stats = body.explain ? { clauses: [] as any[] } : undefined;
         const before = { ...store.stats };
         const result = await query(dbv, body.query as any, body.inputs ?? [], { stats });
@@ -105,7 +106,7 @@ export default {
       if (rest === "/pull" && request.method === "POST") {
         const body = fromJson(await request.json()) as { eid: number | string | [string, unknown]; pattern: unknown; asOf?: number; history?: boolean };
         const basis = await fetchBasis(env, db, request);
-        const dbv = await dbFromBasis(segmentSource(env), basis, { asOf: body.asOf, history: body.history });
+        const dbv = await dbFromBasis(segmentSource(env, db), basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
         const eid = typeof body.eid === "number" ? body.eid : await dbv.entid(body.eid as any);
         if (eid === undefined) return json({ t: basis.t, result: null });
         return json({ t: basis.t, result: await pull(dbv, eid, body.pattern as any) }, 200, { "x-ripple-ms": String(Date.now() - t0) });
@@ -114,21 +115,22 @@ export default {
       if (em && request.method === "GET") {
         const basis = await fetchBasis(env, db, request);
         const asOf = url.searchParams.has("asOf") ? Number(url.searchParams.get("asOf")) : undefined;
-        const dbv = await dbFromBasis(segmentSource(env), basis, { asOf });
+        const dbv = await dbFromBasis(segmentSource(env, db), basis, { asOf });
         return json({ t: basis.t, entity: await dbv.entity(Number(em[1])) });
       }
       if (rest === "/info" && request.method === "GET") {
         const [tx, rep] = await Promise.all([
-          transactor().fetch("https://transactor/info").then((r) => r.json()),
+          transactor().fetch(txUrl("/info")).then((r) => r.json()),
           env.REPLICA.get(replicaId(env, db, regionOf(request))).fetch(`https://replica/info?db=${encodeURIComponent(db)}`).then((r) => r.json()),
         ]);
-        return json({ db, region: regionOf(request), transactor: tx, replica: rep, peer: segmentSource(env).stats });
+        return json({ db, region: regionOf(request), transactor: tx, replica: rep, peer: segmentSource(env, db).stats });
       }
       return json({ error: "not found" }, 404);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const status = /unknown attribute|not bound|insufficient|parse|EDN|QueryError/i.test(msg) ? 400 : 500;
-      return json({ error: msg }, status);
+      const stack = env.RIPPLE_STAGE !== "prod" && err instanceof Error ? err.stack : undefined;
+      return json({ error: msg, stack }, status);
     }
   },
 };

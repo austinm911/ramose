@@ -2,21 +2,25 @@
  * Peer-side segment source and basis fetching.
  *
  * SegmentSource = R2NodeStore(memory LRU → Cache API → R2). One instance per
- * isolate (module scope) so warm isolates serve repeat queries with zero R2
- * reads. Content-addressed keys make the Cache API safe to share across
- * databases and versions.
+ * database per isolate (module scope) so warm isolates serve repeat queries
+ * with zero R2 reads. R2 keys are namespaced per database (db/<name>/…);
+ * the Cache API tier is keyed by content hash and shared.
  */
 
-import { R2NodeStore, cacheApiTier } from "@ripple/storage";
+import { R2NodeStore, cacheApiTier, dbPrefix, prefixedBucket } from "@ripple/storage";
 import type { RippleEnv } from "@ripple/transactor";
 import type { Basis } from "@ripple/replica";
 
-let source: R2NodeStore | undefined;
+const sources = new Map<string, R2NodeStore>();
+const MAX_SOURCES = 64;
 
-export function segmentSource(env: RippleEnv): R2NodeStore {
+export function segmentSource(env: RippleEnv, db: string): R2NodeStore {
+  let source = sources.get(db);
   if (!source) {
+    if (sources.size >= MAX_SOURCES) sources.delete(sources.keys().next().value!);
     const cache = (globalThis as any).caches?.default;
-    source = new R2NodeStore(env.STORE, { maxNodes: 4096, cache: cache ? cacheApiTier(cache) : undefined });
+    source = new R2NodeStore(prefixedBucket(env.STORE, dbPrefix(db)), { maxNodes: 2048, cache: cache ? cacheApiTier(cache) : undefined });
+    sources.set(db, source);
   }
   return source;
 }

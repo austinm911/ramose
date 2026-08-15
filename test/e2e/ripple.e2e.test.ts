@@ -55,8 +55,8 @@ d("ripple e2e", () => {
 
   test("update, as-of, history, pull", async () => {
     const u = await db.transact([[":db/add", [":user/email", "alice@example.com"], ":user/age", 31]]);
-    expect(await db.q(`[:find ?a . :in $ ?e :where [?e :user/age ?a]]`, [alice])).toBe(31);
-    expect(await db.asOf(tAge30).q(`[:find ?a . :in $ ?e :where [?e :user/age ?a]]`, [alice])).toBe(30);
+    expect(await db.q<number>(`[:find ?a . :in $ ?e :where [?e :user/age ?a]]`, [alice])).toBe(31);
+    expect(await db.asOf(tAge30).q<number>(`[:find ?a . :in $ ?e :where [?e :user/age ?a]]`, [alice])).toBe(30);
     expect(await db.asOf(tSchema).q(`[:find ?a . :in $ ?e :where [?e :user/age ?a]]`, [alice])).toBeNull();
     const hist = await db.history().q<[number, boolean][]>(`[:find ?a ?op :in $ ?e :where [?e :user/age ?a _ ?op]]`, [alice]);
     expect(hist.map((r) => JSON.stringify(r)).sort()).toEqual([[30, false], [30, true], [31, true]].map((r) => JSON.stringify(r)).sort());
@@ -85,7 +85,7 @@ d("ripple e2e", () => {
     expect(q2.result.length).toBe(2);
     if (q2.meta.r2Gets !== null) expect(q2.meta.r2Gets).toBe(0); // warm isolate: no R2 reads
     // as-of still correct after the root flip
-    expect(await db.asOf(tAge30).q(`[:find ?a . :in $ ?e :where [?e :user/age ?a]]`, [alice])).toBe(30);
+    expect(await db.asOf(tAge30).q<number>(`[:find ?a . :in $ ?e :where [?e :user/age ?a]]`, [alice])).toBe(30);
   });
 
   test("serialized t under concurrent clients (no gaps / dupes)", async () => {

@@ -53,6 +53,8 @@ export const DEFAULT_CONFIG: TransactorConfig = {
 };
 
 export interface TransactorHost {
+  /** Logical database name (R2 keys live under `db/<name>/`). */
+  readonly dbName: string;
   /** Durable, single-writer SQL log + metadata (DO SQLite). */
   readonly sql: SqlLike;
   /** Run `fn` atomically against `sql` (all-or-nothing). */

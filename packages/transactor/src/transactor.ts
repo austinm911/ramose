@@ -75,6 +75,8 @@ export class TransactorDeadError extends Error {
   }
 }
 
+const yieldToEventLoop = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(toJson(body)), { status, headers: { "content-type": "application/json", ...headers } });
 
@@ -253,6 +255,10 @@ export class Transactor {
     try {
       await this.init();
       while (this.queue.length > 0 && this.dead === undefined) {
+        // Open the batching window: yield to the event loop once so requests
+        // that are already in flight (separate events in a Durable Object)
+        // land in the queue and share the coming storage write.
+        await yieldToEventLoop();
         // Everything queued while the previous batch was in flight forms the next batch.
         const batch = this.takeBatch();
         const entries: LogEntry[] = [];
