@@ -203,16 +203,17 @@ export async function sha256Hex(data: Uint8Array): Promise<string> {
 
 /** gzip via the standard CompressionStream (Bun, Node ≥ 18, Workers). */
 export async function gzip(data: Uint8Array): Promise<Uint8Array> {
-  const cs = new CompressionStream("gzip");
-  const w = cs.writable.getWriter();
-  void w.write(data as BufferSource);
-  void w.close();
-  return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+  return pipeThrough(new CompressionStream("gzip"), data);
 }
+/** Rejects (never crashes) on truncated / corrupt input. */
 export async function gunzip(data: Uint8Array): Promise<Uint8Array> {
-  const ds = new DecompressionStream("gzip");
-  const w = ds.writable.getWriter();
-  void w.write(data as BufferSource);
-  void w.close();
-  return new Uint8Array(await new Response(ds.readable).arrayBuffer());
+  return pipeThrough(new DecompressionStream("gzip"), data);
+}
+async function pipeThrough(ts: { readable: ReadableStream<Uint8Array>; writable: WritableStream<BufferSource> }, data: Uint8Array): Promise<Uint8Array> {
+  const w = ts.writable.getWriter();
+  // Both halves are awaited together so a failure on either side surfaces
+  // as this promise's rejection instead of an unhandled rejection.
+  const written = w.write(data as BufferSource).then(() => w.close());
+  const [buf] = await Promise.all([new Response(ts.readable).arrayBuffer(), written]);
+  return new Uint8Array(buf);
 }
