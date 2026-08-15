@@ -126,30 +126,35 @@ export class Db {
   }
 
   /**
-   * Batched seek: yields `{ i, datoms }` for each of `prefixes` (which must
-   * all bind the same components), in ascending index order. Same visibility
-   * rules as `datoms`, but one tree cursor serves the whole batch and the
-   * novelty merge / current-view collapse run synchronously per prefix.
+   * Batched seek: `results[i]` = datoms matching `prefixes[i]` (which must
+   * all bind the same components). Same visibility rules as `datoms`, but one
+   * tree cursor serves the whole batch and the novelty merge / current-view
+   * collapse run synchronously per prefix.
    */
-  async *seekMany(index: IndexId, prefixes: readonly Prefix[]): AsyncGenerator<{ i: number; datoms: Datom[] }, void, undefined> {
+  async seekMany(index: IndexId, prefixes: readonly Prefix[]): Promise<Datom[][]> {
     const nov = this.novelty.byIndex[index];
     const cmp = COMPARATORS[index];
     const asOf = this.effectiveT;
     const rawHistory = this.isHistory && asOf >= this.novelty.maxT && asOf >= this.roots.t && this.asOfT === undefined;
-    for await (const r of scanMany(this.store, index, rootFor(this.roots, index), prefixes)) {
-      let ds: Datom[] = r.datoms;
-      const n = nov.range(prefixes[r.i]);
-      if (n !== undefined) {
-        const nds = n.start === 0 && n.end === n.datoms.length ? n.datoms : n.datoms.slice(n.start, n.end);
-        ds = ds.length === 0 ? (nds as Datom[]) : sortedUnion(cmp, ds, nds);
+    const hasNovelty = nov.size > 0;
+    const results = await scanMany(this.store, index, rootFor(this.roots, index), prefixes);
+    for (let i = 0; i < results.length; i++) {
+      let ds: Datom[] = results[i];
+      if (hasNovelty) {
+        const n = nov.range(prefixes[i]);
+        if (n !== undefined) {
+          const nds = n.start === 0 && n.end === n.datoms.length ? n.datoms : n.datoms.slice(n.start, n.end);
+          ds = ds.length === 0 ? (nds as Datom[]) : sortedUnion(cmp, ds, nds);
+        }
       }
       if (this.isHistory) {
         if (!rawHistory) ds = ds.filter((d) => d.t <= asOf);
-      } else {
+      } else if (ds.length > 0) {
         ds = collapseCurrent(ds, asOf);
       }
-      yield { i: r.i, datoms: ds };
+      results[i] = ds;
     }
+    return results;
   }
 
   async datomsArray(index: IndexId, prefix: Prefix): Promise<Datom[]> {

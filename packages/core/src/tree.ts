@@ -252,19 +252,20 @@ export async function* scan(
 
 /**
  * Batched seek: for a list of *same-shape* prefixes (identical set of bound
- * components — hence equal or disjoint ranges; duplicates allowed) yield, in ascending prefix order,
- * `{ i, datoms }` = the datoms matching `prefixes[i]`. One cursor walks the
- * tree; consecutive prefixes that land in the resident leaf cost only a
+ * components — hence equal or disjoint ranges; duplicates allowed) return
+ * `results[i]` = the datoms matching `prefixes[i]`. One cursor walks the
+ * tree in ascending prefix order; consecutive prefixes that land in the resident leaf cost only a
  * binary search, and no async machinery is spun up per prefix. Warm path
  * never awaits a pending promise.
  */
-export async function* scanMany(
+export async function scanMany(
   src: NodeSource,
   index: IndexId,
   root: NodeRef,
   prefixes: readonly Prefix[],
-): AsyncGenerator<{ i: number; datoms: Datom[] }, void, undefined> {
-  if (prefixes.length === 0) return;
+): Promise<Datom[][]> {
+  const results: Datom[][] = new Array(prefixes.length);
+  if (prefixes.length === 0) return results;
   const order = prefixes.map((_, i) => i);
   order.sort((x, y) => comparePrefix(index, prefixAsDatom(prefixes[x]), prefixes[y]));
 
@@ -322,7 +323,7 @@ export async function* scanMany(
   for (const i of order) {
     const p = prefixes[i];
     if (prevP !== undefined && comparePrefix(index, prefixAsDatom(p), prevP) === 0) {
-      yield { i, datoms: prevOut }; // duplicate prefix: same answer
+      results[i] = prevOut; // duplicate prefix: same answer (callers must not mutate)
       continue;
     }
     let ds: readonly Datom[];
@@ -346,8 +347,9 @@ export async function* scanMany(
     }
     prevP = p;
     prevOut = out;
-    yield { i, datoms: out };
+    results[i] = out;
   }
+  return results;
 }
 
 /** A datom standing in for `p` (only the components present in `p` are meaningful). */

@@ -38,7 +38,7 @@ test("seekMany ≡ datomsArray per prefix (with duplicates)", async () => {
     const seen = new Set<string>(); const prefixes: Prefix[] = [];
     for (let i = 0; i < n; i++) { const p = shapes[si](); const k = JSON.stringify(p); if (seen.has(k) && r() < 0.7) continue; seen.add(k); prefixes.push(p); }
     const got = new Map<number, string>();
-    for await (const { i, datoms } of db.seekMany(index, prefixes)) got.set(i, JSON.stringify(datoms));
+    (await db.seekMany(index, prefixes)).forEach((datoms, i) => got.set(i, JSON.stringify(datoms)));
     for (let i = 0; i < prefixes.length; i++) {
       const want = JSON.stringify(await db.datomsArray(index, prefixes[i]));
       if (got.get(i) !== want) throw new Error(`round ${round} idx ${index} prefix ${JSON.stringify(prefixes[i])} (${i}/${prefixes.length})\n got ${got.get(i)}\nwant ${want}`);
