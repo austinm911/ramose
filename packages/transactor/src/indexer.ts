@@ -15,7 +15,7 @@
 
 import { type LogEntry, type RootRecord, gzipCodec, txFrame } from "@ripple/core";
 import { gcSweep, publishRoot, putLogChunk, retainNewest, rootsToRecord } from "@ripple/storage";
-import type { TransactorDO } from "./transactor-do.ts";
+import type { Transactor } from "./transactor.ts";
 
 export interface IndexerOptions {
   intervalMs: number;
@@ -44,7 +44,7 @@ export class Indexer {
   private lastRun: IndexRunResult | undefined;
   private lastGc: unknown;
 
-  constructor(private readonly t: TransactorDO, readonly opts: IndexerOptions) {}
+  constructor(private readonly t: Transactor, readonly opts: IndexerOptions) {}
 
   status() {
     return { running: this.running, runs: this.runs, lastRun: this.lastRun, lastGc: this.lastGc, opts: this.opts };
@@ -53,19 +53,19 @@ export class Indexer {
   /** Called after each commit batch: run soon if the log is large, else make sure an alarm exists. */
   async maybeSchedule(): Promise<void> {
     if (this.t.txsSinceIndex >= this.opts.txThreshold) {
-      await this.t.durableStorage.setAlarm(Date.now()); // as soon as possible
+      await this.t.host.setAlarm(this.t.host.now()); // as soon as possible
     } else await this.schedule();
   }
 
   /** Ensure a periodic alarm is set. */
   async schedule(): Promise<void> {
-    const existing = await this.t.durableStorage.getAlarm();
-    if (existing === null) await this.t.durableStorage.setAlarm(Date.now() + this.opts.intervalMs);
+    const existing = await this.t.host.getAlarm();
+    if (existing === null) await this.t.host.setAlarm(this.t.host.now() + this.opts.intervalMs);
   }
 
   async onAlarm(): Promise<void> {
     const res = await this.runOnce();
-    if (res.remainingTxs > 0) await this.t.durableStorage.setAlarm(Date.now() + 50);
+    if (res.remainingTxs > 0) await this.t.host.setAlarm(this.t.host.now() + 50);
     // else: next commit re-arms the alarm via maybeSchedule()
   }
 
@@ -79,7 +79,7 @@ export class Indexer {
     if (this.running) return { ran: false, fromT, toT: fromT, txs: 0, datoms: 0, ms: 0, r2Puts: 0, remainingTxs: conn.t - fromT };
     if (conn.t <= fromT) return { ran: false, fromT, toT: fromT, txs: 0, datoms: 0, ms: 0, r2Puts: 0, remainingTxs: 0 };
     this.running = true;
-    const started = Date.now();
+    const started = this.t.host.now();
     const putsBefore = this.t.nodeStore.stats.r2Puts;
     try {
       // 1. Bounded slice of the log.
@@ -112,7 +112,7 @@ export class Indexer {
         toT,
         txs: entries.length,
         datoms,
-        ms: Date.now() - started,
+        ms: this.t.host.now() - started,
         r2Puts: this.t.nodeStore.stats.r2Puts - putsBefore,
         remainingTxs: conn.t - toT,
         root: rec,

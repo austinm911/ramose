@@ -16,7 +16,8 @@
  */
 
 import { fromJson, pull, query, toJson } from "@ripple/core";
-import { TransactorDO, type RippleEnv } from "@ripple/transactor";
+import { type RippleEnv } from "@ripple/transactor";
+import { TransactorDO } from "@ripple/transactor/transactor-do.ts";
 import { QueryReplicaDO, dbFromBasis } from "@ripple/replica";
 import { fetchBasis, regionOf, replicaId, segmentSource } from "./peer.ts";
 import { DEMO_HTML } from "./demo.ts";

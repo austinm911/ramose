@@ -14,6 +14,8 @@ export interface RippleEnv {
   RIPPLE_LOG_KEEP_TXS?: string;
   RIPPLE_GC_EVERY_N_INDEXES?: string;
   RIPPLE_RETAIN_ROOTS?: string;
+  /** group commit: max txs per storage write (0 = unbounded) */
+  RIPPLE_MAX_BATCH?: string;
 }
 
 export function envInt(v: string | undefined, dflt: number): number {
