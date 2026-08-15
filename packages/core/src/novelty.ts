@@ -195,10 +195,45 @@ export async function* currentView(
   asOf?: number,
 ): AsyncGenerator<Datom[], void, undefined> {
   let pending: Datom | undefined;
+  // A whole leaf array of distinct, asserted, visible facts, held until we
+  // know the next chunk does not carry a newer version of its last fact —
+  // then passed through without copying.
+  let held: Datom[] | undefined;
   for await (const c of chunks) {
     const ds = c.datoms;
+    const start = c.start, end = c.end;
+    if (start >= end) continue;
+    if (held !== undefined) {
+      const last = held[held.length - 1], first = ds[start];
+      if (last.e === first.e && last.a === first.a && valueEquals(last.vt, last.v, first.vt, first.v)) {
+        if (held.length > 1) yield held.slice(0, held.length - 1);
+        pending = last; // superseded (or not) by what follows
+      } else {
+        yield held;
+        pending = undefined;
+      }
+      held = undefined;
+    }
+    if (pending !== undefined) {
+      // pending fact ends here unless this chunk continues it
+      const first = ds[start];
+      if (!(pending.e === first.e && pending.a === first.a && valueEquals(pending.vt, pending.v, first.vt, first.v))) {
+        if (pending.op) yield [pending];
+        pending = undefined;
+      }
+    }
+    if (pending === undefined && isPlainChunk(ds, start, end, asOf)) {
+      if (start === 0 && end === ds.length) {
+        held = ds as Datom[];
+      } else {
+        // hold back the last datom: the next chunk might carry a newer version of it
+        if (end - 1 > start) yield ds.slice(start, end - 1);
+        pending = ds[end - 1];
+      }
+      continue;
+    }
     const out: Datom[] = [];
-    for (let i = c.start; i < c.end; i++) {
+    for (let i = start; i < end; i++) {
       const d = ds[i];
       if (asOf !== undefined && d.t > asOf) continue;
       if (pending !== undefined && pending.e === d.e && pending.a === d.a && valueEquals(pending.vt, pending.v, d.vt, d.v)) {
@@ -210,7 +245,21 @@ export async function* currentView(
     }
     if (out.length) yield out;
   }
-  if (pending !== undefined && pending.op) yield [pending];
+  if (held !== undefined) yield held;
+  else if (pending !== undefined && pending.op) yield [pending];
+}
+
+/** True if ds[start,end) are all asserts, visible as of `asOf`, and pairwise-distinct facts. */
+function isPlainChunk(ds: readonly Datom[], start: number, end: number, asOf: number | undefined): boolean {
+  let prev = ds[start];
+  if (!prev.op || (asOf !== undefined && prev.t > asOf)) return false;
+  for (let i = start + 1; i < end; i++) {
+    const d = ds[i];
+    if (!d.op || (asOf !== undefined && d.t > asOf)) return false;
+    if (prev.e === d.e && prev.a === d.a && valueEquals(prev.vt, prev.v, d.vt, d.v)) return false;
+    prev = d;
+  }
+  return true;
 }
 
 /**

@@ -148,6 +148,40 @@ export function upperBound(index: IndexId, datoms: readonly Datom[], p: Prefix):
   }
   return lo;
 }
+/** lowerBound restricted to [from, n): gallops forward, then bisects. */
+export function lowerBoundFrom(index: IndexId, datoms: readonly Datom[], p: Prefix, from: number): number {
+  const n = datoms.length;
+  let lo = from, step = 1, hi = from;
+  while (hi < n && comparePrefix(index, datoms[hi], p) < 0) {
+    lo = hi + 1;
+    hi += step;
+    step <<= 1;
+  }
+  if (hi > n) hi = n;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (comparePrefix(index, datoms[mid], p) < 0) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+/** upperBound restricted to [from, n): gallops forward, then bisects. */
+export function upperBoundFrom(index: IndexId, datoms: readonly Datom[], p: Prefix, from: number): number {
+  const n = datoms.length;
+  let lo = from, step = 1, hi = from;
+  while (hi < n && comparePrefix(index, datoms[hi], p) <= 0) {
+    lo = hi + 1;
+    hi += step;
+    step <<= 1;
+  }
+  if (hi > n) hi = n;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (comparePrefix(index, datoms[mid], p) <= 0) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
 /** First index i with cmp(datoms[i], d) >= 0 (full-key lower bound). */
 export function lowerBoundDatom(cmp: DatomComparator, datoms: readonly Datom[], d: Datom): number {
   let lo = 0, hi = datoms.length;
@@ -267,7 +301,8 @@ export async function scanMany(
   const results: Datom[][] = new Array(prefixes.length);
   if (prefixes.length === 0) return results;
   const order = prefixes.map((_, i) => i);
-  order.sort((x, y) => comparePrefix(index, prefixAsDatom(prefixes[x]), prefixes[y]));
+  const asDatom = prefixes.map(prefixAsDatom);
+  order.sort((x, y) => comparePrefix(index, asDatom[x], prefixes[y]));
 
   const dirs: DirNode[] = [];
   const idxs: number[] = [];
@@ -320,9 +355,11 @@ export async function scanMany(
 
   let prevP: Prefix | undefined;
   let prevOut: Datom[] = [];
+  let lastDs: readonly Datom[] | undefined;
+  let lastEnd = 0;
   for (const i of order) {
     const p = prefixes[i];
-    if (prevP !== undefined && comparePrefix(index, prefixAsDatom(p), prevP) === 0) {
+    if (prevP !== undefined && comparePrefix(index, asDatom[i], prevP) === 0) {
       results[i] = prevOut; // duplicate prefix: same answer (callers must not mutate)
       continue;
     }
@@ -334,10 +371,14 @@ export async function scanMany(
       ds = leaf.datoms;
     }
     const out: Datom[] = [];
-    let s = lowerBound(index, ds, p);
+    // Prefixes ascend, so the answer starts at or after the previous end
+    // position when we are still in the same leaf: gallop from there.
+    let s = lowerBoundFrom(index, ds, p, ds === lastDs ? lastEnd : 0);
     for (;;) {
-      const e = upperBound(index, ds, p);
+      const e = upperBoundFrom(index, ds, p, s);
       for (let k = s; k < e; k++) out.push(ds[k]);
+      lastDs = ds;
+      lastEnd = e;
       if (e < ds.length) break; // hit a datom past p (or found nothing in a leaf that spans p)
       const nl = await nextLeaf(p);
       if (nl === undefined) break;

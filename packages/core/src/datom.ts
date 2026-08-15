@@ -186,6 +186,10 @@ export function compareValue(at: ValueTag, av: DatomValue, bt: ValueTag, bv: Dat
 }
 
 export function valueEquals(at: ValueTag, av: DatomValue, bt: ValueTag, bv: DatomValue): boolean {
+  if (at !== bt) return false;
+  if (av === bv) return true;
+  // primitives: strict equality is value equality (except NaN); objects (bytes) need the deep compare
+  if (typeof av !== "object" || typeof bv !== "object") return typeof av === "number" && typeof bv === "number" && av !== av && bv !== bv;
   return compareValue(at, av, bt, bv) === 0;
 }
 
