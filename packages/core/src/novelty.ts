@@ -267,6 +267,7 @@ function isPlainChunk(ds: readonly Datom[], start: number, end: number, asOf: nu
  * as `currentView`). Used by batched seeks where each result is small.
  */
 export function collapseCurrent(ds: readonly Datom[], asOf?: number): Datom[] {
+  if (ds.length === 0 || isPlainChunk(ds, 0, ds.length, asOf)) return ds as Datom[]; // nothing to collapse: no copy
   const out: Datom[] = [];
   let pending: Datom | undefined;
   for (let i = 0; i < ds.length; i++) {

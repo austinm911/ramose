@@ -29,6 +29,8 @@ import {
   type IndexId,
   type Prefix,
   COMPARATORS,
+  Index,
+  ValueTag,
   comparePrefix,
 } from "./datom.ts";
 import { decodeSegment, encodeSegment, readDatom, writeDatom } from "./segment.ts";
@@ -148,11 +150,35 @@ export function upperBound(index: IndexId, datoms: readonly Datom[], p: Prefix):
   }
   return lo;
 }
+export type PrefixCmp = (d: Datom, p: Prefix) => number;
+
+/**
+ * A comparator specialised to the *shape* of `p` (which components are
+ * bound) in `index` order — same result as `comparePrefix`, without the
+ * per-call dispatch. Only valid for prefixes of the same shape as `p`.
+ */
+export function prefixComparator(index: IndexId, p: Prefix): PrefixCmp {
+  const hasE = p.e !== undefined, hasA = p.a !== undefined, hasV = p.vt !== undefined, hasT = p.t !== undefined;
+  if (!hasV && !hasT) {
+    switch (index) {
+      case Index.EAVT:
+        if (hasE && !hasA) return (d, q) => (d.e < q.e! ? -1 : d.e > q.e! ? 1 : 0);
+        if (hasE && hasA) return (d, q) => (d.e < q.e! ? -1 : d.e > q.e! ? 1 : d.a < q.a! ? -1 : d.a > q.a! ? 1 : 0);
+        break;
+      case Index.AEVT:
+        if (hasA && !hasE) return (d, q) => (d.a < q.a! ? -1 : d.a > q.a! ? 1 : 0);
+        if (hasA && hasE) return (d, q) => (d.a < q.a! ? -1 : d.a > q.a! ? 1 : d.e < q.e! ? -1 : d.e > q.e! ? 1 : 0);
+        break;
+    }
+  }
+  return (d, q) => comparePrefix(index, d, q);
+}
+
 /** lowerBound restricted to [from, n): gallops forward, then bisects. */
-export function lowerBoundFrom(index: IndexId, datoms: readonly Datom[], p: Prefix, from: number): number {
+export function lowerBoundFrom(cmp: PrefixCmp, datoms: readonly Datom[], p: Prefix, from: number): number {
   const n = datoms.length;
   let lo = from, step = 1, hi = from;
-  while (hi < n && comparePrefix(index, datoms[hi], p) < 0) {
+  while (hi < n && cmp(datoms[hi], p) < 0) {
     lo = hi + 1;
     hi += step;
     step <<= 1;
@@ -160,16 +186,16 @@ export function lowerBoundFrom(index: IndexId, datoms: readonly Datom[], p: Pref
   if (hi > n) hi = n;
   while (lo < hi) {
     const mid = (lo + hi) >>> 1;
-    if (comparePrefix(index, datoms[mid], p) < 0) lo = mid + 1;
+    if (cmp(datoms[mid], p) < 0) lo = mid + 1;
     else hi = mid;
   }
   return lo;
 }
 /** upperBound restricted to [from, n): gallops forward, then bisects. */
-export function upperBoundFrom(index: IndexId, datoms: readonly Datom[], p: Prefix, from: number): number {
+export function upperBoundFrom(cmp: PrefixCmp, datoms: readonly Datom[], p: Prefix, from: number): number {
   const n = datoms.length;
   let lo = from, step = 1, hi = from;
-  while (hi < n && comparePrefix(index, datoms[hi], p) <= 0) {
+  while (hi < n && cmp(datoms[hi], p) <= 0) {
     lo = hi + 1;
     hi += step;
     step <<= 1;
@@ -177,7 +203,7 @@ export function upperBoundFrom(index: IndexId, datoms: readonly Datom[], p: Pref
   if (hi > n) hi = n;
   while (lo < hi) {
     const mid = (lo + hi) >>> 1;
-    if (comparePrefix(index, datoms[mid], p) <= 0) lo = mid + 1;
+    if (cmp(datoms[mid], p) <= 0) lo = mid + 1;
     else hi = mid;
   }
   return lo;
@@ -300,9 +326,9 @@ export async function scanMany(
 ): Promise<Datom[][]> {
   const results: Datom[][] = new Array(prefixes.length);
   if (prefixes.length === 0) return results;
-  const order = prefixes.map((_, i) => i);
   const asDatom = prefixes.map(prefixAsDatom);
-  order.sort((x, y) => comparePrefix(index, asDatom[x], prefixes[y]));
+  const order = sortedPrefixOrder(index, prefixes, asDatom);
+  const pcmp = prefixComparator(index, prefixes[0]);
 
   const dirs: DirNode[] = [];
   const idxs: number[] = [];
@@ -359,12 +385,12 @@ export async function scanMany(
   let lastEnd = 0;
   for (const i of order) {
     const p = prefixes[i];
-    if (prevP !== undefined && comparePrefix(index, asDatom[i], prevP) === 0) {
+    if (prevP !== undefined && pcmp(asDatom[i], prevP) === 0) {
       results[i] = prevOut; // duplicate prefix: same answer (callers must not mutate)
       continue;
     }
     let ds: readonly Datom[];
-    if (leaf === undefined || comparePrefix(index, leaf.datoms[leaf.datoms.length - 1], p) < 0) {
+    if (leaf === undefined || pcmp(leaf.datoms[leaf.datoms.length - 1], p) < 0) {
       await descend(p);
       ds = leaf!.datoms;
     } else {
@@ -373,9 +399,9 @@ export async function scanMany(
     const out: Datom[] = [];
     // Prefixes ascend, so the answer starts at or after the previous end
     // position when we are still in the same leaf: gallop from there.
-    let s = lowerBoundFrom(index, ds, p, ds === lastDs ? lastEnd : 0);
+    let s = lowerBoundFrom(pcmp, ds, p, ds === lastDs ? lastEnd : 0);
     for (;;) {
-      const e = upperBoundFrom(index, ds, p, s);
+      const e = upperBoundFrom(pcmp, ds, p, s);
       for (let k = s; k < e; k++) out.push(ds[k]);
       lastDs = ds;
       lastEnd = e;
@@ -391,6 +417,53 @@ export async function scanMany(
     results[i] = out;
   }
   return results;
+}
+
+/**
+ * Indices of `prefixes` in ascending index order. Sorts by a numeric primary
+ * key (native typed-array sort) and only falls back to the full comparator
+ * within runs of equal primary key — comparator sorts of large batches are
+ * dominated by call overhead otherwise.
+ */
+function sortedPrefixOrder(index: IndexId, prefixes: readonly Prefix[], asDatom: readonly Datom[]): number[] {
+  const n = prefixes.length;
+  const cmp = (x: number, y: number) => comparePrefix(index, asDatom[x], prefixes[y]);
+  const order: number[] = new Array(n);
+  const LIMIT = 2 ** 32;
+  if (n < 2 ** 20) {
+    const packed = new Float64Array(n);
+    let ok = true;
+    for (let i = 0; i < n; i++) {
+      const p = prefixes[i];
+      let k: unknown;
+      switch (index) {
+        case Index.EAVT: k = p.e; break;
+        case Index.AEVT: case Index.AVET: k = p.a; break;
+        default: k = p.vt === ValueTag.Ref ? p.v : undefined; break;
+      }
+      if (typeof k !== "number" || !(k >= 0 && k < LIMIT) || !Number.isInteger(k)) { ok = false; break; }
+      packed[i] = k * 2 ** 20 + i;
+    }
+    if (ok) {
+      packed.sort();
+      for (let i = 0; i < n; i++) order[i] = packed[i] % 2 ** 20;
+      // resolve ties on the primary key with the full comparator
+      let i = 0;
+      while (i < n) {
+        let j = i + 1;
+        const ki = Math.floor(packed[i] / 2 ** 20);
+        while (j < n && Math.floor(packed[j] / 2 ** 20) === ki) j++;
+        if (j - i > 1) {
+          const run = order.slice(i, j).sort(cmp);
+          for (let k = 0; k < run.length; k++) order[i + k] = run[k];
+        }
+        i = j;
+      }
+      return order;
+    }
+  }
+  for (let i = 0; i < n; i++) order[i] = i;
+  return order.sort(cmp);
 }
 
 /** A datom standing in for `p` (only the components present in `p` are meaningful). */
