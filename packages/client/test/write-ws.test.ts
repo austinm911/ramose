@@ -97,10 +97,11 @@ describe("decodeWriteReply", () => {
   });
 
   test("multi acks, per-slot error preserved", () => {
-    const r = decodeWriteReply(JSON.stringify({ id: 5, acks: [{ t: 1, txEid: 2, tempids: {}, datoms: 1 }, { error: "nope", code: "conflict" }] }));
+    const r = decodeWriteReply(JSON.stringify({ id: 5, t: 12, acks: [{ t: 1, txEid: 2, tempids: {}, datoms: 1 }, { error: "nope", code: "conflict" }] }));
     expect(r.kind).toBe("acks");
     if (r.kind !== "acks") throw new Error("kind");
     expect(r.id).toBe(5);
+    expect(r.t).toBe(12);
     expect(r.acks.length).toBe(2);
     expect((r.acks[1] as any).error).toBe("nope");
   });
@@ -208,6 +209,17 @@ describe("RippleWriteSocket", () => {
     ws.reply({ id: 1, acks: [ack(0, 10), ack(0, 11), ack(0, 12)].map(({ id: _id, ...a }) => a) });
     const acks = await p;
     expect(acks.map((a) => a.t)).toEqual([10, 11, 12]);
+    expect(acks.t).toBe(12);
+  });
+
+  test("transactMany uses the reply's top-level t as acks.t", async () => {
+    const { sock, ws } = socket({});
+    ws.open();
+    await sock.ready;
+    const p = sock.transactMany([[{ ":k/id": 1 }], [{ ":k/id": 2 }]]);
+    await Promise.resolve();
+    ws.reply({ id: 1, t: 12, acks: [{ t: 10, txEid: 1010, tempids: {}, datoms: 2 }, { t: 11, txEid: 1011, tempids: {}, datoms: 2 }] });
+    expect((await p).t).toBe(12);
   });
 
   test("transactMany rejects naming the failing slot and keeps the raw acks", async () => {
@@ -228,7 +240,9 @@ describe("RippleWriteSocket", () => {
     const { sock, ws } = socket({});
     ws.open();
     await sock.ready;
-    expect(await sock.transactMany([])).toEqual([]);
+    const empty = await sock.transactMany([]);
+    expect(empty).toEqual([]);
+    expect(empty.t).toBe(0);
     expect(ws.sent.length).toBe(0);
   });
 

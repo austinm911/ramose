@@ -16,7 +16,7 @@ import { RippleWriteSocket, type WriteSocketOptions } from "./write-ws.ts";
 
 export { RippleError } from "./errors.ts";
 export { RippleWriteSocket, encodeWriteFrame, decodeWriteReply } from "./write-ws.ts";
-export type { WriteSocketOptions, WriteReply, WebSocketLike, WebSocketCtor, WriteFrame } from "./write-ws.ts";
+export type { WriteSocketOptions, WriteReply, WebSocketLike, WebSocketCtor, WriteFrame, TxAcks } from "./write-ws.ts";
 
 export interface ClientOptions {
   token?: string;

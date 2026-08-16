@@ -130,6 +130,7 @@ describe("handleWriteFrame", () => {
     expect(ws.frames.length).toBe(1);
     expect(ws.frames[0].id).toBe(20);
     expect(ws.frames[0].acks.map((a: TxAck) => a.t)).toEqual([40, 41, 42, 43, 44, 45, 46, 47]);
+    expect(ws.frames[0].t).toBe(47);
   });
 
   test("txs: one rejected tx becomes { error } in its slot; the others still ack", async () => {
@@ -141,6 +142,7 @@ describe("handleWriteFrame", () => {
       { error: "bad", code: "tx/invalid" },
       { t: 102, txEid: 1102, tempids: {}, datoms: 3 },
     ]);
+    expect(ws.frames[0].t).toBe(102);
   });
 
   test("txs: a synchronous throw from transact is caught too", async () => {
@@ -152,6 +154,7 @@ describe("handleWriteFrame", () => {
     };
     await handleWriteFrame(core, ws, JSON.stringify({ id: 22, txs: [[{ ":k/v": "a" }]] }));
     expect(ws.frames[0].acks).toEqual([{ error: "boom" }]);
+    expect(ws.frames[0].t).toBeUndefined();
   });
 
   test("frame errors reply exactly once, with id or null", async () => {
@@ -201,6 +204,7 @@ describe("handleWriteFrame over a real Transactor", () => {
     const acks = ws.frames[0].acks as TxAck[];
     expect(acks.length).toBe(8);
     expect(acks.map((a) => a.t)).toEqual(Array.from({ length: 8 }, (_, i) => t0 + 1 + i)); // dense, in order
+    expect(ws.frames[0].t).toBe(t0 + 8);
     expect(h.transactor.stats.batches - batchesBefore).toBe(1); // ONE batch
     expect(h.writes - writesBefore).toBe(1); // ONE storage write
     expect(h.transactor.stats.maxBatch).toBe(8);

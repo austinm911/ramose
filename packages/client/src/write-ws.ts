@@ -7,6 +7,9 @@
  *   const acks = await sock.transactMany([tx1, tx2, tx3]);   // one frame, one round trip
  *   sock.close();
  *
+ * `acks.t` is the frame's basis — pass it as `db.q(..., { minT })` / `db.query(..., { minT })`
+ * or `db.asOf(t)` when a read must observe these writes.
+ *
  * One socket = one Worker request = one Transactor DO socket. The fetch-based
  * `RippleDb.transact` is unchanged; this is the batching/pipelining path.
  *
@@ -14,7 +17,7 @@
  * HTTP bodies):
  *   client→server  { id, tx }               | { id, txs: TxData[] }
  *   server→client  { id, t, txEid, tempids, datoms }
- *                | { id, acks: Array<TxAck | { error, code? }> }     (same order as txs)
+ *                | { id, t?, acks: Array<TxAck | { error, code? }> }     (same order as txs)
  *                | { id: number | null, error, code?, status? }
  * Anything else (e.g. an unsolicited `{ kind: "pong", t }`) and any frame whose
  * `id` has no pending caller is ignored.
@@ -37,10 +40,13 @@ export interface SlotError {
 
 export type WriteReply =
   | { kind: "ack"; id: number; ack: TxAck }
-  | { kind: "acks"; id: number; acks: Array<TxAck | SlotError> }
+  | { kind: "acks"; id: number; t?: number; acks: Array<TxAck | SlotError> }
   | { kind: "error"; id: number | null; error: string; code?: string; status?: number }
   /** Unparseable, or parseable but not one of the three shapes (pong, future frames). */
   | { kind: "unknown"; frame?: unknown; text: string };
+
+/** `transactMany` result: the slot acks plus the frame's basis `t` (non-enumerable). */
+export type TxAcks = TxAck[] & { readonly t: number };
 
 /**
  * `JSON.stringify(toJson(frame))` — one tx (`{ id, tx }`) or a batch (`{ id, txs }`).
@@ -71,7 +77,11 @@ export function decodeWriteReply(text: string): WriteReply {
     return out;
   }
   if (id === null) return { kind: "unknown", frame, text };
-  if (Array.isArray(o.acks)) return { kind: "acks", id, acks: o.acks as Array<TxAck | SlotError> };
+  if (Array.isArray(o.acks)) {
+    const out: Extract<WriteReply, { kind: "acks" }> = { kind: "acks", id, acks: o.acks as Array<TxAck | SlotError> };
+    if (typeof o.t === "number") out.t = o.t;
+    return out;
+  }
   if (typeof o.t === "number") return { kind: "ack", id, ack: { t: o.t, txEid: Number(o.txEid), tempids: (o.tempids as Record<string, number>) ?? {}, datoms: Number(o.datoms) } };
   return { kind: "unknown", frame, text };
 }
@@ -172,9 +182,13 @@ export class RippleWriteSocket {
    * index (`ripple: tx 2 of 8 failed: …`); the raw slot array is attached to the
    * error as `.acks` for callers that need the partial results.
    */
-  async transactMany(txs: TxData[]): Promise<TxAck[]> {
-    if (txs.length === 0) return [];
-    const acks = await this.send<Array<TxAck | SlotError>>(true, (id) => encodeWriteFrame(id, txs, true));
+  async transactMany(txs: TxData[]): Promise<TxAcks> {
+    if (txs.length === 0) {
+      const empty = [] as unknown as TxAcks;
+      Object.defineProperty(empty, "t", { value: 0, enumerable: false });
+      return empty;
+    }
+    const { acks, t } = await this.send<{ acks: Array<TxAck | SlotError>; t?: number }>(true, (id) => encodeWriteFrame(id, txs, true));
     const bad = acks.findIndex((a) => a && typeof (a as SlotError).error === "string");
     if (bad >= 0) {
       const slot = acks[bad] as SlotError;
@@ -182,7 +196,9 @@ export class RippleWriteSocket {
       (err as RippleError & { acks?: unknown }).acks = acks;
       throw err;
     }
-    return acks as TxAck[];
+    const basis = t ?? Math.max(...(acks as TxAck[]).map((a) => a.t));
+    Object.defineProperty(acks, "t", { value: basis, enumerable: false });
+    return acks as TxAcks;
   }
 
   /** Close the socket and reject everything still in flight. */
@@ -228,7 +244,7 @@ export class RippleWriteSocket {
         p.reject(new RippleError(`ripple: expected a single ack for frame ${reply.id}, got ${reply.acks.length} acks`, 0));
         return;
       }
-      p.resolve(reply.acks);
+      p.resolve({ acks: reply.acks, t: reply.t });
       return;
     }
     if (p.multi) {

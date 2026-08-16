@@ -16,9 +16,13 @@
  *                 { "kind": "ping" }                     (optional keepalive)
  *
  *   DO → client   { "id", "t", "txEid", "tempids", "datoms" }        single ack
- *                 { "id", "acks": Array<TxAck | { error, code? }> }  multi, in order
+ *                 { "id", "t"?, "acks": Array<TxAck | { error, code? }> }  multi, in order
  *                 { "id": <id|null>, "error", "code"? }              frame / tx failure
  *                 { "kind": "pong", "t" }
+ *
+ * Consistency: an ack's `t` is the basis of that write; pass it as `minT`/`asOf`
+ * on a later read. Nothing is invalidated per frame. The multi reply's top-level
+ * `t` = max `t` over successful slots (omitted when none succeeded).
  *
  * Exactly one reply per frame. Bodies go through `fromJson`/`toJson`, the same
  * encoding the HTTP `/transact` route uses. For `txs` every `core.transact()`
@@ -51,9 +55,12 @@ export type DecodedWriteFrame =
 
 export type WriteReply =
   | ({ id: number } & TxAck)
-  | { id: number; acks: (TxAck | WriteErrorBody)[] }
+  | { id: number; t?: number; acks: (TxAck | WriteErrorBody)[] }
   | ({ id: number | null } & WriteErrorBody)
   | { kind: "pong"; t: number };
+
+const frameBasis = (acks: (TxAck | WriteErrorBody)[]): number | undefined =>
+  acks.reduce<number | undefined>((m, a) => ("t" in a && typeof a.t === "number" ? Math.max(m ?? a.t, a.t) : m), undefined);
 
 const isError = (f: DecodedWriteFrame): f is { id: number | null; error: string } => "error" in f;
 const isPing = (f: DecodedWriteFrame): f is { kind: "ping" } => "kind" in f && f.kind === "ping";
@@ -131,7 +138,8 @@ export async function handleWriteFrame(core: WriteCore, ws: SocketLike, message:
     });
     const settled = await Promise.allSettled(pending);
     const acks = settled.map((r) => (r.status === "fulfilled" ? r.value : writeErrorBody(r.reason)));
-    send(ws, { id: frame.id, acks });
+    const t = frameBasis(acks);
+    send(ws, t === undefined ? { id: frame.id, acks } : { id: frame.id, t, acks });
     return;
   }
   if (frame.tx !== undefined) {
