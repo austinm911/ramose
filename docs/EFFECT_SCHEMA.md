@@ -1,6 +1,6 @@
 # Effect-native schema catalog
 
-Typed surface to implement. No engine yet. Do not rewrite the transactor,
+Typed surface over today's untyped client. Do not rewrite the transactor,
 worker, replica, storage, or the existing untyped client.
 
 The caller experience is `packages/alchemy/src/schema/usage.ts` (compiled
@@ -87,16 +87,19 @@ Privilege / `asOf` / `history` / `catchTags` match the untyped client.
 
 ## Wire to the existing client
 
-Wrap today's untyped `Ripple.System` / `ReadWriteDatabaseClient`. Do not
-rewrite the transactor. Lower builder ops / pull maps / `schemaTx` onto
+Wraps today's untyped `Ripple.System` / `ReadWriteDatabaseClient`. Does not
+rewrite the transactor. Builder ops / pull maps / `schemaTx` lower onto
 what the peer already accepts (`:db/add`, pull with `:as`, ident maps).
 
-Stubs today (`Effect.die` — "proposal stub") must become real I/O:
+Real I/O (no proposal stubs on the happy path):
 
 - `create` / `connect` — validate name, transact `schemaTx(catalog)`,
   return the typed client
 - `transact` / `transactWire` / `transactUntyped` — collect ops, submit
 - `q` / `query` / `Eid.pull` / `info` / `health` — real reads
+
+`unsafeDatabase` / `Eid.of` without a peer still die (type-fixture
+helpers). Integration tests live in `packages/alchemy/test/schema/io.test.ts`.
 
 ## Out of scope
 
