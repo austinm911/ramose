@@ -1,7 +1,6 @@
 /** Ident derivation (`:ns/attr`) and value-type lookup against a catalog. */
 
-import type { Schema } from "effect/Schema";
-import type { AnyAttribute, Cardinality, ValueOf } from "./Attribute.ts";
+import type { ValueOf } from "./Attribute.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 
 export type Ident<Ns extends string, Attr extends string> = `:${Ns}/${Attr}`;
@@ -61,5 +60,3 @@ export type LookupRef<C extends AnyCatalog> = {
 
 /** eid | tempid/ident string | typed lookup ref. */
 export type EntityRef<C extends AnyCatalog> = number | string | LookupRef<C>;
-
-export type { AnyAttribute, Cardinality, Schema };

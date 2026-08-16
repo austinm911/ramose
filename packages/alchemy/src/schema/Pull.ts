@@ -8,13 +8,6 @@ import type { AttributeMap } from "./Namespace.ts";
 
 // ── markers ────────────────────────────────────────────────────────────────
 
-export interface PullStruct<
-  F extends Record<string, unknown> = Record<string, unknown>,
-> {
-  readonly _tag: "struct";
-  readonly fields: F;
-}
-
 export interface PullOptional<F = unknown> {
   readonly _tag: "optional";
   readonly field: F;
@@ -68,7 +61,7 @@ export const optional = <const F>(field: F): PullOptional<F> => {
  */
 export const nested = <
   const A extends { readonly valueType: ":db.type/ref" },
-  const P extends Record<string, unknown> | PullStruct<Record<string, unknown>>,
+  const P extends Record<string, unknown>,
 >(
   attr: A,
   pattern: P,
@@ -101,12 +94,6 @@ export const pick = <
   };
 };
 
-export const isPullStruct = (value: unknown): value is PullStruct =>
-  typeof value === "object" &&
-  value !== null &&
-  (value as { _tag?: unknown })._tag === "struct" &&
-  "fields" in value;
-
 export const isPullOptional = (value: unknown): value is PullOptional =>
   typeof value === "object" &&
   value !== null &&
@@ -133,15 +120,13 @@ type ScalarResult<F> = F extends {
     : SchemaType<S>
   : never;
 
-type PatternFields<P> = P extends PullStruct<infer F> ? F : P;
-
 type FieldsResult<F> = {
   readonly [K in keyof F]: FieldResult<F[K]>;
 };
 
 type NestedResult<A, P> = A extends { readonly cardinality: "many" }
-  ? readonly FieldsResult<PatternFields<P>>[]
-  : FieldsResult<PatternFields<P>>;
+  ? readonly FieldsResult<P>[]
+  : FieldsResult<P>;
 
 type FieldResult<F> = F extends PullOptional<infer Inner>
   ? FieldResult<Inner> | undefined
@@ -150,9 +135,7 @@ type FieldResult<F> = F extends PullOptional<infer Inner>
     : ScalarResult<F>;
 
 /** Result shape of a fields object. */
-export type StructPullResult<P> = P extends PullStruct<infer F>
-  ? FieldsResult<F>
-  : FieldsResult<P>;
+export type StructPullResult<P> = FieldsResult<P>;
 
 // ── ident-keyed escape ─────────────────────────────────────────────────────
 
@@ -206,19 +189,17 @@ export type IdentPullResult<
  * that are not in the catalog without a recursive field union —
  * those blow the client type (`Type instantiation is excessively deep`).
  */
-type IdentsIn<P> = [P] extends [PullStruct<infer F>]
-  ? IdentsInFields<F>
-  : [P] extends [PullOptional<infer I>]
-    ? IdentsIn<I>
-    : [P] extends [PullNested<infer A, infer Inner>]
-      ? IdentsIn<A> | IdentsIn<Inner>
-      : [P] extends [{ readonly ident: infer I extends string }]
-        ? I
-        : [P] extends [readonly unknown[]]
-          ? IdentsInArray<P[number]>
-          : [P] extends [object]
-            ? IdentsInFields<P>
-            : never;
+type IdentsIn<P> = [P] extends [PullOptional<infer I>]
+  ? IdentsIn<I>
+  : [P] extends [PullNested<infer A, infer Inner>]
+    ? IdentsIn<A> | IdentsIn<Inner>
+    : [P] extends [{ readonly ident: infer I extends string }]
+      ? I
+      : [P] extends [readonly unknown[]]
+        ? IdentsInArray<P[number]>
+        : [P] extends [object]
+          ? IdentsInFields<P>
+          : never;
 
 /** Ident strings are only idents in the array escape, not on attr objects. */
 type IdentsInArray<E> = [E] extends [string] ? E : IdentsIn<E>;
@@ -249,13 +230,6 @@ export type PullResult<C extends AnyCatalog, P> = [P] extends [
     : never
   : StructPullResult<P>;
 
-/** @deprecated Use {@link IdentPullAttr}. */
-export type PullAttr<C extends AnyCatalog> = IdentPullAttr<C>;
-
-/** @deprecated Array form only. Prefer a plain fields object. */
-export type PullPattern<C extends AnyCatalog> = IdentPullPattern<C>;
-
-
 // ── wire lowering ──────────────────────────────────────────────────────────
 
 const isAttrRef = (a: unknown): a is { readonly ident: string } =>
@@ -271,7 +245,6 @@ const identOf = (field: unknown): string => {
 };
 
 const fieldsOf = (pattern: unknown): Record<string, unknown> => {
-  if (isPullStruct(pattern)) return pattern.fields as Record<string, unknown>;
   if (typeof pattern === "object" && pattern !== null && !Array.isArray(pattern)) {
     return pattern as Record<string, unknown>;
   }
