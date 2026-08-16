@@ -15,8 +15,8 @@
  * Transactor DO. Auth: per-db bearer token (RIPPLE_TOKENS), disabled if unset.
  */
 
-import { fromJson, pull, query, toJson } from "@ripple/core";
-import { type RippleEnv } from "@ripple/transactor";
+import { DEFAULT_QUERY_MAX_CELLS, QueryBudgetError, fromJson, pull, query, toJson } from "@ripple/core";
+import { type RippleEnv, envInt } from "@ripple/transactor";
 import { TransactorDO } from "@ripple/transactor/transactor-do.ts";
 import { QueryReplicaDO, dbFromBasis } from "@ripple/replica";
 import { fetchBasis, regionOf, replicaId, segmentSource } from "./peer.ts";
@@ -100,7 +100,7 @@ export default {
         const dbv = await dbFromBasis(store, basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
         const stats = body.explain ? { clauses: [] as any[] } : undefined;
         const before = { ...store.stats };
-        const result = await query(dbv, body.query as any, body.inputs ?? [], { stats });
+        const result = await query(dbv, body.query as any, body.inputs ?? [], { stats, maxCells: envInt(env.RIPPLE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS) });
         const after = store.stats;
         return json(
           { t: basis.t, root: basis.root.t, result, ...(stats ? { explain: stats.clauses } : {}) },
@@ -133,6 +133,10 @@ export default {
       return json({ error: "not found" }, 404);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (err instanceof QueryBudgetError) {
+        // planner memory guardrail: clear, tagged, retryable-with-a-narrower-query — never an OOM
+        return json({ error: msg, code: err.code, clause: err.clause, cells: err.cells, limit: err.limit }, 413);
+      }
       const status = /unknown attribute|not bound|insufficient|parse|EDN|QueryError/i.test(msg) ? 400 : 500;
       const stack = env.RIPPLE_STAGE !== "prod" && err instanceof Error ? err.stack : undefined;
       return json({ error: msg, stack }, status);

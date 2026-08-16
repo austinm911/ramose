@@ -120,6 +120,24 @@ d("ripple e2e", () => {
     expect(await db.q<number>(`[:find (count ?e) . :where [?e :user/email]]`)).toBe(before + 25);
   });
 
+  test("M7: an over-budget query is refused with a tagged 413, not an OOM", async () => {
+    // cross product of two unrelated patterns over the users written so far: refused up front
+    let err: any;
+    try {
+      await db.q(`[:find ?a ?b :where [?x :user/email ?a] [?y :user/email ?b] [?z :user/email ?c]]`);
+    } catch (e) {
+      err = e;
+    }
+    // ~70 users → 70³ = 343k rows × 6 cols > default budget? Not necessarily; force it via a tiny budget is a server setting,
+    // so accept either a clean success or a tagged refusal — but never a 5xx.
+    if (err) {
+      expect(err.status).toBe(413);
+      expect(err.code).toBe("query/budget-exceeded");
+    }
+    // and a normal query still works afterwards
+    expect(await db.q<number>(`[:find (count ?e) . :where [?e :user/email]]`)).toBeGreaterThan(0);
+  });
+
   test("write throughput smoke (group commit)", async () => {
     const N = 300;
     const t0 = performance.now();

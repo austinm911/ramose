@@ -2,7 +2,7 @@
  * Property test: Db.seekMany (batched cursor seek, tree + novelty, current view)
  * ≡ datomsArray per prefix — including duplicate prefixes in one batch.
  */
-import { test } from "bun:test";
+import { expect, test } from "bun:test";
 import { Connection } from "../src/conn.ts";
 import { Index, type Prefix } from "../src/datom.ts";
 import { rng, randInt, pick } from "./util.ts";
@@ -44,4 +44,15 @@ test("seekMany ≡ datomsArray per prefix (with duplicates)", async () => {
       if (got.get(i) !== want) throw new Error(`round ${round} idx ${index} prefix ${JSON.stringify(prefixes[i])} (${i}/${prefixes.length})\n got ${got.get(i)}\nwant ${want}`);
     }
   }
+});
+
+test("seekMany over an empty tree (all novelty) works", async () => {
+  const conn = await Connection.create();
+  await conn.transact([{ ":db/ident": ":p/tag", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/many" }]);
+  const r = await conn.transact([{ ":db/id": "x", ":p/tag": "a" }]);
+  const db = conn.db();
+  const tag = db.schema.entid(":p/tag")!;
+  const res = await db.seekMany(Index.EAVT, [{ e: r.tempids.x, a: tag }, { e: 5, a: tag }]);
+  expect(res[0].length).toBe(1);
+  expect(res[1].length).toBe(0);
 });

@@ -16,6 +16,8 @@ export interface RippleEnv {
   RIPPLE_RETAIN_ROOTS?: string;
   /** group commit: max txs per storage write (0 = unbounded) */
   RIPPLE_MAX_BATCH?: string;
+  /** query memory guardrail: max intermediate cells (rows × columns) per query */
+  RIPPLE_QUERY_MAX_CELLS?: string;
 }
 
 export function envInt(v: string | undefined, dflt: number): number {

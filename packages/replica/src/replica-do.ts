@@ -16,6 +16,8 @@
 
 import { DurableObject } from "cloudflare:workers";
 import {
+  DEFAULT_QUERY_MAX_CELLS,
+  QueryBudgetError,
   type LogEntry,
   type RootRecord,
   type WireFrame,
@@ -29,7 +31,7 @@ import {
   toJson,
 } from "@ripple/core";
 import { type R2Like, R2NodeStore, dbPrefix, prefixedBucket, readCurrentRoot, readLogSince, type ByteTier } from "@ripple/storage";
-import type { RippleEnv } from "@ripple/transactor";
+import { type RippleEnv, envInt } from "@ripple/transactor";
 import { type Basis, dbFromBasis, makeBasis } from "./basis.ts";
 
 const json = (body: unknown, status = 200) =>
@@ -282,7 +284,7 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
           const db = await dbFromBasis(this.store, basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
           this.stats.queries++;
           if (body.pull) return json({ t: basis.t, result: await runPull(db, body.pull.eid, body.pull.pattern as any) });
-          const result = await runQuery(db, body.query as any, body.inputs ?? []);
+          const result = await runQuery(db, body.query as any, body.inputs ?? [], { maxCells: envInt(this.env.RIPPLE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS) });
           return json({ t: basis.t, result });
         }
         case "/info":
@@ -299,6 +301,7 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
           return json({ error: "not found" }, 404);
       }
     } catch (err) {
+      if (err instanceof QueryBudgetError) return json({ error: err.message, code: err.code, clause: err.clause, cells: err.cells, limit: err.limit }, 413);
       return json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   }

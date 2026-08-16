@@ -390,7 +390,7 @@ export async function scanMany(
       continue;
     }
     let ds: readonly Datom[];
-    if (leaf === undefined || pcmp(leaf.datoms[leaf.datoms.length - 1], p) < 0) {
+    if (leaf === undefined || leaf.datoms.length === 0 || pcmp(leaf.datoms[leaf.datoms.length - 1], p) < 0) {
       await descend(p);
       ds = leaf!.datoms;
     } else {
