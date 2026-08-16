@@ -76,24 +76,43 @@ ada.add(User.nope, "x")
 ada.add(User.name, 42)
 ```
 
-`entity` / `pull` project catalog value types. `pull` takes the same
-attr refs as writes (`User.name`); the result map is still keyed by
-ident — that is what the engine returns. Keyword-soup idents remain as
-an overload. `q` is a catalog-generic builder: bindings accumulate as
-clauses are added, and `find` produces a row tuple from the selected
-variables. Today's object/string `q<T>` stays as the escape hatch.
-`transactUntyped` is the write-side escape. `transactWire` is the
-keyword-soup form (`{ ":user/name": "Ada" }`), still catalog-checked —
-a bag, but not the Effect-savvy path. `tx.add(e, attr, value)` stays
-for an eid / tempid / lookup that is not a handle.
+`entity` still returns the whole ident-keyed bag (no projection).
+`pull` is a `Schema.Struct`-shaped pattern: callers map attr refs onto
+the result keys they want. Required fields are `T`; `optional` is
+`T | undefined`; `nested` follows a ref (object, or `T[]` if many).
+Keyword-soup ident arrays remain as an escape. `q` is a catalog-generic
+builder: bindings accumulate as clauses are added, and `find` produces
+a row tuple from the selected variables. Today's object/string `q<T>`
+stays as the escape hatch. `transactUntyped` is the write-side escape.
+`transactWire` is the keyword-soup form (`{ ":user/name": "Ada" }`),
+still catalog-checked — a bag, but not the Effect-savvy path.
+`tx.add(e, attr, value)` stays for an eid / tempid / lookup that is
+not a handle.
 
 ```ts
 const ada = yield* db.entity(1001)
 // ada?.[":user/name"] : string | undefined
 // ada?.[":user/friends"] : readonly number[] | undefined
 
-const pulled = yield* db.pull(1001, [User.name, User.age])
-// pulled?.[":user/name"] : string | undefined
+const Friend = SchemaFx.Struct({
+  name: User.name,
+  age: SchemaFx.optional(User.age),
+})
+const pulled = yield* db.pull(
+  1001,
+  SchemaFx.Struct({
+    name: User.name,
+    age: SchemaFx.optional(User.age),
+    source: Meta.source,
+    friends: SchemaFx.nested(User.friends, Friend),
+  }),
+)
+// pulled : {
+//   readonly name: string
+//   readonly age: number | undefined
+//   readonly source: string
+//   readonly friends: readonly { readonly name: string; readonly age: number | undefined }[]
+// } | null
 
 const rows = yield* db.q((q) =>
   q.where("?e", User.name, "?n").find("?n"),
@@ -174,13 +193,32 @@ it is keyword soup. Nested maps remain as a `NestedEntity` type
 lowers the builder's collected `:db/add` / `:db/retract` ops to what the
 peer already accepts.
 
-**Reads speak attr refs.** `db.pull(1001, [User.name, User.age])` is the
-same language as writes. The result map is keyed by ident
-(`":user/name"`) because that is what the engine returns; the *call*
-accepts `User.name`. Keyword-soup idents remain as an overload.
+**Pull is a Struct, not ident keys.** An ident-keyed
+`db.pull(1001, [User.name])` → `{ ":user/name"?: string }` is honest
+about the engine, and it is the wrong happy path. Callers do not want
+to write `":user/name"` in application code, they cannot rename, they
+cannot mark required vs maybe, and they cannot nest a ref into a
+typed object. A nested map under namespace keys (`{ user: { name } }`)
+is the same mistake the write path already rejected: it partitions
+the entity and cannot mix `User.name` + `Meta.source`.
+
+`SchemaFx.Struct` is the Effect-shaped answer. Keys are the names that
+come back (`name`, not `":user/name"`). Values are the same attr refs
+writes already use. `optional` is `Schema.optional`. `nested(ref, pattern)`
+follows a `:db.type/ref` — card-one is an object, card-many is
+`readonly T[]`. `pick(User, "name", "age")` is `Schema.pick` for the
+same-namespace case. Recursion is just a nested Struct; two levels
+typecheck. The catalog is still a bag: `Movie.title` on a user pull
+is legal if you name the key.
+
+The engine can still return ident maps. A future implementation
+lowers `Struct({ name: User.name })` to today's pull with `:as`
+(`(:user/name :as "name")`) and nested map specs. The typed result
+is the decoded shape, not the wire. `[User.name, ":user/age"]`
+stays as the keyword-soup escape — ident keys, every field optional.
+
 `entity(eid)` still returns the whole bag (no projection). The catalog
-does not partition entities into types — `Movie.title` on a user handle
-(or in a user pull) typechecks. That is the bag.
+does not partition entities into types.
 
 **Typed `q` is a builder, not a Schema encoding of EDN.** The last writeup
 left `q<T = unknown>` as the escape hatch because a `where` slot restricted
@@ -189,6 +227,20 @@ legal: the attr slot is `User.name | ":user/name" | "?a" | "_"`. Bindings
 are a type-level map that grows with each `where`. `find("?n", "?age")`
 is a tuple of the bound types. The object/string `q<T>` remains for
 queries the builder does not type.
+
+Remaining limits (pull):
+
+- `entity(eid)` is still the whole ident-keyed bag. Use `pull` + Struct
+  to project and rename.
+- `nested` requires `valueType: ":db.type/ref"` on the attr. A `Ref`
+  schema without that option is not enough for the type checker.
+- Reverse refs (`:user/_friends`), `:as` on the wire, `limit` /
+  `default`, and recursive `...` are not encoded. Use the ident-keyed
+  escape or `q<T>`.
+- The entity itself is still `| null` when the eid is missing;
+  required fields describe the payload given that it exists.
+- Patterns are finite values. There is no typed recursive-self pull
+  (`friends` of `friends` of `…`); nest a couple of levels by hand.
 
 Remaining limits (query builder):
 
