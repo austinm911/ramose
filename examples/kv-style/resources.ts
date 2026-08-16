@@ -1,7 +1,11 @@
 /**
  * Ripple through the Alchemy 2 + Effect interface, in the shape the KV docs
- * use: declare the database as a resource, bind it as a capability, use the
+ * use: declare the deployment as a resource, bind it as a capability, use the
  * Effect-native client.
+ *
+ * The resource is the *peer* (a Ripple system). A database is a *name* on it —
+ * nothing is provisioned, so there is no resource per database: you `create`
+ * (≡ `connect`) a name and transact.
  *
  * This directory is a *type-checked* example, not part of the deployed stack —
  * it is compiled by `bun run typecheck` so the public API can never drift from
@@ -9,8 +13,8 @@
  * `bun alchemy dev examples/kv-style/alchemy.run.ts`. To adopt it, copy the
  * three files into a project of your own.
  *
- *   resources.ts    ← you are here: the Ripple deployment + the database
- *   app.ts          an app Worker that binds the database (its own module, so
+ *   resources.ts    ← you are here: the Ripple deployment (peer + system)
+ *   app.ts          an app Worker that binds the system (its own module, so
  *                   `main: import.meta.url` bundles only the app)
  *   alchemy.run.ts  the stack: providers, the deploy-time schema Action, outputs
  *
@@ -41,8 +45,13 @@ export const Peer = Cloudflare.Worker("Peer", {
 });
 
 /**
- * A logical database on that peer. Nothing is provisioned — the name *is* the
- * database — but the resource pins it, derives `databaseUrl`, and proves the
- * peer answers `/health` before anything downstream binds to it.
+ * The Ripple system on that peer. Nothing is provisioned and no database name
+ * is pinned here — the resource is the deployment: it resolves the peer's
+ * `url`, carries the shared `token`, and proves the peer answers `/health`
+ * before anything downstream binds to it.
+ *
+ * Databases come later and per use: `system.create("movies")` hands back a
+ * client for `/db/movies/…`, and the first `transact` materializes it (the
+ * Transactor DO is `idFromName("movies")`).
  */
-export const Movies = Ripple.Database("Movies", { peer: Peer, name: "movies" });
+export const Sys = Ripple.System("Sys", { peer: Peer });

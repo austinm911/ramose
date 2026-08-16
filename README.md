@@ -13,7 +13,7 @@ milestones; `bench/RESULTS.md` for recorded numbers.
 - `packages/replica` — QueryReplica DO (novelty subscriber, basis endpoint).
 - `packages/worker` — the peer Worker (HTTP API, edge query execution). Exports both DO classes.
 - `packages/client` — TS SDK.
-- `packages/alchemy` — Alchemy 2 + Effect interface (`Ripple.Database` resource, Read/Write/ReadWrite capabilities).
+- `packages/alchemy` — Alchemy 2 + Effect interface (`Ripple.System` resource, Read/Write/ReadWrite capabilities).
 - `bench/`, `test/e2e/` — benches and end-to-end tests.
 
 ## Commands
@@ -52,19 +52,20 @@ import * as Ripple from "@ripple/alchemy";
 import * as Layer from "effect/Layer";
 
 export const Peer = Cloudflare.Worker("Peer", { main: "./packages/worker/src/index.ts", env: { /* … */ } });
-export const Movies = Ripple.Database("Movies", { peer: Peer, name: "movies" });
+export const Sys  = Ripple.System("Sys", { peer: Peer });
 
 // inside an Effect-form Worker (deploy time: lowers a `service` binding to the peer)
-const db = yield* Ripple.ReadWriteDatabase(Movies);
-// per request
+const system = yield* Ripple.ReadWriteSystem(Sys);
+// per request — a database is a name; `create` is an upsert, no network
+const db   = yield* system.create("movies");
 const ack  = yield* db.transact([{ ":user/name": "Ada" }]);
 const rows = yield* db.q({ find: ["?n"], where: [["?e", ":user/name", "?n"]] }, [], { minT: ack.t });
 const past = yield* db.asOf(ack.t - 1).q(/* … */);
 const ada  = yield* db.entity(17);
 
-// db-per-tenant: the same client/peer/token, another Ripple database name
+// db-per-tenant: same peer/token, another name
 const tenantId = (yield* HttpServerRequest).url.split("/")[2]; // GET /t/:tenant
-const tenant   = db.for(tenantId);                            // invalid name → BadRequest
+const tenant   = yield* system.create(tenantId);               // invalid name → fails with BadRequest
 const tack     = yield* tenant.transact([{ ":user/name": "Ada" }]);
 
 export default Alchemy.Stack("app", {
@@ -73,31 +74,36 @@ export default Alchemy.Stack("app", {
 }, /* … */);
 ```
 
-- **Resource** — `Ripple.Database(id, { peer, name?, token?, probe? })`, guard `Ripple.isDatabase`.
-  Attributes: `name`, `url`, `databaseUrl`, `peerName`, `token`. A Ripple database is a *name*
-  (the Transactor DO is `idFromName(name)`; the log lives under `db/<name>/…`), so the provider
-  creates nothing — it pins the name, derives the URLs, and proves the peer serves `/health`.
-  `destroy` forgets the name; it does **not** erase the log, the segments, or the DOs.
-- **Capabilities** — `Ripple.ReadDatabase` / `WriteDatabase` / `ReadWriteDatabase`.
-  Client: `transact`, `q`, `query` (with `x-ripple-*` meta), `pull`, `entity`, `info`, `health`,
-  and the `asOf(t)` / `history()` views; `minT` is the read fence.
-- **Layers** — `*DatabaseBinding` (Worker service binding to the peer, same-colo, no public hop),
-  `*DatabaseHttp` (plain HTTPS, works anywhere), `*DatabaseLocal` (`Alchemy.Action`, `alchemy dev`).
+- **Resource** — `Ripple.System(id, { peer, token?, probe? })`, guard `Ripple.isSystem`.
+  Attributes: `url`, `peerName`, `token`. The resource is the *deployment*, not a database:
+  a Ripple database is a **name** (the Transactor DO is `idFromName(name)`; the log lives
+  under `db/<name>/…`), there is no create-database endpoint and no list, so the provider
+  creates nothing — it resolves the peer's URL, carries the shared token, and proves the peer
+  serves `/health`. `system.create(name)` and `system.connect(name)` are the same upsert:
+  they validate the name and return a client; the **first transact materializes** the
+  database. `destroy` forgets the resource; it does **not** erase any log, segments or DOs.
+- **Capabilities** — `Ripple.ReadSystem` / `WriteSystem` / `ReadWriteSystem`.
+  System client: `create(name)` / `connect(name)` → a database client, plus `health()` (the
+  peer's, not db-scoped). Database client: `transact`, `q`, `query` (with `x-ripple-*` meta),
+  `pull`, `entity`, `info`, `health`, and the `asOf(t)` / `history()` views; `minT` is the
+  read fence. Privilege follows the system — `WriteSystem.create` hands back a write-only
+  database client.
+- **Layers** — `*SystemBinding` (Worker service binding to the peer, same-colo, no public hop),
+  `*SystemHttp` (plain HTTPS, works anywhere), `*SystemLocal` (`Alchemy.Action`, `alchemy dev`).
 - **Errors** — tagged, one per condition the peer/DOs report: `TxRejected`, `TransactorDead`,
   `BadRequest`, `NotFound`, `Unauthorized`, `QueryBudgetExceeded`, `Internal`, `NetworkError`
   (union `Ripple.DatabaseError`, guard `Ripple.isDatabaseError`). Catch them with
   `Effect.catchTags` instead of reading status codes.
-- **Db-per-tenant** — `db.for(name)` returns the same client — same peer/service binding,
-  `fetch`, token and headers — pointed at a different Ripple database name (the `:name` in
-  `/db/:name/…`, i.e. the Transactor DO's `idFromName`). Synchronous like `asOf`, and it
-  composes: `db.for(t).asOf(7)` ≡ `db.asOf(7).for(t)`. No resource per tenant, no schema
-  generics; `Ripple.Database(…, { name })` stays the deploy-time default. The name is
-  validated (`/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/`) — an invalid one does not throw, every
-  request on the derived client fails `BadRequest`. The **token is shared** across every name
-  `for` reaches, so unbounded tenants want `RIPPLE_TOKENS` unset, a single string, or a `"*"`
-  fallback (`docs/RUNBOOK.md`).
+- **Db-per-tenant** — one `system.create(tenantId)` per request. No resource per tenant, no
+  deploy, no provisioning, no schema generics: `create` touches the network not at all, so it
+  is cheap on the request path, and the client it returns is the same peer/service binding,
+  `fetch`, token and headers pointed at `/db/:name/…`. The name is validated
+  (`/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/`) — an invalid one **fails the Effect** with
+  `BadRequest`. The **token is shared** across every name, so unbounded tenants want
+  `RIPPLE_TOKENS` unset, a single string, or a `"*"` fallback (`docs/RUNBOOK.md`).
 - **Outside Alchemy** — `Ripple.Client.make({ url, name, token?, fetch? })` gives the same
-  Effect client to bun scripts and tests.
+  Effect database client to bun scripts and tests, and `Ripple.Client.makeSystem({ url, token?,
+  fetch? })` the system client (`create` / `connect` / `health`).
 
 ## Operations
 
