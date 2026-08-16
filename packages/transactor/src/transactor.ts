@@ -42,6 +42,10 @@ import {
   toJson,
   txFrame,
   FIRST_USER_EID,
+  Histogram,
+  type Logger,
+  RateMeter,
+  componentLogger,
 } from "@ripple/core";
 import { R2NodeStore, readCurrentRoot, recordToRoots, rootsToRecord } from "@ripple/storage";
 import { type SocketLike, type TransactorHost } from "./host.ts";
@@ -61,6 +65,10 @@ export interface TransactorStats {
   rejected: number;
   indexRuns: number;
   broadcasts: number;
+  /** ms spent inside the storage write (group commit) */
+  commitMs: number;
+  /** ms spent resolving txs in memory (validate/tempids/uniques) */
+  resolveMs: number;
 }
 
 interface Pending {
@@ -76,6 +84,14 @@ export class TransactorDeadError extends Error {
 }
 
 const yieldToEventLoop = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+const round = (x: number) => Math.round(x * 100) / 100;
+const safeName = (host: TransactorHost): string | undefined => {
+  try {
+    return host.dbName;
+  } catch {
+    return undefined;
+  }
+};
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(toJson(body)), { status, headers: { "content-type": "application/json", ...headers } });
@@ -91,9 +107,16 @@ export class Transactor {
   private indexer!: Indexer;
   private txSinceIndex = 0;
   private dead: string | undefined;
-  readonly stats: TransactorStats = { txs: 0, batches: 0, maxBatch: 0, rejected: 0, indexRuns: 0, broadcasts: 0 };
+  readonly stats: TransactorStats = { txs: 0, batches: 0, maxBatch: 0, rejected: 0, indexRuns: 0, broadcasts: 0, commitMs: 0, resolveMs: 0 };
+  /** metrics: tx/s over the last 10 s, batch-size and commit-latency distributions */
+  readonly txRate = new RateMeter(10_000);
+  readonly batchSizes = new Histogram([1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]);
+  readonly commitLatency = new Histogram();
+  private readonly log: Logger;
 
-  constructor(readonly host: TransactorHost) {}
+  constructor(readonly host: TransactorHost) {
+    this.log = componentLogger("transactor", () => ({ db: safeName(host) }));
+  }
 
   // ---------------------------------------------------------------------------
   // Boot
@@ -142,6 +165,7 @@ export class Transactor {
       retainRoots: c.retainRoots,
     });
     if (this.conn.t > roots.t) await this.indexer.schedule();
+    this.log.info("boot", { t: this.conn.t, rootT: roots.t, novelty: this.conn.noveltyCount, nextEid: this.conn.nextEntityId, fresh: !this.getMeta("root") });
   }
 
   // ---------------------------------------------------------------------------
@@ -263,6 +287,7 @@ export class Transactor {
         const batch = this.takeBatch();
         const entries: LogEntry[] = [];
         const acks: { p: Pending; ack: TxAck }[] = [];
+        const tResolve = performance.now();
         for (const p of batch) {
           try {
             const rep = await this.conn.transact(p.tx);
@@ -271,10 +296,13 @@ export class Transactor {
             acks.push({ p, ack: { t: rep.t, txEid: rep.txEid, tempids: rep.tempids, datoms: rep.txData.length } });
           } catch (err) {
             this.stats.rejected++;
+            this.log.warn("tx.rejected", { code: (err as any)?.code, error: err instanceof Error ? err.message : String(err) });
             p.reject(err);
           }
         }
+        this.stats.resolveMs += performance.now() - tResolve;
         if (entries.length === 0) continue;
+        const tWrite = performance.now();
         try {
           // ONE storage write for the whole batch (group commit).
           this.host.transactionSync(() => {
@@ -287,10 +315,16 @@ export class Transactor {
           this.die(`log write failed: ${err instanceof Error ? err.message : String(err)}`, err, acks.map((a) => a.p));
           return;
         }
+        const writeMs = performance.now() - tWrite;
+        this.stats.commitMs += writeMs;
         this.stats.txs += entries.length;
         this.stats.batches++;
         if (entries.length > this.stats.maxBatch) this.stats.maxBatch = entries.length;
         this.txSinceIndex += entries.length;
+        this.txRate.mark(entries.length, this.host.now());
+        this.batchSizes.observe(entries.length);
+        this.commitLatency.observe(writeMs);
+        this.log.debug("tx.commit", { t: this.conn.t, batch: entries.length, datoms: entries.reduce((n, e) => n + e.datoms.length, 0), writeMs: round(writeMs), queued: this.queue.length, txsSinceIndex: this.txSinceIndex });
         for (const a of acks) a.p.resolve(a.ack);
         for (const e of entries) this.broadcast(txFrame(e));
         await this.indexer.maybeSchedule();
@@ -309,6 +343,7 @@ export class Transactor {
   private die(reason: string, cause: unknown, inflight: Pending[]): void {
     if (this.dead !== undefined) return;
     this.dead = reason;
+    this.log.error("tx.aborted", { reason, inflight: inflight.length, queued: this.queue.length, t: this.conn?.t });
     const err = cause instanceof Error ? cause : new TransactorDeadError(reason);
     for (const p of inflight) p.reject(err);
     for (const p of this.queue) p.reject(new TransactorDeadError(reason));
@@ -336,6 +371,7 @@ export class Transactor {
   onSubscribe(ws: SocketLike, from: number): void {
     ws.send(JSON.stringify({ v: 1, kind: "hello", t: this.conn.t, root: this.rootRecord }));
     this.sendCatchUp(ws, Number.isFinite(from) ? from : 0);
+    this.log.info("subscriber.connect", { from, t: this.conn.t, subscribers: this.host.sockets().length });
   }
 
   /** Subscriber control message (resume / ping). */
@@ -358,6 +394,7 @@ export class Transactor {
     if (earliest === 0 || earliest > from + 1) {
       // The SQL log no longer holds (from, earliest): subscriber must read log/ chunks from R2.
       ws.send(JSON.stringify({ v: 1, kind: "gap", from: Math.max(from, earliest - 1) }));
+      this.log.warn("subscriber.gap", { from, earliestLogT: earliest, t });
       from = Math.max(from, earliest - 1);
     }
     for (const e of this.readLogEntries(from, t)) ws.send(JSON.stringify(txFrame(e)));
@@ -387,6 +424,12 @@ export class Transactor {
       nextEid: this.conn.nextEntityId,
       subscribers: this.host.sockets().length,
       stats: this.stats,
+      metrics: {
+        txPerSec: round(this.txRate.rate(this.host.now())),
+        batchSize: this.batchSizes.snapshot(),
+        commitMs: this.commitLatency.snapshot(),
+        avgBatch: this.stats.batches ? round(this.stats.txs / this.stats.batches) : 0,
+      },
       store: this.store.stats,
       indexer: this.indexer.status(),
     };

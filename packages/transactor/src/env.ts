@@ -18,6 +18,8 @@ export interface RippleEnv {
   RIPPLE_MAX_BATCH?: string;
   /** query memory guardrail: max intermediate cells (rows × columns) per query */
   RIPPLE_QUERY_MAX_CELLS?: string;
+  /** structured log level for all components: debug | info | warn | error (default info) */
+  RIPPLE_LOG_LEVEL?: string;
 }
 
 export function envInt(v: string | undefined, dflt: number): number {

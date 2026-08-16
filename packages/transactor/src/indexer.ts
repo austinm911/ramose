@@ -13,7 +13,7 @@
  * receiving new roots back — nothing else here needs to change.
  */
 
-import { type LogEntry, type RootRecord, gzipCodec, txFrame } from "@ripple/core";
+import { type LogEntry, type RootRecord, componentLogger, gzipCodec, txFrame } from "@ripple/core";
 import { gcSweep, publishRoot, putLogChunk, retainNewest, rootsToRecord } from "@ripple/storage";
 import type { Transactor } from "./transactor.ts";
 
@@ -43,8 +43,16 @@ export class Indexer {
   private runs = 0;
   private lastRun: IndexRunResult | undefined;
   private lastGc: unknown;
+  private readonly log = componentLogger("indexer");
 
   constructor(private readonly t: Transactor, readonly opts: IndexerOptions) {}
+  private get db(): string | undefined {
+    try {
+      return this.t.host.dbName;
+    } catch {
+      return undefined;
+    }
+  }
 
   status() {
     return { running: this.running, runs: this.runs, lastRun: this.lastRun, lastGc: this.lastGc, opts: this.opts };
@@ -118,6 +126,7 @@ export class Indexer {
         root: rec,
       };
       this.lastRun = res;
+      this.log.info("index.run", { db: this.db, fromT, toT, txs: entries.length, datoms, ms: res.ms, r2Puts: res.r2Puts, remainingTxs: res.remainingTxs, noveltyAfter: conn.noveltyCount });
 
       // 6. Occasionally GC.
       if (this.opts.gcEveryN > 0 && this.runs % this.opts.gcEveryN === 0) {
@@ -125,17 +134,23 @@ export class Indexer {
           this.lastGc = await this.gcNow();
         } catch (err) {
           this.lastGc = { error: String(err) };
+          this.log.error("index.gc.error", { db: this.db, error: String(err) });
         }
       }
       return res;
+    } catch (err) {
+      this.log.error("index.error", { db: this.db, fromT, error: err instanceof Error ? err.message : String(err) });
+      throw err;
     } finally {
       this.running = false;
     }
   }
 
   async gcNow() {
+    const t0 = this.t.host.now();
     const res = await gcSweep(this.t.bucket, this.t.nodeStore, this.t.currentRootRecord.t, retainNewest(this.opts.retainRoots), { deleteRoots: true });
     this.lastGc = res;
+    this.log.info("index.gc", { db: this.db, ...res, ms: this.t.host.now() - t0 });
     return res;
   }
 }

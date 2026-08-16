@@ -18,6 +18,7 @@ import { DurableObject } from "cloudflare:workers";
 import {
   DEFAULT_QUERY_MAX_CELLS,
   QueryBudgetError,
+  componentLogger,
   type LogEntry,
   type RootRecord,
   type WireFrame,
@@ -65,7 +66,8 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
   private ws: WebSocket | undefined;
   private connecting: Promise<void> | undefined;
   private syncing: Promise<void> | undefined;
-  readonly stats = { frames: 0, gaps: 0, reconnects: 0, rootFlips: 0, basisServed: 0, queries: 0 };
+  readonly stats = { frames: 0, gaps: 0, reconnects: 0, rootFlips: 0, basisServed: 0, queries: 0, budgetAborts: 0 };
+  private readonly log = componentLogger("replica");
 
   constructor(ctx: DurableObjectState, env: RippleEnv) {
     super(ctx, env);
@@ -127,9 +129,11 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
     this.root = rec;
     this.setMeta("root", rec);
     // drop novelty absorbed by the new root
+    const before = this.entries.length;
     this.entries = this.entries.filter((e) => e.t > rec.t);
     this.sql.exec(`DELETE FROM novelty WHERE t <= ?`, rec.t);
     this.stats.rootFlips++;
+    this.log.info("replica.root", { db: this.dbName, rootT: rec.t, noveltyBefore: before, noveltyAfter: this.entries.length });
   }
 
   private async handleFrame(frame: WireFrame): Promise<void> {
@@ -148,6 +152,7 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
         break;
       case "gap":
         this.stats.gaps++;
+        this.log.warn("replica.gap", { db: this.dbName, from: frame.from, basisT: this.basisT });
         await this.catchUpFromR2(frame.from);
         break;
       case "tx": {
@@ -157,6 +162,7 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
         if (e.t > expected) {
           // gap: fill from the transactor's log (or R2), then apply this frame
           this.stats.gaps++;
+          this.log.warn("replica.gap", { db: this.dbName, expected, got: e.t });
           await this.fillGap(this.basisT, e.t - 1);
           if (e.t !== this.basisT + 1) return; // still inconsistent; a resume will fix it
         }
@@ -215,6 +221,7 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
     ws.accept();
     this.ws = ws;
     this.stats.reconnects++;
+    this.log.info("replica.connect", { db: this.dbName, from: this.basisT, reconnects: this.stats.reconnects, novelty: this.entries.length });
     let chain: Promise<void> = Promise.resolve();
     ws.addEventListener("message", (ev) => {
       // frames are applied strictly in order
@@ -245,7 +252,7 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
         await this.ensureConnected();
       } catch (err) {
         // transactor unreachable: serve from R2 (root + log chunks) — stale but consistent
-        console.warn("replica: connect failed, serving from R2:", String(err));
+        this.log.warn("replica.connect.failed", { db: this.dbName, error: String(err), basisT: this.basisT });
         await this.catchUpFromR2(this.basisT).catch(() => undefined);
       }
     })().finally(() => (this.syncing = undefined));
@@ -273,6 +280,7 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
           await this.sync();
           if (!this.root) return json({ error: "database has no root yet" }, 503);
           this.stats.basisServed++;
+          if (this.stats.basisServed % 100 === 1) this.log.debug("replica.basis", { db: this.dbName, t: this.basisT, rootT: this.root.t, novelty: this.entries.length, served: this.stats.basisServed });
           const basis: Basis = makeBasis(this.dbName, this.root, this.entries, this.ctx.id.toString().slice(0, 8));
           return json(basis);
         }
@@ -301,7 +309,11 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
           return json({ error: "not found" }, 404);
       }
     } catch (err) {
-      if (err instanceof QueryBudgetError) return json({ error: err.message, code: err.code, clause: err.clause, cells: err.cells, limit: err.limit }, 413);
+      if (err instanceof QueryBudgetError) {
+        this.stats.budgetAborts++;
+        this.log.warn("query.budget-exceeded", { db: this.dbName, clause: err.clause, cells: err.cells, limit: err.limit });
+        return json({ error: err.message, code: err.code, clause: err.clause, cells: err.cells, limit: err.limit }, 413);
+      }
       return json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   }

@@ -15,7 +15,7 @@
  * Transactor DO. Auth: per-db bearer token (RIPPLE_TOKENS), disabled if unset.
  */
 
-import { DEFAULT_QUERY_MAX_CELLS, QueryBudgetError, fromJson, pull, query, toJson } from "@ripple/core";
+import { DEFAULT_QUERY_MAX_CELLS, Histogram, QueryBudgetError, type QueryStats, RateMeter, componentLogger, fromJson, pull, query, setTelemetryLevel, toJson } from "@ripple/core";
 import { type RippleEnv, envInt } from "@ripple/transactor";
 import { TransactorDO } from "@ripple/transactor/transactor-do.ts";
 import { QueryReplicaDO, dbFromBasis } from "@ripple/replica";
@@ -23,6 +23,18 @@ import { fetchBasis, regionOf, replicaId, segmentSource } from "./peer.ts";
 import { DEMO_HTML } from "./demo.ts";
 
 export { TransactorDO, QueryReplicaDO };
+
+// ---- peer metrics (per isolate) --------------------------------------------
+const plog = componentLogger("peer");
+const peerMetrics = {
+  queries: new RateMeter(10_000),
+  transacts: new RateMeter(10_000),
+  queryMs: new Histogram(),
+  transactMs: new Histogram(),
+  budgetAborts: 0,
+  errors: 0,
+};
+let levelApplied = false;
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify(toJson(body)), {
@@ -57,6 +69,11 @@ function validDbName(name: string): boolean {
 
 export default {
   async fetch(request: Request, env: RippleEnv): Promise<Response> {
+    if (!levelApplied) {
+      levelApplied = true;
+      const lvl = env.RIPPLE_LOG_LEVEL;
+      if (lvl === "debug" || lvl === "info" || lvl === "warn" || lvl === "error") setTelemetryLevel(lvl);
+    }
     const url = new URL(request.url);
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     if (url.pathname === "/" || url.pathname === "/index.html") {
@@ -79,6 +96,10 @@ export default {
       // ---- writes → Transactor DO
       if (rest === "/transact" && request.method === "POST") {
         const res = await transactor().fetch(txUrl("/transact"), { method: "POST", body: await request.text(), headers: { "content-type": "application/json" } });
+        const ms = Date.now() - t0;
+        peerMetrics.transacts.mark(1);
+        peerMetrics.transactMs.observe(ms);
+        plog.debug("transact", { db, status: res.status, ms });
         return new Response(res.body, { status: res.status, headers: { "content-type": "application/json", ...CORS, "x-ripple-ms": String(Date.now() - t0) } });
       }
       if (rest === "/admin/replica/reconnect" && request.method === "POST") {
@@ -98,12 +119,16 @@ export default {
         const basis = await fetchBasis(env, db, request);
         const store = segmentSource(env, db);
         const dbv = await dbFromBasis(store, basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
-        const stats = body.explain ? { clauses: [] as any[] } : undefined;
+        const stats: QueryStats = { clauses: [] };
         const before = { ...store.stats };
         const result = await query(dbv, body.query as any, body.inputs ?? [], { stats, maxCells: envInt(env.RIPPLE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS) });
         const after = store.stats;
+        const ms = Date.now() - t0;
+        peerMetrics.queries.mark(1);
+        peerMetrics.queryMs.observe(ms);
+        plog.debug("query", { db, ms, rows: Array.isArray(result) ? result.length : 1, basisT: basis.t, novelty: basis.novelty.length, r2Gets: after.r2Gets - before.r2Gets, cacheHits: after.cacheHits - before.cacheHits, peakCells: stats?.budget?.peakCells });
         return json(
-          { t: basis.t, root: basis.root.t, result, ...(stats ? { explain: stats.clauses } : {}) },
+          { t: basis.t, root: basis.root.t, result, ...(body.explain ? { explain: stats.clauses, budget: stats.budget } : {}) },
           200,
           { "x-ripple-ms": String(Date.now() - t0), "x-ripple-r2-gets": String(after.r2Gets - before.r2Gets), "x-ripple-cache-hits": String(after.cacheHits - before.cacheHits), "x-ripple-basis-t": String(basis.t) },
         );
@@ -128,16 +153,29 @@ export default {
           transactor().fetch(txUrl("/info")).then((r) => r.json()),
           env.REPLICA.get(replicaId(env, db, regionOf(request))).fetch(`https://replica/info?db=${encodeURIComponent(db)}`).then((r) => r.json()),
         ]);
-        return json({ db, region: regionOf(request), transactor: tx, replica: rep, peer: segmentSource(env, db).stats });
+        return json({
+          db,
+          region: regionOf(request),
+          transactor: tx,
+          replica: rep,
+          peer: segmentSource(env, db).stats,
+          peerMetrics: { queriesPerSec: peerMetrics.queries.rate(), transactsPerSec: peerMetrics.transacts.rate(), queryMs: peerMetrics.queryMs.snapshot(), transactMs: peerMetrics.transactMs.snapshot(), budgetAborts: peerMetrics.budgetAborts, errors: peerMetrics.errors },
+        });
       }
       return json({ error: "not found" }, 404);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (err instanceof QueryBudgetError) {
         // planner memory guardrail: clear, tagged, retryable-with-a-narrower-query — never an OOM
+        peerMetrics.budgetAborts++;
+        plog.warn("query.budget-exceeded", { db, clause: err.clause, cells: err.cells, limit: err.limit, ms: Date.now() - t0 });
         return json({ error: msg, code: err.code, clause: err.clause, cells: err.cells, limit: err.limit }, 413);
       }
       const status = /unknown attribute|not bound|insufficient|parse|EDN|QueryError/i.test(msg) ? 400 : 500;
+      if (status === 500) {
+        peerMetrics.errors++;
+        plog.error("request.error", { db, path: rest, error: msg });
+      }
       const stack = env.RIPPLE_STAGE !== "prod" && err instanceof Error ? err.stack : undefined;
       return json({ error: msg, stack }, status);
     }

@@ -19,3 +19,4 @@ export * from "./query/engine.ts";
 export * from "./query/pull.ts";
 export * from "./log.ts";
 export * from "./json.ts";
+export * from "./telemetry.ts";

@@ -9,7 +9,17 @@ import { Database } from "bun:sqlite";
 import { type R2Like, dbPrefix, prefixedBucket } from "@ripple/storage";
 import { MemoryBucket } from "@ripple/storage/memory.ts";
 export { MemoryBucket };
+import { type TelemetryEvent, setTelemetryLevel, setTelemetrySink } from "@ripple/core";
 import { DEFAULT_CONFIG, type SocketLike, type SqlLike, type TransactorConfig, type TransactorHost, Transactor } from "../src/index.ts";
+
+/** Captured structured events (all levels) instead of console noise. */
+export const events: TelemetryEvent[] = [];
+setTelemetrySink((e) => {
+  events.push(e);
+  if (events.length > 50_000) events.splice(0, 25_000);
+});
+setTelemetryLevel("debug");
+export const eventsOf = (event: string) => events.filter((e) => e.event === event);
 
 /** Fake subscriber socket collecting frames. */
 export class FakeSocket implements SocketLike {

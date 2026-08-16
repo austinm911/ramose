@@ -208,3 +208,34 @@ describe("transactor: HTTP + alarm", () => {
     expect(await h2.transactor.connection.db().entid([":k/id", 59])).toBeDefined();
   });
 });
+
+describe("transactor: structured metrics", () => {
+  test("commit batches, rejects, subscribers and index runs emit structured events; /info carries live metrics", async () => {
+    const { events, eventsOf } = await import("./harness.ts");
+    const mark = events.length;
+    const h = await fresh({ config: { indexTxThreshold: 1_000_000, indexIntervalMs: 1_000_000 } });
+    h.subscribe(h.transactor.t);
+    await Promise.all(Array.from({ length: 30 }, (_, i) => h.transactor.transact([{ ":k/id": i }])));
+    await h.transactor.transact([[":db/add", 1, ":k/nope", 1]]).catch(() => undefined);
+    await h.transactor.handleRequest(new Request("https://t/admin/index", { method: "POST" }));
+    const mine = events.slice(mark);
+    const commits = mine.filter((e) => e.event === "tx.commit");
+    expect(commits.length).toBeGreaterThan(0);
+    expect(commits.every((e) => e.component === "transactor" && e.db === "test" && typeof e.batch === "number" && typeof e.writeMs === "number")).toBe(true);
+    expect(commits.reduce((n, e) => n + (e.batch as number), 0)).toBe(31); // schema + 30
+    expect(mine.some((e) => e.event === "boot")).toBe(true);
+    expect(mine.some((e) => e.event === "subscriber.connect")).toBe(true);
+    expect(mine.filter((e) => e.event === "tx.rejected").length).toBe(1);
+    const run = mine.find((e) => e.event === "index.run")!;
+    expect(run.component).toBe("indexer");
+    expect(run.txs).toBe(32); // bootstrap + schema + 30
+    expect(typeof run.ms).toBe("number");
+    expect(typeof run.r2Puts).toBe("number");
+    const info = h.transactor.info();
+    expect(info.metrics.batchSize.count).toBe(commits.length);
+    expect(info.metrics.commitMs.count).toBe(commits.length);
+    expect(info.metrics.avgBatch).toBeGreaterThan(1);
+    expect(info.metrics.txPerSec).toBeGreaterThan(0);
+    expect(eventsOf("tx.commit").length).toBeGreaterThanOrEqual(commits.length);
+  });
+});
