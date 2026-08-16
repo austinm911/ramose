@@ -1,4 +1,4 @@
-/** Catalog-generic System / Database clients. Peer methods are stubs (`Effect.die`). */
+/** Catalog-generic System / Database clients. Wraps today's untyped Ripple client. */
 
 import type { TxData } from "@ripple/core";
 import type { RuntimeContext } from "alchemy/RuntimeContext";
@@ -7,22 +7,47 @@ import type {
   DatabaseHealth,
   QueryOptions,
   QueryResponse,
+  ReadDatabaseClient,
+  ReadWriteDatabaseClient,
   SystemSource,
   TxAck,
+  WriteDatabaseClient,
 } from "../Client.ts";
-import { systemSource, type SystemClientOptions } from "../Client.ts";
+import {
+  makeReadWriteSystemClient as makeUntypedReadWriteSystemClient,
+  systemSource,
+  type SystemClientOptions,
+} from "../Client.ts";
 import { DATABASE_NAME_RE, invalidDatabaseName } from "../DatabaseName.ts";
 import type { BadRequest, DatabaseError } from "../DatabaseTypes.ts";
 import type { AnyCatalog } from "./Catalog.ts";
+import { makeEid, type EidPull } from "./Eid.ts";
+import { schemaTx } from "./ensure.ts";
 import { SchemaEnsureError } from "./Errors.ts";
-import { type QueryBuilder, queryBuilder } from "./Query.ts";
-import type { TxBuilder, WireTx, YieldContext, YieldError } from "./Tx.ts";
+import {
+  queryBuilder,
+  toQueryObject,
+  type QueryBuilder,
+  type QueryIo,
+  type QuerySpec,
+  type QueryVar,
+} from "./Query.ts";
+import {
+  txBuilder,
+  type TxBuilder,
+  type WireTx,
+  type YieldContext,
+  type YieldError,
+} from "./Tx.ts";
 
 export type OpenError = BadRequest | SchemaEnsureError;
 
 const die = <A, E = never, R = RuntimeContext>(
   what: string,
-): Effect.Effect<A, E, R> => Effect.die(new Error(`ripple/schema: proposal stub — ${what} (no peer I/O)`));
+): Effect.Effect<A, E, R> =>
+  Effect.die(
+    new Error(`ripple/schema: proposal stub — ${what} (no peer I/O)`),
+  );
 
 /** Read half, generic on the catalog. No `transact`. */
 export interface TypedReadDatabaseClient<C extends AnyCatalog = AnyCatalog> {
@@ -131,105 +156,207 @@ export interface TypedReadWriteSystemClient {
   health(): Effect.Effect<DatabaseHealth, DatabaseError, RuntimeContext>;
 }
 
+const isGenerator = (
+  value: unknown,
+): value is Generator<Effect.Effect<any, any, any>, unknown, never> =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof (value as Iterator<unknown>).next === "function" &&
+  typeof (value as Iterable<unknown>)[Symbol.iterator] === "function";
+
+const runGenerator = (
+  gen: Generator<Effect.Effect<any, any, any>, unknown, unknown>,
+): Effect.Effect<unknown, any, any> =>
+  Effect.gen(function* () {
+    let step = gen.next();
+    while (!step.done) {
+      const value = yield* step.value;
+      step = gen.next(value);
+    }
+    return step.value;
+  });
+
+const runTxBody = <C extends AnyCatalog>(
+  catalog: C,
+  build: (tx: TxBuilder<C>) => unknown,
+): Effect.Effect<TxData, any, any> => {
+  const tx = txBuilder(catalog);
+  const out = build(tx);
+  const ops = () => Effect.succeed(tx.spec.ops as unknown as TxData);
+  if (isGenerator(out)) return runGenerator(out).pipe(Effect.andThen(ops));
+  return (out as Effect.Effect<unknown, any, any>).pipe(Effect.andThen(ops));
+};
+
+const wrapRows = <C extends AnyCatalog>(
+  catalog: C,
+  vars: readonly string[],
+  eidVars: readonly string[] | undefined,
+  result: unknown,
+  pullFn: EidPull | undefined,
+): unknown => {
+  if (!Array.isArray(result)) return result;
+  const eids = new Set(eidVars ?? []);
+  return result.map((row) => {
+    if (!Array.isArray(row)) return row;
+    return vars.map((v, i) => {
+      const cell = row[i];
+      if (eids.has(v) && typeof cell === "number") {
+        return makeEid(catalog, cell, pullFn);
+      }
+      return cell;
+    });
+  });
+};
+
+const queryIo = <C extends AnyCatalog>(
+  catalog: C,
+  raw: ReadDatabaseClient,
+  pullFn: EidPull,
+): QueryIo => ({
+  find: (spec: QuerySpec, vars: readonly QueryVar[]) =>
+    raw
+      .q(toQueryObject(spec, vars), [], spec.options)
+      .pipe(
+        Effect.map((rows) =>
+          wrapRows(catalog, vars, spec.eidVars, rows, pullFn),
+        ),
+      ),
+  query: (spec: QuerySpec, vars: readonly QueryVar[]) =>
+    raw
+      .query(toQueryObject(spec, vars), [], spec.options)
+      .pipe(
+        Effect.map((res) => ({
+          ...res,
+          result: wrapRows(catalog, vars, spec.eidVars, res.result, pullFn),
+        })),
+      ),
+});
+
+const pullFnOf = (raw: ReadDatabaseClient): EidPull => (id, pattern) =>
+  raw.pull(id, pattern);
+
 const makeRead = <C extends AnyCatalog>(
   catalog: C,
   name: string,
-): TypedReadDatabaseClient<C> => ({
-  catalog,
-  name,
-  q: ((
-    queryOrBuild?:
-      | string
-      | object
-      | ((
-          q: QueryBuilder<C, {}>,
-        ) => Effect.Effect<unknown, DatabaseError, RuntimeContext>),
-    _inputs?: unknown[],
-    _options?: QueryOptions,
-  ) => {
-    if (queryOrBuild === undefined) return queryBuilder(catalog);
-    if (typeof queryOrBuild === "function") {
-      return queryOrBuild(queryBuilder(catalog));
-    }
-    return die("q");
-  }) as TypedReadDatabaseClient<C>["q"],
-  query: () => die("query"),
-  info: () => die("info"),
-  health: () => die("health"),
-  asOf: () => makeRead(catalog, name),
-  history: () => makeRead(catalog, name),
-});
+  raw?: ReadDatabaseClient,
+): TypedReadDatabaseClient<C> => {
+  const pullFn = raw ? pullFnOf(raw) : undefined;
+  const io = raw && pullFn ? queryIo(catalog, raw, pullFn) : undefined;
+  return {
+    catalog,
+    name,
+    q: ((
+      queryOrBuild?:
+        | string
+        | object
+        | ((
+            q: QueryBuilder<C, {}>,
+          ) => Effect.Effect<unknown, DatabaseError, RuntimeContext>),
+      inputs?: unknown[],
+      options?: QueryOptions,
+    ) => {
+      if (queryOrBuild === undefined) return queryBuilder(catalog, io);
+      if (typeof queryOrBuild === "function") {
+        return queryOrBuild(queryBuilder(catalog, io));
+      }
+      return raw ? raw.q(queryOrBuild, inputs, options) : die("q");
+    }) as TypedReadDatabaseClient<C>["q"],
+    query: (query, inputs, options) =>
+      raw ? raw.query(query, inputs, options) : die("query"),
+    info: () => (raw ? raw.info() : die("info")),
+    health: () => (raw ? raw.health() : die("health")),
+    asOf: (t) => makeRead(catalog, name, raw?.asOf(t)),
+    history: () => makeRead(catalog, name, raw?.history()),
+  };
+};
 
 const makeWrite = <C extends AnyCatalog>(
   catalog: C,
   name: string,
+  raw?: WriteDatabaseClient,
 ): TypedWriteDatabaseClient<C> => ({
   catalog,
   name,
-  transact: ((_build: (tx: TxBuilder<C>) => unknown) =>
-    die("transact")) as unknown as TypedWriteDatabaseClient<C>["transact"],
-  transactWire: () => die("transactWire"),
-  transactUntyped: () => die("transactUntyped"),
+  transact: ((build: (tx: TxBuilder<C>) => unknown) => {
+    if (!raw) return die("transact");
+    return runTxBody(catalog, build).pipe(
+      Effect.flatMap((ops) => raw.transact(ops)),
+    );
+  }) as unknown as TypedWriteDatabaseClient<C>["transact"],
+  transactWire: (tx) =>
+    raw ? raw.transact(tx as unknown as TxData) : die("transactWire"),
+  transactUntyped: (tx) => (raw ? raw.transact(tx) : die("transactUntyped")),
 });
 
 const makeReadWrite = <C extends AnyCatalog>(
   catalog: C,
   name: string,
+  raw?: ReadWriteDatabaseClient,
 ): TypedReadWriteDatabaseClient<C> => ({
-  ...makeRead(catalog, name),
-  ...makeWrite(catalog, name),
+  ...makeRead(catalog, name, raw),
+  ...makeWrite(catalog, name, raw),
 });
 
-const openRead = <C extends AnyCatalog>(
-  name: string,
-  catalog: C,
-): Effect.Effect<TypedReadDatabaseClient<C>, OpenError, RuntimeContext> =>
-  DATABASE_NAME_RE.test(name)
-    ? Effect.succeed(makeRead(catalog, name))
-    : Effect.fail(invalidDatabaseName(name));
+const ensureSchema = (
+  raw: WriteDatabaseClient,
+  catalog: AnyCatalog,
+): Effect.Effect<void, SchemaEnsureError, RuntimeContext> =>
+  raw.transact(schemaTx(catalog) as unknown as TxData).pipe(
+    Effect.map(() => undefined),
+    Effect.mapError(
+      (e) =>
+        new SchemaEnsureError({
+          message: e.message,
+          cause: e,
+        }),
+    ),
+  );
 
-const openWrite = <C extends AnyCatalog>(
+const open = <C extends AnyCatalog, Client>(
+  source: SystemSource,
   name: string,
   catalog: C,
-): Effect.Effect<TypedWriteDatabaseClient<C>, OpenError, RuntimeContext> =>
-  DATABASE_NAME_RE.test(name)
-    ? Effect.succeed(makeWrite(catalog, name))
-    : Effect.fail(invalidDatabaseName(name));
-
-const openReadWrite = <C extends AnyCatalog>(
-  name: string,
-  catalog: C,
-): Effect.Effect<TypedReadWriteDatabaseClient<C>, OpenError, RuntimeContext> =>
-  DATABASE_NAME_RE.test(name)
-    ? Effect.succeed(makeReadWrite(catalog, name))
-    : Effect.fail(invalidDatabaseName(name));
+  wrap: (raw: ReadWriteDatabaseClient) => Client,
+): Effect.Effect<Client, OpenError, RuntimeContext> => {
+  if (!DATABASE_NAME_RE.test(name)) {
+    return Effect.fail(invalidDatabaseName(name));
+  }
+  return Effect.gen(function* () {
+    const raw = yield* makeUntypedReadWriteSystemClient(source).create(name);
+    yield* ensureSchema(raw, catalog);
+    return wrap(raw);
+  });
+};
 
 /** Build the read half of the typed system client. */
 export const makeReadSystemClient = (
-  _source: SystemSource,
-): TypedReadSystemClient => ({
-  create: openRead,
-  connect: openRead,
-  health: () => die("health"),
-});
+  source: SystemSource,
+): TypedReadSystemClient => {
+  const untyped = makeUntypedReadWriteSystemClient(source);
+  const create = <C extends AnyCatalog>(name: string, catalog: C) =>
+    open(source, name, catalog, (raw) => makeRead(catalog, name, raw));
+  return { create, connect: create, health: () => untyped.health() };
+};
 
 /** Build the write half of the typed system client. */
 export const makeWriteSystemClient = (
-  _source: SystemSource,
-): TypedWriteSystemClient => ({
-  create: openWrite,
-  connect: openWrite,
-  health: () => die("health"),
-});
+  source: SystemSource,
+): TypedWriteSystemClient => {
+  const untyped = makeUntypedReadWriteSystemClient(source);
+  const create = <C extends AnyCatalog>(name: string, catalog: C) =>
+    open(source, name, catalog, (raw) => makeWrite(catalog, name, raw));
+  return { create, connect: create, health: () => untyped.health() };
+};
 
 /** Build the read-write typed system client. */
 export const makeReadWriteSystemClient = (
-  _source: SystemSource,
-): TypedReadWriteSystemClient => ({
-  create: openReadWrite,
-  connect: openReadWrite,
-  health: () => die("health"),
-});
+  source: SystemSource,
+): TypedReadWriteSystemClient => {
+  const untyped = makeUntypedReadWriteSystemClient(source);
+  const create = <C extends AnyCatalog>(name: string, catalog: C) =>
+    open(source, name, catalog, (raw) => makeReadWrite(catalog, name, raw));
+  return { create, connect: create, health: () => untyped.health() };
+};
 
 /**
  * A typed system client over concrete values (no Alchemy Outputs).
@@ -244,15 +371,17 @@ export const makeSystem = (
 export const unsafeDatabase = <C extends AnyCatalog>(
   catalog: C,
   name = "db",
-): TypedReadWriteDatabaseClient<C> => makeReadWrite(catalog, name);
+  raw?: ReadWriteDatabaseClient,
+): TypedReadWriteDatabaseClient<C> => makeReadWrite(catalog, name, raw);
 
 export const unsafeReadDatabase = <C extends AnyCatalog>(
   catalog: C,
   name = "db",
-): TypedReadDatabaseClient<C> => makeRead(catalog, name);
+  raw?: ReadDatabaseClient,
+): TypedReadDatabaseClient<C> => makeRead(catalog, name, raw);
 
 export const unsafeWriteDatabase = <C extends AnyCatalog>(
   catalog: C,
   name = "db",
-): TypedWriteDatabaseClient<C> => makeWrite(catalog, name);
-
+  raw?: WriteDatabaseClient,
+): TypedWriteDatabaseClient<C> => makeWrite(catalog, name, raw);
