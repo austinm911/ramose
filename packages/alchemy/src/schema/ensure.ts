@@ -53,7 +53,7 @@ export const schemaTx = (catalog: AnyCatalog): SchemaAttrTx[] => {
   const out: SchemaAttrTx[] = [];
   for (const ns of Object.values(catalog.namespaces)) {
     for (const [key, attribute] of Object.entries(ns.attributes)) {
-      out.push(attributeTx(`:${ns.name}/${key}`, attribute));
+      out.push(attributeTx(`:${ns.ns}/${key}`, attribute));
     }
   }
   return out;

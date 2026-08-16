@@ -22,11 +22,11 @@ import type {
 } from "./idents.ts";
 
 type NamespaceName<C extends AnyCatalog> = {
-  [K in keyof C["namespaces"]]: C["namespaces"][K]["name"];
+  [K in keyof C["namespaces"]]: C["namespaces"][K]["ns"];
 }[keyof C["namespaces"]];
 
 type NamespaceByName<C extends AnyCatalog, Name extends string> = {
-  [K in keyof C["namespaces"]]: C["namespaces"][K]["name"] extends Name
+  [K in keyof C["namespaces"]]: C["namespaces"][K]["ns"] extends Name
     ? C["namespaces"][K]
     : never;
 }[keyof C["namespaces"]];

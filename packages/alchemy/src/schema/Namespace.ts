@@ -1,6 +1,10 @@
 /**
- * A named group of attributes. The namespace name is the ident prefix:
- * `Namespace("user", { name })` derives `:user/name`.
+ * A named group of attributes. The namespace prefix is `ns`:
+ * `Namespace("user", { name })` derives `:user/name`, and `User.name` is
+ * the stamped attribute (an attr ref the query builder accepts).
+ *
+ * `_tag`, `ns`, and `attributes` are reserved and must not be attribute
+ * keys — they stay on the namespace object.
  */
 
 import type { AnyAttribute, Attribute } from "./Attribute.ts";
@@ -23,16 +27,31 @@ export type StampedAttributes<
   readonly [K in keyof Attrs]: StampedAttribute<Ns, K & string, Attrs[K]>;
 };
 
-export interface Namespace<
+/**
+ * A namespace is its stamped attributes, plus `ns` / `attributes` for
+ * the prefix and the same map under an explicit key.
+ *
+ * ```ts
+ * const User = Namespace("user", { name: attr(Schema.String) })
+ * User.ns                 // "user"
+ * User.name.ident         // ":user/name"
+ * User.attributes.name    // same attr ref
+ * ```
+ */
+export type Namespace<
   Name extends string = string,
   Attrs extends AttributeMap = AttributeMap,
-> {
+> = {
   readonly _tag: "Namespace";
-  readonly name: Name;
+  readonly ns: Name;
   readonly attributes: StampedAttributes<Name, Attrs>;
-}
+} & StampedAttributes<Name, Attrs>;
 
-export type AnyNamespace = Namespace<string, AttributeMap>;
+export type AnyNamespace = {
+  readonly _tag: "Namespace";
+  readonly ns: string;
+  readonly attributes: StampedAttributes<string, AttributeMap>;
+};
 
 const stamp = <Name extends string, Attrs extends AttributeMap>(
   name: Name,
@@ -52,15 +71,8 @@ const stamp = <Name extends string, Attrs extends AttributeMap>(
 };
 
 /**
- * Group attributes under one ident prefix.
- *
- * ```ts
- * const User = Namespace("user", {
- *   name: attr(Schema.String, { unique: "identity" }),
- *   age: attr(Schema.Number),
- * })
- * User.attributes.name.ident // ":user/name"
- * ```
+ * Group attributes under one ident prefix. Attribute keys are also on
+ * the namespace object so `User.name` is an attr ref.
  */
 export const Namespace = <
   const Name extends string,
@@ -68,11 +80,15 @@ export const Namespace = <
 >(
   name: Name,
   attributes: Attrs,
-): Namespace<Name, Attrs> => ({
-  _tag: "Namespace",
-  name,
-  attributes: stamp(name, attributes),
-});
+): Namespace<Name, Attrs> => {
+  const stamped = stamp(name, attributes);
+  return {
+    _tag: "Namespace" as const,
+    ns: name,
+    attributes: stamped,
+    ...stamped,
+  };
+};
 
 export type AttrOf<
   N extends AnyNamespace,
@@ -82,5 +98,4 @@ export type AttrOf<
 export type IdentOf<
   N extends AnyNamespace,
   K extends keyof N["attributes"] & string,
-> = `:${N["name"]}/${K}`;
-
+> = `:${N["ns"]}/${K}`;

@@ -1,7 +1,7 @@
 /**
  * Ident derivation and value-type lookup.
  *
- * `:user/name` is `:${namespace.name}/${attributeKey}`. That is the same
+ * `:user/name` is `:${namespace.ns}/${attributeKey}`. That is the same
  * string the untyped client already sends on the wire.
  */
 
@@ -18,7 +18,7 @@ export type Ident<Ns extends string, Attr extends string> = `:${Ns}/${Attr}`;
 export type CatalogIdent<C extends AnyCatalog> = {
   [K in keyof C["namespaces"]]: {
     [A in keyof C["namespaces"][K]["attributes"] & string]: Ident<
-      C["namespaces"][K]["name"],
+      C["namespaces"][K]["ns"],
       A
     >;
   }[keyof C["namespaces"][K]["attributes"] & string];
@@ -31,7 +31,7 @@ export type CatalogIdent<C extends AnyCatalog> = {
 export type AttrAtIdent<C extends AnyCatalog, I extends string> = {
   [K in keyof C["namespaces"]]: {
     [A in keyof C["namespaces"][K]["attributes"] & string]: Ident<
-      C["namespaces"][K]["name"],
+      C["namespaces"][K]["ns"],
       A
     > extends I
       ? C["namespaces"][K]["attributes"][A]
