@@ -51,67 +51,69 @@ const Tag = Namespace("tag", {
 const Movies = Catalog({ user: User, movie: Movie, meta: Meta });
 const db = unsafeDatabase(Movies);
 
-// ── same entity, two namespaces, both attrs typecheck ──────────────────────
+// ── generator transact is the happy path ───────────────────────────────────
 
-const crossNs = db.transact((tx) =>
-  Effect.gen(function* () {
-    const ada = yield* tx.entity();
-    yield* ada.add(User.name, "Ada");
-    yield* ada.add(User.age, 36);
-    yield* ada.add(Meta.source, "import");
-    yield* tx.add(ada, Movie.title, "not a movie but types allow any ns");
-  }),
-);
+const crossNs = db.transact(function* (tx) {
+  const ada = yield* tx.entity();
+  yield* ada.add(User.name, "Ada");
+  yield* ada.add(User.age, 36);
+  yield* ada.add(Meta.source, "import");
+  // bag: Movie.title on a user handle is legal — do not close the world
+  yield* ada.add(Movie.title, "not a movie but types allow any ns");
+});
 type _crossNsAck = Expect<Equal<Effect.Success<typeof crossNs>, TxAck>>;
 type _crossNsErr = Expect<Extends<DatabaseError, Effect.Error<typeof crossNs>>>;
 
-// ── unknown attr is a type error ───────────────────────────────────────────
-
-db.transact((tx) =>
+// Effect-returning callback stays for composition (not the default)
+const viaEffect = db.transact((tx) =>
   Effect.gen(function* () {
     const e = yield* tx.entity();
-    // @ts-expect-error unknown attr on the namespace
-    yield* e.add(User.nope, "x");
-    // @ts-expect-error ident not in the catalog
-    yield* e.add({ ident: ":user/nope" } as const, "x");
-    // @ts-expect-error namespace not in this catalog
-    yield* e.add(Tag.label, "x");
-    // @ts-expect-error unknown ident string
-    yield* tx.add(e, ":user/nope", "x");
+    yield* e.add(User.name, "Ada");
   }),
 );
+type _viaEffect = Expect<Equal<Effect.Success<typeof viaEffect>, TxAck>>;
+
+// ── unknown attr is a type error ───────────────────────────────────────────
+
+db.transact(function* (tx) {
+  const e = yield* tx.entity();
+  // @ts-expect-error unknown attr on the namespace
+  yield* e.add(User.nope, "x");
+  // @ts-expect-error ident not in the catalog
+  yield* e.add({ ident: ":user/nope" } as const, "x");
+  // @ts-expect-error namespace not in this catalog
+  yield* e.add(Tag.label, "x");
+  // @ts-expect-error unknown ident string
+  yield* tx.add(e, ":user/nope", "x");
+});
 
 // ── wrong value type is a type error ───────────────────────────────────────
 
-db.transact((tx) =>
-  Effect.gen(function* () {
-    const e = yield* tx.entity();
-    // @ts-expect-error name is string, not number
-    yield* e.add(User.name, 42);
-    // @ts-expect-error year is number, not string
-    yield* e.add(Movie.year, "2016");
-    // @ts-expect-error ident form: name is string, not number
-    yield* tx.add(e, ":user/name", 42);
-    // @ts-expect-error friends is a ref (number), not a string
-    yield* e.add(User.friends, "Ada");
-  }),
-);
+db.transact(function* (tx) {
+  const e = yield* tx.entity();
+  // @ts-expect-error name is string, not number
+  yield* e.add(User.name, 42);
+  // @ts-expect-error year is number, not string
+  yield* e.add(Movie.year, "2016");
+  // @ts-expect-error ident form: name is string, not number
+  yield* tx.add(e, ":user/name", 42);
+  // @ts-expect-error friends is a ref (number), not a string
+  yield* e.add(User.friends, "Ada");
+});
 
 // ── retract / retractEntity typecheck ──────────────────────────────────────
 
-const retracts = db.transact((tx) =>
-  Effect.gen(function* () {
-    const e = yield* tx.entity(1001);
-    yield* e.retract(User.age, 35);
-    yield* e.retract(User.name);
-    yield* e.retractEntity();
-    yield* tx.retract(e, User.friends, 1002);
-    yield* tx.retractEntity(e);
-    const byLookup = yield* tx.entity([User.name, "Ada"]);
-    yield* byLookup.add(Meta.source, "lookup");
-    yield* tx.add([":user/name", "Ada"], User.age, 36);
-  }),
-);
+const retracts = db.transact(function* (tx) {
+  const e = yield* tx.entity(1001);
+  yield* e.retract(User.age, 35);
+  yield* e.retract(User.name);
+  yield* e.retractEntity();
+  yield* tx.retract(e, User.friends, 1002);
+  yield* tx.retractEntity(e);
+  const byLookup = yield* tx.entity([User.name, "Ada"]);
+  yield* byLookup.add(Meta.source, "lookup");
+  yield* tx.add([":user/name", "Ada"], User.age, 36);
+});
 type _retractAck = Expect<Equal<Effect.Success<typeof retracts>, TxAck>>;
 
 // ── Write vs Read still distinguishes transact ─────────────────────────────
@@ -145,25 +147,21 @@ readOnly.transact;
 // @ts-expect-error write client has no entity
 writeOnly.entity;
 
-const writeTx = writeOnly.transact((tx) =>
-  Effect.gen(function* () {
-    const e = yield* tx.entity();
-    yield* e.add(User.name, "Ada");
-  }),
-);
+const writeTx = writeOnly.transact(function* (tx) {
+  const e = yield* tx.entity();
+  yield* e.add(User.name, "Ada");
+});
 type _writeTx = Expect<Equal<Effect.Success<typeof writeTx>, TxAck>>;
 
 // ── callback errors / context union into transact ──────────────────────────
 
 class ExtraLoad extends Data.TaggedError("ExtraLoad")<{}> {}
 
-const withExtra = db.transact((tx) =>
-  Effect.gen(function* () {
-    const e = yield* tx.entity();
-    yield* e.add(User.name, "Ada");
-    return yield* Effect.fail(new ExtraLoad());
-  }),
-);
+const withExtra = db.transact(function* (tx) {
+  const e = yield* tx.entity();
+  yield* e.add(User.name, "Ada");
+  return yield* Effect.fail(new ExtraLoad());
+});
 type _extraErr = Expect<
   Extends<ExtraLoad, Effect.Error<typeof withExtra>>
 >;
@@ -178,4 +176,4 @@ type _handle = Expect<
   >
 >;
 
-void 0 as unknown as [_crossNsAck, _retractAck, _writeTx, _handle];
+void 0 as unknown as [_crossNsAck, _viaEffect, _retractAck, _writeTx, _handle];
