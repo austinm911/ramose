@@ -35,7 +35,25 @@ export * from "./equal.ts";
 export * from "./Errors.ts";
 export * from "./idents.ts";
 export * from "./Namespace.ts";
-export * from "./Pull.ts";
+export {
+  type AttrPull,
+  type IdentPullAttr,
+  type IdentPullIdents,
+  type IdentPullPattern,
+  type IdentPullResult,
+  type PullAttr,
+  type PullNested,
+  type PullOptional,
+  type PullPattern,
+  type PullResult,
+  type PullStruct,
+  type StructPullResult,
+  type ValidatePull,
+  isPullNested,
+  isPullOptional,
+  isPullStruct,
+  pick,
+} from "./Pull.ts";
 export * from "./Query.ts";
 export * from "./Read.ts";
 export * from "./Tx.ts";

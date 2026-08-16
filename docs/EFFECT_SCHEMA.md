@@ -83,8 +83,8 @@ keys they want. The object *is* the pattern — no `Struct` wrap.
 A bare attr ref is required (`T`). `.optional` is maybe
 (`T | undefined`). `.with({ ... })` follows a ref (object, or `T[]`
 if many). Same syntax at every level; mix namespaces on one map.
-`Struct` / `optional()` / `nested()` stay as aliases. Keyword-soup
-ident arrays remain as an escape. `q` is a catalog-generic builder:
+Keyword-soup ident arrays remain as an escape. `q` is a catalog-generic
+builder:
 bindings accumulate as clauses are added, and `find` produces a row
 tuple from the selected variables. Today's object/string `q<T>`
 stays as the escape hatch. `transactUntyped` is the write-side escape.
@@ -215,7 +215,6 @@ is a maybe-nested field. Same syntax at every level. Recursion is
 just another map inside `.with`; two levels typecheck. The catalog
 is still a bag: `Movie.title` on a user pull is legal if you name
 the key. `pick(User, "name", "age")` is the same-namespace shortcut.
-`Struct` / `optional()` / `nested()` remain as aliases.
 
 The engine can still return ident maps. A future implementation
 lowers `{ name: User.name }` to today's pull with `:as`
@@ -238,7 +237,7 @@ Remaining limits (pull):
 
 - `entity(eid)` is still the whole ident-keyed bag. Use `pull` to
   project and rename.
-- `.with` / `nested` require `valueType: ":db.type/ref"` on the attr.
+- `.with` requires `valueType: ":db.type/ref"` on the attr.
   A `Ref` schema without that option is not enough for the type checker.
 - Reverse refs (`:user/_friends`), `:as` on the wire, `limit` /
   `default`, and recursive `...` are not encoded. Use the ident-keyed

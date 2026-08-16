@@ -14,11 +14,8 @@ import {
   type Expect,
   Long,
   Namespace,
-  nested,
-  optional,
   pick,
   Ref,
-  Struct,
   unsafeDatabase,
 } from "../../src/schema/index.ts";
 
@@ -156,29 +153,12 @@ type _bagName = Expect<Equal<BagPull["name"], string>>;
 type _bagSource = Expect<Equal<BagPull["source"], string>>;
 type _bagTitle = Expect<Equal<BagPull["title"], string>>;
 
-// ── pick (alias) ───────────────────────────────────────────────────────────
+// ── pick ──────────────────────────────────────────────────────────────────
 
 const picked = db.pull(1001, pick(User, "name", "age"));
 type Picked = NonNullable<Effect.Success<typeof picked>>;
 type _picked = Expect<
   Equal<Picked, { readonly name: string; readonly age: number }>
->;
-
-// ── Struct / optional() / nested() still infer (aliases, not the default) ──
-
-const aliased = db.pull(
-  1001,
-  Struct({
-    name: User.name,
-    age: optional(User.age),
-    friends: nested(User.friends, { name: User.name }),
-  }),
-);
-type Aliased = NonNullable<Effect.Success<typeof aliased>>;
-type _aliasName = Expect<Equal<Aliased["name"], string>>;
-type _aliasAge = Expect<Equal<Aliased["age"], number | undefined>>;
-type _aliasFriends = Expect<
-  Equal<Aliased["friends"], readonly { readonly name: string }[]>
 >;
 
 // ── ident-keyed escape still works ─────────────────────────────────────────
@@ -212,8 +192,3 @@ const Other = Namespace("tag", { label: attr(Schema.String) });
 // @ts-expect-error attr from a catalog that is not on this client
 db.pull(1001, { label: Other.label });
 
-// alias path still rejects a non-ref
-db.pull(1001, {
-  // @ts-expect-error cannot nest a non-ref attr
-  friends: nested(User.name, { name: User.name }),
-});

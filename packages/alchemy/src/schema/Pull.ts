@@ -26,8 +26,7 @@
  * (`T | undefined`). `.with({ ... })` follows a ref — object if
  * card-one, `readonly T[]` if many. Mix namespaces on one map.
  *
- * `Struct` / `optional()` / `nested()` stay as aliases if they still
- * infer. Ident-keyed arrays (`[User.name, ":user/age"]`) stay as the
+ * Ident-keyed arrays (`[User.name, ":user/age"]`) stay as the
  * keyword-soup escape — those results are keyed by ident, and every
  * field is optional.
  */
@@ -80,18 +79,7 @@ export type AttrPull<A> = {
     : never;
 };
 
-/**
- * Alias: wrap a fields object. The plain object *is* the pattern —
- * you do not need this.
- */
-export const Struct = <const F extends Record<string, unknown>>(
-  fields: F,
-): PullStruct<F> => ({
-  _tag: "struct",
-  fields,
-});
-
-/** Alias for `attr.optional`. The result type is `T | undefined`. */
+/** Internal: implements `attr.optional`. The result type is `T | undefined`. */
 export const optional = <const F>(field: F): PullOptional<F> => {
   const wrap: PullOptional<F> = {
     _tag: "optional",
@@ -105,9 +93,9 @@ export const optional = <const F>(field: F): PullOptional<F> => {
 };
 
 /**
- * Alias for `attr.with({ ... })`. Follow a ref (or cardinality-many
- * refs) and pull a nested map. The attr must be a `:db.type/ref`.
- * Card-one → object; card-many → `readonly T[]`.
+ * Internal: implements `attr.with({ ... })`. Follow a ref (or
+ * cardinality-many refs) and pull a nested map. The attr must be a
+ * `:db.type/ref`. Card-one → object; card-many → `readonly T[]`.
  */
 export const nested = <
   const A extends { readonly valueType: ":db.type/ref" },
@@ -142,14 +130,14 @@ export const pick = <
 >(
   ns: N,
   ...keys: Keys
-): PullStruct<{
+): {
   readonly [K in Keys[number]]: N["attributes"][K];
-}> => {
+} => {
   const fields = {} as Record<string, AnyAttribute>;
   for (const key of keys) fields[key] = ns.attributes[key]!;
-  return Struct(fields) as PullStruct<{
+  return fields as {
     readonly [K in Keys[number]]: N["attributes"][K];
-  }>;
+  };
 };
 
 export const isPullStruct = (value: unknown): value is PullStruct =>
@@ -200,7 +188,7 @@ type FieldResult<F> = F extends PullOptional<infer Inner>
     ? NestedResult<A, P>
     : ScalarResult<F>;
 
-/** Result shape of a fields object (or a {@link Struct} alias). */
+/** Result shape of a fields object. */
 export type StructPullResult<P> = P extends PullStruct<infer F>
   ? FieldsResult<F>
   : FieldsResult<P>;
