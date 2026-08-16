@@ -14,9 +14,9 @@ import {
   type Expect,
   Long,
   Namespace,
+  Eid,
   pick,
   Ref,
-  unsafeDatabase,
 } from "../../src/schema/index.ts";
 
 const User = Namespace("user", {
@@ -36,11 +36,11 @@ const Meta = Namespace("meta", {
 });
 
 const Movies = Catalog({ user: User, movie: Movie, meta: Meta });
-const db = unsafeDatabase(Movies);
+const eid = Eid.of(Movies, 1001);
 
 // ── renamed keys, required vs optional ─────────────────────────────────────
 
-const required = db.pull(1001, {
+const required = eid.pull({
   name: User.name,
   age: User.age,
 });
@@ -52,7 +52,7 @@ type _noIdent = Expect<
   Equal<":user/name" extends keyof RequiredPull ? true : false, false>
 >;
 
-const maybe = db.pull(1001, {
+const maybe = eid.pull({
   name: User.name.optional,
   age: User.age.optional,
 });
@@ -62,7 +62,7 @@ type _optAge = Expect<Equal<MaybePull["age"], number | undefined>>;
 
 // ── .with nest: many → array, one → object ─────────────────────────────────
 
-const withFriends = db.pull(1001, {
+const withFriends = eid.pull({
   name: User.name,
   friends: User.friends.with({
     name: User.name,
@@ -78,7 +78,7 @@ type _friends = Expect<
 >;
 type _selfName = Expect<Equal<FriendsPull["name"], string>>;
 
-const withBest = db.pull(1001, {
+const withBest = eid.pull({
   bestFriend: User.bestFriend.with({ name: User.name }),
   maybeBest: User.bestFriend.optional.with({ name: User.name }),
 });
@@ -91,7 +91,7 @@ type _maybeBest = Expect<
 >;
 
 // two levels — same syntax inside .with
-const deep = db.pull(1001, {
+const deep = eid.pull({
   friends: User.friends.with({
     name: User.name,
     friends: User.friends.with({ name: User.name }),
@@ -110,7 +110,7 @@ type _deep = Expect<
 
 // ── the target happy path ──────────────────────────────────────────────────
 
-const happy = db.pull(1001, {
+const happy = eid.pull({
   name: User.name,
   age: User.age.optional,
   source: Meta.source,
@@ -143,7 +143,7 @@ type _happyFriends = Expect<
 
 // ── cross-namespace fields on one pull ─────────────────────────────────────
 
-const bag = db.pull(1001, {
+const bag = eid.pull({
   name: User.name,
   source: Meta.source,
   title: Movie.title,
@@ -155,7 +155,7 @@ type _bagTitle = Expect<Equal<BagPull["title"], string>>;
 
 // ── pick ──────────────────────────────────────────────────────────────────
 
-const picked = db.pull(1001, pick(User, "name", "age"));
+const picked = eid.pull(pick(User, "name", "age"));
 type Picked = NonNullable<Effect.Success<typeof picked>>;
 type _picked = Expect<
   Equal<Picked, { readonly name: string; readonly age: number }>
@@ -163,7 +163,7 @@ type _picked = Expect<
 
 // ── ident-keyed escape still works ─────────────────────────────────────────
 
-const soup = db.pull(1001, [User.name, User.age] as const);
+const soup = eid.pull([User.name, User.age] as const);
 type Soup = NonNullable<Effect.Success<typeof soup>>;
 type _soupName = Expect<Equal<Soup[":user/name"], string | undefined>>;
 type _soupAge = Expect<Equal<Soup[":user/age"], number | undefined>>;
@@ -171,24 +171,24 @@ type _soupAge = Expect<Equal<Soup[":user/age"], number | undefined>>;
 // ── unknown attr is a type error ───────────────────────────────────────────
 
 // @ts-expect-error unknown attr on the namespace
-db.pull(1001, { name: User.nope });
+eid.pull({ name: User.nope });
 
 // @ts-expect-error ident not in the catalog
-db.pull(1001, [":user/nope"]);
+eid.pull([":user/nope"]);
 
 // ── wrong nested attr is a type error ──────────────────────────────────────
 
-db.pull(1001, {
+eid.pull({
   // @ts-expect-error cannot nest a non-ref attr
   friends: User.name.with({ name: User.name }),
 });
 
-db.pull(1001, {
+eid.pull({
   // @ts-expect-error unknown attr inside the nested pattern
   friends: User.friends.with({ nope: User.nope }),
 });
 
 const Other = Namespace("tag", { label: attr(Schema.String) });
 // @ts-expect-error attr from a catalog that is not on this client
-db.pull(1001, { label: Other.label });
+eid.pull({ label: Other.label });
 

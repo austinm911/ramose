@@ -11,6 +11,7 @@ import {
   attr,
   Catalog,
   type CatalogIdent,
+  type Eid,
   type Equal,
   type Expect,
   type FindRows,
@@ -62,13 +63,55 @@ const eidAndName = db
   .q()
   .where("?e", User.name, "?n")
   .find("?e", "?n");
+type EidNameRows = Effect.Success<typeof eidAndName>;
+type EidCell = EidNameRows[number][0];
+type NameCell = EidNameRows[number][1];
+type _eidIsWrapper = Expect<Equal<EidCell, Eid<typeof Movies>>>;
+type _eidNotNumber = Expect<Equal<EidCell extends number ? true : false, false>>;
+type _nameStaysPrimitive = Expect<Equal<NameCell, string>>;
 type _eidName = Expect<
-  Equal<Effect.Success<typeof eidAndName>, readonly [number, string][]>
+  Equal<EidNameRows, readonly [Eid<typeof Movies>, string][]>
 >;
 
 // callback form infers the same row
 const viaCb = db.q((q) => q.where("?e", User.name, "?n").find("?n"));
 type _cbRow = Expect<Equal<Effect.Success<typeof viaCb>, readonly [string][]>>;
+
+// ── ref-attr value binding is an Eid, not number ───────────────────────────
+
+const friendRows = db
+  .q()
+  .where("?e", User.friends, "?f")
+  .find("?f");
+type _friendEid = Expect<
+  Equal<Effect.Success<typeof friendRows>, readonly [Eid<typeof Movies>][]>
+>;
+
+const identRefRows = db
+  .q()
+  .where("?e", ":user/friends", "?f")
+  .find("?f");
+type _identRefEid = Expect<
+  Equal<Effect.Success<typeof identRefRows>, readonly [Eid<typeof Movies>][]>
+>;
+
+// ── wrapper.pull infers the literate result ────────────────────────────────
+
+declare const found: EidCell;
+const fromFind = found.pull({
+  name: User.name,
+  age: User.age.optional,
+  friends: User.friends.with({ name: User.name }),
+});
+type FromFind = NonNullable<Effect.Success<typeof fromFind>>;
+type _fromFindName = Expect<Equal<FromFind["name"], string>>;
+type _fromFindAge = Expect<Equal<FromFind["age"], number | undefined>>;
+type _fromFindFriends = Expect<
+  Equal<FromFind["friends"], readonly { readonly name: string }[]>
+>;
+
+// @ts-expect-error unknown attr on wrapper.pull
+found.pull({ name: User.nope });
 
 // ── unknown attr in where is a type error ──────────────────────────────────
 
@@ -93,17 +136,20 @@ db.q().where("?e", ":user/name", 42);
 
 const blankAttr = db.q().where("?e", "_", "?v").find("?e", "?v");
 type _blankOk = Expect<
-  Equal<Effect.Success<typeof blankAttr>, readonly [number, unknown][]>
+  Equal<Effect.Success<typeof blankAttr>, readonly [Eid<typeof Movies>, unknown][]>
 >;
 
 const varAttr = db.q().where("?e", "?a", "?v").find("?e", "?a", "?v");
 type _varAttrOk = Expect<
-  Equal<Effect.Success<typeof varAttr>, readonly [number, string, unknown][]>
+  Equal<
+    Effect.Success<typeof varAttr>,
+    readonly [Eid<typeof Movies>, string, unknown][]
+  >
 >;
 
 const blankVal = db.q().where("?e", User.name, "_").find("?e");
 type _blankVal = Expect<
-  Equal<Effect.Success<typeof blankVal>, readonly [number][]>
+  Equal<Effect.Success<typeof blankVal>, readonly [Eid<typeof Movies>][]>
 >;
 
 // ── joining two clauses types both vars ────────────────────────────────────
@@ -145,9 +191,15 @@ type _histRows = Expect<
 
 // ── FindRows helper matches the Effect success ─────────────────────────────
 
-type Bound = { readonly "?n": string; readonly "?e": number };
+type Bound = {
+  readonly "?n": string;
+  readonly "?e": Eid<typeof Movies>;
+};
 type _helper = Expect<
-  Equal<FindRows<Bound, readonly ["?n", "?e"]>, readonly [string, number][]>
+  Equal<
+    FindRows<Bound, readonly ["?n", "?e"]>,
+    readonly [string, Eid<typeof Movies>][]
+  >
 >;
 
 // keep CatalogIdent referenced
