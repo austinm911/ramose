@@ -22,8 +22,11 @@ const conc = Number(process.argv[4] ?? 8);
 const headers: Record<string, string> = {};
 if (process.env.RIPPLE_REPLICA_HINT) headers["x-ripple-replica-hint"] = process.env.RIPPLE_REPLICA_HINT;
 if (process.env.RIPPLE_CACHE_BASIS) headers["x-ripple-cache-basis"] = process.env.RIPPLE_CACHE_BASIS;
+if (process.env.RIPPLE_CACHE_MODE) headers["x-ripple-cache-mode"] = process.env.RIPPLE_CACHE_MODE;
+// RIPPLE_MIN_T=1: every read carries x-ripple-min-t = t of the last write this bench made (read fence)
+const fence = process.env.RIPPLE_MIN_T === "1";
 const client = new RippleClient(url, { token: process.env.RIPPLE_TOKEN, headers });
-console.log(`variant: hint=${process.env.RIPPLE_REPLICA_HINT ?? "(default)"} cacheBasis=${process.env.RIPPLE_CACHE_BASIS ?? "0"}`);
+console.log(`variant: hint=${process.env.RIPPLE_REPLICA_HINT ?? "(default)"} cacheBasis=${process.env.RIPPLE_CACHE_BASIS ?? "(default)"} cacheMode=${process.env.RIPPLE_CACHE_MODE ?? "(default)"} minT=${fence ? "on" : "off"}`);
 const db = client.db(`readbench-${Date.now().toString(36)}`);
 
 await db.transact([
@@ -44,6 +47,9 @@ for (let i = 0; i < people; i += 200) {
 const ids = (await db.q<number[]>(`[:find [?e ...] :where [?e :person/city "city-3"]]`)).slice(0, 500);
 await db.transact(ids.map((e, i) => [":db/add", e, ":person/friends", ids[(i + 1) % ids.length]]));
 await db.index();
+// D4-style fence: one more write, then every read demands >= its t
+const lastT = fence ? (await db.transact([{ ":person/name": "fence", ":person/city": "city-0", ":person/age": 1 }])).t : undefined;
+const qopts = lastT !== undefined ? { minT: lastT } : {};
 
 const QUERIES: Record<string, { q: string; inputs?: unknown[] }> = {
   "point lookup (AVET)": { q: `[:find ?e . :where [?e :person/name "person-42"]]` },
@@ -54,23 +60,27 @@ const QUERIES: Record<string, { q: string; inputs?: unknown[] }> = {
 
 const results: Record<string, unknown> = {};
 for (const [name, { q, inputs }] of Object.entries(QUERIES)) {
-  const warm = await db.query(q, inputs); // warm
+  const warm = await db.query(q, inputs, qopts); // warm
   if (warm.meta?.colo || warm.meta?.replicaHint) console.log(`  ${name}: worker colo=${warm.meta?.colo ?? "?"} replicaHint=${warm.meta?.replicaHint ?? "?"}`);
   const client_ms: number[] = [], server_ms: number[] = [];
+  let hits = 0, refetches = 0, behind = 0;
   let i = 0;
   await Promise.all(
     Array.from({ length: conc }, async () => {
       while (i++ < runs) {
         const t0 = performance.now();
-        const r = await db.query(q, inputs);
+        const r = await db.query(q, inputs, qopts);
         client_ms.push(performance.now() - t0);
         if (r.meta?.ms !== null && r.meta?.ms !== undefined) server_ms.push(r.meta.ms);
+        if (r.meta?.basisHit) hits++;
+        else if (r.meta?.basisReason && r.meta.basisReason !== "off") refetches++;
+        if (r.meta?.basisBehind) behind++;
       }
     }),
   );
   client_ms.sort((a, b) => a - b);
   server_ms.sort((a, b) => a - b);
-  results[name] = { "client p50 ms": +fmt(percentile(client_ms, 50)), "client p95 ms": +fmt(percentile(client_ms, 95)), "server p50 ms": server_ms.length ? +fmt(percentile(server_ms, 50)) : null };
+  results[name] = { "client p50 ms": +fmt(percentile(client_ms, 50)), "client p95 ms": +fmt(percentile(client_ms, 95)), "server p50 ms": server_ms.length ? +fmt(percentile(server_ms, 50)) : null, "basis hits": hits, "refetches": refetches, "behind": behind };
 }
 console.log(`read bench: ${people} people, ${runs} runs × ${conc} concurrent per query, warm`);
 console.table(results);

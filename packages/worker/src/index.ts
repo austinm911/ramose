@@ -1,9 +1,12 @@
 /**
  * Ripple peer Worker — the HTTP API and the edge datalog executor.
  *
- * Read-path knobs (per request): `x-ripple-replica-hint: wnam|enam|…` picks the
- * replica DO placement (hint is part of the DO id); `x-ripple-cache-basis: 1`
- * reuses an isolate-cached basis instead of calling the replica each read.
+ * Read-path knobs (per request by header, default by env — see peer.ts):
+ * `x-ripple-replica-hint: wnam|enam|…|auto` picks the replica DO placement (hint
+ * is part of the DO id; auto = colo→hint); `x-ripple-cache-basis: 0|1` reuses an
+ * isolate-cached basis instead of calling the replica each read;
+ * `x-ripple-cache-mode: ttl|peer` picks the cache's consistency story (5 s TTL vs
+ * write-through invalidation + `x-ripple-min-t` client fences).
  *
  *   GET  /                                  demo app (CRUD + as-of history view)
  *   GET  /health
@@ -23,7 +26,7 @@ import { DEFAULT_QUERY_MAX_CELLS, Histogram, QueryBudgetError, type QueryStats, 
 import { type RippleEnv, envInt } from "@ripple/transactor";
 import { TransactorDO } from "@ripple/transactor/transactor-do.ts";
 import { QueryReplicaDO, dbFromBasis } from "@ripple/replica";
-import { fetchBasis, hintOf, invalidateBasis, regionOf, replicaId, segmentSource, wantsBasisCache } from "./peer.ts";
+import { basisHeaders, fetchBasisWithStats, hintOf, invalidateBasis, regionOf, replicaId, segmentSource } from "./peer.ts";
 import { DEMO_HTML } from "./demo.ts";
 
 export { TransactorDO, QueryReplicaDO };
@@ -49,7 +52,8 @@ const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =
 const CORS = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET,POST,OPTIONS",
-  "access-control-allow-headers": "content-type,authorization,x-ripple-replica-hint,x-ripple-cache-basis",
+  "access-control-allow-headers": "content-type,authorization,x-ripple-replica-hint,x-ripple-cache-basis,x-ripple-cache-mode,x-ripple-min-t",
+  "access-control-expose-headers": "x-ripple-ms,x-ripple-r2-gets,x-ripple-cache-hits,x-ripple-basis-t,x-ripple-basis-hit,x-ripple-basis-reason,x-ripple-basis-calls,x-ripple-basis-behind,x-ripple-replica-hint,x-ripple-cache-basis,x-ripple-cache-mode,x-ripple-colo",
 };
 
 function authorized(env: RippleEnv, db: string, request: Request): boolean {
@@ -109,7 +113,7 @@ export default {
       }
       if (rest === "/admin/replica/reconnect" && request.method === "POST") {
         // chaos/ops: drop the nearest replica's novelty subscription; it must resume with no missed datoms
-        const res = await env.REPLICA.get(replicaId(env, db, regionOf(request), 1, hintOf(request))).fetch(`https://replica/admin/reconnect?db=${encodeURIComponent(db)}`, { method: "POST" });
+        const res = await env.REPLICA.get(replicaId(env, db, regionOf(request), 1, hintOf(request, env))).fetch(`https://replica/admin/reconnect?db=${encodeURIComponent(db)}`, { method: "POST" });
         return new Response(res.body, { status: res.status, headers: { "content-type": "application/json", ...CORS } });
       }
       if (rest.startsWith("/admin/") && request.method === "POST") {
@@ -121,7 +125,8 @@ export default {
       if (rest === "/query" && request.method === "POST") {
         const body = fromJson(await request.json()) as { query: unknown; inputs?: unknown[]; asOf?: number; history?: boolean; explain?: boolean };
         if (!body?.query) return json({ error: "body must be { query, inputs? }" }, 400);
-        const basis = await fetchBasis(env, db, request);
+        const bf = await fetchBasisWithStats(env, db, request);
+        const basis = bf.basis;
         const store = segmentSource(env, db);
         const dbv = await dbFromBasis(store, basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
         const stats: QueryStats = { clauses: [] };
@@ -131,32 +136,34 @@ export default {
         const ms = Date.now() - t0;
         peerMetrics.queries.mark(1);
         peerMetrics.queryMs.observe(ms);
-        plog.debug("query", { db, ms, rows: Array.isArray(result) ? result.length : 1, basisT: basis.t, novelty: basis.novelty.length, r2Gets: after.r2Gets - before.r2Gets, cacheHits: after.cacheHits - before.cacheHits, peakCells: stats?.budget?.peakCells });
+        plog.debug("query", { db, ms, rows: Array.isArray(result) ? result.length : 1, basisT: basis.t, basisHit: bf.hit, basisReason: bf.reason, novelty: basis.novelty.length, r2Gets: after.r2Gets - before.r2Gets, cacheHits: after.cacheHits - before.cacheHits, peakCells: stats?.budget?.peakCells });
         return json(
           { t: basis.t, root: basis.root.t, result, ...(body.explain ? { explain: stats.clauses, budget: stats.budget } : {}) },
           200,
-          { "x-ripple-ms": String(Date.now() - t0), "x-ripple-r2-gets": String(after.r2Gets - before.r2Gets), "x-ripple-cache-hits": String(after.cacheHits - before.cacheHits), "x-ripple-basis-t": String(basis.t), "x-ripple-replica-hint": hintOf(request) ?? "", "x-ripple-cache-basis": wantsBasisCache(request) ? "1" : "0", "x-ripple-colo": String((request as any).cf?.colo ?? "") },
+          { "x-ripple-ms": String(Date.now() - t0), "x-ripple-r2-gets": String(after.r2Gets - before.r2Gets), "x-ripple-cache-hits": String(after.cacheHits - before.cacheHits), ...basisHeaders(request, env, bf) },
         );
       }
       if (rest === "/pull" && request.method === "POST") {
         const body = fromJson(await request.json()) as { eid: number | string | [string, unknown]; pattern: unknown; asOf?: number; history?: boolean };
-        const basis = await fetchBasis(env, db, request);
+        const bf = await fetchBasisWithStats(env, db, request);
+        const basis = bf.basis;
         const dbv = await dbFromBasis(segmentSource(env, db), basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
         const eid = typeof body.eid === "number" ? body.eid : await dbv.entid(body.eid as any);
-        if (eid === undefined) return json({ t: basis.t, result: null });
-        return json({ t: basis.t, result: await pull(dbv, eid, body.pattern as any) }, 200, { "x-ripple-ms": String(Date.now() - t0) });
+        if (eid === undefined) return json({ t: basis.t, result: null }, 200, { "x-ripple-ms": String(Date.now() - t0), ...basisHeaders(request, env, bf) });
+        return json({ t: basis.t, result: await pull(dbv, eid, body.pattern as any) }, 200, { "x-ripple-ms": String(Date.now() - t0), ...basisHeaders(request, env, bf) });
       }
       const em = /^\/entity\/(\d+)$/.exec(rest);
       if (em && request.method === "GET") {
-        const basis = await fetchBasis(env, db, request);
+        const bf = await fetchBasisWithStats(env, db, request);
+        const basis = bf.basis;
         const asOf = url.searchParams.has("asOf") ? Number(url.searchParams.get("asOf")) : undefined;
         const dbv = await dbFromBasis(segmentSource(env, db), basis, { asOf });
-        return json({ t: basis.t, entity: await dbv.entity(Number(em[1])) });
+        return json({ t: basis.t, entity: await dbv.entity(Number(em[1])) }, 200, { "x-ripple-ms": String(Date.now() - t0), ...basisHeaders(request, env, bf) });
       }
       if (rest === "/info" && request.method === "GET") {
         const [tx, rep] = await Promise.all([
           transactor().fetch(txUrl("/info")).then((r) => r.json()),
-          env.REPLICA.get(replicaId(env, db, regionOf(request), 1, hintOf(request))).fetch(`https://replica/info?db=${encodeURIComponent(db)}`).then((r) => r.json()),
+          env.REPLICA.get(replicaId(env, db, regionOf(request), 1, hintOf(request, env))).fetch(`https://replica/info?db=${encodeURIComponent(db)}`).then((r) => r.json()),
         ]);
         return json({
           db,

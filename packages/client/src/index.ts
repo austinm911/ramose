@@ -15,7 +15,7 @@ import type { TxData } from "@ripple/core";
 export interface ClientOptions {
   token?: string;
   fetch?: typeof fetch;
-  /** Extra request headers, e.g. `x-ripple-replica-hint: enam`, `x-ripple-cache-basis: 1` (read-path knobs). */
+  /** Extra request headers, e.g. `x-ripple-replica-hint: enam`, `x-ripple-cache-basis: 1`, `x-ripple-cache-mode: peer` (read-path knobs). */
   headers?: Record<string, string>;
 }
 
@@ -31,7 +31,7 @@ export interface QueryResponse<T = unknown> {
   root: number;
   result: T;
   explain?: unknown[];
-  meta: { ms: number | null; r2Gets: number | null; cacheHits: number | null; colo?: string; replicaHint?: string };
+  meta: { ms: number | null; r2Gets: number | null; cacheHits: number | null; colo?: string; replicaHint?: string; basisT?: number | null; basisHit?: boolean; basisReason?: string; basisBehind?: boolean };
 }
 
 export class RippleError extends Error {
@@ -63,8 +63,8 @@ export class RippleClient {
     return this.request("GET", "/health");
   }
 
-  async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const headers: Record<string, string> = { "content-type": "application/json", ...(this.opts.headers ?? {}) };
+  async request<T>(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
+    const headers: Record<string, string> = { "content-type": "application/json", ...(this.opts.headers ?? {}), ...(extraHeaders ?? {}) };
     if (this.opts.token) headers.authorization = `Bearer ${this.opts.token}`;
     const res = await this.f(this.base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(toJson(body)) });
     const text = await res.text();
@@ -77,7 +77,7 @@ export class RippleClient {
     if (!res.ok) throw new RippleError(parsed?.error ?? `HTTP ${res.status}`, res.status, parsed?.code);
     const out = fromJson(parsed) as any;
     if (out && typeof out === "object" && !Array.isArray(out)) {
-      out.meta = { ms: num(res.headers.get("x-ripple-ms")), r2Gets: num(res.headers.get("x-ripple-r2-gets")), cacheHits: num(res.headers.get("x-ripple-cache-hits")), colo: res.headers.get("x-ripple-colo") ?? undefined, replicaHint: res.headers.get("x-ripple-replica-hint") ?? undefined };
+      out.meta = { ms: num(res.headers.get("x-ripple-ms")), r2Gets: num(res.headers.get("x-ripple-r2-gets")), cacheHits: num(res.headers.get("x-ripple-cache-hits")), colo: res.headers.get("x-ripple-colo") ?? undefined, replicaHint: res.headers.get("x-ripple-replica-hint") ?? undefined, basisT: num(res.headers.get("x-ripple-basis-t")), basisHit: res.headers.get("x-ripple-basis-hit") === "1", basisReason: res.headers.get("x-ripple-basis-reason") ?? undefined, basisBehind: res.headers.get("x-ripple-basis-behind") === "1" };
     }
     return out as T;
   }
@@ -112,13 +112,14 @@ export class RippleDb {
     return this.client.request<TxAck>("POST", this.path("/transact"), { tx });
   }
 
-  async q<T = any>(query: string | object, inputs: unknown[] = [], opts: { explain?: boolean } = {}): Promise<T> {
+  /** `minT`: read fence — the server refetches its basis if its cached one is older than `t` (e.g. the t of your last transact). */
+  async q<T = any>(query: string | object, inputs: unknown[] = [], opts: { explain?: boolean; minT?: number } = {}): Promise<T> {
     const r = await this.query<T>(query, inputs, opts);
     return r.result;
   }
 
-  query<T = any>(query: string | object, inputs: unknown[] = [], opts: { explain?: boolean } = {}): Promise<QueryResponse<T>> {
-    return this.client.request<QueryResponse<T>>("POST", this.path("/query"), compact({ query, inputs, asOf: this.asOfT, history: this.hist || undefined, explain: opts.explain }));
+  query<T = any>(query: string | object, inputs: unknown[] = [], opts: { explain?: boolean; minT?: number } = {}): Promise<QueryResponse<T>> {
+    return this.client.request<QueryResponse<T>>("POST", this.path("/query"), compact({ query, inputs, asOf: this.asOfT, history: this.hist || undefined, explain: opts.explain }), opts.minT !== undefined ? { "x-ripple-min-t": String(opts.minT) } : undefined);
   }
 
   async pull<T = Record<string, unknown> | null>(eid: number | string | [string, unknown], pattern: string | unknown[]): Promise<T> {

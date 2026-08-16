@@ -20,6 +20,13 @@ export interface RippleEnv {
   RIPPLE_QUERY_MAX_CELLS?: string;
   /** structured log level for all components: debug | info | warn | error (default info) */
   RIPPLE_LOG_LEVEL?: string;
+  /** Worker read-path defaults (each overridable per request by header, see packages/worker/src/peer.ts) */
+  /** default replica location hint: wnam|enam|…|auto (auto = colo→hint); unset = continent default */
+  RIPPLE_REPLICA_HINT?: string;
+  /** "1" = isolate basis cache on by default */
+  RIPPLE_CACHE_BASIS?: string;
+  /** default basis-cache consistency mode: ttl | peer */
+  RIPPLE_CACHE_MODE?: string;
 }
 
 export function envInt(v: string | undefined, dflt: number): number {
