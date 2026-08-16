@@ -83,7 +83,7 @@ export type WorkerEnv = Cloudflare.InferEnv<typeof Worker>;
  *
  * Consumers get an Effect-native client — `yield* Ripple.ReadWriteDatabase(Movies)`
  * — over a Worker service binding to this peer, plain HTTPS, or an Action.
- * See examples/alchemy-kv-style.ts.
+ * See examples/kv-style/ (resources.ts + app.ts + alchemy.run.ts).
  *
  * Note the same async-env limitation as `Analytics` above: a custom resource
  * cannot be declared in a Worker's `env: {}` (the classifier chain in
