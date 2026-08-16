@@ -11,6 +11,7 @@ import {
   Catalog,
   makeSystem,
   Namespace,
+  queryBuilder,
   schemaTx,
   Long,
   Ref,
@@ -26,7 +27,8 @@ const Movies = Catalog({ user: User });
 
 describe("catalog constructors", () => {
   test("namespace stamps derivable idents", () => {
-    expect(User.name).toBe("user");
+    expect(User.ns).toBe("user");
+    expect(User.name.ident).toBe(":user/name");
     expect(User.attributes.name.ident).toBe(":user/name");
     expect(User.attributes.name.cardinality).toBe("one");
     expect(User.attributes.name.unique).toBe("identity");
@@ -79,5 +81,22 @@ describe("typed create / connect", () => {
     expect(db.catalog).toBe(Movies);
     const again = await run(system.connect("movies", Movies));
     expect(again.catalog).toBe(Movies);
+  });
+});
+
+describe("query builder", () => {
+  test("where lowers attr refs to idents and keeps vars / blanks", () => {
+    const q = queryBuilder(Movies)
+      .where("?e", User.name, "?n")
+      .where("?e", "_", "?v")
+      .where("?e", "?a", 1)
+      .options({ minT: 3 });
+    expect(q.spec.where).toEqual([
+      ["?e", ":user/name", "?n"],
+      ["?e", "_", "?v"],
+      ["?e", "?a", 1],
+    ]);
+    expect(q.spec.options).toEqual({ minT: 3 });
+    expect(q.catalog).toBe(Movies);
   });
 });
