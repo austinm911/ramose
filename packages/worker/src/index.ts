@@ -11,6 +11,7 @@
  *   GET  /                                  demo app (CRUD + as-of history view)
  *   GET  /health
  *   POST /db/:name/transact   { tx }        → { t, txEid, tempids, datoms }
+ *   GET  /db/:name/write-ws   (Upgrade)     → write WebSocket, proxied to the Transactor DO
  *   POST /db/:name/query      { query, inputs?, asOf?, history? }   → { t, result }
  *   POST /db/:name/pull       { eid, pattern, asOf?, history? }     → { t, result }
  *   GET  /db/:name/entity/:eid[?asOf=]                              → { t, entity }
@@ -33,6 +34,7 @@ import { TransactorDO } from "@ripple/transactor/transactor-do.ts";
 import { QueryReplicaDO, dbFromBasis } from "@ripple/replica";
 import * as Effect from "effect/Effect";
 import { Analytics, type Route, bindingOf, fromBinding, httpPoint, routeOf } from "./analytics.ts";
+import { authorized, validDbName } from "./auth.ts";
 import { BadRequest, type Internal, NotFound, type QueryBudgetExceeded, type RippleError, Unauthorized, UpstreamError, fromThrown, toHttp } from "./errors.ts";
 import { basisHeaders, coloHeader, fetchBasisWithStats, hintOf, invalidateBasis, regionOf, replicaId, segmentSource } from "./peer.ts";
 import { DEMO_HTML } from "./demo.ts";
@@ -64,18 +66,6 @@ const CORS = {
   "access-control-allow-headers": "content-type,authorization,x-ripple-replica-hint,x-ripple-cache-basis,x-ripple-cache-mode,x-ripple-min-t",
   "access-control-expose-headers": "x-ripple-ms,x-ripple-r2-gets,x-ripple-cache-hits,x-ripple-basis-t,x-ripple-basis-hit,x-ripple-basis-reason,x-ripple-basis-calls,x-ripple-basis-behind,x-ripple-replica-hint,x-ripple-cache-basis,x-ripple-cache-mode,x-ripple-colo",
 };
-
-/** One shared bearer token (`RIPPLE_TOKEN`) for every database name; unset = auth off. */
-function authorized(env: RippleEnv, request: Request): boolean {
-  if (!env.RIPPLE_TOKEN) return true;
-  const header = request.headers.get("authorization") ?? "";
-  const token = header.startsWith("Bearer ") ? header.slice(7) : new URL(request.url).searchParams.get("token") ?? "";
-  return token === env.RIPPLE_TOKEN;
-}
-
-function validDbName(name: string): boolean {
-  return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(name);
-}
 
 /** What the request turned out to be — filled in as it is routed; used by the error log and the AE point. */
 interface RequestInfo {
@@ -137,6 +127,21 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
     const headers = { "content-type": "application/json", ...CORS, "x-ripple-ms": String(Date.now() - t0) };
     if (!res.ok) throw new UpstreamError({ status: res.status, body: await res.text(), headers });
     return new Response(res.body, { status: res.status, headers });
+  }
+  // ---- client-held write socket → Transactor DO (this request's IoContext owns it)
+  if (rest === "/write-ws" && request.method === "GET") {
+    if ((request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") throw new BadRequest({ message: "expected websocket upgrade" });
+    const res = await transactor().fetch(txUrl("/write"), { headers: { Upgrade: "websocket", ...coloHeader(request) } });
+    if (res.status !== 101 || !res.webSocket) {
+      const body = res.status === 101 ? "transactor upgraded without a socket" : await res.text();
+      throw new UpstreamError({ status: res.status === 101 ? 502 : res.status, body, headers: { "content-type": "application/json", ...CORS } });
+    }
+    plog.debug("write-ws.open", { db, ms: Date.now() - t0 });
+    // The DO's socket is handed straight to the client: no frame relaying here, and the
+    // request stays open for the socket's life. `invalidateBasis(db)` therefore cannot run
+    // per frame — writes over this socket become visible to cached reads only after the
+    // basis ttl or via `x-ripple-min-t`.
+    return new Response(null, { status: 101, webSocket: res.webSocket });
   }
   if (rest === "/admin/replica/reconnect" && request.method === "POST") {
     // chaos/ops: drop the nearest replica's novelty subscription; it must resume with no missed datoms

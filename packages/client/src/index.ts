@@ -11,6 +11,12 @@
 
 import { fromJson, toJson } from "@ripple/core";
 import type { TxData } from "@ripple/core";
+import { RippleError } from "./errors.ts";
+import { RippleWriteSocket, type WriteSocketOptions } from "./write-ws.ts";
+
+export { RippleError } from "./errors.ts";
+export { RippleWriteSocket, encodeWriteFrame, decodeWriteReply } from "./write-ws.ts";
+export type { WriteSocketOptions, WriteReply, WebSocketLike, WebSocketCtor, WriteFrame } from "./write-ws.ts";
 
 export interface ClientOptions {
   token?: string;
@@ -34,11 +40,6 @@ export interface QueryResponse<T = unknown> {
   meta: { ms: number | null; r2Gets: number | null; cacheHits: number | null; colo?: string; replicaHint?: string; basisT?: number | null; basisHit?: boolean; basisReason?: string; basisBehind?: boolean };
 }
 
-export class RippleError extends Error {
-  constructor(msg: string, readonly status: number, readonly code?: string) {
-    super(msg);
-  }
-}
 
 /** Drop undefined fields (JSON encoding would otherwise send them as null). */
 function compact<T extends Record<string, unknown>>(o: T): Partial<T> {
@@ -134,6 +135,16 @@ export class RippleDb {
 
   info(): Promise<any> {
     return this.client.request("GET", this.path("/info"));
+  }
+
+  /**
+   * Open a client-held write WebSocket to `ws(s)://…/db/<name>/write-ws`.
+   * The socket carries `{ id, tx }` / `{ id, txs }` frames; the fetch-based
+   * `transact` above is unchanged. Await `sock.ready` before the first send
+   * (or just call `transact` — it awaits `ready` for you).
+   */
+  writeSocket(opts: WriteSocketOptions = {}): RippleWriteSocket {
+    return new RippleWriteSocket(this.client, this.name, opts);
   }
   /** Chaos/ops: drop the replica's novelty subscription (it must resume with no missed datoms). */
   reconnectReplica(): Promise<{ ok: boolean; t: number }> {

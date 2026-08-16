@@ -8,4 +8,5 @@ export { DEFAULT_CONFIG, type SocketLike, type SqlLike, type SqlCursorLike, type
 export { Indexer, type IndexerOptions, type IndexRunResult } from "./indexer.ts";
 export { type RippleEnv, envInt } from "./env.ts";
 export { TxMetrics, type AnalyticsEngineDatasetLike, type BatchPoint, type IndexPoint } from "./observability.ts";
+export { handleWriteFrame, decodeWriteFrame, encodeWriteReply, writeErrorBody, type WriteCore, type WriteReply, type WriteErrorBody, type DecodedWriteFrame } from "./write-ws.ts";
 export { TxRejected, TransactorDead, BadRequest, NotFound, Internal, type TransactorHttpError, toHttpError, statusOf, errorResponse } from "./errors.ts";

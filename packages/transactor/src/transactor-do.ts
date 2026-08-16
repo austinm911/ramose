@@ -7,6 +7,7 @@
  * tested under Bun; this file only maps APIs.
  *
  *   GET /subscribe?from=<t>  (WebSocket upgrade) → hello / tx / root / gap frames
+ *   GET /write               (WebSocket upgrade) → write socket, { id, tx|txs } frames
  *   everything else → Transactor.handleRequest
  */
 
@@ -16,6 +17,7 @@ import { dbPrefix, prefixedBucket } from "@ripple/storage";
 import { type RippleEnv, envInt } from "./env.ts";
 import { DEFAULT_CONFIG, type SocketLike, type TransactorConfig, type TransactorHost } from "./host.ts";
 import { Transactor, type TxAck } from "./transactor.ts";
+import { handleWriteFrame } from "./write-ws.ts";
 
 export type { TxAck };
 
@@ -117,6 +119,29 @@ export class TransactorDO extends DurableObject<RippleEnv> {
       const [client, server] = [pair[0], pair[1]];
       this.ctx.acceptWebSocket(server);
       this.core.onSubscribe(server, from);
+      return new Response(null, { status: 101, webSocket: client });
+    }
+    if (url.pathname === "/write") {
+      // Client-held write socket, proxied through one Worker request. Frames are
+      // handled by write-ws.ts (plain async/await, no Effect).
+      if (request.headers.get("Upgrade") !== "websocket") return new Response("expected websocket", { status: 426 });
+      const pair = new WebSocketPair();
+      const [client, server] = [pair[0], pair[1]];
+      // `server.accept()`, NOT `ctx.acceptWebSocket(server)`: hibernating accept would add
+      // this socket to `ctx.getWebSockets()` = `host.sockets()`, so it would receive every
+      // novelty broadcast meant for replica subscribers. Write sockets stay out of that set.
+      server.accept();
+      const core = this.core;
+      server.addEventListener("message", (event: MessageEvent) => {
+        void handleWriteFrame(core, server as unknown as SocketLike, event.data as string | ArrayBuffer);
+      });
+      const bye = () => {
+        try {
+          server.close();
+        } catch {}
+      };
+      server.addEventListener("close", bye);
+      server.addEventListener("error", bye);
       return new Response(null, { status: 101, webSocket: client });
     }
     if (url.pathname === "/health") {

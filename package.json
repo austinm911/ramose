@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "scripts": {
-    "test": "bun test packages/core packages/storage packages/transactor packages/replica packages/worker packages/alchemy",
+    "test": "bun test packages/core packages/storage packages/transactor packages/replica packages/worker packages/client packages/alchemy",
     "test:all": "bun test",
     "test:e2e": "bun test test/e2e",
     "typecheck": "bunx tsc --noEmit -p tsconfig.json",
@@ -18,6 +18,7 @@
     "bench:write": "bun run bench/write.bench.ts",
     "bench:transactor": "bun run bench/transactor.bench.ts",
     "bench:write-do": "bun run bench/write-do.bench.ts",
+    "bench:write-ws": "bun run bench/write-ws.bench.ts",
     "bench:read-do": "bun run bench/read-do.bench.ts",
     "bench:indexer": "bun run bench/indexer.bench.ts",
     "dev": "bun alchemy dev",
