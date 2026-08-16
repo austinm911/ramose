@@ -19,9 +19,11 @@
  * and /cloudflare/compute/durable-objects for alchemy 2.0.0-beta.72.
  */
 
+import * as Ripple from "@ripple/alchemy";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 
 const stage = process.env.ALCHEMY_STAGE ?? process.env.STAGE ?? process.env.USER ?? "dev";
 const tuning = (...names: string[]): Record<string, string> =>
@@ -70,16 +72,39 @@ export const Worker = Cloudflare.Worker("Worker", {
 /** Typed `env` for the Worker entrypoint (mirrors packages/transactor/src/env.ts#RippleEnv). */
 export type WorkerEnv = Cloudflare.InferEnv<typeof Worker>;
 
+/**
+ * A logical Ripple database on this peer (`@ripple/alchemy`).
+ *
+ * Nothing is provisioned: the Transactor DO is `idFromName("movies")` and the
+ * log/segments live under `db/movies/…` in the bucket, so the first
+ * transaction materializes it. What the resource buys is a *pinned* name that
+ * other stacks and Workers can depend on, plus a deploy-time proof that the
+ * peer is actually serving (`GET /health`) before anything binds to it.
+ *
+ * Consumers get an Effect-native client — `yield* Ripple.ReadWriteDatabase(Movies)`
+ * — over a Worker service binding to this peer, plain HTTPS, or an Action.
+ * See examples/alchemy-kv-style.ts.
+ *
+ * Note the same async-env limitation as `Analytics` above: a custom resource
+ * cannot be declared in a Worker's `env: {}` (the classifier chain in
+ * alchemy/src/Cloudflare/Workers/WorkerAsyncBindings.ts is closed over
+ * Cloudflare's own resource types). Attribute Outputs still work —
+ * `env: { MOVIES_URL: Movies.databaseUrl }` lowers to a `plain_text`
+ * binding — and the `Ripple.*Database*` capabilities bind themselves.
+ */
+export const Movies = Ripple.Database("Movies", { peer: Worker, name: "movies" });
+
 export default Alchemy.Stack(
   "ripple",
   {
-    providers: Cloudflare.providers(),
+    providers: Layer.mergeAll(Cloudflare.providers(), Ripple.providers()),
     // State lives in Cloudflare by default; ALCHEMY_STATE=local keeps a file
     // store instead (offline `bun alchemy dev` against the local emulation).
     state: process.env.ALCHEMY_STATE === "local" ? Alchemy.localState() : Cloudflare.state(),
   },
   Effect.gen(function* () {
     const worker = yield* Worker;
-    return { url: worker.url };
+    const movies = yield* Movies;
+    return { url: worker.url, databaseUrl: movies.databaseUrl };
   }),
 );

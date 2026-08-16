@@ -20,7 +20,8 @@
     "paths": {
       "@ripple/core": ["packages/core/src/index.ts"],
       "@ripple/core/*": ["packages/core/src/*"],
-      "@ripple/client": ["packages/client/src/index.ts"]
+      "@ripple/client": ["packages/client/src/index.ts"],
+      "@ripple/alchemy": ["packages/alchemy/src/index.ts"]
     }
   },
   "include": [
@@ -28,7 +29,8 @@
     "packages/*/src/**/*.ts",
     "packages/*/test/**/*.ts",
     "bench/**/*.ts",
-    "test/**/*.ts"
+    "test/**/*.ts",
+    "examples/**/*.ts"
   ],
   "exclude": ["node_modules", ".alchemy", "dist"]
 }
