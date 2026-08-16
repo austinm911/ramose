@@ -15,12 +15,14 @@ import { Catalog } from "./Catalog.ts";
 import { makeSystem } from "./Client.ts";
 import { SchemaEnsureError } from "./Errors.ts";
 import { Namespace } from "./Namespace.ts";
+import { nested, optional, Struct } from "./Pull.ts";
 import { Long, Ref } from "./valueTypes.ts";
 
 export const User = Namespace("user", {
   name: attr(Schema.String, { unique: "identity" }),
   age: attr(Long, { valueType: ":db.type/long" }),
   friends: attr(Ref, { cardinality: "many", valueType: ":db.type/ref" }),
+  bestFriend: attr(Ref, { valueType: ":db.type/ref" }),
 });
 
 export const Movie = Namespace("movie", {
@@ -39,7 +41,8 @@ export const Movies = Catalog({ user: User, movie: Movie, meta: Meta });
  * The happy path an Effect-savvy caller writes: `yield*`, inferred
  * success, `catchTags` on the tagged channel. One entity is a bag —
  * User.name and Meta.source on the same handle. `ada.add` is the write;
- * `pull` / `q` take the same attr refs.
+ * `pull` is a Struct of those attr refs (keys are the names that come
+ * back); `q` takes the same refs in `where`.
  */
 export const program = Effect.gen(function* () {
   const system = makeSystem({ url: "https://ripple.example.workers.dev" });
@@ -58,7 +61,25 @@ export const program = Effect.gen(function* () {
   });
 
   const ada = yield* db.entity(1001);
-  const pulled = yield* db.pull(1001, [User.name, User.age]);
+
+  const Friend = Struct({
+    name: User.name,
+    age: optional(User.age),
+  });
+  // required name: string; optional age: number | undefined
+  // nested many → Friend[]; nested one → Friend | undefined
+  const pulled = yield* db.pull(
+    1001,
+    Struct({
+      name: User.name,
+      age: optional(User.age),
+      source: Meta.source,
+      bestFriend: optional(nested(User.bestFriend, Friend)),
+      friends: nested(User.friends, Friend),
+    }),
+  );
+  const requiredOnly = yield* db.pull(1001, Struct({ name: User.name }));
+
   const rows = yield* db.q((q) =>
     q.where("?e", User.name, "?n").options({ minT: ack.t }).find("?n"),
   );
@@ -67,7 +88,7 @@ export const program = Effect.gen(function* () {
   const hist = db.history();
   const past = yield* before.entity(1001);
 
-  return { ack, ada, pulled, rows, past, hist, catalog: db.catalog };
+  return { ack, ada, pulled, requiredOnly, rows, past, hist, catalog: db.catalog };
 }).pipe(
   Effect.catchTags({
     BadRequest: (e) => Effect.succeed({ error: e._tag, message: e.message }),
