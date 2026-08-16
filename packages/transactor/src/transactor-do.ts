@@ -58,6 +58,8 @@ export class TransactorDO extends DurableObject<RippleEnv> {
       abort: (reason) => ctx.abort(reason),
       now: () => Date.now(),
       config: configFromEnv(env),
+      // bound in alchemy.run.ts as ANALYTICS; undefined = metrics disabled
+      analytics: env.ANALYTICS,
     };
     this.core = new Transactor(host);
   }

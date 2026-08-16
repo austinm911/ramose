@@ -32,7 +32,6 @@ import {
   type RootRecord,
   type Roots,
   type TxData,
-  TxError,
   bootstrapDatoms,
   decodeLogChunk,
   emptyRoots,
@@ -48,8 +47,13 @@ import {
   componentLogger,
 } from "@ripple/core";
 import { R2NodeStore, readCurrentRoot, recordToRoots, rootsToRecord } from "@ripple/storage";
+import * as Effect from "effect/Effect";
+import { BadRequest, NotFound, TransactorDeadError, errorResponse, toHttpError } from "./errors.ts";
 import { type SocketLike, type TransactorHost } from "./host.ts";
 import { Indexer } from "./indexer.ts";
+import { TxMetrics } from "./observability.ts";
+
+export { TransactorDeadError };
 
 export interface TxAck {
   t: number;
@@ -69,18 +73,14 @@ export interface TransactorStats {
   commitMs: number;
   /** ms spent resolving txs in memory (validate/tempids/uniques) */
   resolveMs: number;
+  /** ms of wall clock per batch from dequeue to ack ("other" = loopMs - resolveMs - commitMs) */
+  loopMs: number;
 }
 
 interface Pending {
   tx: TxData;
   resolve: (r: TxAck) => void;
   reject: (e: unknown) => void;
-}
-
-export class TransactorDeadError extends Error {
-  constructor(reason: string) {
-    super(`transactor aborted: ${reason}`);
-  }
 }
 
 const yieldToEventLoop = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
@@ -107,15 +107,21 @@ export class Transactor {
   private indexer!: Indexer;
   private txSinceIndex = 0;
   private dead: string | undefined;
-  readonly stats: TransactorStats = { txs: 0, batches: 0, maxBatch: 0, rejected: 0, indexRuns: 0, broadcasts: 0, commitMs: 0, resolveMs: 0 };
+  readonly stats: TransactorStats = { txs: 0, batches: 0, maxBatch: 0, rejected: 0, indexRuns: 0, broadcasts: 0, commitMs: 0, resolveMs: 0, loopMs: 0 };
   /** metrics: tx/s over the last 10 s, batch-size and commit-latency distributions */
   readonly txRate = new RateMeter(10_000);
   readonly batchSizes = new Histogram([1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]);
   readonly commitLatency = new Histogram();
+  /** per-batch resolve time and dequeue→ack wall time (commit time is `commitLatency`) */
+  readonly resolveLatency = new Histogram();
+  readonly loopLatency = new Histogram();
+  /** Analytics Engine sink (no-op when the host has no dataset bound) */
+  readonly metrics: TxMetrics;
   private readonly log: Logger;
 
   constructor(readonly host: TransactorHost) {
     this.log = componentLogger("transactor", () => ({ db: safeName(host) }));
+    this.metrics = new TxMetrics(host.analytics);
   }
 
   // ---------------------------------------------------------------------------
@@ -284,6 +290,8 @@ export class Transactor {
         // land in the queue and share the coming storage write.
         await yieldToEventLoop();
         // Everything queued while the previous batch was in flight forms the next batch.
+        const queueDepth = this.queue.length; // pending txs at dequeue (includes this batch)
+        const tLoop = performance.now();
         const batch = this.takeBatch();
         const entries: LogEntry[] = [];
         const acks: { p: Pending; ack: TxAck }[] = [];
@@ -300,7 +308,8 @@ export class Transactor {
             p.reject(err);
           }
         }
-        this.stats.resolveMs += performance.now() - tResolve;
+        const resolveMs = performance.now() - tResolve;
+        this.stats.resolveMs += resolveMs;
         if (entries.length === 0) continue;
         const tWrite = performance.now();
         try {
@@ -324,8 +333,24 @@ export class Transactor {
         this.txRate.mark(entries.length, this.host.now());
         this.batchSizes.observe(entries.length);
         this.commitLatency.observe(writeMs);
+        this.resolveLatency.observe(resolveMs);
         this.log.debug("tx.commit", { t: this.conn.t, batch: entries.length, datoms: entries.reduce((n, e) => n + e.datoms.length, 0), writeMs: round(writeMs), queued: this.queue.length, txsSinceIndex: this.txSinceIndex });
         for (const a of acks) a.p.resolve(a.ack);
+        // dequeue → ack wall clock; "other" = loopMs - resolveMs - commitMs
+        const loopMs = performance.now() - tLoop;
+        this.stats.loopMs += loopMs;
+        this.loopLatency.observe(loopMs);
+        // ONE Analytics Engine data point per batch, after the acks and outside every timed region.
+        this.metrics.batch({
+          db: safeName(this.host) ?? "unknown",
+          resolveMs,
+          commitMs: writeMs,
+          batchSize: entries.length,
+          queueDepth,
+          noveltyDatoms: this.conn.noveltyCount,
+          txOk: entries.length,
+          txErr: batch.length - entries.length,
+        });
         for (const e of entries) this.broadcast(txFrame(e));
         await this.indexer.maybeSchedule();
       }
@@ -429,39 +454,66 @@ export class Transactor {
         batchSize: this.batchSizes.snapshot(),
         commitMs: this.commitLatency.snapshot(),
         avgBatch: this.stats.batches ? round(this.stats.txs / this.stats.batches) : 0,
+        // cumulative counters (same numbers as stats.*, kept here for one-stop reading)
+        resolveMs: round(this.stats.resolveMs),
+        loopMs: round(this.stats.loopMs),
+        // per-batch distributions: "other" per batch = batchLoopMs - batchResolveMs - batchCommitMs
+        batchResolveMs: this.resolveLatency.snapshot(),
+        batchCommitMs: this.commitLatency.snapshot(),
+        batchLoopMs: this.loopLatency.snapshot(),
+        noveltyDatoms: this.conn.noveltyCount,
+        queueDepth: this.queue.length,
+        ...this.metrics.snapshot(),
       },
       store: this.store.stats,
       indexer: this.indexer.status(),
     };
   }
 
+  /**
+   * Route dispatch as an Effect program: every route runs inside
+   * `Effect.tryPromise`, whatever it throws is classified into a tagged error
+   * (errors.ts) and `Effect.catchTags` maps each tag to the same status/body
+   * the pre-Effect handler produced. Only the boundary is effectful — the
+   * resolve/commit loop above stays plain async/await.
+   *
+   * The WebSocket `/subscribe` upgrade never reaches here (the DO shell owns it).
+   */
   async handleRequest(request: Request): Promise<Response> {
     await this.init();
+    this.metrics.observeColo((request as { cf?: { colo?: string } }).cf?.colo);
     const url = new URL(request.url);
+    return Effect.runPromise(
+      Effect.tryPromise({ try: () => this.route(request, url), catch: toHttpError }).pipe(
+        Effect.catchTags({
+          TxRejected: (e) => Effect.sync(() => errorResponse(e)),
+          TransactorDead: (e) => Effect.sync(() => errorResponse(e)),
+          BadRequest: (e) => Effect.sync(() => errorResponse(e)),
+          NotFound: (e) => Effect.sync(() => errorResponse(e)),
+          Internal: (e) => Effect.sync(() => errorResponse(e)),
+        }),
+      ),
+    );
+  }
+
+  private async route(request: Request, url: URL): Promise<Response> {
     const path = url.pathname;
-    try {
-      if (path === "/transact" && request.method === "POST") {
-        const body = fromJson(await request.json()) as { tx?: TxData };
-        if (!body || !Array.isArray(body.tx)) return json({ error: "body must be { tx: [...] }" }, 400);
-        const ack = await this.transact(body.tx);
-        return json(ack);
-      }
-      if (path === "/info") return json(this.info());
-      if (path === "/log") {
-        const from = Number(url.searchParams.get("from") ?? "0");
-        const to = Number(url.searchParams.get("to") ?? String(Number.MAX_SAFE_INTEGER));
-        const entries = this.readLogEntries(from, to, 10_000);
-        const frames: NoveltyFrameV1[] = entries.map(txFrame);
-        return json({ from, to, earliestLogT: this.earliestLogT(), t: this.conn.t, entries: frames });
-      }
-      if (path === "/admin/index" && request.method === "POST") return json(await this.indexer.runNow());
-      if (path === "/admin/gc" && request.method === "POST") return json(await this.indexer.gcNow());
-      return json({ error: "not found" }, 404);
-    } catch (err) {
-      if (err instanceof TxError) return json({ error: err.message, code: err.code }, 409);
-      if (err instanceof TransactorDeadError) return json({ error: err.message }, 503, { "retry-after": "0" });
-      const msg = err instanceof Error ? err.message : String(err);
-      return json({ error: msg }, 500);
+    if (path === "/transact" && request.method === "POST") {
+      const body = fromJson(await request.json()) as { tx?: TxData };
+      if (!body || !Array.isArray(body.tx)) throw new BadRequest({ message: "body must be { tx: [...] }" });
+      const ack = await this.transact(body.tx);
+      return json(ack);
     }
+    if (path === "/info") return json(this.info());
+    if (path === "/log") {
+      const from = Number(url.searchParams.get("from") ?? "0");
+      const to = Number(url.searchParams.get("to") ?? String(Number.MAX_SAFE_INTEGER));
+      const entries = this.readLogEntries(from, to, 10_000);
+      const frames: NoveltyFrameV1[] = entries.map(txFrame);
+      return json({ from, to, earliestLogT: this.earliestLogT(), t: this.conn.t, entries: frames });
+    }
+    if (path === "/admin/index" && request.method === "POST") return json(await this.indexer.runNow());
+    if (path === "/admin/gc" && request.method === "POST") return json(await this.indexer.gcNow());
+    throw new NotFound({ message: "not found" });
   }
 }

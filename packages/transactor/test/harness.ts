@@ -10,7 +10,7 @@ import { type R2Like, dbPrefix, prefixedBucket } from "@ripple/storage";
 import { MemoryBucket } from "@ripple/storage/memory.ts";
 export { MemoryBucket };
 import { type TelemetryEvent, setTelemetryLevel, setTelemetrySink } from "@ripple/core";
-import { DEFAULT_CONFIG, type SocketLike, type SqlLike, type TransactorConfig, type TransactorHost, Transactor } from "../src/index.ts";
+import { type AnalyticsEngineDatasetLike, DEFAULT_CONFIG, type SocketLike, type SqlLike, type TransactorConfig, type TransactorHost, Transactor } from "../src/index.ts";
 
 /** Captured structured events (all levels) instead of console noise. */
 export const events: TelemetryEvent[] = [];
@@ -61,6 +61,21 @@ export interface HarnessOptions {
   /** fault injection: throw inside the N-th (1-based) transactionSync */
   failWriteAt?: number;
   now?: () => number;
+  /** fake Analytics Engine dataset (see FakeAnalytics) */
+  analytics?: AnalyticsEngineDatasetLike;
+}
+
+/** Collects Analytics Engine data points; `fail` makes writeDataPoint throw. */
+export class FakeAnalytics implements AnalyticsEngineDatasetLike {
+  readonly points: { indexes?: string[]; blobs?: string[]; doubles?: number[] }[] = [];
+  constructor(public fail = false) {}
+  writeDataPoint(dp: { indexes?: string[]; blobs?: string[]; doubles?: number[] }): void {
+    if (this.fail) throw new Error("analytics unavailable");
+    this.points.push(dp);
+  }
+  ofStage(stage: string) {
+    return this.points.filter((p) => p.blobs?.[0] === stage);
+  }
 }
 
 export class Harness implements TransactorHost {
@@ -72,6 +87,7 @@ export class Harness implements TransactorHost {
   /** this database's view of it (db/<name>/…), as the DO shell hands it to the Transactor */
   readonly bucket: R2Like;
   readonly config: TransactorConfig;
+  readonly analytics: AnalyticsEngineDatasetLike | undefined;
   readonly subscribers = new Set<FakeSocket>();
   alarm: number | null = null;
   aborted: string | undefined;
@@ -89,6 +105,7 @@ export class Harness implements TransactorHost {
     this.raw = bucket ?? new MemoryBucket();
     this.bucket = prefixedBucket(this.raw, dbPrefix(this.dbName));
     this.config = { ...DEFAULT_CONFIG, ...opts.config };
+    this.analytics = opts.analytics;
     this.failAt = opts.failWriteAt;
     this.clock = opts.now ?? (() => Date.now());
     this.transactor = new Transactor(this);

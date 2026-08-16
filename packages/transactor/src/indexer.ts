@@ -89,6 +89,7 @@ export class Indexer {
     this.running = true;
     const started = this.t.host.now();
     const putsBefore = this.t.nodeStore.stats.r2Puts;
+    const noveltyBefore = conn.noveltyCount; // O(1) counter, read before the merge/flush
     try {
       // 1. Bounded slice of the log.
       const toT = Math.min(conn.t, fromT + this.opts.maxTxsPerRun);
@@ -126,6 +127,8 @@ export class Indexer {
         root: rec,
       };
       this.lastRun = res;
+      // one Analytics Engine data point per indexer run (see observability.ts schema)
+      this.t.metrics.index({ db: this.db ?? "unknown", indexMs: res.ms, txs: res.txs, datoms: res.datoms, noveltyDatoms: noveltyBefore });
       this.log.info("index.run", { db: this.db, fromT, toT, txs: entries.length, datoms, ms: res.ms, r2Puts: res.r2Puts, remainingTxs: res.remainingTxs, noveltyAfter: conn.noveltyCount });
 
       // 6. Occasionally GC.

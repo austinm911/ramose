@@ -1,8 +1,12 @@
+import type { AnalyticsEngineDatasetLike } from "./observability.ts";
+
 /** Worker environment bindings shared by the Worker and both DO classes. */
 export interface RippleEnv {
   STORE: R2Bucket;
   TRANSACTOR: DurableObjectNamespace;
   REPLICA: DurableObjectNamespace;
+  /** optional Analytics Engine dataset for write-path + http metrics; unbound = metrics off */
+  ANALYTICS?: AnalyticsEngineDatasetLike;
   /** stage name (dev / prod) */
   RIPPLE_STAGE?: string;
   /** JSON map { "<db>": "<token>" } or a single admin token; empty = auth disabled */

@@ -18,7 +18,6 @@
 import { DurableObject } from "cloudflare:workers";
 import {
   DEFAULT_QUERY_MAX_CELLS,
-  QueryBudgetError,
   type QueryStats,
   componentLogger,
   type LogEntry,
@@ -35,7 +34,9 @@ import {
 } from "@ripple/core";
 import { type R2Like, R2NodeStore, dbPrefix, prefixedBucket, readCurrentRoot, readLogSince, type ByteTier } from "@ripple/storage";
 import { type RippleEnv, envInt } from "@ripple/transactor";
+import * as Effect from "effect/Effect";
 import { type Basis, dbFromBasis, makeBasis } from "./basis.ts";
+import { replicaErrorResponse, toReplicaError } from "./errors.ts";
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify(toJson(body)), { status, headers: { "content-type": "application/json", ...extra } });
@@ -276,75 +277,83 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
       this.bindStore(dbParam);
     }
     if (!this.dbName) return json({ error: "missing ?db=" }, 400);
-    try {
-      switch (url.pathname) {
-        case "/basis": {
-          await this.sync();
-          if (!this.root) return json({ error: "database has no root yet" }, 503);
-          this.stats.basisServed++;
-          if (this.stats.basisServed % 100 === 1) this.log.debug("replica.basis", { db: this.dbName, t: this.basisT, rootT: this.root.t, novelty: this.entries.length, served: this.stats.basisServed });
-          const basis: Basis = makeBasis(this.dbName, this.root, this.entries, this.ctx.id.toString().slice(0, 8));
-          return json(basis);
-        }
-        case "/query": {
-          // Executes the read on the replica (SPEC §8): plain datalog, pull, or a whole-entity read.
-          // The Worker forwards its public /query /pull /entity bodies here; the JSON shape it returns
-          // is exactly what the Worker used to build itself.
-          await this.sync();
-          if (!this.root) return json({ error: "database has no root yet" }, 503);
-          const body = fromJson(await request.json()) as {
-            query?: unknown;
-            inputs?: unknown[];
-            asOf?: number;
-            history?: boolean;
-            explain?: boolean;
-            pull?: { eid: number | string | [string, unknown]; pattern: unknown };
-            entity?: number;
-          };
-          if (!body || (!body.query && !body.pull && typeof body.entity !== "number")) return json({ error: "body must be { query, inputs? } | { pull } | { entity }" }, 400);
-          const basis = makeBasis(this.dbName, this.root, this.entries);
-          const before = { ...this.store.stats };
-          const db = await dbFromBasis(this.store, basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
-          this.stats.queries++;
-          const hdrs = () => ({
-            "x-ripple-basis-t": String(basis.t),
-            "x-ripple-r2-gets": String(this.store.stats.r2Gets - before.r2Gets),
-            "x-ripple-cache-hits": String(this.store.stats.cacheHits + this.store.stats.tierHits + this.store.stats.memHits - before.cacheHits - before.tierHits - before.memHits),
-          });
-          if (typeof body.entity === "number") return json({ t: basis.t, entity: await db.entity(body.entity) }, 200, hdrs());
-          if (body.pull) {
-            const eid = typeof body.pull.eid === "number" ? body.pull.eid : await db.entid(body.pull.eid as any);
-            if (eid === undefined) return json({ t: basis.t, result: null }, 200, hdrs());
-            return json({ t: basis.t, result: await runPull(db, eid, body.pull.pattern as any) }, 200, hdrs());
-          }
-          const stats: QueryStats = { clauses: [] };
-          const result = await runQuery(db, body.query as any, body.inputs ?? [], { stats, maxCells: envInt(this.env.RIPPLE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS) });
-          if (this.stats.queries % 100 === 1) this.log.debug("replica.query", { db: this.dbName, t: basis.t, rows: Array.isArray(result) ? result.length : 1, novelty: this.entries.length, peakCells: stats.budget?.peakCells });
-          return json({ t: basis.t, root: basis.root.t, result, ...(body.explain ? { explain: stats.clauses, budget: stats.budget } : {}) }, 200, hdrs());
-        }
-        case "/info":
-          return json({ db: this.dbName, t: this.basisT, root: this.root, novelty: this.entries.length, connected: this.ws?.readyState === 1, stats: this.stats, store: this.store.stats });
-        case "/admin/reconnect": {
-          try {
-            this.ws?.close(1000, "reconnect");
-          } catch {}
-          this.ws = undefined;
-          await this.sync();
-          return json({ ok: true, t: this.basisT });
-        }
-        default:
-          return json({ error: "not found" }, 404);
+    // Route dispatch as an Effect program: the routes stay plain async/await,
+    // failures are classified into tagged errors (errors.ts) and mapped back to
+    // exactly the statuses/bodies this endpoint returned before.
+    return Effect.runPromise(
+      Effect.tryPromise({ try: () => this.route(request, url, this.dbName as string), catch: toReplicaError }).pipe(
+        Effect.catchTags({
+          QueryBudget: (e) =>
+            Effect.sync(() => {
+              this.stats.budgetAborts++;
+              this.log.warn("query.budget-exceeded", { db: this.dbName, clause: e.clause, cells: e.cells, limit: e.limit });
+              return replicaErrorResponse(e);
+            }),
+          BadRequest: (e) => Effect.sync(() => replicaErrorResponse(e)),
+          Internal: (e) => Effect.sync(() => replicaErrorResponse(e)),
+        }),
+      ),
+    );
+  }
+
+  private async route(request: Request, url: URL, dbName: string): Promise<Response> {
+    switch (url.pathname) {
+      case "/basis": {
+        await this.sync();
+        if (!this.root) return json({ error: "database has no root yet" }, 503);
+        this.stats.basisServed++;
+        if (this.stats.basisServed % 100 === 1) this.log.debug("replica.basis", { db: this.dbName, t: this.basisT, rootT: this.root.t, novelty: this.entries.length, served: this.stats.basisServed });
+        const basis: Basis = makeBasis(dbName, this.root, this.entries, this.ctx.id.toString().slice(0, 8));
+        return json(basis);
       }
-    } catch (err) {
-      if (err instanceof QueryBudgetError) {
-        this.stats.budgetAborts++;
-        this.log.warn("query.budget-exceeded", { db: this.dbName, clause: err.clause, cells: err.cells, limit: err.limit });
-        return json({ error: err.message, code: err.code, clause: err.clause, cells: err.cells, limit: err.limit }, 413);
+      case "/query": {
+        // Executes the read on the replica (SPEC §8): plain datalog, pull, or a whole-entity read.
+        // The Worker forwards its public /query /pull /entity bodies here; the JSON shape it returns
+        // is exactly what the Worker used to build itself.
+        await this.sync();
+        if (!this.root) return json({ error: "database has no root yet" }, 503);
+        const body = fromJson(await request.json()) as {
+          query?: unknown;
+          inputs?: unknown[];
+          asOf?: number;
+          history?: boolean;
+          explain?: boolean;
+          pull?: { eid: number | string | [string, unknown]; pattern: unknown };
+          entity?: number;
+        };
+        if (!body || (!body.query && !body.pull && typeof body.entity !== "number")) return json({ error: "body must be { query, inputs? } | { pull } | { entity }" }, 400);
+        const basis = makeBasis(dbName, this.root, this.entries);
+        const before = { ...this.store.stats };
+        const db = await dbFromBasis(this.store, basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
+        this.stats.queries++;
+        const hdrs = () => ({
+          "x-ripple-basis-t": String(basis.t),
+          "x-ripple-r2-gets": String(this.store.stats.r2Gets - before.r2Gets),
+          "x-ripple-cache-hits": String(this.store.stats.cacheHits + this.store.stats.tierHits + this.store.stats.memHits - before.cacheHits - before.tierHits - before.memHits),
+        });
+        if (typeof body.entity === "number") return json({ t: basis.t, entity: await db.entity(body.entity) }, 200, hdrs());
+        if (body.pull) {
+          const eid = typeof body.pull.eid === "number" ? body.pull.eid : await db.entid(body.pull.eid as any);
+          if (eid === undefined) return json({ t: basis.t, result: null }, 200, hdrs());
+          return json({ t: basis.t, result: await runPull(db, eid, body.pull.pattern as any) }, 200, hdrs());
+        }
+        const stats: QueryStats = { clauses: [] };
+        const result = await runQuery(db, body.query as any, body.inputs ?? [], { stats, maxCells: envInt(this.env.RIPPLE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS) });
+        if (this.stats.queries % 100 === 1) this.log.debug("replica.query", { db: this.dbName, t: basis.t, rows: Array.isArray(result) ? result.length : 1, novelty: this.entries.length, peakCells: stats.budget?.peakCells });
+        return json({ t: basis.t, root: basis.root.t, result, ...(body.explain ? { explain: stats.clauses, budget: stats.budget } : {}) }, 200, hdrs());
       }
-      const msg = err instanceof Error ? err.message : String(err);
-      // same client-error mapping the Worker applies, so forwarded reads keep their status codes
-      const status = /unknown attribute|not bound|insufficient|parse|EDN|QueryError/i.test(msg) ? 400 : 500;
-      return json({ error: msg }, status);
+      case "/info":
+        return json({ db: this.dbName, t: this.basisT, root: this.root, novelty: this.entries.length, connected: this.ws?.readyState === 1, stats: this.stats, store: this.store.stats });
+      case "/admin/reconnect": {
+        try {
+          this.ws?.close(1000, "reconnect");
+        } catch {}
+        this.ws = undefined;
+        await this.sync();
+        return json({ ok: true, t: this.basisT });
+      }
+      default:
+        return json({ error: "not found" }, 404);
     }
   }
 }

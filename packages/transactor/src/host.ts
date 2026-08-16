@@ -11,6 +11,7 @@
  */
 
 import type { R2Like } from "@ripple/storage";
+import type { AnalyticsEngineDatasetLike } from "./observability.ts";
 
 export interface SqlCursorLike {
   toArray(): Record<string, unknown>[];
@@ -73,4 +74,9 @@ export interface TransactorHost {
   abort(reason: string): void;
   now(): number;
   readonly config: TransactorConfig;
+  /**
+   * Optional Analytics Engine dataset for write-path metrics (one data point
+   * per commit batch / indexer run). Absent = metrics disabled (no-op sink).
+   */
+  readonly analytics?: AnalyticsEngineDatasetLike;
 }
