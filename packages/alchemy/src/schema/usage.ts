@@ -1,7 +1,7 @@
 /**
  * Typechecked usage — the experience proof, not a markdown wish list.
  *
- * System → catalog → create → transact → entity / pull / q → asOf.
+ * System → catalog → create → transact (gen builder) → entity / pull / q → asOf.
  * This file is compiled by `bun run typecheck`. It is not a runtime test
  * (create is real for the name check; everything past that is a stub).
  */
@@ -28,21 +28,37 @@ export const Movie = Namespace("movie", {
   year: attr(Long, { valueType: ":db.type/long" }),
 });
 
-export const Movies = Catalog({ user: User, movie: Movie });
+/** Metadata namespace — attrs from here mix onto the same entity as User. */
+export const Meta = Namespace("meta", {
+  source: attr(Schema.String),
+});
+
+export const Movies = Catalog({ user: User, movie: Movie, meta: Meta });
 
 /**
  * The happy path an Effect-savvy caller writes: `yield*`, inferred
- * success, `catchTags` on the tagged channel.
+ * success, `catchTags` on the tagged channel. One entity is a bag —
+ * User.name and Meta.source on the same handle.
  */
 export const program = Effect.gen(function* () {
   const system = makeSystem({ url: "https://ripple.example.workers.dev" });
   const db = yield* system.create("movies", Movies);
 
-  const ack = yield* db.transact([
-    { user: { name: "Ada", age: 36 } },
-    { movie: { title: "Arrival", year: 2016 } },
-    [":db/add", "ada", ":user/name", "Ada"],
-  ]);
+  const ack = yield* db.transact((tx) =>
+    Effect.gen(function* () {
+      const ada = yield* tx.entity();
+      yield* ada.add(User.name, "Ada");
+      yield* ada.add(User.age, 36);
+      yield* ada.add(Meta.source, "import");
+      yield* ada.retract(User.age, 35);
+
+      const arrival = yield* tx.entity();
+      yield* arrival.add(Movie.title, "Arrival");
+      yield* arrival.add(Movie.year, 2016);
+
+      yield* tx.add("ada", User.name, "Ada");
+    }),
+  );
 
   const ada = yield* db.entity(1001);
   const pulled = yield* db.pull(1001, [":user/name", ":user/age"]);
