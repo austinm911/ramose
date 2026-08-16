@@ -7,7 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { RuntimeContext } from "alchemy/RuntimeContext";
 import {
-  attr,
+  Attr,
   Catalog,
   Eid,
   isEid,
@@ -24,13 +24,13 @@ import {
 } from "../../src/schema/index.ts";
 
 const User = Namespace("user", {
-  name: attr(Schema.String, { unique: "identity", doc: "display name" }),
-  age: attr(Long, { valueType: ":db.type/long" }),
-  friends: attr(Ref, { cardinality: "many", valueType: ":db.type/ref" }),
+  name: Attr(Schema.String, { unique: "identity", doc: "display name" }),
+  age: Attr(Long),
+  friends: Attr(Ref, { cardinality: "many" }),
 });
 
 const Meta = Namespace("meta", {
-  source: attr(Schema.String),
+  source: Attr(Schema.String),
 });
 
 const Movies = Catalog({ user: User, meta: Meta });
@@ -44,6 +44,9 @@ describe("catalog constructors", () => {
     expect(User.attributes.name.unique).toBe("identity");
     expect(User.attributes.friends.cardinality).toBe("many");
     expect(User.attributes.friends.ident).toBe(":user/friends");
+    expect(User.age.valueType).toBe(":db.type/long");
+    expect(User.friends.valueType).toBe(":db.type/ref");
+    expect(User.name.valueType).toBe(":db.type/string");
   });
 
   test("schemaTx lowers to ident datom maps (separate ensure tx)", () => {

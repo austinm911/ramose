@@ -12,7 +12,7 @@
  * import { SchemaFx } from "@ripple/alchemy"
  *
  * const User = SchemaFx.Namespace("user", {
- *   name: SchemaFx.attr(Schema.String, { unique: "identity" }),
+ *   name: SchemaFx.Attr(Schema.String, { unique: "identity" }),
  * })
  * const Movies = SchemaFx.Catalog({ user: User })
  *

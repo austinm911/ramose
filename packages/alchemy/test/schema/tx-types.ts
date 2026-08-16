@@ -11,7 +11,7 @@ import * as Schema from "effect/Schema";
 import type { TxAck } from "../../src/Client.ts";
 import type { DatabaseError } from "../../src/DatabaseTypes.ts";
 import {
-  attr,
+  Attr,
   Catalog,
   type EntityHandle,
   type Equal,
@@ -30,22 +30,22 @@ import {
 } from "../../src/schema/index.ts";
 
 const User = Namespace("user", {
-  name: attr(Schema.String, { unique: "identity" }),
-  age: attr(Long, { valueType: ":db.type/long" }),
-  friends: attr(Ref, { cardinality: "many", valueType: ":db.type/ref" }),
+  name: Attr(Schema.String, { unique: "identity" }),
+  age: Attr(Long),
+  friends: Attr(Ref, { cardinality: "many" }),
 });
 
 const Movie = Namespace("movie", {
-  title: attr(Schema.String, { index: true }),
-  year: attr(Long, { valueType: ":db.type/long" }),
+  title: Attr(Schema.String, { index: true }),
+  year: Attr(Long),
 });
 
 const Meta = Namespace("meta", {
-  source: attr(Schema.String),
+  source: Attr(Schema.String),
 });
 
 const Tag = Namespace("tag", {
-  label: attr(Schema.String),
+  label: Attr(Schema.String),
 });
 
 const Movies = Catalog({ user: User, movie: Movie, meta: Meta });

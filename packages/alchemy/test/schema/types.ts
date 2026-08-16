@@ -13,7 +13,7 @@ import type { TxAck } from "../../src/Client.ts";
 import { BadRequest, type DatabaseError } from "../../src/DatabaseTypes.ts";
 import {
   type AnyCatalog,
-  attr,
+  Attr,
   type CatalogIdent,
   Catalog,
   type Equal,
@@ -31,6 +31,10 @@ import {
   type WireEntity,
   Long,
   Ref,
+  Uuid,
+  UuidString,
+  Instant,
+  Bytes,
   Eid,
   makeSystem,
   unsafeDatabase,
@@ -41,18 +45,18 @@ import {
 // ── fixture catalog ────────────────────────────────────────────────────────
 
 const User = Namespace("user", {
-  name: attr(Schema.String, { unique: "identity" }),
-  age: attr(Long, { valueType: ":db.type/long" }),
-  friends: attr(Ref, { cardinality: "many", valueType: ":db.type/ref" }),
+  name: Attr(Schema.String, { unique: "identity" }),
+  age: Attr(Long),
+  friends: Attr(Ref, { cardinality: "many" }),
 });
 
 const Movie = Namespace("movie", {
-  title: attr(Schema.String, { index: true }),
-  year: attr(Long, { valueType: ":db.type/long" }),
+  title: Attr(Schema.String, { index: true }),
+  year: Attr(Long),
 });
 
 const Meta = Namespace("meta", {
-  source: attr(Schema.String),
+  source: Attr(Schema.String),
 });
 
 const Movies = Catalog({ user: User, movie: Movie, meta: Meta });
@@ -91,6 +95,49 @@ type _valueName = Expect<Equal<ValueAtIdent<typeof Movies, ":user/name">, string
 type _valueFriends = Expect<
   Equal<ValueAtIdent<typeof Movies, ":user/friends">, number>
 >;
+type _nameVt = Expect<
+  Equal<(typeof User)["name"]["valueType"], ":db.type/string">
+>;
+type _ageVt = Expect<
+  Equal<(typeof User)["age"]["valueType"], ":db.type/long">
+>;
+type _friendsVt = Expect<
+  Equal<(typeof User)["friends"]["valueType"], ":db.type/ref">
+>;
+
+// helpers + primitives stamp valueType; explicit valueType overrides
+const Typed = Namespace("typed", {
+  s: Attr(Schema.String),
+  n: Attr(Schema.Number),
+  b: Attr(Schema.Boolean),
+  l: Attr(Long),
+  r: Attr(Ref),
+  u: Attr(Uuid),
+  us: Attr(UuidString),
+  i: Attr(Instant),
+  by: Attr(Bytes),
+  override: Attr(Schema.String, { valueType: ":db.type/uuid" }),
+});
+type _sVt = Expect<Equal<(typeof Typed)["s"]["valueType"], ":db.type/string">>;
+type _nVt = Expect<Equal<(typeof Typed)["n"]["valueType"], ":db.type/double">>;
+type _bVt = Expect<Equal<(typeof Typed)["b"]["valueType"], ":db.type/boolean">>;
+type _lVt = Expect<Equal<(typeof Typed)["l"]["valueType"], ":db.type/long">>;
+type _rVt = Expect<Equal<(typeof Typed)["r"]["valueType"], ":db.type/ref">>;
+type _uVt = Expect<Equal<(typeof Typed)["u"]["valueType"], ":db.type/uuid">>;
+type _usVt = Expect<Equal<(typeof Typed)["us"]["valueType"], ":db.type/uuid">>;
+type _iVt = Expect<Equal<(typeof Typed)["i"]["valueType"], ":db.type/instant">>;
+type _byVt = Expect<Equal<(typeof Typed)["by"]["valueType"], ":db.type/bytes">>;
+type _overrideVt = Expect<
+  Equal<(typeof Typed)["override"]["valueType"], ":db.type/uuid">
+>;
+
+// .with is callable on inferred refs; a non-ref is a type error
+const _refWith = Typed.r.with({ s: Typed.s });
+void _refWith;
+// @ts-expect-error Schema.String / non-ref .with is never
+Typed.s.with({ s: Typed.s });
+// @ts-expect-error Schema.Number / non-ref .with is never
+Typed.n.with({ s: Typed.s });
 
 // ── create / connect return a client generic on that catalog ───────────────
 
@@ -113,7 +160,7 @@ type _createCatalog = Expect<
 
 // A different catalog is a different client type.
 const Other = Catalog({
-  tag: Namespace("tag", { label: attr(Schema.String) }),
+  tag: Namespace("tag", { label: Attr(Schema.String) }),
 });
 type OtherClient = Effect.Success<ReturnType<typeof system.create<typeof Other>>>;
 type _notSame = Expect<

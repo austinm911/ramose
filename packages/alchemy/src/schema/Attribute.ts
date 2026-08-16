@@ -8,7 +8,11 @@
  */
 
 import type * as Schema from "effect/Schema";
-import type { DbValueType } from "./valueTypes.ts";
+import {
+  tryInferDbValueType,
+  type DbValueType,
+  type InferDbValueType,
+} from "./valueTypes.ts";
 
 export type Cardinality = "one" | "many";
 export type Uniqueness = "identity" | "value";
@@ -23,7 +27,7 @@ export interface AttributeOptions {
    * Override `:db.type/*` inference. Required when the value Schema is not
    * a primitive or one of the helpers in `valueTypes.ts`.
    *
-   * Captured as a type parameter so `attr.with({ ... })` / `nested`
+   * Captured as a type parameter so `User.friends.with({ ... })` / `nested`
    * can require a ref (`valueType: ":db.type/ref"`) without a
    * parallel schema language.
    */
@@ -42,11 +46,11 @@ type UniqueOf<O> = [O] extends [{ readonly unique: infer U }]
     : undefined
   : undefined;
 
-type ValueTypeOf<O> = [O] extends [{ readonly valueType: infer V }]
+type ValueTypeOf<S, O> = [O] extends [{ readonly valueType: infer V }]
   ? V extends DbValueType
     ? V
-    : undefined
-  : undefined;
+    : InferDbValueType<S>
+  : InferDbValueType<S>;
 
 export interface Attribute<
   S extends Schema.Top = Schema.Top,
@@ -75,16 +79,24 @@ export type AnyAttribute = Attribute<
  * Declare an attribute. File it under a namespace key to give it a name:
  *
  * ```ts
- * const name = attr(Schema.String, { unique: "identity" })
- * // Namespace("user", { name }) → ident :user/name
+ * const name = Attr(Schema.String, { unique: "identity" })
+ * const age = Attr(Long)
+ * const friends = Attr(Ref, { cardinality: "many" })
+ * // Namespace("user", { name, age, friends }) → :user/name, …
  * ```
+ *
+ * Constructors are `Namespace`, `Catalog`, `Attr`. `:db.type/*` is
+ * inferred from the Schema (`Long` → long, `Ref` → ref, `Schema.String`
+ * → string, `Schema.Number` → double, `Schema.Boolean` → boolean).
  */
-export const attr: {
-  <S extends Schema.Top>(schema: S): Attribute<S, "one", undefined, undefined>;
+export const Attr: {
+  <S extends Schema.Top>(
+    schema: S,
+  ): Attribute<S, "one", undefined, InferDbValueType<S>>;
   <S extends Schema.Top, const O extends AttributeOptions>(
     schema: S,
     options: O,
-  ): Attribute<S, CardOf<O>, UniqueOf<O>, ValueTypeOf<O>>;
+  ): Attribute<S, CardOf<O>, UniqueOf<O>, ValueTypeOf<S, O>>;
 } = ((schema: Schema.Top, options?: AttributeOptions) => ({
   _tag: "Attribute" as const,
   schema,
@@ -93,7 +105,7 @@ export const attr: {
   index: options?.index ?? options?.unique !== undefined,
   isComponent: options?.isComponent ?? false,
   doc: options?.doc,
-  valueType: options?.valueType,
-})) as typeof attr;
+  valueType: tryInferDbValueType(schema, options?.valueType),
+})) as typeof Attr;
 
 export type ValueOf<A extends AnyAttribute> = Schema.Schema.Type<A["schema"]>;

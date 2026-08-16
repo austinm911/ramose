@@ -10,7 +10,7 @@ import type { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type { DatabaseError } from "../DatabaseTypes.ts";
-import { attr } from "./Attribute.ts";
+import { Attr } from "./Attribute.ts";
 import { Catalog } from "./Catalog.ts";
 import { makeSystem } from "./Client.ts";
 import { SchemaEnsureError } from "./Errors.ts";
@@ -18,20 +18,20 @@ import { Namespace } from "./Namespace.ts";
 import { Long, Ref } from "./valueTypes.ts";
 
 export const User = Namespace("user", {
-  name: attr(Schema.String, { unique: "identity" }),
-  age: attr(Long, { valueType: ":db.type/long" }),
-  friends: attr(Ref, { cardinality: "many", valueType: ":db.type/ref" }),
-  bestFriend: attr(Ref, { valueType: ":db.type/ref" }),
+  name: Attr(Schema.String, { unique: "identity" }),
+  age: Attr(Long),
+  friends: Attr(Ref, { cardinality: "many" }),
+  bestFriend: Attr(Ref),
 });
 
 export const Movie = Namespace("movie", {
-  title: attr(Schema.String, { index: true }),
-  year: attr(Long, { valueType: ":db.type/long" }),
+  title: Attr(Schema.String, { index: true }),
+  year: Attr(Long),
 });
 
 /** Metadata namespace — attrs from here mix onto the same entity as User. */
 export const Meta = Namespace("meta", {
-  source: attr(Schema.String),
+  source: Attr(Schema.String),
 });
 
 export const Movies = Catalog({ user: User, movie: Movie, meta: Meta });
