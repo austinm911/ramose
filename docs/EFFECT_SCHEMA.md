@@ -31,7 +31,11 @@ const Movie = SchemaFx.Namespace("movie", {
   year: SchemaFx.attr(SchemaFx.Long),
 })
 
-const Movies = SchemaFx.Catalog({ user: User, movie: Movie })
+const Meta = SchemaFx.Namespace("meta", {
+  source: SchemaFx.attr(Schema.String),
+})
+
+const Movies = SchemaFx.Catalog({ user: User, movie: Movie, meta: Meta })
 ```
 
 `create` / `connect` stay the same name-upsert they are today
@@ -44,21 +48,34 @@ const db = yield* system.create("movies", Movies)
 // db : TypedReadWriteDatabaseClient<typeof Movies>
 ```
 
-The typed write surface is a nested map keyed by namespace name. List ops
-keep the Datomic shape, with the attribute slot restricted to catalog idents
-and the value slot correlated to that ident.
+The typed write surface is an `Effect.gen` builder. An entity is a **bag
+of attributes**: any catalog namespace can be asserted on the same handle.
+Transactions do not prescribe a nested `{ user: {…}, meta: {…} }` shape —
+that forced an entity to live under one namespace key and made metadata
+namespaces awkward. `User.name` is the typed slot; the value type is
+correlated. The builder is what `yield*`s; `db.transact` returns
+`Effect<TxAck, DatabaseError, RuntimeContext>` plus whatever the callback
+adds.
 
 ```ts
-yield* db.transact([
-  { user: { name: "Ada", age: 36 } },
-  { movie: { title: "Arrival", year: 2016 } },
-  [":db/add", "ada", ":user/name", "Ada"],
-])
+yield* db.transact((tx) =>
+  Effect.gen(function* () {
+    const ada = yield* tx.entity()
+    yield* ada.add(User.name, "Ada")
+    yield* ada.add(User.age, 36)
+    yield* ada.add(Meta.source, "import")  // different namespace, same entity
+    yield* ada.retract(User.age, 35)
+
+    const arrival = yield* tx.entity()
+    yield* arrival.add(Movie.title, "Arrival")
+    yield* tx.add("ada", User.name, "Ada")  // eid / tempid / lookup also work
+  }),
+)
 
 // type error: unknown attr
-db.transact([{ user: { nope: "x" } }])
+ada.add(User.nope, "x")
 // type error: wrong value type
-db.transact([{ user: { name: 42 } }])
+ada.add(User.name, 42)
 ```
 
 `entity` / `pull` project catalog value types. `q` is a catalog-generic
@@ -66,7 +83,7 @@ builder: bindings accumulate as clauses are added, and `find` produces a
 row tuple from the selected variables. Today's object/string `q<T>` stays
 as the escape hatch. `transactUntyped` is the write-side escape.
 `transactWire` is the keyword-soup form (`{ ":user/name": "Ada" }`), still
-catalog-checked.
+catalog-checked — a bag, but not the Effect-savvy path.
 
 ```ts
 const ada = yield* db.entity(1001)
@@ -140,13 +157,18 @@ unique, index, isComponent, and doc are what the engine already persists.
 
 ## Open tradeoffs
 
-**Nested maps vs keyword soup.** Nested `{ user: { name: "Ada" } }` is the
-typed default because excess-property checking and value-type correlation
-are straightforward, and it feels like `Schema.Struct`. The wire form
-`{ ":user/name": "Ada" }` is `transactWire` — same checks, uglier keys, what
-the peer already accepts. Showing both is deliberate: the nested form is
-the one that typechecks cleanly; the wire form is the one a future
-implementation would send (or lower the nested form to).
+**Builder vs nested maps vs keyword soup.** An entity is a bag of
+attributes from *any* catalog namespace (think metadata namespaces:
+`User.name` and `Meta.source` on the same entity). A nested
+`{ user: { name: "Ada" } }` map prescribes a shape and puts the entity
+under one namespace key — you cannot naturally mix namespaces. The
+`Effect.gen` builder is the typed default: `tx.entity()` is a handle,
+`ada.add(User.name, "Ada")` is one datom, value type is correlated to the
+attr ref. `transactWire` (`{ ":user/name": "Ada" }`) is still a bag and
+still catalog-checked, but it is keyword soup. Nested maps remain as a
+`NestedEntity` type (secondary / lowering), not the happy path. A future
+implementation lowers the builder's collected `:db/add` / `:db/retract`
+ops to what the peer already accepts.
 
 **Typed `q` is a builder, not a Schema encoding of EDN.** The last writeup
 left `q<T = unknown>` as the escape hatch because a `where` slot restricted
@@ -156,7 +178,7 @@ are a type-level map that grows with each `where`. `find("?n", "?age")`
 is a tuple of the bound types. The object/string `q<T>` remains for
 queries the builder does not type.
 
-Remaining limits, honestly:
+Remaining limits (query builder):
 
 - A var or `_` in the *attr* slot leaves the value binding `unknown` —
   the catalog cannot say which attr it is.
@@ -185,9 +207,11 @@ them apart without a parallel schema language. Override with
 `attr(schema, { valueType })` when the Schema is not a primitive or one of
 those helpers.
 
-**Cardinality-many in maps vs list ops.** Nested / wire maps take an array
-for a many-attr (`friends: [1001, 1002]`). `:db/add` still takes one value
-(one datom), even for many. That matches today's transactor.
+**Cardinality-many is one add per datom.** `ada.add(User.friends, 1001)`
+asserts one ref. Call `add` again for the next. That matches today's
+`:db/add` (one datom). Wire maps still take an array for a many-attr
+(`":user/friends": [1001, 1002]`) because that is the map form the peer
+already speaks.
 
 **Ensure on `create` vs a separate `ensure`.** Putting ensure on
 `create` / `connect` matches the requirement and keeps the happy path to
