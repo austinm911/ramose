@@ -46,9 +46,33 @@ export function regionOf(request: Request): string {
   return cf?.continent ?? "global";
 }
 
+/** Nearest replica stub for a request (deterministic id + location hint). */
+export function nearestReplica(env: RippleEnv, db: string, request: Request): DurableObjectStub {
+  const region = regionOf(request);
+  return env.REPLICA.get(replicaId(env, db, region), { locationHint: hintFor(region) } as any);
+}
+
+/** Response headers a forwarded read copies from the replica onto the public response. */
+export const READ_PASSTHROUGH_HEADERS = ["x-ripple-r2-gets", "x-ripple-cache-hits", "x-ripple-basis-t"] as const;
+
+/**
+ * Execute a read (datalog / pull / entity) on the nearest QueryReplica and hand
+ * its response back verbatim (status + body + x-ripple-* stats). The Worker no
+ * longer fetches a basis and runs datalog itself; `x-ripple-ms` is the Worker's
+ * wall time for the forwarded call.
+ */
+export async function readFromReplica(env: RippleEnv, db: string, request: Request, body: string, t0: number): Promise<Response> {
+  const res = await nearestReplica(env, db, request).fetch(`https://replica/query?db=${encodeURIComponent(db)}`, { method: "POST", body, headers: { "content-type": "application/json" } });
+  const headers: Record<string, string> = { "content-type": "application/json", "access-control-allow-origin": "*", "x-ripple-ms": String(Date.now() - t0) };
+  for (const h of READ_PASSTHROUGH_HEADERS) {
+    const v = res.headers.get(h);
+    if (v !== null) headers[h] = v;
+  }
+  return new Response(res.body, { status: res.status, headers });
+}
+
 export async function fetchBasis(env: RippleEnv, db: string, request: Request): Promise<Basis> {
-  const id = replicaId(env, db, regionOf(request));
-  const stub = env.REPLICA.get(id, { locationHint: hintFor(regionOf(request)) } as any);
+  const stub = nearestReplica(env, db, request);
   const res = await stub.fetch(`https://replica/basis?db=${encodeURIComponent(db)}`);
   if (!res.ok) throw new Error(`replica basis failed: ${res.status} ${await res.text()}`);
   return (await res.json()) as Basis;

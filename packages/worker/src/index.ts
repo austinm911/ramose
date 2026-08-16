@@ -1,5 +1,5 @@
 /**
- * Ripple peer Worker — the HTTP API and the edge datalog executor.
+ * Ripple peer Worker — the HTTP API; reads execute on the QueryReplica.
  *
  *   GET  /                                  demo app (CRUD + as-of history view)
  *   GET  /health
@@ -10,16 +10,17 @@
  *   GET  /db/:name/info                                            → transactor + replica + basis info
  *   POST /db/:name/admin/index | /admin/gc                         → indexer controls
  *
- * Reads: basis (root + novelty) from the nearest QueryReplica DO → Db over
- * cached segments → datalog here in the Worker. Writes: forwarded to the
- * Transactor DO. Auth: per-db bearer token (RIPPLE_TOKENS), disabled if unset.
+ * Reads: forwarded to the nearest QueryReplica DO, which executes datalog /
+ * pull / entity over its basis (root + novelty) and cached segments — the
+ * Worker does not run query() itself. Writes: forwarded to the Transactor DO.
+ * Auth: per-db bearer token (RIPPLE_TOKENS), disabled if unset.
  */
 
-import { DEFAULT_QUERY_MAX_CELLS, Histogram, QueryBudgetError, type QueryStats, RateMeter, componentLogger, fromJson, pull, query, setTelemetryLevel, toJson } from "@ripple/core";
-import { type RippleEnv, envInt } from "@ripple/transactor";
+import { Histogram, RateMeter, componentLogger, setTelemetryLevel, toJson } from "@ripple/core";
+import type { RippleEnv } from "@ripple/transactor";
 import { TransactorDO } from "@ripple/transactor/transactor-do.ts";
-import { QueryReplicaDO, dbFromBasis } from "@ripple/replica";
-import { fetchBasis, regionOf, replicaId, segmentSource } from "./peer.ts";
+import { QueryReplicaDO } from "@ripple/replica";
+import { readFromReplica, regionOf, replicaId, segmentSource } from "./peer.ts";
 import { DEMO_HTML } from "./demo.ts";
 
 export { TransactorDO, QueryReplicaDO };
@@ -112,41 +113,26 @@ export default {
         return new Response(res.body, { status: res.status, headers: { "content-type": "application/json", ...CORS } });
       }
 
-      // ---- reads → replica basis + local execution
+      // ---- reads → executed on the nearest QueryReplica (SPEC §8); the Worker only forwards
       if (rest === "/query" && request.method === "POST") {
-        const body = fromJson(await request.json()) as { query: unknown; inputs?: unknown[]; asOf?: number; history?: boolean; explain?: boolean };
-        if (!body?.query) return json({ error: "body must be { query, inputs? }" }, 400);
-        const basis = await fetchBasis(env, db, request);
-        const store = segmentSource(env, db);
-        const dbv = await dbFromBasis(store, basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
-        const stats: QueryStats = { clauses: [] };
-        const before = { ...store.stats };
-        const result = await query(dbv, body.query as any, body.inputs ?? [], { stats, maxCells: envInt(env.RIPPLE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS) });
-        const after = store.stats;
+        const res = await readFromReplica(env, db, request, await request.text(), t0);
         const ms = Date.now() - t0;
         peerMetrics.queries.mark(1);
         peerMetrics.queryMs.observe(ms);
-        plog.debug("query", { db, ms, rows: Array.isArray(result) ? result.length : 1, basisT: basis.t, novelty: basis.novelty.length, r2Gets: after.r2Gets - before.r2Gets, cacheHits: after.cacheHits - before.cacheHits, peakCells: stats?.budget?.peakCells });
-        return json(
-          { t: basis.t, root: basis.root.t, result, ...(body.explain ? { explain: stats.clauses, budget: stats.budget } : {}) },
-          200,
-          { "x-ripple-ms": String(Date.now() - t0), "x-ripple-r2-gets": String(after.r2Gets - before.r2Gets), "x-ripple-cache-hits": String(after.cacheHits - before.cacheHits), "x-ripple-basis-t": String(basis.t) },
-        );
+        if (res.status === 413) peerMetrics.budgetAborts++; // replica refused an over-budget query (query/budget-exceeded)
+        else if (res.status >= 500) peerMetrics.errors++;
+        plog.debug("query", { db, ms, status: res.status, basisT: res.headers.get("x-ripple-basis-t"), r2Gets: res.headers.get("x-ripple-r2-gets"), cacheHits: res.headers.get("x-ripple-cache-hits") });
+        return res;
       }
       if (rest === "/pull" && request.method === "POST") {
-        const body = fromJson(await request.json()) as { eid: number | string | [string, unknown]; pattern: unknown; asOf?: number; history?: boolean };
-        const basis = await fetchBasis(env, db, request);
-        const dbv = await dbFromBasis(segmentSource(env, db), basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
-        const eid = typeof body.eid === "number" ? body.eid : await dbv.entid(body.eid as any);
-        if (eid === undefined) return json({ t: basis.t, result: null });
-        return json({ t: basis.t, result: await pull(dbv, eid, body.pattern as any) }, 200, { "x-ripple-ms": String(Date.now() - t0) });
+        const body = (await request.json()) as { eid: unknown; pattern: unknown; asOf?: number; history?: boolean };
+        if (!body || body.eid === undefined || !body.pattern) return json({ error: "body must be { eid, pattern, asOf?, history? }" }, 400);
+        return readFromReplica(env, db, request, JSON.stringify({ pull: { eid: body.eid, pattern: body.pattern }, asOf: body.asOf, history: body.history }), t0);
       }
       const em = /^\/entity\/(\d+)$/.exec(rest);
       if (em && request.method === "GET") {
-        const basis = await fetchBasis(env, db, request);
         const asOf = url.searchParams.has("asOf") ? Number(url.searchParams.get("asOf")) : undefined;
-        const dbv = await dbFromBasis(segmentSource(env, db), basis, { asOf });
-        return json({ t: basis.t, entity: await dbv.entity(Number(em[1])) });
+        return readFromReplica(env, db, request, JSON.stringify({ entity: Number(em[1]), asOf }), t0);
       }
       if (rest === "/info" && request.method === "GET") {
         const [tx, rep] = await Promise.all([
@@ -165,12 +151,6 @@ export default {
       return json({ error: "not found" }, 404);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (err instanceof QueryBudgetError) {
-        // planner memory guardrail: clear, tagged, retryable-with-a-narrower-query — never an OOM
-        peerMetrics.budgetAborts++;
-        plog.warn("query.budget-exceeded", { db, clause: err.clause, cells: err.cells, limit: err.limit, ms: Date.now() - t0 });
-        return json({ error: msg, code: err.code, clause: err.clause, cells: err.cells, limit: err.limit }, 413);
-      }
       const status = /unknown attribute|not bound|insufficient|parse|EDN|QueryError/i.test(msg) ? 400 : 500;
       if (status === 500) {
         peerMetrics.errors++;

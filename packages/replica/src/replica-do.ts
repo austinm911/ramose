@@ -7,8 +7,9 @@
  * - Keeps novelty since the current root sorted in memory and spilled to
  *   SQLite (survives eviction/restart without a full resync).
  * - Caches hot segments in SQLite (`segcache`) in front of R2.
- * - Serves `GET /basis` → { t, root, novelty } to Workers, and can execute
- *   queries itself (`POST /query`) when a Worker prefers that.
+ * - Serves `GET /basis` → { t, root, novelty } to Workers, and executes
+ *   reads itself (`POST /query`: datalog / pull / entity) — the Worker's
+ *   read path forwards here instead of running datalog in the Worker.
  * - Drops novelty ≤ new root on root flip.
  *
  * Workers never talk to the Transactor for reads (invariant §1.5).
@@ -18,6 +19,7 @@ import { DurableObject } from "cloudflare:workers";
 import {
   DEFAULT_QUERY_MAX_CELLS,
   QueryBudgetError,
+  type QueryStats,
   componentLogger,
   type LogEntry,
   type RootRecord,
@@ -35,8 +37,8 @@ import { type R2Like, R2NodeStore, dbPrefix, prefixedBucket, readCurrentRoot, re
 import { type RippleEnv, envInt } from "@ripple/transactor";
 import { type Basis, dbFromBasis, makeBasis } from "./basis.ts";
 
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(toJson(body)), { status, headers: { "content-type": "application/json" } });
+const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
+  new Response(JSON.stringify(toJson(body)), { status, headers: { "content-type": "application/json", ...extra } });
 
 /** SQLite-backed byte tier for segment bodies (bounded by row count, LRU-ish by insertion). */
 class SqliteTier implements ByteTier {
@@ -285,15 +287,40 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
           return json(basis);
         }
         case "/query": {
+          // Executes the read on the replica (SPEC §8): plain datalog, pull, or a whole-entity read.
+          // The Worker forwards its public /query /pull /entity bodies here; the JSON shape it returns
+          // is exactly what the Worker used to build itself.
           await this.sync();
           if (!this.root) return json({ error: "database has no root yet" }, 503);
-          const body = fromJson(await request.json()) as { query: unknown; inputs?: unknown[]; asOf?: number; history?: boolean; pull?: { eid: number; pattern: unknown } };
+          const body = fromJson(await request.json()) as {
+            query?: unknown;
+            inputs?: unknown[];
+            asOf?: number;
+            history?: boolean;
+            explain?: boolean;
+            pull?: { eid: number | string | [string, unknown]; pattern: unknown };
+            entity?: number;
+          };
+          if (!body || (!body.query && !body.pull && typeof body.entity !== "number")) return json({ error: "body must be { query, inputs? } | { pull } | { entity }" }, 400);
           const basis = makeBasis(this.dbName, this.root, this.entries);
+          const before = { ...this.store.stats };
           const db = await dbFromBasis(this.store, basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
           this.stats.queries++;
-          if (body.pull) return json({ t: basis.t, result: await runPull(db, body.pull.eid, body.pull.pattern as any) });
-          const result = await runQuery(db, body.query as any, body.inputs ?? [], { maxCells: envInt(this.env.RIPPLE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS) });
-          return json({ t: basis.t, result });
+          const hdrs = () => ({
+            "x-ripple-basis-t": String(basis.t),
+            "x-ripple-r2-gets": String(this.store.stats.r2Gets - before.r2Gets),
+            "x-ripple-cache-hits": String(this.store.stats.cacheHits + this.store.stats.tierHits + this.store.stats.memHits - before.cacheHits - before.tierHits - before.memHits),
+          });
+          if (typeof body.entity === "number") return json({ t: basis.t, entity: await db.entity(body.entity) }, 200, hdrs());
+          if (body.pull) {
+            const eid = typeof body.pull.eid === "number" ? body.pull.eid : await db.entid(body.pull.eid as any);
+            if (eid === undefined) return json({ t: basis.t, result: null }, 200, hdrs());
+            return json({ t: basis.t, result: await runPull(db, eid, body.pull.pattern as any) }, 200, hdrs());
+          }
+          const stats: QueryStats = { clauses: [] };
+          const result = await runQuery(db, body.query as any, body.inputs ?? [], { stats, maxCells: envInt(this.env.RIPPLE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS) });
+          if (this.stats.queries % 100 === 1) this.log.debug("replica.query", { db: this.dbName, t: basis.t, rows: Array.isArray(result) ? result.length : 1, novelty: this.entries.length, peakCells: stats.budget?.peakCells });
+          return json({ t: basis.t, root: basis.root.t, result, ...(body.explain ? { explain: stats.clauses, budget: stats.budget } : {}) }, 200, hdrs());
         }
         case "/info":
           return json({ db: this.dbName, t: this.basisT, root: this.root, novelty: this.entries.length, connected: this.ws?.readyState === 1, stats: this.stats, store: this.store.stats });
@@ -314,7 +341,10 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
         this.log.warn("query.budget-exceeded", { db: this.dbName, clause: err.clause, cells: err.cells, limit: err.limit });
         return json({ error: err.message, code: err.code, clause: err.clause, cells: err.cells, limit: err.limit }, 413);
       }
-      return json({ error: err instanceof Error ? err.message : String(err) }, 500);
+      const msg = err instanceof Error ? err.message : String(err);
+      // same client-error mapping the Worker applies, so forwarded reads keep their status codes
+      const status = /unknown attribute|not bound|insufficient|parse|EDN|QueryError/i.test(msg) ? 400 : 500;
+      return json({ error: msg }, status);
     }
   }
 }
