@@ -15,6 +15,7 @@
 import * as Ripple from "@ripple/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
+import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import { Movies } from "./resources.ts";
 
@@ -29,8 +30,55 @@ export const App = Cloudflare.Worker(
   Effect.gen(function* () {
     const db = yield* Ripple.ReadWriteDatabase(Movies);
 
+    // ── db-per-tenant ────────────────────────────────────────────────────────
+    //
+    // `db.for(name)` is the *same* client — same service binding, same fetch,
+    // same token, same headers — pointed at another Ripple database name (the
+    // `:name` in `/db/:name/…`, i.e. the Transactor DO's `idFromName`). It is
+    // synchronous like `asOf`, so there is no resource, no deploy and no
+    // provisioning per tenant; the name is validated, and an invalid one does
+    // not throw here — every request on the derived client fails `BadRequest`
+    // (mapped to 400 below). The token is shared, so `RIPPLE_TOKENS` must be
+    // unset / one string / a `"*"` map for an open-ended set of tenants
+    // (docs/RUNBOOK.md).
+    const tenantRoute = (tenantId: string) =>
+      Effect.gen(function* () {
+        const tenant = db.for(tenantId);
+
+        // Each tenant database starts empty: `:user/name` has to exist *in it*
+        // before anything can use the attribute (an attribute cannot be defined
+        // and used in the same transaction). `:db/ident` is
+        // `:db.unique/identity`, so re-asserting the same definition upserts the
+        // same entity — the install is idempotent, which is what makes it safe
+        // on the request path in this example. A real app would do it once, when
+        // the tenant is created.
+        yield* tenant.transact([
+          {
+            ":db/ident": ":user/name",
+            ":db/valueType": ":db.type/string",
+            ":db/cardinality": ":db.cardinality/one",
+          },
+        ]);
+
+        const ack = yield* tenant.transact([{ ":user/name": "Ada" }]);
+        const names = yield* tenant.q<string[][]>(
+          { find: ["?n"], where: [["?e", ":user/name", "?n"]] },
+          [],
+          { minT: ack.t },
+        );
+        return yield* HttpServerResponse.json({ tenant: tenantId, t: ack.t, names });
+      });
+
     return {
       fetch: Effect.gen(function* () {
+        // `HttpServerRequest.fromWeb` strips the origin, so `url` is already
+        // "/path?query". Valid database names are URL-safe by construction, so
+        // the raw segment is used as-is: anything percent-encoded (say
+        // `/t/bad%2Fname`) simply fails the name check → `BadRequest` → 400.
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const path = request.url.split("?")[0] ?? "/";
+        if (path.startsWith("/t/")) return yield* tenantRoute(path.slice("/t/".length));
+
         const ack = yield* db.transact([{ ":user/name": "Ada" }]);
 
         // Read your own write: `minT` fences the read against the `t` we just

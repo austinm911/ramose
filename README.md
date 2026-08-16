@@ -62,6 +62,11 @@ const rows = yield* db.q({ find: ["?n"], where: [["?e", ":user/name", "?n"]] }, 
 const past = yield* db.asOf(ack.t - 1).q(/* … */);
 const ada  = yield* db.entity(17);
 
+// db-per-tenant: the same client/peer/token, another Ripple database name
+const tenantId = (yield* HttpServerRequest).url.split("/")[2]; // GET /t/:tenant
+const tenant   = db.for(tenantId);                            // invalid name → BadRequest
+const tack     = yield* tenant.transact([{ ":user/name": "Ada" }]);
+
 export default Alchemy.Stack("app", {
   providers: Layer.mergeAll(Cloudflare.providers(), Ripple.providers()),
   state: Cloudflare.state(),
@@ -82,6 +87,15 @@ export default Alchemy.Stack("app", {
   `BadRequest`, `NotFound`, `Unauthorized`, `QueryBudgetExceeded`, `Internal`, `NetworkError`
   (union `Ripple.DatabaseError`, guard `Ripple.isDatabaseError`). Catch them with
   `Effect.catchTags` instead of reading status codes.
+- **Db-per-tenant** — `db.for(name)` returns the same client — same peer/service binding,
+  `fetch`, token and headers — pointed at a different Ripple database name (the `:name` in
+  `/db/:name/…`, i.e. the Transactor DO's `idFromName`). Synchronous like `asOf`, and it
+  composes: `db.for(t).asOf(7)` ≡ `db.asOf(7).for(t)`. No resource per tenant, no schema
+  generics; `Ripple.Database(…, { name })` stays the deploy-time default. The name is
+  validated (`/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/`) — an invalid one does not throw, every
+  request on the derived client fails `BadRequest`. The **token is shared** across every name
+  `for` reaches, so unbounded tenants want `RIPPLE_TOKENS` unset, a single string, or a `"*"`
+  fallback (`docs/RUNBOOK.md`).
 - **Outside Alchemy** — `Ripple.Client.make({ url, name, token?, fetch? })` gives the same
   Effect client to bun scripts and tests.
 
