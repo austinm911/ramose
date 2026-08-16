@@ -1,7 +1,7 @@
 /**
  * Typed read results. `entity` projects the whole catalog bag so a
  * known attribute does not collapse to `unknown`. `pull` lives in
- * `./Pull.ts` — a Struct of attr refs, not ident keys.
+ * `./Pull.ts` — a plain object of attr refs, not ident keys.
  */
 
 import type { AnyCatalog } from "./Catalog.ts";

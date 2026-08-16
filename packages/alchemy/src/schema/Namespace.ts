@@ -5,9 +5,13 @@
  *
  * `_tag`, `ns`, and `attributes` are reserved and must not be attribute
  * keys — they stay on the namespace object.
+ *
+ * Each stamped attr carries literate pull methods: `User.age.optional`
+ * and `User.friends.with({ ... })`.
  */
 
-import type { AnyAttribute, Attribute } from "./Attribute.ts";
+import type { AnyAttribute } from "./Attribute.ts";
+import { nested, optional, type AttrPull } from "./Pull.ts";
 
 export type AttributeMap = Record<string, AnyAttribute>;
 
@@ -18,7 +22,12 @@ export type StampedAttribute<
 > = A & {
   readonly name: Name;
   readonly ident: `:${Ns}/${Name}`;
-};
+} & AttrPull<
+    A & {
+      readonly name: Name;
+      readonly ident: `:${Ns}/${Name}`;
+    }
+  >;
 
 export type StampedAttributes<
   Ns extends string,
@@ -36,6 +45,8 @@ export type StampedAttributes<
  * User.ns                 // "user"
  * User.name.ident         // ":user/name"
  * User.attributes.name    // same attr ref
+ * User.age.optional       // maybe-missing pull field
+ * User.friends.with({ name: User.name })
  * ```
  */
 export type Namespace<
@@ -57,17 +68,27 @@ const stamp = <Name extends string, Attrs extends AttributeMap>(
   name: Name,
   attributes: Attrs,
 ): StampedAttributes<Name, Attrs> => {
-  const out: Record<string, AnyAttribute & { name: string; ident: string }> =
+  const out: Record<string, StampedAttribute<string, string, AnyAttribute>> =
     {};
   for (const key of Object.keys(attributes)) {
     const a = attributes[key]!;
-    out[key] = {
+    const base = {
       ...a,
       name: key,
-      ident: `:${name}/${key}`,
+      ident: `:${name}/${key}` as const,
+    };
+    out[key] = {
+      ...base,
+      optional: optional(base),
+      with: ((pattern: Record<string, unknown>) =>
+        nested(base as never, pattern)) as StampedAttribute<
+        string,
+        string,
+        AnyAttribute
+      >["with"],
     };
   }
-  return out as StampedAttributes<Name, Attrs>;
+  return out as unknown as StampedAttributes<Name, Attrs>;
 };
 
 /**

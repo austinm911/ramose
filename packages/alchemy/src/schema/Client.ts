@@ -74,10 +74,11 @@ export interface TypedReadDatabaseClient<C extends AnyCatalog = AnyCatalog> {
   ): Effect.Effect<QueryResponse<T>, DatabaseError, RuntimeContext>;
 
   /**
-   * Project an entity. The happy path is a Struct: keys are the names
-   * that come back, values are attr refs / `optional` / `nested`.
-   * The ident-keyed array remains as an escape (idents must be in the
-   * catalog; that is the `P & IdentPullPattern` branch).
+   * Project an entity. The happy path is a plain object: keys are the
+   * names that come back, values are attr refs, `attr.optional`, or
+   * `attr.with({ ... })`. Same syntax at every level. The ident-keyed
+   * array remains as an escape (idents must be in the catalog; that
+   * is the `P & IdentPullPattern` branch).
    */
   pull<const P>(
     eid: EntityRef<C>,
