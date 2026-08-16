@@ -2,6 +2,7 @@
 
 import * as Effect from "effect/Effect";
 import { BadRequest } from "../DatabaseTypes.ts";
+import { isAttrRef, lowerAttr } from "./attrRef.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import type {
   CatalogIdent,
@@ -157,19 +158,10 @@ export type TxEffectBody<
   R = never,
 > = (tx: TxBuilder<C>) => Effect.Effect<unknown, E, R>;
 
-const isAttrRef = (a: unknown): a is { readonly ident: string } =>
-  typeof a === "object" &&
-  a !== null &&
-  "ident" in a &&
-  typeof (a as { ident: unknown }).ident === "string";
-
 const isHandle = (e: unknown): e is EntityHandle =>
   typeof e === "object" &&
   e !== null &&
   (e as { _tag?: unknown })._tag === "EntityHandle";
-
-const lowerAttr = (a: unknown): string =>
-  isAttrRef(a) ? a.ident : (a as string);
 
 const resolveEntity = (e: unknown): unknown => {
   if (isHandle(e)) return e.id;
