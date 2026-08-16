@@ -1,17 +1,4 @@
-/**
- * The eight `:db.type/*` idents the engine already persists
- * (`packages/core/src/schema.ts` VALUE_TYPE_IDENTS), plus Effect Schema
- * values that lower onto them.
- *
- * Prefer `effect/Schema` primitives (`Schema.String`, `Schema.Boolean`, …)
- * and the helpers here when the Ripple tag is not the Schema default
- * (`Number` → double, not long or ref).
- *
- * `Attr` infers `:db.type/*` from the Schema at the type level: helpers
- * carry a brand (`Long` → `":db.type/long"`), primitives follow
- * `Schema.Type` (`string` / `number` / `boolean`). Explicit `valueType`
- * on `Attr` remains an override for custom Schemas.
- */
+/** The eight `:db.type/*` idents and Effect Schema helpers that lower onto them. */
 
 import * as Schema from "effect/Schema";
 
@@ -59,10 +46,7 @@ const asVt = <S extends Schema.Top, const VT extends DbValueType>(
   return schema as S & RippleVt<VT>;
 };
 
-/**
- * Uuid as the engine currently *reads* it: `{ vt: 6, v: "…" }`, not a
- * string. See the uuid wart in `docs/EFFECT_SCHEMA.md`.
- */
+/** Uuid as the engine currently reads it: `{ vt: 6, v: "…" }`, not a string. */
 export const Uuid = asVt(
   Schema.Struct({
     vt: Schema.Literal(6),

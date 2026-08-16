@@ -1,28 +1,4 @@
-/**
- * Catalog-generic datalog query builder.
- *
- * Bindings accumulate as `where` clauses are added. A variable in the
- * value slot of a known catalog attr inherits that attr's value type.
- * The attribute slot accepts an attr ref (`User.name`), a catalog ident
- * (`":user/name"`), a variable (`"?a"`), or `_`. Restricting it to
- * idents-only is what made the last attempt reject `_` and vars.
- *
- * `find(...vars)` is the typed terminal: the row is a tuple of the
- * selected bindings. Today's `q<T = unknown>(string | object)` stays as
- * the escape hatch on the client.
- *
- * A var in the entity slot, or against a `:db.type/ref` attr, binds
- * as an {@link Eid} — a wrapper with `.pull(pattern)`. String / long
- * bindings stay primitives.
- *
- * ```ts
- * const rows = yield* db.q((q) =>
- *   q.where("?e", User.name, "?n").find("?e", "?n"),
- * )
- * // rows : readonly [Eid<C>, string][]
- * const ada = yield* rows[0][0].pull({ name: User.name })
- * ```
- */
+/** Catalog-generic datalog builder. Bindings accumulate; `find` is the typed terminal. */
 
 import type { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";

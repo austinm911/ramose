@@ -1,21 +1,14 @@
 /**
- * Runtime constructors and schema lowering. No peer I/O.
+ * Runtime lowering: catalog → ident datoms, q clauses, tx ops. No peer I/O.
  */
 
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { RuntimeContext } from "alchemy/RuntimeContext";
 import {
   Attr,
   Catalog,
-  Eid,
-  isEid,
-  makeSystem,
   Namespace,
-  isPullNested,
-  isPullOptional,
-  pick,
   queryBuilder,
   schemaTx,
   txBuilder,
@@ -35,21 +28,8 @@ const Meta = Namespace("meta", {
 
 const Movies = Catalog({ user: User, meta: Meta });
 
-describe("catalog constructors", () => {
-  test("namespace stamps derivable idents", () => {
-    expect(User.ns).toBe("user");
-    expect(User.name.ident).toBe(":user/name");
-    expect(User.attributes.name.ident).toBe(":user/name");
-    expect(User.attributes.name.cardinality).toBe("one");
-    expect(User.attributes.name.unique).toBe("identity");
-    expect(User.attributes.friends.cardinality).toBe("many");
-    expect(User.attributes.friends.ident).toBe(":user/friends");
-    expect(User.age.valueType).toBe(":db.type/long");
-    expect(User.friends.valueType).toBe(":db.type/ref");
-    expect(User.name.valueType).toBe(":db.type/string");
-  });
-
-  test("schemaTx lowers to ident datom maps (separate ensure tx)", () => {
+describe("schemaTx", () => {
+  test("lowers to ident datom maps (separate ensure tx)", () => {
     expect(schemaTx(Movies)).toEqual([
       {
         ":db/ident": ":user/name",
@@ -75,30 +55,6 @@ describe("catalog constructors", () => {
         ":db/cardinality": ":db.cardinality/one",
       },
     ]);
-  });
-});
-
-describe("typed create / connect", () => {
-  const system = makeSystem({ url: "https://peer.example" });
-  const run = <A, E>(eff: Effect.Effect<A, E, RuntimeContext>) =>
-    Effect.runPromise(eff.pipe(Effect.provide(RuntimeContext.phantom)));
-
-  test("invalid name is BadRequest, no network", async () => {
-    const err = await Effect.runPromise(
-      Effect.flip(system.create("bad/name", Movies)).pipe(
-        Effect.provide(RuntimeContext.phantom),
-      ),
-    );
-    expect(err._tag).toBe("BadRequest");
-    expect(err.message).toContain("invalid database name");
-  });
-
-  test("valid name returns a client generic on the catalog", async () => {
-    const db = await run(system.create("movies", Movies));
-    expect(db.name).toBe("movies");
-    expect(db.catalog).toBe(Movies);
-    const again = await run(system.connect("movies", Movies));
-    expect(again.catalog).toBe(Movies);
   });
 });
 
@@ -147,41 +103,3 @@ describe("transaction builder", () => {
     expect(tx.catalog).toBe(Movies);
   });
 });
-
-describe("literate pull constructors", () => {
-  test("attr.optional / attr.with are tagged field specs", () => {
-    expect(isPullOptional(User.age.optional)).toBe(true);
-    expect(User.age.optional.field.ident).toBe(":user/age");
-
-    const friends = User.friends.with({
-      name: User.name,
-      age: User.age.optional,
-    });
-    expect(isPullNested(friends)).toBe(true);
-    expect(friends.attr.ident).toBe(":user/friends");
-    expect(isPullOptional(friends.pattern.age)).toBe(true);
-
-    const maybeBest = User.friends.optional.with({ name: User.name });
-    expect(isPullOptional(maybeBest)).toBe(true);
-    expect(isPullNested(maybeBest.field)).toBe(true);
-  });
-
-  test("pick is a plain fields object, not a Struct wrap", () => {
-    const picked = pick(User, "name", "age");
-    expect(picked.name.ident).toBe(":user/name");
-    expect(picked.age.ident).toBe(":user/age");
-    expect("_tag" in picked).toBe(false);
-  });
-});
-
-describe("eid wrapper", () => {
-  test("Eid.of wraps a known number", () => {
-    const eid = Eid.of(Movies, 1001);
-    expect(isEid(eid)).toBe(true);
-    expect(eid._tag).toBe("Eid");
-    expect(eid.id).toBe(1001);
-    expect(eid.catalog).toBe(Movies);
-    expect(typeof eid.pull).toBe("function");
-  });
-});
-

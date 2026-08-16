@@ -1,35 +1,4 @@
-/**
- * Typed pull. The pattern is a plain object: keys are the names that
- * come back, values are attr refs. Same syntax at every level.
- *
- * ```ts
- * const pulled = yield* eid.pull({
- *   name: User.name,
- *   age: User.age.optional,
- *   source: Meta.source,
- *   bestFriend: User.bestFriend.optional.with({
- *     name: User.name,
- *     age: User.age.optional,
- *   }),
- *   friends: User.friends.with({
- *     name: User.name,
- *     age: User.age.optional,
- *   }),
- * })
- * // name: string
- * // age: number | undefined
- * // bestFriend: { name: string; age: number | undefined } | undefined
- * // friends: readonly { name: string; age: number | undefined }[]
- * ```
- *
- * A bare attr ref is required (`T`). `.optional` is maybe
- * (`T | undefined`). `.with({ ... })` follows a ref — object if
- * card-one, `readonly T[]` if many. Mix namespaces on one map.
- *
- * Ident-keyed arrays (`[User.name, ":user/age"]`) stay as the
- * keyword-soup escape — those results are keyed by ident, and every
- * field is optional.
- */
+/** Literate pull map: keys are result names, values are attr refs / `.optional` / `.with`. */
 
 import type * as Schema from "effect/Schema";
 import type { AnyAttribute } from "./Attribute.ts";
@@ -115,15 +84,7 @@ export const nested = <
   return result;
 };
 
-/**
- * `Schema.pick` for a namespace: result keys are the attribute names,
- * all required. Mix namespaces or rename with a plain object.
- *
- * ```ts
- * pick(User, "name", "age")
- * // { name: User.name, age: User.age }
- * ```
- */
+/** Same-namespace shortcut: `pick(User, "name", "age")`. */
 export const pick = <
   const N extends { readonly attributes: AttributeMap },
   const Keys extends readonly (keyof N["attributes"] & string)[],

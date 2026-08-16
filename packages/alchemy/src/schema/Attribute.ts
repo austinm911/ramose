@@ -1,11 +1,4 @@
-/**
- * A typed attribute: a value `effect/Schema`, cardinality, and the
- * Datomic-shaped options Ripple already persists.
- *
- * The attribute's *name* is the key it is filed under in a {@link Namespace}.
- * The ident (`:user/name`) is derived there — not invented here — so the
- * wire form stays today's `:ns/attr`.
- */
+/** Typed attribute: value Schema, cardinality, and Datomic-shaped options. */
 
 import type * as Schema from "effect/Schema";
 import {
@@ -23,14 +16,7 @@ export interface AttributeOptions {
   readonly index?: boolean;
   readonly isComponent?: boolean;
   readonly doc?: string;
-  /**
-   * Override `:db.type/*` inference. Required when the value Schema is not
-   * a primitive or one of the helpers in `valueTypes.ts`.
-   *
-   * Captured as a type parameter so `User.friends.with({ ... })` / `nested`
-   * can require a ref (`valueType: ":db.type/ref"`) without a
-   * parallel schema language.
-   */
+  /** Override `:db.type/*` inference. Required for custom Schemas. */
   readonly valueType?: DbValueType;
 }
 
@@ -75,20 +61,7 @@ export type AnyAttribute = Attribute<
   DbValueType | undefined
 >;
 
-/**
- * Declare an attribute. File it under a namespace key to give it a name:
- *
- * ```ts
- * const name = Attr(Schema.String, { unique: "identity" })
- * const age = Attr(Long)
- * const friends = Attr(Ref, { cardinality: "many" })
- * // Namespace("user", { name, age, friends }) → :user/name, …
- * ```
- *
- * Constructors are `Namespace`, `Catalog`, `Attr`. `:db.type/*` is
- * inferred from the Schema (`Long` → long, `Ref` → ref, `Schema.String`
- * → string, `Schema.Number` → double, `Schema.Boolean` → boolean).
- */
+/** Declare an attribute. File it under a namespace key to stamp `:ns/name`. */
 export const Attr: {
   <S extends Schema.Top>(
     schema: S,
