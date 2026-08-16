@@ -9,6 +9,7 @@ export * from "./Errors.ts";
 export * from "./idents.ts";
 export * from "./Namespace.ts";
 export * from "./Eid.ts";
+export * from "./Live.ts";
 export {
   type AttrPull,
   type IdentPullAttr,

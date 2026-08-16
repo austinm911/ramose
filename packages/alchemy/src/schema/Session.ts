@@ -9,18 +9,19 @@ import {
 } from "../Client.ts";
 import { openSession, type Session, type SessionOptions } from "../Session.ts";
 import type { AnyCatalog } from "./Catalog.ts";
+import { fromReadWrite, type OpenError } from "./Client.ts";
 import {
-  fromReadWrite,
-  type OpenError,
-  type TypedReadWriteDatabaseClient,
-} from "./Client.ts";
+  makeLive,
+  type LiveRun,
+  type TypedLiveDatabaseClient,
+} from "./Live.ts";
 
 /** The socket, and the one database it is bound to. */
 export interface TypedSession<C extends AnyCatalog = AnyCatalog> {
   /** The transport: `t`, `onT`, `close`. */
   readonly session: Session;
-  /** The catalog-typed client speaking it. */
-  readonly db: TypedReadWriteDatabaseClient<C>;
+  /** The catalog-typed client speaking it — `db.live` included. */
+  readonly db: TypedLiveDatabaseClient<C>;
 }
 
 export interface TypedSessionOptions<C extends AnyCatalog> extends SessionOptions {
@@ -52,5 +53,12 @@ export const connect = <C extends AnyCatalog>(
     const db = yield* system
       .create(options.name, options.catalog)
       .pipe(Effect.tapError(() => Effect.sync(() => session.close())));
-    return { session, db };
+    // live stores run outside Effect, on the services this connect was given
+    const context = yield* Effect.context<RuntimeContext>();
+    const run: LiveRun = Effect.runPromiseWith(context);
+    const client: TypedLiveDatabaseClient<C> = {
+      ...db,
+      live: makeLive<C>(db, session, run),
+    };
+    return { session, db: client };
   });
