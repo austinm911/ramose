@@ -56,6 +56,58 @@ concurrent clients; storage-fault injection → batch all-or-nothing, instance
 aborted, restart continues with no gaps/dupes; novelty frames + resume /
 gap catch-up; alarm-driven indexing.
 
+## M7 — load tests
+
+### Write ceiling: with vs without group commit
+
+In-process Transactor over an fsync'd SQLite file, 4 s per cell, one novelty
+subscriber (`bun run bench/transactor.bench.ts 64 4 1,8,64,256`; "single" =
+`maxBatch: 1`, i.e. one storage write per tx):
+
+| clients | group tx/s | group p50 | group p99 | avg batch | single tx/s | single p50 | single p99 |
+|---|---|---|---|---|---|---|---|
+| 1 | 641 | 1.5 ms | 2.7 ms | 1 | 628 | 1.5 ms | 2.9 ms |
+| 8 | 2,108 | 3.6 ms | 7.6 ms | 8 | 635 | 12.4 ms | 16.7 ms |
+| 64 | 2,701 | 22 ms | 54 ms | 63.6 | 631 | 100 ms | 111 ms |
+| 256 | 2,860 | 85 ms | 181 ms | 250 | 630 | 404 ms | 427 ms |
+
+Single-write mode is fsync-bound (~630 tx/s regardless of concurrency);
+group commit converts concurrency into batch size and reaches ~2.8k tx/s on
+this machine, i.e. the write ceiling of one logical database is
+**low-thousands tx/s** as the spec expects (§7). Beyond that, split the
+logical database (see `docs/RUNBOOK.md`).
+
+Through the full local stack (`bun alchemy dev`, Worker → Transactor DO,
+`bun run bench/write-do.bench.ts <clients> 5`; "off" = `RIPPLE_MAX_BATCH=1`):
+
+| clients | group commit tx/s | ack p50 / p99 | avg batch | group commit off tx/s | ack p50 / p99 |
+|---|---|---|---|---|---|
+| 8 | 1,228 | 4.9 / 44 ms | 2.7 | 867 | 7.7 / 58 ms |
+| 64 | 1,595 | 29 / 120 ms | 15.2 | 836 | 68 / 203 ms |
+| 256 | 1,741 | 142 / 303 ms | 16.1 | 805 | 312 / 456 ms |
+
+The DO path is bounded by the local emulator's per-request overhead (batches
+stay ~16 because the Worker → DO hop paces arrivals), so the in-process
+numbers are the better estimate of the transactor itself.
+
+### Read path through the Worker (warm)
+
+`bun run bench/read-do.bench.ts 5000 200 8` (5k people indexed into segments,
+200 runs × 8 concurrent per query, warm isolate; client p50 includes local
+HTTP RTT, server p50 is the Worker's own `x-ripple-ms`):
+
+| query | client p50 | client p95 | server p50 |
+|---|---|---|---|
+| point lookup (AVET) | 3.6 ms | 7.1 ms | 1 ms |
+| entity attributes (EAVT) | 3.9 ms | 5.0 ms | 1 ms |
+| city → friends → name (3-way join) | 11.6 ms | 24.6 ms | 3 ms |
+| count by city (aggregate) | 4.9 ms | 7.2 ms | 1 ms |
+
+Repeat queries hit the peer's memory tier (8,258 peek hits vs 12 R2 gets over
+the whole run). **Multi-colo read scaling was not measured**: this
+environment has no Cloudflare credentials, so there is one local isolate and
+no geographic distribution; only a real deployment can produce those numbers.
+
 ## Milestone status (as of this snapshot)
 
 | milestone | status | evidence |

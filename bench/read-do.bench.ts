@@ -1,0 +1,73 @@
+/**
+ * M7 read-path bench against a running Ripple deployment: warm query latency
+ * through the Worker (replica basis + edge datalog over cached segments).
+ *
+ *   RIPPLE_URL=http://localhost:1337 bun run bench/read-do.bench.ts [people=5000] [runs=200] [concurrency=8]
+ *
+ * Reports client-observed p50/p95 (includes local HTTP RTT) and the server-side
+ * `x-ripple-ms` p50 (query execution only). Multi-colo scaling cannot be
+ * measured against a local emulator; see bench/RESULTS.md.
+ */
+import { RippleClient, attribute } from "../packages/client/src/index.ts";
+import { fmt, percentile } from "./lib.ts";
+
+const url = process.env.RIPPLE_URL;
+if (!url) {
+  console.error("set RIPPLE_URL");
+  process.exit(1);
+}
+const people = Number(process.argv[2] ?? 5000);
+const runs = Number(process.argv[3] ?? 200);
+const conc = Number(process.argv[4] ?? 8);
+const client = new RippleClient(url, { token: process.env.RIPPLE_TOKEN });
+const db = client.db(`readbench-${Date.now().toString(36)}`);
+
+await db.transact([
+  attribute(":person/name", "string", { index: true }),
+  attribute(":person/city", "string", { index: true }),
+  attribute(":person/age", "long"),
+  attribute(":person/friends", "ref", { cardinality: "many" }),
+]);
+// seed in batches of 200 entities per tx
+for (let i = 0; i < people; i += 200) {
+  const tx: unknown[] = [];
+  for (let j = i; j < Math.min(people, i + 200); j++) {
+    tx.push({ ":db/id": `p${j}`, ":person/name": `person-${j}`, ":person/city": `city-${j % 10}`, ":person/age": j % 90 });
+  }
+  await db.transact(tx);
+}
+// friends (refs to existing entities) + index so most data lives in segments
+const ids = (await db.q<number[]>(`[:find [?e ...] :where [?e :person/city "city-3"]]`)).slice(0, 500);
+await db.transact(ids.map((e, i) => [":db/add", e, ":person/friends", ids[(i + 1) % ids.length]]));
+await db.index();
+
+const QUERIES: Record<string, { q: string; inputs?: unknown[] }> = {
+  "point lookup (AVET)": { q: `[:find ?e . :where [?e :person/name "person-42"]]` },
+  "entity attrs (EAVT)": { q: `[:find ?a ?v :in $ ?e :where [?e ?a ?v]]`, inputs: [ids[0]] },
+  "city → friends → name (join)": { q: `[:find ?n ?fn :where [?e :person/city "city-3"] [?e :person/friends ?f] [?f :person/name ?fn] [?e :person/name ?n]]` },
+  "count by city (agg)": { q: `[:find (count ?e) . :where [?e :person/city "city-7"]]` },
+};
+
+const results: Record<string, unknown> = {};
+for (const [name, { q, inputs }] of Object.entries(QUERIES)) {
+  await db.query(q, inputs); // warm
+  const client_ms: number[] = [], server_ms: number[] = [];
+  let i = 0;
+  await Promise.all(
+    Array.from({ length: conc }, async () => {
+      while (i++ < runs) {
+        const t0 = performance.now();
+        const r = await db.query(q, inputs);
+        client_ms.push(performance.now() - t0);
+        if (r.meta?.ms !== null && r.meta?.ms !== undefined) server_ms.push(r.meta.ms);
+      }
+    }),
+  );
+  client_ms.sort((a, b) => a - b);
+  server_ms.sort((a, b) => a - b);
+  results[name] = { "client p50 ms": +fmt(percentile(client_ms, 50)), "client p95 ms": +fmt(percentile(client_ms, 95)), "server p50 ms": server_ms.length ? +fmt(percentile(server_ms, 50)) : null };
+}
+console.log(`read bench: ${people} people, ${runs} runs × ${conc} concurrent per query, warm`);
+console.table(results);
+const info = await db.info();
+console.log(`peer segment cache: ${JSON.stringify(info.peer)}`);

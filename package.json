@@ -17,6 +17,8 @@
     "bench:join": "bun run bench/join.bench.ts",
     "bench:write": "bun run bench/write.bench.ts",
     "bench:transactor": "bun run bench/transactor.bench.ts",
+    "bench:write-do": "bun run bench/write-do.bench.ts",
+    "bench:read-do": "bun run bench/read-do.bench.ts",
     "dev": "bun alchemy dev",
     "deploy": "bun alchemy deploy",
     "deploy:prod": "bun alchemy deploy --stage prod",

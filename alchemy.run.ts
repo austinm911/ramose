@@ -24,6 +24,8 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 
 const stage = process.env.ALCHEMY_STAGE ?? process.env.STAGE ?? process.env.USER ?? "dev";
+const tuning = (...names: string[]): Record<string, string> =>
+  Object.fromEntries(names.filter((n) => process.env[n] !== undefined).map((n) => [n, process.env[n]!]));
 
 /** Content-addressed segment / log / root storage. Everything except `root/current` is immutable. */
 export const Store = Cloudflare.R2.Bucket("Store");
@@ -40,6 +42,8 @@ export const Worker = Cloudflare.Worker("Worker", {
     TRANSACTOR: Transactor,
     REPLICA: Replica,
     RIPPLE_STAGE: stage,
+    // tuning knobs (see packages/transactor/src/env.ts); only bound when set
+    ...tuning("RIPPLE_MAX_BATCH", "RIPPLE_QUERY_MAX_CELLS", "RIPPLE_INDEX_TX_THRESHOLD", "RIPPLE_INDEX_INTERVAL_MS", "RIPPLE_LOG_KEEP_TXS"),
     // RIPPLE_TOKENS: Config.redacted("RIPPLE_TOKENS")  ← per-db bearer tokens for prod
   },
 });

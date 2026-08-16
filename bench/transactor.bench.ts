@@ -14,12 +14,14 @@ import { fmt, percentile } from "./lib.ts";
 
 const conc = Number(process.argv[2] ?? 64);
 const seconds = Number(process.argv[3] ?? 5);
+/** optional: comma-separated concurrency sweep for the write-ceiling table, e.g. "1,8,64,256" */
+const sweep = process.argv[4] ? process.argv[4].split(",").map(Number) : [conc];
 
 const dir = mkdtempSync(join(tmpdir(), "ripple-tx-"));
 const file = join(dir, "transactor.sqlite");
 
-async function run(label: string, groupCommit: boolean) {
-  const h = new Harness({ file: `${file}-${label}`, config: { maxBatch: groupCommit ? 0 : 1, indexTxThreshold: 1_000_000, indexIntervalMs: 1_000_000 } });
+async function run(label: string, groupCommit: boolean, conc: number) {
+  const h = new Harness({ file: `${file}-${label}-${conc}`, config: { maxBatch: groupCommit ? 0 : 1, indexTxThreshold: 1_000_000, indexIntervalMs: 1_000_000 } });
   const tx = h.transactor;
   await tx.init();
   await tx.transact([attribute(":k/id", "long", { ":db/unique": ":db.unique/identity" }), attribute(":k/v", "string")]);
@@ -54,12 +56,22 @@ async function run(label: string, groupCommit: boolean) {
   for (let i = 0; i < ts.length; i++) if (ts[i] !== i + 1) throw new Error(`log gap at ${i}: ${ts[i]}`);
   if (ts.length !== tx.t) throw new Error(`log length ${ts.length} != t ${tx.t}`);
   h.db.close();
-  return tps;
+  return { tps, p50: percentile(lat, 50), p99: percentile(lat, 99), avgBatch: tx.stats.txs / Math.max(1, tx.stats.batches), maxBatch: tx.stats.maxBatch };
 }
 
-const grouped = await run("group-commit", true);
-const single = await run("one-tx-per-write", false);
+const table: Record<string, unknown>[] = [];
+let grouped = 0, single = 0;
+for (const c of sweep) {
+  const g = await run("group-commit", true, c);
+  const s1 = await run("one-tx-per-write", false, c);
+  if (c === conc) {
+    grouped = g.tps;
+    single = s1.tps;
+  }
+  table.push({ concurrency: c, "group tx/s": Math.round(g.tps), "group p50 ms": +fmt(g.p50), "group p99 ms": +fmt(g.p99), "avg batch": +fmt(g.avgBatch, 1), "single tx/s": Math.round(s1.tps), "single p50 ms": +fmt(s1.p50), "single p99 ms": +fmt(s1.p99) });
+}
 rmSync(dir, { recursive: true, force: true });
 
 console.log(`\nM2 gate: ≥ 500 tx/s sustained with group commit → ${grouped >= 500 ? "PASS" : "FAIL"} (${fmt(grouped, 0)} tx/s; without group commit ${fmt(single, 0)} tx/s)`);
-console.log(JSON.stringify({ concurrency: conc, seconds, results: { "group-commit tx/s": grouped, "single-write tx/s": single } }, null, 2));
+console.log("\nwrite ceiling (in-process Transactor over an fsync'd SQLite file):");
+console.table(table);
