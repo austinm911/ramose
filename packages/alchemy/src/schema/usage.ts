@@ -46,10 +46,8 @@ export const program = Effect.gen(function* () {
 
   const ada = yield* db.entity(1001);
   const pulled = yield* db.pull(1001, [":user/name", ":user/age"]);
-  const rows = yield* db.q<string[][]>(
-    { find: ["?n"], where: [["?e", ":user/name", "?n"]] },
-    [],
-    { minT: ack.t },
+  const rows = yield* db.q((q) =>
+    q.where("?e", User.name, "?n").options({ minT: ack.t }).find("?n"),
   );
 
   const before = db.asOf(ack.t - 1);
