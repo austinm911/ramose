@@ -4,6 +4,7 @@ import type { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";
 import type { QueryOptions, QueryResponse } from "../Client.ts";
 import type { DatabaseError } from "../DatabaseTypes.ts";
+import { lowerAttr } from "./attrRef.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import type { Eid } from "./Eid.ts";
 import { noPeer, type MissingPeer } from "./Errors.ts";
@@ -136,14 +137,6 @@ export interface QuerySpec {
   /** Vars bound as an entity or `:db.type/ref` — wrapped as {@link Eid} on find. */
   readonly eidVars?: readonly string[] | undefined;
 }
-
-const isAttrRef = (a: unknown): a is { readonly ident: string } =>
-  typeof a === "object" &&
-  a !== null &&
-  "ident" in a &&
-  typeof (a as { ident: unknown }).ident === "string";
-
-const lowerAttr = (a: unknown): unknown => (isAttrRef(a) ? a.ident : a);
 
 const isQueryVar = (x: unknown): x is QueryVar =>
   typeof x === "string" && x.startsWith("?") && x.length > 1;

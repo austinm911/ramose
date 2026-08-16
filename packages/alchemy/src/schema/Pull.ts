@@ -2,6 +2,7 @@
 
 import type * as Schema from "effect/Schema";
 import type { AnyAttribute } from "./Attribute.ts";
+import { isAttrRef } from "./attrRef.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import type { CatalogIdent, ReadAtIdent } from "./idents.ts";
 import type { AttributeMap } from "./Namespace.ts";
@@ -42,17 +43,12 @@ export type AttrPull<A> = {
 };
 
 /** Internal: implements `attr.optional`. The result type is `T | undefined`. */
-export const optional = <const F>(field: F): PullOptional<F> => {
-  const wrap: PullOptional<F> = {
-    _tag: "optional",
-    field,
-    with: ((pattern: Record<string, unknown>) =>
-      optional(nested(field as never, pattern))) as unknown as PullOptional<
-      F
-    >["with"],
-  };
-  return wrap;
-};
+export const optional = <const F>(field: F): PullOptional<F> => ({
+  _tag: "optional",
+  field,
+  with: ((pattern: Record<string, unknown>) =>
+    optional(nested(field as never, pattern))) as unknown as PullOptional<F>["with"],
+});
 
 /**
  * Internal: implements `attr.with({ ... })`. Follow a ref (or
@@ -231,12 +227,6 @@ export type PullResult<C extends AnyCatalog, P> = [P] extends [
   : StructPullResult<P>;
 
 // ── wire lowering ──────────────────────────────────────────────────────────
-
-const isAttrRef = (a: unknown): a is { readonly ident: string } =>
-  typeof a === "object" &&
-  a !== null &&
-  "ident" in a &&
-  typeof (a as { ident: unknown }).ident === "string";
 
 const identOf = (field: unknown): string => {
   if (typeof field === "string") return field;
