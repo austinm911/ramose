@@ -124,20 +124,17 @@ type _notSame = Expect<
 
 const db = unsafeDatabase(Movies);
 
-const _validTx = db.transact((tx) =>
-  Effect.gen(function* () {
-    const ada = yield* tx.entity();
-    yield* ada.add(User.name, "Ada");
-    yield* ada.add(User.age, 36);
-    yield* ada.add(Meta.source, "import");
-    yield* ada.retract(User.age, 35);
-    const arrival = yield* tx.entity();
-    yield* arrival.add(Movie.title, "Arrival");
-    yield* tx.add("ada", User.name, "Ada");
-    yield* tx.retract(1001, User.age, 36);
-    yield* tx.retractEntity(1001);
-  }),
-);
+const _validTx = db.transact(function* (tx) {
+  const ada = yield* tx.entity();
+  yield* ada.add(User.name, "Ada");
+  yield* ada.add(User.age, 36);
+  yield* ada.add(Meta.source, "import");
+  yield* ada.retract(User.age, 35);
+  const arrival = yield* tx.entity();
+  yield* arrival.add(Movie.title, "Arrival");
+  yield* tx.retract(1001, User.age, 36);
+  yield* tx.retractEntity(1001);
+});
 void _validTx;
 
 // secondary: nested / list-form types still exist (not the transact happy path)
@@ -194,7 +191,7 @@ const entityFx = db.entity(1001);
 type EntitySuccess = Effect.Success<typeof entityFx>;
 type _entity = Expect<Equal<EntitySuccess, Ada | undefined>>;
 
-const pullFx = db.pull(1001, [":user/name", ":user/age"] as const);
+const pullFx = db.pull(1001, [User.name, User.age]);
 type PullSuccess = Effect.Success<typeof pullFx>;
 type _pullName = Expect<
   Equal<
@@ -210,7 +207,24 @@ type _pullNoTitle = Expect<
   Equal<":movie/title" extends keyof NonNullable<PullSuccess> ? true : false, false>
 >;
 
-// @ts-expect-error pull rejects an ident the catalog does not have
+// keyword-soup pull remains (idents, still catalog-checked)
+const pullSoup = db.pull(1001, [":user/name", ":user/age"] as const);
+type _soupName = Expect<
+  Equal<NonNullable<Effect.Success<typeof pullSoup>>[":user/name"], string | undefined>
+>;
+type _soupAge = Expect<
+  Equal<NonNullable<Effect.Success<typeof pullSoup>>[":user/age"], number | undefined>
+>;
+
+// bag: Movie.title on a user eid is legal
+const pullBag = db.pull(1001, [User.name, Movie.title]);
+type _bagTitle = Expect<
+  Equal<NonNullable<Effect.Success<typeof pullBag>>[":movie/title"], string | undefined>
+>;
+
+// @ts-expect-error unknown attr on the namespace
+db.pull(1001, [User.nope]);
+// @ts-expect-error ident not in the catalog
 db.pull(1001, [":user/nope"]);
 
 // ── asOf / history preserve the catalog parameter ──────────────────────────
@@ -252,12 +266,10 @@ writeOnly.entity;
 // ── tagged errors remain on the Effect (catchTags still typechecks) ────────
 
 const caught = db
-  .transact((tx) =>
-    Effect.gen(function* () {
-      const e = yield* tx.entity();
-      yield* e.add(User.name, "Ada");
-    }),
-  )
+  .transact(function* (tx) {
+    const e = yield* tx.entity();
+    yield* e.add(User.name, "Ada");
+  })
   .pipe(
     Effect.catchTags({
       TxRejected: (e) => Effect.succeed(e.code),
