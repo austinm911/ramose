@@ -560,8 +560,76 @@ remote tx/s: ~1.5× at 64 clients even one tx per frame, up to ~2× (64) / ~4×
 loop, multi-tx frames trade ack latency for it (p50 ×4–6), the Worker cannot
 `invalidateBasis` per frame (cached reads see WS writes only via ttl /
 `x-ripple-min-t`), and the DO stays resident while any write socket is open.
-Not shipped as the default write path; `POST /transact` unchanged. One
-unexplained ~9 s ack stall in 5 ws×8 runs at 64 clients (no error, no gap)
-should be understood before anyone relies on the socket for latency.
+Not shipped as the default write path; `POST /transact` unchanged. The
+~9 s ack stall in 1 of 5 ws×8 @64 runs is **per-connection client↔edge
+WebSocket transport** (not a commit-loop freeze and not the DO output
+gate) — see the next section. Consistency is still `ack.t → minT / asOf`.
 
 Stage destroyed after the run (`ALCHEMY_STAGE=cf-ws bun alchemy destroy --yes` → Sys + Worker + Store deleted; `/health` → 404).
+
+## Cloudflare (write-ws ~9 s stall root cause), stages `cf-ws` + `cf-stall`, 2026-08-16
+
+**Mechanism: per-connection client↔edge WebSocket transport delay** on
+specific write sockets (TCP / IAD edge path). The transactor committed
+on time; the ack was late on that connection only. Not a correctness
+bug: `t` stayed gap-free, 0 errors on the stall runs, `ack.t` is still
+the basis for a later `minT` / `asOf`.
+
+### Measurement that selects it
+
+**Historical (no deploy).** Account AE dataset `ripple_tx` outlived
+stage `cf-ws`. The stall run is `bench-msvwlbdl` (IAD, 2026-08-16
+14:31:49–14:32:09 UTC / 07:31–07:32 PT): sampled `tx_ok·si` ≈ 21k
+(matches the 14 144 tx / 19.5 s / 724 tx/s row; the four sibling
+WS×8 @64 dbs are `bench-msvwisho`, `bench-msvwmiv5`, `bench-msvwmrzo`,
+`bench-msvwn174`). Consecutive `batch` timestamps have **max gap 2 s**
+(14:31:54 → 14:31:56). Last batch 14:31:56; `/info` http 14:32:09
+(13 s later); first `index` point 14:32:10 (`index_ms` 7080 then 6246).
+A >5 s inter-batch gap would have meant the commit loop (or input gate)
+froze. There was none, and batches did **not** keep landing through the
+extra ~9.5 s — they stopped, then the client waited. That is after-commit
+(transport or output gate). DO `durableObjectsPeriodicGroups` for the
+destroyed worker did not retain the transactor objects (0 inbound WS
+on the leftover `ripple` / `__root__` rows).
+
+**Reproduce (stage `cf-stall`, IAD, 25× `write-ws.bench.ts ws 64 10 8`,
+then destroyed).** Run 11 (`bench-msvy11uf`, 14 960 tx in 12.4 s, 0
+errors, gap-free) printed:
+
+```
+SLOW-FRAME worker=31 frame=13 at=+2146ms lat=2559 tMin=6323 tMax=6330 maxTseen=9474 pending=0
+SLOW-FRAME worker=46 frame=13 at=+2146ms lat=2560 tMin=6315 tMax=6322 maxTseen=9474 pending=0
+SLOW-FRAME worker=46 frame=14 at=+4706ms lat=7731 tMin=13467 tMax=13474 maxTseen=14962 pending=0
+SLOW-FRAME worker=31 frame=14 at=+4706ms lat=7731 tMin=13459 tMax=13466 maxTseen=14962 pending=0
+```
+
+**The number:** `tMax=6330 ≪ maxTseen=9474` (and `13474 ≪ 14962`) on a
+7731 ms frame. Other sockets had already acked higher `t` before these
+two connections received their lower-`t` acks — committed on time, ack
+late, **per-connection**. AE for that db: batches 15:12:03–15:12:13 UTC
+(08:12–08:12 PT), max inter-batch gap 3 s, `/info` at 15:12:16. Worker
+tail: **0** `write-ws: allSettled >2s` warns across all 25 runs;
+`gapMs.count=0` every run. Decision tree: loop never paused and
+`allSettled` was short ⇒ **transport**, not the output gate (that
+would be `allSettled` long / isolate-wide, so `tMax ≈ maxTseen`).
+Hop: client↔edge. The Worker is a passthrough (`stub.fetch` Upgrade,
+no relay); the same DO kept committing and acking the other 62
+sockets, so this is not Worker↔DO. 7.7 s (and the original ~9 s) sit
+in TCP RTO / edge-retransmit range.
+
+### Falsified
+
+| candidate | why not |
+|---|---|
+| Commit-loop / input-gate freeze | Original AE max inter-batch gap **2 s** (need >5 s). Reproduce `gapMs.count=0`, batches kept landing while the 7.7 s frame was in flight. |
+| DO output gate (isolate-wide) | Would delay `send` for everyone and make `allSettled` long / `tMax ≈ maxTseen`. Opposite: 2 of 64 sockets, `allSettled` <2 s, later `t` acked first. |
+| `maybeSchedule` / indexer CPU | `maybeSchedule` only `setAlarm`. Original `index` points start **after** `/info` (14:32:10 vs 14:32:09). A 9.5 s index on run 11 is a later alarm, not the late ack. |
+| Lost ack / `t` hole | `maxT−minT+1 === acked` on the original and on every reproduce run that completed. |
+| R2 in resolve | `store.r2Gets=0` on the stall reproduce. |
+
+Run 12 (`bench-msvy1cbo`) is a **different** incident: sockets died and
+the bench tight-looped (`errors=2_958_499`). Not the 0-error stall.
+
+`POST /transact` remains the default. No Effect around `processTx` /
+`SortedNovelty.flush`. Stage `cf-stall` destroyed after
+(`bun alchemy destroy --stage cf-stall --yes`).
