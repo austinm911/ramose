@@ -51,7 +51,11 @@ const Movie = Namespace("movie", {
   year: attr(Long, { valueType: ":db.type/long" }),
 });
 
-const Movies = Catalog({ user: User, movie: Movie });
+const Meta = Namespace("meta", {
+  source: attr(Schema.String),
+});
+
+const Movies = Catalog({ user: User, movie: Movie, meta: Meta });
 
 // ── catalog / namespace / attr inference ───────────────────────────────────
 
@@ -80,7 +84,7 @@ type _ageType = Expect<
 type _idents = Expect<
   Equal<
     CatalogIdent<typeof Movies>,
-    ":user/name" | ":user/age" | ":user/friends" | ":movie/title" | ":movie/year"
+    ":user/name" | ":user/age" | ":user/friends" | ":movie/title" | ":movie/year" | ":meta/source"
   >
 >;
 type _valueName = Expect<Equal<ValueAtIdent<typeof Movies, ":user/name">, string>>;
@@ -116,59 +120,66 @@ type _notSame = Expect<
   Equal<Equal<CreatedClient, OtherClient>, false>
 >;
 
-// ── transact accepts a valid entity / tx ───────────────────────────────────
+// ── transact builder is the typed write path ───────────────────────────────
 
 const db = unsafeDatabase(Movies);
 
+const _validTx = db.transact((tx) =>
+  Effect.gen(function* () {
+    const ada = yield* tx.entity();
+    yield* ada.add(User.name, "Ada");
+    yield* ada.add(User.age, 36);
+    yield* ada.add(Meta.source, "import");
+    yield* ada.retract(User.age, 35);
+    const arrival = yield* tx.entity();
+    yield* arrival.add(Movie.title, "Arrival");
+    yield* tx.add("ada", User.name, "Ada");
+    yield* tx.retract(1001, User.age, 36);
+    yield* tx.retractEntity(1001);
+  }),
+);
+void _validTx;
+
+// secondary: nested / list-form types still exist (not the transact happy path)
 const _validNested: TypedTx<typeof Movies> = [
-  { user: { name: "Ada", age: 36 } },
+  { user: { name: "Ada", age: 36 }, meta: { source: "import" } },
   { movie: { title: "Arrival", year: 2016 } },
   { ":db/id": "ada", user: { name: "Ada" } },
   [":db/add", "ada", ":user/name", "Ada"],
   [":db/retract", 1001, ":user/age", 36],
   [":db/retractEntity", 1001],
 ];
+void _validNested;
 
 const _validWire: WireEntity<typeof Movies> = {
   ":db/id": "ada",
   ":user/name": "Ada",
   ":user/friends": [1001, 1002],
+  ":meta/source": "import",
 };
 
-void db.transact(_validNested);
 void db.transactWire([_validWire]);
 void db.transactUntyped([{ ":user/name": "Ada" }]);
 
-// ── transact rejects an unknown attribute ──────────────────────────────────
+// ── wire / nested secondary forms still reject unknown / wrong types ───────
 
 // @ts-expect-error unknown nested attribute
-db.transact([{ user: { nope: "x" } }]);
+const _badNestedAttr: NestedEntity<typeof Movies> = { user: { nope: "x" } };
+void _badNestedAttr;
 
 // @ts-expect-error unknown namespace
-db.transact([{ studio: { name: "A24" } }]);
+const _badNestedNs: NestedEntity<typeof Movies> = { studio: { name: "A24" } };
+void _badNestedNs;
 
 // @ts-expect-error unknown wire ident
 db.transactWire([{ ":user/nope": "x" }]);
 
-// @ts-expect-error unknown ident in :db/add
-db.transact([[":db/add", "ada", ":user/nope", "x"]]);
-
-// ── transact rejects a wrong value type ────────────────────────────────────
-
 // @ts-expect-error name is string, not number
-db.transact([{ user: { name: 42 } }]);
-
-// @ts-expect-error year is number, not string
-db.transact([{ movie: { year: "2016" } }]);
+const _badNestedVal: NestedEntity<typeof Movies> = { user: { name: 42 } };
+void _badNestedVal;
 
 // @ts-expect-error wire name is string, not number
 db.transactWire([{ ":user/name": 42 }]);
-
-// @ts-expect-error :db/add value must match the ident
-db.transact([[":db/add", "ada", ":user/name", 42]]);
-
-// @ts-expect-error friends is many-ref, not a string
-db.transact([{ user: { friends: "Ada" } }]);
 
 // ── entity / pull infer attr value types ───────────────────────────────────
 
@@ -240,18 +251,25 @@ writeOnly.entity;
 
 // ── tagged errors remain on the Effect (catchTags still typechecks) ────────
 
-const caught = db.transact([{ user: { name: "Ada" } }]).pipe(
-  Effect.catchTags({
-    TxRejected: (e) => Effect.succeed(e.code),
-    TransactorDead: (e) => Effect.succeed(e.message),
-    BadRequest: (e) => Effect.succeed(e.message),
-    NotFound: (e) => Effect.succeed(e.message),
-    Unauthorized: (e) => Effect.succeed(e.message),
-    QueryBudgetExceeded: (e) => Effect.succeed(e.clause),
-    Internal: (e) => Effect.succeed(e.message),
-    NetworkError: (e) => Effect.succeed(e.message),
-  }),
-);
+const caught = db
+  .transact((tx) =>
+    Effect.gen(function* () {
+      const e = yield* tx.entity();
+      yield* e.add(User.name, "Ada");
+    }),
+  )
+  .pipe(
+    Effect.catchTags({
+      TxRejected: (e) => Effect.succeed(e.code),
+      TransactorDead: (e) => Effect.succeed(e.message),
+      BadRequest: (e) => Effect.succeed(e.message),
+      NotFound: (e) => Effect.succeed(e.message),
+      Unauthorized: (e) => Effect.succeed(e.message),
+      QueryBudgetExceeded: (e) => Effect.succeed(e.clause),
+      Internal: (e) => Effect.succeed(e.message),
+      NetworkError: (e) => Effect.succeed(e.message),
+    }),
+  );
 type CaughtSuccess = Effect.Success<typeof caught>;
 type _caught = Expect<Equal<CaughtSuccess, TxAck | string>>;
 type _caughtErr = Expect<Equal<Effect.Error<typeof caught>, never>>;

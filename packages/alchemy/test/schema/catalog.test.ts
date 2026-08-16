@@ -13,6 +13,7 @@ import {
   Namespace,
   queryBuilder,
   schemaTx,
+  txBuilder,
   Long,
   Ref,
 } from "../../src/schema/index.ts";
@@ -23,7 +24,11 @@ const User = Namespace("user", {
   friends: attr(Ref, { cardinality: "many", valueType: ":db.type/ref" }),
 });
 
-const Movies = Catalog({ user: User });
+const Meta = Namespace("meta", {
+  source: attr(Schema.String),
+});
+
+const Movies = Catalog({ user: User, meta: Meta });
 
 describe("catalog constructors", () => {
   test("namespace stamps derivable idents", () => {
@@ -55,6 +60,11 @@ describe("catalog constructors", () => {
         ":db/ident": ":user/friends",
         ":db/valueType": ":db.type/ref",
         ":db/cardinality": ":db.cardinality/many",
+      },
+      {
+        ":db/ident": ":meta/source",
+        ":db/valueType": ":db.type/string",
+        ":db/cardinality": ":db.cardinality/one",
       },
     ]);
   });
@@ -98,5 +108,34 @@ describe("query builder", () => {
     ]);
     expect(q.spec.options).toEqual({ minT: 3 });
     expect(q.catalog).toBe(Movies);
+  });
+});
+
+describe("transaction builder", () => {
+  test("entity is a bag: attrs from two namespaces lower to :db/add", () => {
+    const tx = txBuilder(Movies);
+    Effect.runSync(
+      Effect.gen(function* () {
+        const ada = yield* tx.entity();
+        yield* ada.add(User.name, "Ada");
+        yield* ada.add(User.age, 36);
+        yield* ada.add(Meta.source, "import");
+        yield* ada.retract(User.age, 35);
+        yield* tx.add(1001, User.friends, 1002);
+        yield* tx.retractEntity(1001);
+        const byLookup = yield* tx.entity([User.name, "Ada"]);
+        yield* byLookup.add(Meta.source, "lookup");
+      }),
+    );
+    expect(tx.spec.ops).toEqual([
+      [":db/add", "tmp-1", ":user/name", "Ada"],
+      [":db/add", "tmp-1", ":user/age", 36],
+      [":db/add", "tmp-1", ":meta/source", "import"],
+      [":db/retract", "tmp-1", ":user/age", 35],
+      [":db/add", 1001, ":user/friends", 1002],
+      [":db/retractEntity", 1001],
+      [":db/add", [":user/name", "Ada"], ":meta/source", "lookup"],
+    ]);
+    expect(tx.catalog).toBe(Movies);
   });
 });
