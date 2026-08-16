@@ -12,14 +12,11 @@ import type { TxAck } from "../../src/Client.ts";
 import type { DatabaseError } from "../../src/DatabaseTypes.ts";
 import {
   Attr,
-  Catalog,
   type EntityHandle,
   type Equal,
   type Expect,
   type Extends,
-  Long,
   Namespace,
-  Ref,
   type TxBuilder,
   type TypedReadDatabaseClient,
   type TypedReadWriteDatabaseClient,
@@ -29,26 +26,11 @@ import {
   unsafeWriteDatabase,
 } from "../../src/schema/index.ts";
 
-const User = Namespace("user", {
-  name: Attr(Schema.String, { unique: "identity" }),
-  age: Attr(Long),
-  friends: Attr(Ref, { cardinality: "many" }),
-});
-
-const Movie = Namespace("movie", {
-  title: Attr(Schema.String, { index: true }),
-  year: Attr(Long),
-});
-
-const Meta = Namespace("meta", {
-  source: Attr(Schema.String),
-});
+import { Meta, Movie, Movies, User } from "./fixture.ts";
 
 const Tag = Namespace("tag", {
   label: Attr(Schema.String),
 });
-
-const Movies = Catalog({ user: User, movie: Movie, meta: Meta });
 const db = unsafeDatabase(Movies);
 
 // ── generator transact is the happy path ───────────────────────────────────
