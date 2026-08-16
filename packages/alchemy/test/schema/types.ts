@@ -33,6 +33,8 @@ import {
   Long,
   Ref,
   makeSystem,
+  optional,
+  Struct,
   unsafeDatabase,
   unsafeReadDatabase,
   unsafeWriteDatabase,
@@ -191,23 +193,18 @@ const entityFx = db.entity(1001);
 type EntitySuccess = Effect.Success<typeof entityFx>;
 type _entity = Expect<Equal<EntitySuccess, Ada | undefined>>;
 
-const pullFx = db.pull(1001, [User.name, User.age]);
+// Struct pull is the happy path — see pull-types.ts for the full matrix.
+const pullFx = db.pull(1001, Struct({ name: User.name, age: optional(User.age) }));
 type PullSuccess = Effect.Success<typeof pullFx>;
-type _pullName = Expect<
-  Equal<
-    NonNullable<PullSuccess>[":user/name"],
-    string | undefined
-  >
->;
+type _pullName = Expect<Equal<NonNullable<PullSuccess>["name"], string>>;
 type _pullAge = Expect<
-  Equal<NonNullable<PullSuccess>[":user/age"], number | undefined>
+  Equal<NonNullable<PullSuccess>["age"], number | undefined>
 >;
-// pulled pattern does not include :movie/title
-type _pullNoTitle = Expect<
-  Equal<":movie/title" extends keyof NonNullable<PullSuccess> ? true : false, false>
+type _pullNoIdent = Expect<
+  Equal<":user/name" extends keyof NonNullable<PullSuccess> ? true : false, false>
 >;
 
-// keyword-soup pull remains (idents, still catalog-checked)
+// keyword-soup pull remains (idents, still catalog-checked, all optional)
 const pullSoup = db.pull(1001, [":user/name", ":user/age"] as const);
 type _soupName = Expect<
   Equal<NonNullable<Effect.Success<typeof pullSoup>>[":user/name"], string | undefined>
@@ -216,10 +213,10 @@ type _soupAge = Expect<
   Equal<NonNullable<Effect.Success<typeof pullSoup>>[":user/age"], number | undefined>
 >;
 
-// bag: Movie.title on a user eid is legal
-const pullBag = db.pull(1001, [User.name, Movie.title]);
+// bag: Movie.title on a user eid is legal (Struct keys are the rename)
+const pullBag = db.pull(1001, Struct({ name: User.name, title: Movie.title }));
 type _bagTitle = Expect<
-  Equal<NonNullable<Effect.Success<typeof pullBag>>[":movie/title"], string | undefined>
+  Equal<NonNullable<Effect.Success<typeof pullBag>>["title"], string>
 >;
 
 // @ts-expect-error unknown attr on the namespace
