@@ -330,3 +330,127 @@ describe("failures", () => {
     expect(e.message).toBe("<html>502 Bad Gateway</html>");
   });
 });
+
+describe("for (db-per-tenant)", () => {
+  const peer = (fetch: FetchLike) =>
+    Client.make({
+      url: "https://peer.example.com",
+      name: "control",
+      token: Redacted.make("s3cret"),
+      headers: { "x-ripple-replica-hint": "enam" },
+      fetch,
+    });
+
+  test("routes to /db/:tenant/* and leaves the client it came from alone", async () => {
+    const { calls, fetch } = recorder(() => ({ body: { t: 1, root: 0, result: [] } }));
+    const db = peer(fetch);
+    const tenant = db.for("tenant-x");
+
+    await run(tenant.transact([{ ":user/name": "Ada" }]));
+    await run(tenant.q("[]"));
+    await run(db.q("[]"));
+
+    expect(calls.map((c) => c.url)).toEqual([
+      "https://peer.example.com/db/tenant-x/transact",
+      "https://peer.example.com/db/tenant-x/query",
+      "https://peer.example.com/db/control/query",
+    ]);
+  });
+
+  test("the same fetch, token and headers carry over", async () => {
+    const { calls, fetch } = recorder(() => ({ body: {} }));
+    const db = peer(fetch);
+
+    await run(db.info());
+    await run(db.for("tenant-x").info());
+
+    // one recorder saw both: `for` reuses the very same FetchLike object
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.headers.authorization).toBe("Bearer s3cret");
+      expect(call.headers["x-ripple-replica-hint"]).toBe("enam");
+    }
+  });
+
+  test("a valid name survives percent-encoding unchanged", async () => {
+    const { calls, fetch } = recorder(() => ({ body: {} }));
+    await run(peer(fetch).for("a.b-c_1").info());
+    expect(calls[0].url).toBe("https://peer.example.com/db/a.b-c_1/info");
+  });
+
+  describe("an invalid name fails every request with BadRequest", () => {
+    for (const [label, name] of [
+      ["empty", ""],
+      ["leading dash", "-bad"],
+      ["a slash", "a/b"],
+      ["65 characters", "a".repeat(65)],
+      ["traversal", "../etc"],
+    ] as const) {
+      test(label, async () => {
+        const { calls, fetch } = recorder(() => ({ body: {} }));
+        const db = peer(fetch);
+
+        // never throws: `for` hands back a client, the failure is in the Effect
+        const bad = db.for(name);
+
+        for (const eff of [
+          bad.q("[]"),
+          bad.query("[]"),
+          bad.pull(17, "[*]"),
+          bad.entity(17),
+          bad.info(),
+          bad.health(),
+          bad.asOf(7).q("[]"),
+          bad.history().q("[]"),
+          bad.for("recovered").q("[]"),
+          bad.transact([]),
+        ]) {
+          const e = await runFail(eff);
+          expect(e._tag).toBe("BadRequest");
+          expect(e.message).toContain(JSON.stringify(name));
+        }
+        expect(calls).toHaveLength(0);
+      });
+    }
+  });
+
+  test("composes with asOf / history in either order", async () => {
+    const { calls, fetch } = recorder(() => ({ body: { t: 1, root: 0, result: [] } }));
+    const db = peer(fetch);
+
+    await run(db.for("t").asOf(7).q("[]"));
+    await run(db.asOf(7).for("t").q("[]"));
+    await run(db.for("t").history().pull(17, "[*]"));
+
+    expect(calls[0].url).toBe("https://peer.example.com/db/t/query");
+    expect(calls[0].body).toEqual({ query: "[]", inputs: [], asOf: 7 });
+    expect(calls[1].url).toBe(calls[0].url);
+    expect(calls[1].body).toEqual(calls[0].body);
+    expect(calls[2].url).toBe("https://peer.example.com/db/t/pull");
+    expect(calls[2].body).toEqual({ eid: 17, pattern: "[*]", history: true });
+  });
+
+  test("chaining for again re-points from the peer, not from the last name", async () => {
+    const { calls, fetch } = recorder(() => ({ body: {} }));
+    await run(peer(fetch).for("a").for("b").info());
+    expect(calls[0].url).toBe("https://peer.example.com/db/b/info");
+  });
+
+  test("the read half's for stays read-only and the write half's write-only", async () => {
+    const { calls, fetch } = recorder(() => ({ body: { t: 1, root: 0, result: [] } }));
+    const source = Client.source({ url: "https://peer.example.com", name: "control", fetch });
+
+    const read = Client.makeReadClient(source).for("tenant-x");
+    const write = Client.makeWriteClient(source).for("tenant-x");
+
+    expect("transact" in read).toBe(false);
+    expect("q" in write).toBe(false);
+
+    await run(read.q("[]"));
+    await run(write.transact([]));
+    expect(calls.map((c) => c.url)).toEqual([
+      "https://peer.example.com/db/tenant-x/query",
+      "https://peer.example.com/db/tenant-x/transact",
+    ]);
+  });
+});

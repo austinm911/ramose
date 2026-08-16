@@ -18,7 +18,9 @@ import type { TxData } from "@ripple/core";
 import type { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
+import { DATABASE_NAME_RE, invalidDatabaseName } from "./DatabaseName.ts";
 import {
+  type BadRequest,
   type DatabaseError,
   fromResponse,
   NetworkError,
@@ -136,23 +138,78 @@ export interface ReadDatabaseClient {
   asOf(t: number): ReadDatabaseClient;
   /** History view — asserts *and* retracts, with tx and op. */
   history(): ReadDatabaseClient;
+  /**
+   * The same peer, fetch, token and headers, against Ripple database `name`
+   * (db-per-tenant). Invalid names fail every request with `BadRequest`.
+   */
+  for(name: string): ReadDatabaseClient;
 }
 
 /** Write half. */
 export interface WriteDatabaseClient {
   /** Submit a transaction; resolves once it is committed and durable. */
   transact(tx: TxData): Effect.Effect<TxAck, DatabaseError, RuntimeContext>;
+  /**
+   * The same peer, fetch, token and headers, against Ripple database `name`
+   * (db-per-tenant). Invalid names fail every request with `BadRequest`.
+   */
+  for(name: string): WriteDatabaseClient;
 }
 
 export interface ReadWriteDatabaseClient
   extends ReadDatabaseClient,
-    WriteDatabaseClient {}
+    WriteDatabaseClient {
+  /**
+   * The same peer, fetch, token and headers, against Ripple database `name`
+   * (db-per-tenant). Invalid names fail every request with `BadRequest`.
+   */
+  for(name: string): ReadWriteDatabaseClient;
+}
 
 /** The `asOf` / `history` coordinates a read view carries. */
 interface View {
   readonly asOf?: number | undefined;
   readonly history?: boolean | undefined;
 }
+
+/**
+ * What a built client actually holds: the source, plus — when `for` was handed
+ * a name the peer would reject — the failure every request answers with
+ * instead of going near the network. `for` never throws, so the bad name has
+ * to be carried until someone runs an Effect.
+ */
+interface Target {
+  readonly source: DatabaseSource;
+  readonly invalid?: BadRequest | undefined;
+}
+
+/**
+ * Re-point a target at another Ripple database. Everything but
+ * `endpoint.name` — url, token, headers, and the `fetch` function object
+ * itself — is reused by reference; only the resolved endpoint is rewritten,
+ * so an Alchemy Output still resolves lazily, per call.
+ *
+ * A name the peer would reject does not throw and does not silently fall back
+ * to the old database: it poisons the returned client, whose every method
+ * (`health` included, so there is one rule to remember) fails with
+ * `BadRequest`. An already-poisoned target stays poisoned by its first bad
+ * name.
+ */
+const forName = (target: Target, name: string): Target =>
+  DATABASE_NAME_RE.test(name)
+    ? {
+        source: {
+          endpoint: target.source.endpoint.pipe(
+            Effect.map((endpoint) => ({ ...endpoint, name })),
+          ),
+          fetch: target.source.fetch,
+        },
+        invalid: target.invalid,
+      }
+    : {
+        source: target.source,
+        invalid: target.invalid ?? invalidDatabaseName(name),
+      };
 
 const number = (s: string | null): number | null =>
   s === null ? null : Number(s);
@@ -191,13 +248,15 @@ interface RawResult {
 
 /** One request: JSON in, `fromJson` out, non-2xx classified into a tagged failure. */
 const send = (
-  source: DatabaseSource,
+  target: Target,
   method: string,
   path: (name: string) => string,
   body?: unknown,
   extra?: Record<string, string>,
 ): Effect.Effect<RawResult, DatabaseError, RuntimeContext> =>
   Effect.gen(function* () {
+    if (target.invalid !== undefined) return yield* Effect.fail(target.invalid);
+    const source = target.source;
     const endpoint = yield* source.endpoint;
     const headers: Record<string, string> = {
       "content-type": "application/json",
@@ -257,17 +316,14 @@ const record = (value: unknown): Record<string, unknown> =>
     ? value
     : {}) as Record<string, unknown>;
 
-const makeRead = (
-  source: DatabaseSource,
-  view: View,
-): ReadDatabaseClient => {
+const makeRead = (target: Target, view: View): ReadDatabaseClient => {
   const query = <T = unknown>(
     q: string | object,
     inputs: unknown[] = [],
     options: QueryOptions = {},
   ): Effect.Effect<QueryResponse<T>, DatabaseError, RuntimeContext> =>
     send(
-      source,
+      target,
       "POST",
       dbPath("/query"),
       compact({
@@ -305,7 +361,7 @@ const makeRead = (
       pattern: string | unknown[],
     ) =>
       send(
-        source,
+        target,
         "POST",
         dbPath("/pull"),
         compact({
@@ -317,7 +373,7 @@ const makeRead = (
       ).pipe(Effect.map(({ body }) => record(body).result as T)),
     entity: (eid: number) =>
       send(
-        source,
+        target,
         "GET",
         dbPath(
           `/entity/${eid}${view.asOf === undefined ? "" : `?asOf=${view.asOf}`}`,
@@ -331,37 +387,49 @@ const makeRead = (
         }),
       ),
     info: () =>
-      send(source, "GET", dbPath("/info")).pipe(
+      send(target, "GET", dbPath("/info")).pipe(
         Effect.map(({ body }) => record(body)),
       ),
     health: () =>
-      send(source, "GET", () => "/health").pipe(
+      send(target, "GET", () => "/health").pipe(
         Effect.map(({ body }) => record(body) as unknown as DatabaseHealth),
       ),
-    asOf: (t: number) => makeRead(source, { ...view, asOf: t }),
-    history: () => makeRead(source, { ...view, history: true }),
+    asOf: (t: number) => makeRead(target, { ...view, asOf: t }),
+    history: () => makeRead(target, { ...view, history: true }),
+    // `for` keeps the view, so `db.for(n).asOf(t)` and `db.asOf(t).for(n)`
+    // are the same request.
+    for: (name: string) => makeRead(forName(target, name), view),
   };
 };
 
-/** Build the read half of the client. */
-export const makeReadClient = (source: DatabaseSource): ReadDatabaseClient =>
-  makeRead(source, {});
-
-/** Build the write half of the client. */
-export const makeWriteClient = (source: DatabaseSource): WriteDatabaseClient => ({
+const makeWrite = (target: Target): WriteDatabaseClient => ({
   transact: (tx: TxData) =>
-    send(source, "POST", dbPath("/transact"), { tx }).pipe(
+    send(target, "POST", dbPath("/transact"), { tx }).pipe(
       Effect.map(({ body }) => record(body) as unknown as TxAck),
     ),
+  for: (name: string) => makeWrite(forName(target, name)),
 });
+
+const makeReadWrite = (target: Target): ReadWriteDatabaseClient => ({
+  ...makeRead(target, {}),
+  ...makeWrite(target),
+  // Spreading the two halves would leave the write half's `for` (transact and
+  // nothing else) in place; the read-write client re-points both.
+  for: (name: string) => makeReadWrite(forName(target, name)),
+});
+
+/** Build the read half of the client. */
+export const makeReadClient = (source: DatabaseSource): ReadDatabaseClient =>
+  makeRead({ source }, {});
+
+/** Build the write half of the client. */
+export const makeWriteClient = (source: DatabaseSource): WriteDatabaseClient =>
+  makeWrite({ source });
 
 /** Build the read-write client from its two halves. */
 export const makeReadWriteClient = (
   source: DatabaseSource,
-): ReadWriteDatabaseClient => ({
-  ...makeReadClient(source),
-  ...makeWriteClient(source),
-});
+): ReadWriteDatabaseClient => makeReadWrite({ source });
 
 /** The ambient `fetch`, bound once. */
 export const globalFetch: FetchLike = (url, init) =>
@@ -378,7 +446,14 @@ export interface ClientOptions {
   readonly name: string;
   readonly token?: Redacted.Redacted<string> | string | undefined;
   readonly headers?: Record<string, string> | undefined;
-  /** Injection seam — defaults to the ambient `fetch`. */
+  /**
+   * Injection seam — defaults to the ambient `fetch`.
+   *
+   * A Worker service binding fits straight through it, which keeps the request
+   * on Cloudflare's internal network instead of the public internet:
+   * `fetch: (url, init) => env.Movies.fetch(url, init)`. `url` is then only a
+   * routing key for the peer, so any absolute base works.
+   */
   readonly fetch?: FetchLike | undefined;
 }
 
@@ -401,6 +476,21 @@ export const source = (options: ClientOptions): DatabaseSource => ({
  * ```typescript
  * const db = Ripple.Client.make({ url: "https://ripple.example.workers.dev", name: "movies" });
  * const rows = yield* db.q(`[:find ?n :where [?e :user/name ?n]]`);
+ * ```
+ *
+ * `name` is only the default database. One client — one peer, one token, one
+ * `fetch` — reaches all of them through `for`, which is how db-per-tenant is
+ * meant to be done: a Worker passes its service binding in as the `fetch` and
+ * picks the database per request.
+ *
+ * @example Db-per-tenant over a service binding
+ * ```typescript
+ * const peer = Ripple.Client.make({
+ *   url: "https://peer",                       // routing key only
+ *   name: "control",
+ *   fetch: (url, init) => env.Movies.fetch(url, init),
+ * });
+ * const ack = yield* peer.for(tenantId).transact([{ ":user/name": "Ada" }]);
  * ```
  */
 export const make = (options: ClientOptions): ReadWriteDatabaseClient =>

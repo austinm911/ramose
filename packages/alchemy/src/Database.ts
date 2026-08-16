@@ -50,6 +50,7 @@ import { isResourceOfType, Resource } from "alchemy/Resource";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
+import { DATABASE_NAME_RE, invalidDatabaseName } from "./DatabaseName.ts";
 import { BadRequest, NetworkError } from "./DatabaseTypes.ts";
 import type { Providers } from "./Providers.ts";
 
@@ -152,8 +153,7 @@ export const Database = Object.assign(
   DatabaseResource,
 ) as typeof DatabaseResource;
 
-/** A Ripple database name, as the peer Worker validates it (`validDbName`). */
-export const DATABASE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
+export { DATABASE_NAME_RE } from "./DatabaseName.ts";
 
 /** Coerce a generated physical name into something `DATABASE_NAME_RE` accepts. */
 export const sanitizeDatabaseName = (name: string): string =>
@@ -244,11 +244,7 @@ const attributes = Effect.fn(function* (
 ) {
   const name = yield* resolveName(id, props.name);
   if (!DATABASE_NAME_RE.test(name)) {
-    return yield* Effect.fail(
-      new BadRequest({
-        message: `ripple: invalid database name ${JSON.stringify(name)} — must match ${DATABASE_NAME_RE}`,
-      }),
-    );
+    return yield* Effect.fail(invalidDatabaseName(name));
   }
   const peer = resolvePeer(props.peer);
   if (peer.url === undefined || peer.url === "") {
