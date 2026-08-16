@@ -20,6 +20,8 @@ export interface RippleEnv {
   RIPPLE_RETAIN_ROOTS?: string;
   /** group commit: max txs per storage write (0 = unbounded) */
   RIPPLE_MAX_BATCH?: string;
+  /** "1" = timing fences in the commit loop (diagnostics; Workers clock only advances across I/O) */
+  RIPPLE_TIMING_YIELDS?: string;
   /** query memory guardrail: max intermediate cells (rows × columns) per query */
   RIPPLE_QUERY_MAX_CELLS?: string;
   /** structured log level for all components: debug | info | warn | error (default info) */

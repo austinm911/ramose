@@ -34,7 +34,7 @@ import { QueryReplicaDO, dbFromBasis } from "@ripple/replica";
 import * as Effect from "effect/Effect";
 import { Analytics, type Route, bindingOf, fromBinding, httpPoint, routeOf } from "./analytics.ts";
 import { BadRequest, type Internal, NotFound, type QueryBudgetExceeded, type RippleError, Unauthorized, UpstreamError, fromThrown, toHttp } from "./errors.ts";
-import { basisHeaders, fetchBasisWithStats, hintOf, invalidateBasis, regionOf, replicaId, segmentSource } from "./peer.ts";
+import { basisHeaders, coloHeader, fetchBasisWithStats, hintOf, invalidateBasis, regionOf, replicaId, segmentSource } from "./peer.ts";
 import { DEMO_HTML } from "./demo.ts";
 
 export { TransactorDO, QueryReplicaDO };
@@ -135,7 +135,7 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
 
   // ---- writes → Transactor DO
   if (rest === "/transact" && request.method === "POST") {
-    const res = await transactor().fetch(txUrl("/transact"), { method: "POST", body: await request.text(), headers: { "content-type": "application/json" } });
+    const res = await transactor().fetch(txUrl("/transact"), { method: "POST", body: await request.text(), headers: { "content-type": "application/json", ...coloHeader(request) } });
     invalidateBasis(db); // a write through this Worker must be visible to this isolate's next cached read
     const ms = Date.now() - t0;
     peerMetrics.transacts.mark(1);
@@ -147,13 +147,13 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
   }
   if (rest === "/admin/replica/reconnect" && request.method === "POST") {
     // chaos/ops: drop the nearest replica's novelty subscription; it must resume with no missed datoms
-    const res = await env.REPLICA.get(replicaId(env, db, regionOf(request), 1, hintOf(request, env))).fetch(`https://replica/admin/reconnect?db=${encodeURIComponent(db)}`, { method: "POST" });
+    const res = await env.REPLICA.get(replicaId(env, db, regionOf(request), 1, hintOf(request, env))).fetch(`https://replica/admin/reconnect?db=${encodeURIComponent(db)}`, { method: "POST", headers: coloHeader(request) });
     const headers = { "content-type": "application/json", ...CORS };
     if (!res.ok) throw new UpstreamError({ status: res.status, body: await res.text(), headers });
     return new Response(res.body, { status: res.status, headers });
   }
   if (rest.startsWith("/admin/") && request.method === "POST") {
-    const res = await transactor().fetch(txUrl(rest), { method: "POST" });
+    const res = await transactor().fetch(txUrl(rest), { method: "POST", headers: coloHeader(request) });
     const headers = { "content-type": "application/json", ...CORS };
     if (!res.ok) throw new UpstreamError({ status: res.status, body: await res.text(), headers });
     return new Response(res.body, { status: res.status, headers });
@@ -200,8 +200,8 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
   }
   if (rest === "/info" && request.method === "GET") {
     const [tx, rep] = await Promise.all([
-      transactor().fetch(txUrl("/info")).then((r) => r.json()),
-      env.REPLICA.get(replicaId(env, db, regionOf(request), 1, hintOf(request, env))).fetch(`https://replica/info?db=${encodeURIComponent(db)}`).then((r) => r.json()),
+      transactor().fetch(txUrl("/info"), { headers: coloHeader(request) }).then((r) => r.json()),
+      env.REPLICA.get(replicaId(env, db, regionOf(request), 1, hintOf(request, env))).fetch(`https://replica/info?db=${encodeURIComponent(db)}`, { headers: coloHeader(request) }).then((r) => r.json()),
     ]);
     return json({
       db,

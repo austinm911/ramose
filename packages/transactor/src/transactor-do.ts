@@ -29,6 +29,7 @@ export function configFromEnv(env: RippleEnv): TransactorConfig {
     gcEveryNIndexes: envInt(env.RIPPLE_GC_EVERY_N_INDEXES, DEFAULT_CONFIG.gcEveryNIndexes),
     retainRoots: envInt(env.RIPPLE_RETAIN_ROOTS, DEFAULT_CONFIG.retainRoots),
     maxBatch: envInt(env.RIPPLE_MAX_BATCH, DEFAULT_CONFIG.maxBatch),
+    timingYields: env.RIPPLE_TIMING_YIELDS === "1",
   };
 }
 

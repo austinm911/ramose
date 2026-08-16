@@ -75,6 +75,12 @@ export interface TransactorStats {
   resolveMs: number;
   /** ms of wall clock per batch from dequeue to ack ("other" = loopMs - resolveMs - commitMs) */
   loopMs: number;
+  /**
+   * ms measured by the per-batch calibration fence (config.timingYields only;
+   * 0 when off). Each timed section is closed by one such fence, so the fence's
+   * own latency is the bias of resolveMs/commitMs: corrected ≈ x - fenceMs/batches.
+   */
+  fenceMs: number;
 }
 
 interface Pending {
@@ -107,7 +113,7 @@ export class Transactor {
   private indexer!: Indexer;
   private txSinceIndex = 0;
   private dead: string | undefined;
-  readonly stats: TransactorStats = { txs: 0, batches: 0, maxBatch: 0, rejected: 0, indexRuns: 0, broadcasts: 0, commitMs: 0, resolveMs: 0, loopMs: 0 };
+  readonly stats: TransactorStats = { txs: 0, batches: 0, maxBatch: 0, rejected: 0, indexRuns: 0, broadcasts: 0, commitMs: 0, resolveMs: 0, loopMs: 0, fenceMs: 0 };
   /** metrics: tx/s over the last 10 s, batch-size and commit-latency distributions */
   readonly txRate = new RateMeter(10_000);
   readonly batchSizes = new Histogram([1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]);
@@ -115,6 +121,8 @@ export class Transactor {
   /** per-batch resolve time and dequeue→ack wall time (commit time is `commitLatency`) */
   readonly resolveLatency = new Histogram();
   readonly loopLatency = new Histogram();
+  /** cost of one event-loop fence, measured once per batch when config.timingYields is on */
+  readonly fenceLatency = new Histogram();
   /** Analytics Engine sink (no-op when the host has no dataset bound) */
   readonly metrics: TxMetrics;
   private readonly log: Logger;
@@ -284,11 +292,24 @@ export class Transactor {
   private async commitLoop(): Promise<void> {
     try {
       await this.init();
+      const fences = this.host.config.timingYields;
       while (this.queue.length > 0 && this.dead === undefined) {
         // Open the batching window: yield to the event loop once so requests
         // that are already in flight (separate events in a Durable Object)
         // land in the queue and share the coming storage write.
         await yieldToEventLoop();
+        // Diagnostics (config.timingYields): one calibration fence per batch.
+        // On Cloudflare the clock does not advance inside a synchronous turn,
+        // so every timing below is really "clock advance across a fence"; this
+        // measures what one fence costs on its own, i.e. the bias of the rest.
+        let fenceMs = 0;
+        if (fences) {
+          const tFence = performance.now();
+          await yieldToEventLoop();
+          fenceMs = performance.now() - tFence;
+          this.stats.fenceMs += fenceMs;
+          this.fenceLatency.observe(fenceMs);
+        }
         // Everything queued while the previous batch was in flight forms the next batch.
         const queueDepth = this.queue.length; // pending txs at dequeue (includes this batch)
         const tLoop = performance.now();
@@ -308,6 +329,8 @@ export class Transactor {
             p.reject(err);
           }
         }
+        // fence after the resolve section so the clock advances past it (diagnostics only)
+        if (fences) await yieldToEventLoop();
         const resolveMs = performance.now() - tResolve;
         this.stats.resolveMs += resolveMs;
         if (entries.length === 0) continue;
@@ -324,6 +347,9 @@ export class Transactor {
           this.die(`log write failed: ${err instanceof Error ? err.message : String(err)}`, err, acks.map((a) => a.p));
           return;
         }
+        // fence after the storage write, before the acks: persist-before-ack is
+        // unaffected (the write already returned) (diagnostics only)
+        if (fences) await yieldToEventLoop();
         const writeMs = performance.now() - tWrite;
         this.stats.commitMs += writeMs;
         this.stats.txs += entries.length;
@@ -348,6 +374,7 @@ export class Transactor {
           batchSize: entries.length,
           queueDepth,
           noveltyDatoms: this.conn.noveltyCount,
+          fenceMs,
           txOk: entries.length,
           txErr: batch.length - entries.length,
         });
@@ -448,6 +475,7 @@ export class Transactor {
       earliestLogT: this.earliestLogT(),
       nextEid: this.conn.nextEntityId,
       subscribers: this.host.sockets().length,
+      opts: { timingYields: this.host.config.timingYields, maxBatch: this.host.config.maxBatch },
       stats: this.stats,
       metrics: {
         txPerSec: round(this.txRate.rate(this.host.now())),
@@ -461,6 +489,8 @@ export class Transactor {
         batchResolveMs: this.resolveLatency.snapshot(),
         batchCommitMs: this.commitLatency.snapshot(),
         batchLoopMs: this.loopLatency.snapshot(),
+        // fence cost per batch (config.timingYields; all zero when off) — the bias to subtract
+        fenceMs: this.fenceLatency.snapshot(),
         noveltyDatoms: this.conn.noveltyCount,
         queueDepth: this.queue.length,
         ...this.metrics.snapshot(),
@@ -481,7 +511,8 @@ export class Transactor {
    */
   async handleRequest(request: Request): Promise<Response> {
     await this.init();
-    this.metrics.observeColo((request as { cf?: { colo?: string } }).cf?.colo);
+    // Worker→DO subrequests have no `request.cf`; the Worker forwards its own colo as a header.
+    this.metrics.observeColo((request as { cf?: { colo?: string } }).cf?.colo ?? request.headers.get("x-ripple-colo") ?? undefined);
     const url = new URL(request.url);
     return Effect.runPromise(
       Effect.tryPromise({ try: () => this.route(request, url), catch: toHttpError }).pipe(

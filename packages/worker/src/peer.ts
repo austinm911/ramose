@@ -93,6 +93,17 @@ export function hintOf(request: Request, env?: Pick<RippleEnv, "RIPPLE_REPLICA_H
   return hintFor(regionOf(request)); // "continent" or anything unknown
 }
 
+/**
+ * Colo of the inbound edge request. Worker→DO subrequests carry no `request.cf`,
+ * so the DO can only learn its caller's colo if we forward it as a header.
+ */
+export function coloOf(request: Request): string {
+  return String((request as any).cf?.colo ?? "unknown");
+}
+export function coloHeader(request: Request): Record<string, string> {
+  return { "x-ripple-colo": coloOf(request) };
+}
+
 /** Nearest replica stub for a request (deterministic id + location hint). */
 export function nearestReplica(env: RippleEnv, db: string, request: Request): DurableObjectStub {
   const region = regionOf(request);
@@ -168,7 +179,7 @@ export async function fetchBasisWithStats(env: RippleEnv, db: string, request: R
   let basis: Basis;
   for (;;) {
     calls++;
-    const res = await stub.fetch(`https://replica/basis?db=${encodeURIComponent(db)}`);
+    const res = await stub.fetch(`https://replica/basis?db=${encodeURIComponent(db)}`, { headers: coloHeader(request) });
     if (!res.ok) throw new Error(`replica basis failed: ${res.status} ${await res.text()}`);
     basis = (await res.json()) as Basis;
     if (minT === undefined || basis.t >= minT || calls > MIN_T_RETRIES) break;

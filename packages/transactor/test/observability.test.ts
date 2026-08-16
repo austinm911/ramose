@@ -33,8 +33,9 @@ describe("observability: analytics engine data points", () => {
     for (const p of batchPoints) {
       expect(p.indexes).toEqual(["test"]); // indexes[0] = db
       expect(p.blobs).toEqual(["batch", "test", "unknown"]); // blob1 stage, blob2 db, blob3 colo
-      expect(p.doubles).toHaveLength(7);
-      const [resolveMs, commitMs, batchSize, queueDepth, noveltyDatoms, txOk, txErr] = p.doubles!;
+      expect(p.doubles).toHaveLength(8);
+      const [resolveMs, commitMs, batchSize, queueDepth, noveltyDatoms, txOk, txErr, fenceMs] = p.doubles!;
+      expect(fenceMs).toBe(0); // timing fences off by default
       expect(resolveMs).toBeGreaterThanOrEqual(0);
       expect(commitMs).toBeGreaterThanOrEqual(0);
       expect(batchSize).toBeGreaterThan(0);
@@ -123,10 +124,44 @@ describe("observability: analytics engine data points", () => {
     expect(on.colo).toBe("unknown");
     on.observeColo("LHR");
     on.batch({ db: "d", resolveMs: 1, commitMs: 2, batchSize: 3, queueDepth: 4, noveltyDatoms: 5, txOk: 3, txErr: 0 });
-    expect(ae.points).toEqual([{ indexes: ["d"], blobs: ["batch", "d", "LHR"], doubles: [1, 2, 3, 4, 5, 3, 0] }]);
+    expect(ae.points).toEqual([{ indexes: ["d"], blobs: ["batch", "d", "LHR"], doubles: [1, 2, 3, 4, 5, 3, 0, 0] }]);
     on.index({ db: "d", indexMs: 9, txs: 8, datoms: 7, noveltyDatoms: 6 });
     expect(ae.points[1]).toEqual({ indexes: ["d"], blobs: ["index", "d", "LHR"], doubles: [9, 0, 8, 0, 6, 7, 0] });
     expect(on.snapshot()).toEqual({ enabled: true, colo: "LHR", aeWrites: 2, aeErrors: 0 });
+  });
+});
+
+describe("observability: timing fences (config.timingYields)", () => {
+  test("off by default: no fence samples, fence columns zero", async () => {
+    const ae = new FakeAnalytics();
+    const h = await fresh(ae, { indexTxThreshold: 1_000_000, indexIntervalMs: 1_000_000 });
+    await Promise.all(Array.from({ length: 20 }, (_, i) => h.transactor.transact([{ ":k/id": i }])));
+    expect(h.transactor.info().opts.timingYields).toBe(false);
+    expect(h.transactor.stats.fenceMs).toBe(0);
+    expect(h.transactor.info().metrics.fenceMs.count).toBe(0);
+    expect(ae.ofStage("batch").every((p) => p.doubles![7] === 0)).toBe(true);
+  });
+
+  test("on: one calibration fence per batch, reported in /info and double8", async () => {
+    const ae = new FakeAnalytics();
+    const h = await fresh(ae, { indexTxThreshold: 1_000_000, indexIntervalMs: 1_000_000, timingYields: true });
+    const N = 50;
+    const acks = await Promise.all(Array.from({ length: N }, (_, i) => h.transactor.transact([{ ":k/id": i }])));
+    expect(acks).toHaveLength(N); // acks still only resolve after the storage write
+    expect(h.transactor.t).toBe(acks.at(-1)!.t);
+
+    const info = h.transactor.info();
+    expect(info.opts.timingYields).toBe(true);
+    expect(info.metrics.fenceMs.count).toBeGreaterThanOrEqual(info.stats.batches);
+    expect(info.stats.fenceMs).toBeGreaterThanOrEqual(0);
+    // the loop still brackets resolve + commit, and every batch point carries its fence
+    expect(info.stats.loopMs).toBeGreaterThanOrEqual(info.stats.resolveMs + info.stats.commitMs - 1e-6);
+    const points = ae.ofStage("batch");
+    expect(points.length).toBe(info.stats.batches);
+    for (const p of points) {
+      expect(p.doubles).toHaveLength(8);
+      expect(p.doubles![7]).toBeGreaterThanOrEqual(0);
+    }
   });
 });
 

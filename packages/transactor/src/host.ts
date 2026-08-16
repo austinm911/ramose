@@ -41,6 +41,14 @@ export interface TransactorConfig {
   retainRoots: number;
   /** cap on txs coalesced into one storage write (0 = unbounded) */
   maxBatch: number;
+  /**
+   * Diagnostics only (default false): insert `await`-fences around the resolve
+   * and commit sections of the group-commit loop so a runtime whose clock only
+   * advances across I/O (Cloudflare Workers) produces non-zero resolve/commit
+   * timings, plus one calibration fence per batch measuring the fence's own
+   * cost (`stats.fenceMs`). Off = the loop runs with no extra awaits.
+   */
+  timingYields: boolean;
 }
 
 export const DEFAULT_CONFIG: TransactorConfig = {
@@ -51,6 +59,7 @@ export const DEFAULT_CONFIG: TransactorConfig = {
   gcEveryNIndexes: 50,
   retainRoots: 20,
   maxBatch: 0,
+  timingYields: false,
 };
 
 export interface TransactorHost {

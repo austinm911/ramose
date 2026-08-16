@@ -22,6 +22,9 @@
  *     double5 = novelty_datoms un-indexed datoms held in memory after the commit
  *     double6 = tx_ok          txs acked
  *     double7 = tx_err         txs rejected while resolving this batch
+ *     double8 = fence_ms       cost of one event-loop fence, measured once for this batch
+ *                              (config.timingYields; 0 when off). With fences on, double1/2
+ *                              are clock advance across a fence, so subtract this as the bias.
  *
  *   stage = "index" (same columns, indexer semantics):
  *     double1 = index_ms       wall time of the indexer run
@@ -31,6 +34,7 @@
  *     double5 = novelty_datoms novelty held *before* the merge/flush
  *     double6 = datoms         datoms merged
  *     double7 = 0
+ *     (no double8 — index runs are not fenced)
  *
  * `loopMs` (dequeue → ack) is not a column: it is exposed in /info so
  * "other" = loopMs − resolve_ms − commit_ms can be computed per batch.
@@ -54,6 +58,8 @@ export interface BatchPoint {
   noveltyDatoms: number;
   txOk: number;
   txErr: number;
+  /** cost of one event-loop fence for this batch (0 unless config.timingYields) */
+  fenceMs?: number;
 }
 
 export interface IndexPoint {
@@ -86,7 +92,7 @@ export class TxMetrics {
   }
 
   batch(p: BatchPoint): void {
-    this.write("batch", p.db, [p.resolveMs, p.commitMs, p.batchSize, p.queueDepth, p.noveltyDatoms, p.txOk, p.txErr]);
+    this.write("batch", p.db, [p.resolveMs, p.commitMs, p.batchSize, p.queueDepth, p.noveltyDatoms, p.txOk, p.txErr, p.fenceMs ?? 0]);
   }
 
   index(p: IndexPoint): void {

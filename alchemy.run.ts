@@ -62,7 +62,7 @@ export const Worker = Cloudflare.Worker("Worker", {
     ANALYTICS: Analytics,
     RIPPLE_STAGE: stage,
     // tuning knobs (see packages/transactor/src/env.ts); only bound when set
-    ...tuning("RIPPLE_MAX_BATCH", "RIPPLE_QUERY_MAX_CELLS", "RIPPLE_LOG_LEVEL", "RIPPLE_INDEX_TX_THRESHOLD", "RIPPLE_INDEX_INTERVAL_MS", "RIPPLE_LOG_KEEP_TXS", "RIPPLE_REPLICA_HINT", "RIPPLE_CACHE_BASIS", "RIPPLE_CACHE_MODE"),
+    ...tuning("RIPPLE_MAX_BATCH", "RIPPLE_QUERY_MAX_CELLS", "RIPPLE_LOG_LEVEL", "RIPPLE_INDEX_TX_THRESHOLD", "RIPPLE_INDEX_INTERVAL_MS", "RIPPLE_LOG_KEEP_TXS", "RIPPLE_REPLICA_HINT", "RIPPLE_CACHE_BASIS", "RIPPLE_CACHE_MODE", "RIPPLE_TIMING_YIELDS"),
     // RIPPLE_TOKENS: Config.redacted("RIPPLE_TOKENS")  ← per-db bearer tokens for prod
   },
 });
