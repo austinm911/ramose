@@ -6,6 +6,7 @@ import type { QueryOptions, QueryResponse } from "../Client.ts";
 import type { DatabaseError } from "../DatabaseTypes.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import type { Eid } from "./Eid.ts";
+import { noPeer, type MissingPeer } from "./Errors.ts";
 import type { AttrAtIdent, CatalogIdent, ValueAtIdent } from "./idents.ts";
 
 export type QueryVar = `?${string}`;
@@ -136,13 +137,6 @@ export interface QuerySpec {
   readonly eidVars?: readonly string[] | undefined;
 }
 
-const die = <A, E = never, R = RuntimeContext>(
-  what: string,
-): Effect.Effect<A, E, R> =>
-  Effect.die(
-    new Error(`ripple/schema: proposal stub — ${what} (no peer I/O)`),
-  );
-
 const isAttrRef = (a: unknown): a is { readonly ident: string } =>
   typeof a === "object" &&
   a !== null &&
@@ -221,14 +215,14 @@ export interface QueryBuilder<
    */
   find<const Vars extends readonly QueryVar[]>(
     ...vars: Vars
-  ): Effect.Effect<FindRows<B, Vars>, DatabaseError, RuntimeContext>;
+  ): Effect.Effect<FindRows<B, Vars>, DatabaseError | MissingPeer, RuntimeContext>;
 
   /** Same as {@link find} but keeps `t` / `root` / `explain` / meta. */
   query<const Vars extends readonly QueryVar[]>(
     ...vars: Vars
   ): Effect.Effect<
     QueryResponse<FindRows<B, Vars>>,
-    DatabaseError,
+    DatabaseError | MissingPeer,
     RuntimeContext
   >;
 }
@@ -266,13 +260,13 @@ const makeBuilder = <C extends AnyCatalog, B extends object>(
       ? (io.find({ ...spec, find: vars }, vars) as ReturnType<
           QueryBuilder<C, B>["find"]
         >)
-      : die("q"),
+      : noPeer("q"),
   query: (...vars: readonly QueryVar[]) =>
     io
       ? (io.query({ ...spec, find: vars }, vars) as ReturnType<
           QueryBuilder<C, B>["query"]
         >)
-      : die("query"),
+      : noPeer("query"),
 }) as unknown as QueryBuilder<C, B>;
 
 /**

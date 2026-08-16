@@ -91,6 +91,7 @@ export const program = Effect.gen(function* () {
     NotFound: (e) => Effect.succeed({ error: e._tag, message: e.message }),
     Internal: (e) => Effect.succeed({ error: e._tag, message: e.message }),
     NetworkError: (e) => Effect.succeed({ error: e._tag, message: e.message }),
+    MissingPeer: (e) => Effect.succeed({ error: e._tag, message: e.message }),
   }),
 );
 

@@ -1,7 +1,7 @@
 /** Catalog-generic transaction builder. `transact(function* (tx) { … })` is the happy path. */
 
 import * as Effect from "effect/Effect";
-import type { AnyAttribute, ValueOf } from "./Attribute.ts";
+import { BadRequest } from "../DatabaseTypes.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import type {
   CatalogIdent,
@@ -244,32 +244,80 @@ export const txBuilder = <C extends AnyCatalog>(catalog: C): TxBuilder<C> => {
   return builder;
 };
 
-// ── secondary: nested maps / wire / list ops ───────────────────────────────
+// ── wire / list ops ────────────────────────────────────────────────────────
 
-type NamespaceName<C extends AnyCatalog> = {
-  [K in keyof C["namespaces"]]: C["namespaces"][K]["ns"];
-}[keyof C["namespaces"]];
+const catalogIdents = (catalog: AnyCatalog): Set<string> => {
+  const out = new Set<string>();
+  for (const ns of Object.values(catalog.namespaces)) {
+    for (const key of Object.keys(ns.attributes)) {
+      out.add(`:${ns.ns}/${key}`);
+    }
+  }
+  return out;
+};
 
-type NamespaceByName<C extends AnyCatalog, Name extends string> = {
-  [K in keyof C["namespaces"]]: C["namespaces"][K]["ns"] extends Name
-    ? C["namespaces"][K]
-    : never;
-}[keyof C["namespaces"]];
+const unknownAttr = (ident: unknown): BadRequest =>
+  new BadRequest({
+    message: `ripple/schema: unknown attribute ${String(ident)}`,
+  });
 
-type AttrWrites<A extends AnyAttribute> = A["cardinality"] extends "many"
-  ? ReadonlyArray<ValueOf<A>>
-  : ValueOf<A>;
-
-type NamespaceWrites<N extends { readonly attributes: Record<string, AnyAttribute> }> =
-  {
-    [A in keyof N["attributes"]]+?: AttrWrites<N["attributes"][A]>;
-  };
-
-/** Nested entity map — secondary form, not the happy path. */
-export type NestedEntity<C extends AnyCatalog> = {
-  readonly ":db/id"?: EntityRef<C>;
-} & {
-  [Name in NamespaceName<C>]+?: NamespaceWrites<NamespaceByName<C, Name>>;
+/**
+ * Catalog-check a keyword-soup / list-form tx and copy it to a fresh
+ * `unknown[]` the untyped client can submit. Unknown idents fail with
+ * `BadRequest` — no silent cast past the bag.
+ */
+export const lowerWireTx = (
+  catalog: AnyCatalog,
+  tx: readonly unknown[],
+): Effect.Effect<unknown[], BadRequest> => {
+  const idents = catalogIdents(catalog);
+  const out: unknown[] = [];
+  for (const item of tx) {
+    if (Array.isArray(item)) {
+      const op = item[0];
+      if (op === ":db/retractEntity") {
+        out.push([op, item[1]]);
+        continue;
+      }
+      if (op === ":db/add" || op === ":db/retract") {
+        const ident = item[2];
+        if (typeof ident !== "string" || !idents.has(ident)) {
+          return Effect.fail(unknownAttr(ident));
+        }
+        out.push(
+          item.length >= 4
+            ? [op, item[1], ident, item[3]]
+            : [op, item[1], ident],
+        );
+        continue;
+      }
+      return Effect.fail(
+        new BadRequest({
+          message: `ripple/schema: unknown tx op ${String(op)}`,
+        }),
+      );
+    }
+    if (item !== null && typeof item === "object") {
+      const rec = item as Record<string, unknown>;
+      const map: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(rec)) {
+        if (k === ":db/id") {
+          map[k] = v;
+          continue;
+        }
+        if (!idents.has(k)) return Effect.fail(unknownAttr(k));
+        map[k] = v;
+      }
+      out.push(map);
+      continue;
+    }
+    return Effect.fail(
+      new BadRequest({
+        message: `ripple/schema: invalid transactWire item (${typeof item})`,
+      }),
+    );
+  }
+  return Effect.succeed(out);
 };
 
 /** Keyword-soup map the peer already speaks. `transactWire`. */
@@ -293,14 +341,6 @@ export type RetractEntityOp<C extends AnyCatalog> = readonly [
   ":db/retractEntity",
   EntityRef<C>,
 ];
-
-export type TypedTxItem<C extends AnyCatalog> =
-  | NestedEntity<C>
-  | AddOp<C>
-  | RetractOp<C>
-  | RetractEntityOp<C>;
-
-export type TypedTx<C extends AnyCatalog> = readonly TypedTxItem<C>[];
 
 export type WireTxItem<C extends AnyCatalog> =
   | WireEntity<C>
