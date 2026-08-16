@@ -15,7 +15,6 @@ import { Catalog } from "./Catalog.ts";
 import { makeSystem } from "./Client.ts";
 import { SchemaEnsureError } from "./Errors.ts";
 import { Namespace } from "./Namespace.ts";
-import { nested, optional, Struct } from "./Pull.ts";
 import { Long, Ref } from "./valueTypes.ts";
 
 export const User = Namespace("user", {
@@ -41,8 +40,8 @@ export const Movies = Catalog({ user: User, movie: Movie, meta: Meta });
  * The happy path an Effect-savvy caller writes: `yield*`, inferred
  * success, `catchTags` on the tagged channel. One entity is a bag —
  * User.name and Meta.source on the same handle. `ada.add` is the write;
- * `pull` is a Struct of those attr refs (keys are the names that come
- * back); `q` takes the same refs in `where`.
+ * `pull` is a plain object of those attr refs (keys are the names that
+ * come back); `q` takes the same refs in `where`.
  */
 export const program = Effect.gen(function* () {
   const system = makeSystem({ url: "https://ripple.example.workers.dev" });
@@ -62,23 +61,24 @@ export const program = Effect.gen(function* () {
 
   const ada = yield* db.entity(1001);
 
-  const Friend = Struct({
+  const pulled = yield* db.pull(1001, {
     name: User.name,
-    age: optional(User.age),
-  });
-  // required name: string; optional age: number | undefined
-  // nested many → Friend[]; nested one → Friend | undefined
-  const pulled = yield* db.pull(
-    1001,
-    Struct({
+    age: User.age.optional,
+    source: Meta.source,
+    bestFriend: User.bestFriend.optional.with({
       name: User.name,
-      age: optional(User.age),
-      source: Meta.source,
-      bestFriend: optional(nested(User.bestFriend, Friend)),
-      friends: nested(User.friends, Friend),
+      age: User.age.optional,
     }),
-  );
-  const requiredOnly = yield* db.pull(1001, Struct({ name: User.name }));
+    friends: User.friends.with({
+      name: User.name,
+      age: User.age.optional,
+    }),
+  });
+  // name: string
+  // age: number | undefined
+  // bestFriend: { name: string; age: number | undefined } | undefined
+  // friends: readonly { name: string; age: number | undefined }[]
+  const requiredOnly = yield* db.pull(1001, { name: User.name });
 
   const rows = yield* db.q((q) =>
     q.where("?e", User.name, "?n").options({ minT: ack.t }).find("?n"),

@@ -1,33 +1,35 @@
 /**
- * Typed pull. Callers map catalog attrs onto the result keys they want.
- *
- * The happy path is a {@link Struct} — the same shape as `Schema.Struct`:
- * keys are the names that come back, values are attr refs (`User.name`)
- * or `optional` / `nested` wrappers. Required fields are `T`; optional
- * fields are `T | undefined`. A nested ref is an object, or an array
- * when the attr is cardinality-many.
+ * Typed pull. The pattern is a plain object: keys are the names that
+ * come back, values are attr refs. Same syntax at every level.
  *
  * ```ts
- * const pulled = yield* db.pull(
- *   1001,
- *   Struct({
+ * const pulled = yield* db.pull(1001, {
+ *   name: User.name,
+ *   age: User.age.optional,
+ *   source: Meta.source,
+ *   bestFriend: User.bestFriend.optional.with({
  *     name: User.name,
- *     age: optional(User.age),
- *     source: Meta.source,
- *     friends: nested(User.friends, Struct({ name: User.name })),
+ *     age: User.age.optional,
  *   }),
- * )
- * // pulled : {
- * //   readonly name: string
- * //   readonly age: number | undefined
- * //   readonly source: string
- * //   readonly friends: readonly { readonly name: string }[]
- * // } | null
+ *   friends: User.friends.with({
+ *     name: User.name,
+ *     age: User.age.optional,
+ *   }),
+ * })
+ * // name: string
+ * // age: number | undefined
+ * // bestFriend: { name: string; age: number | undefined } | undefined
+ * // friends: readonly { name: string; age: number | undefined }[]
  * ```
  *
- * Ident-keyed arrays (`[User.name, ":user/age"]`) stay as the keyword-soup
- * escape. Those results are still keyed by ident, and every field is
- * optional — that is what the engine returns.
+ * A bare attr ref is required (`T`). `.optional` is maybe
+ * (`T | undefined`). `.with({ ... })` follows a ref — object if
+ * card-one, `readonly T[]` if many. Mix namespaces on one map.
+ *
+ * `Struct` / `optional()` / `nested()` stay as aliases if they still
+ * infer. Ident-keyed arrays (`[User.name, ":user/age"]`) stay as the
+ * keyword-soup escape — those results are keyed by ident, and every
+ * field is optional.
  */
 
 import type * as Schema from "effect/Schema";
@@ -48,17 +50,39 @@ export interface PullStruct<
 export interface PullOptional<F = unknown> {
   readonly _tag: "optional";
   readonly field: F;
+  /**
+   * Nested pull, then maybe. Only on refs
+   * (`valueType: ":db.type/ref"`). Non-refs type this as `never`.
+   */
+  readonly with: F extends { readonly valueType: ":db.type/ref" }
+    ? <const P extends Record<string, unknown>>(
+        pattern: P,
+      ) => PullOptional<PullNested<F, P>>
+    : never;
 }
 
 export interface PullNested<A = unknown, P = unknown> {
   readonly _tag: "nested";
   readonly attr: A;
   readonly pattern: P;
+  /** The whole nested value is maybe (`T | undefined`). */
+  readonly optional: PullOptional<PullNested<A, P>>;
 }
 
 /**
- * `Schema.Struct` for a pull. Keys are the result names; values are
- * attr refs, {@link optional}, or {@link nested}.
+ * Literate pull methods stamped onto every attr ref (`User.name`).
+ * `.with` is only callable on `:db.type/ref` attrs.
+ */
+export type AttrPull<A> = {
+  readonly optional: PullOptional<A>;
+  readonly with: A extends { readonly valueType: ":db.type/ref" }
+    ? <const P extends Record<string, unknown>>(pattern: P) => PullNested<A, P>
+    : never;
+};
+
+/**
+ * Alias: wrap a fields object. The plain object *is* the pattern —
+ * you do not need this.
  */
 export const Struct = <const F extends Record<string, unknown>>(
   fields: F,
@@ -67,15 +91,22 @@ export const Struct = <const F extends Record<string, unknown>>(
   fields,
 });
 
-/** Mark a field maybe-missing. The result type is `T | undefined`. */
-export const optional = <const F>(field: F): PullOptional<F> => ({
-  _tag: "optional",
-  field,
-});
+/** Alias for `attr.optional`. The result type is `T | undefined`. */
+export const optional = <const F>(field: F): PullOptional<F> => {
+  const wrap: PullOptional<F> = {
+    _tag: "optional",
+    field,
+    with: ((pattern: Record<string, unknown>) =>
+      optional(nested(field as never, pattern))) as unknown as PullOptional<
+      F
+    >["with"],
+  };
+  return wrap;
+};
 
 /**
- * Follow a ref (or cardinality-many refs) and pull a nested struct.
- * The attr must be a `:db.type/ref` (`valueType: ":db.type/ref"`).
+ * Alias for `attr.with({ ... })`. Follow a ref (or cardinality-many
+ * refs) and pull a nested map. The attr must be a `:db.type/ref`.
  * Card-one → object; card-many → `readonly T[]`.
  */
 export const nested = <
@@ -84,19 +115,25 @@ export const nested = <
 >(
   attr: A,
   pattern: P,
-): PullNested<A, P> => ({
-  _tag: "nested",
-  attr,
-  pattern,
-});
+): PullNested<A, P> => {
+  const result: PullNested<A, P> = {
+    _tag: "nested",
+    attr,
+    pattern,
+    get optional() {
+      return optional(result);
+    },
+  };
+  return result;
+};
 
 /**
  * `Schema.pick` for a namespace: result keys are the attribute names,
- * all required. Mix namespaces or rename with {@link Struct}.
+ * all required. Mix namespaces or rename with a plain object.
  *
  * ```ts
  * pick(User, "name", "age")
- * // Struct({ name: User.name, age: User.age })
+ * // { name: User.name, age: User.age }
  * ```
  */
 export const pick = <
@@ -163,7 +200,7 @@ type FieldResult<F> = F extends PullOptional<infer Inner>
     ? NestedResult<A, P>
     : ScalarResult<F>;
 
-/** Result shape of a {@link Struct} (or a bare fields object). */
+/** Result shape of a fields object (or a {@link Struct} alias). */
 export type StructPullResult<P> = P extends PullStruct<infer F>
   ? FieldsResult<F>
   : FieldsResult<P>;
@@ -252,7 +289,7 @@ export type ValidatePull<C extends AnyCatalog, P> = [IdentsIn<P>] extends [
   : "unknown attribute in pull pattern";
 
 /**
- * Inferred result of `db.pull(eid, pattern)`. Struct / fields → caller
+ * Inferred result of `db.pull(eid, pattern)`. Fields object → caller
  * keys, required vs optional honored. Array → ident keys, all optional.
  */
 export type PullResult<C extends AnyCatalog, P> = [P] extends [
@@ -266,5 +303,5 @@ export type PullResult<C extends AnyCatalog, P> = [P] extends [
 /** @deprecated Use {@link IdentPullAttr}. */
 export type PullAttr<C extends AnyCatalog> = IdentPullAttr<C>;
 
-/** @deprecated Array form only. Prefer {@link Struct}. */
+/** @deprecated Array form only. Prefer a plain fields object. */
 export type PullPattern<C extends AnyCatalog> = IdentPullPattern<C>;

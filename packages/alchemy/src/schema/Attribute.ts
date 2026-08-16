@@ -23,8 +23,9 @@ export interface AttributeOptions {
    * Override `:db.type/*` inference. Required when the value Schema is not
    * a primitive or one of the helpers in `valueTypes.ts`.
    *
-   * Captured as a type parameter so `nested(attr, …)` can require a ref
-   * (`valueType: ":db.type/ref"`) without a parallel schema language.
+   * Captured as a type parameter so `attr.with({ ... })` / `nested`
+   * can require a ref (`valueType: ":db.type/ref"`) without a
+   * parallel schema language.
    */
   readonly valueType?: DbValueType;
 }
