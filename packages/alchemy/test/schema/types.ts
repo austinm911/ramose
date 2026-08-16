@@ -55,9 +55,12 @@ const Movies = Catalog({ user: User, movie: Movie });
 
 // ── catalog / namespace / attr inference ───────────────────────────────────
 
-type _nsName = Expect<Equal<(typeof User)["name"], "user">>;
+type _nsName = Expect<Equal<(typeof User)["ns"], "user">>;
 type _attrIdent = Expect<
   Equal<(typeof User)["attributes"]["name"]["ident"], ":user/name">
+>;
+type _userNameRef = Expect<
+  Equal<(typeof User)["name"]["ident"], ":user/name">
 >;
 type _attrCard = Expect<
   Equal<(typeof User)["attributes"]["name"]["cardinality"], "one">
