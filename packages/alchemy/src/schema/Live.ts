@@ -32,10 +32,7 @@ export interface LiveStore<T> {
   close(): void;
 }
 
-/**
- * Run an Effect outside Effect — the services captured when the session opened.
- * @internal
- */
+/** @internal */
 export type LiveRun = <A>(
   effect: Effect.Effect<A, unknown, RuntimeContext>,
 ) => Promise<A>;
@@ -104,18 +101,7 @@ export interface LiveQueryBuilder<
   find<const V extends EidVar<C, B>>(v: V): LiveFind<C>;
 }
 
-/**
- * A standing `q` + `pull`, re-run whenever this session's basis moves.
- *
- * @example
- * ```typescript
- * const users = db.live((q) =>
- *   q.where("?e", User.name, "_").find("?e").pull({ name: User.name }),
- * );
- * // React: useSyncExternalStore(users.subscribe, users.get)
- * const off = users.subscribe(() => render(users.get()));
- * ```
- */
+/** A standing `q` + `pull`, re-run whenever this session's basis moves. */
 export type LiveFn<C extends AnyCatalog = AnyCatalog> = <R>(
   build: (q: LiveQueryBuilder<C, {}>) => LiveQuery<C, R>,
 ) => LiveStore<R>;
@@ -163,7 +149,6 @@ const makeStore = <C extends AnyCatalog, R>(
     for (const cb of [...subscribers]) cb();
   };
 
-  /** One pass: the q at the fence, then a pull per row. `true` if it published. */
   const settle = async (minT: number | undefined): Promise<boolean> => {
     const res = await run(
       node.builder
@@ -212,7 +197,6 @@ const makeStore = <C extends AnyCatalog, R>(
     void settle(minT)
       .then(
         (published) => {
-          // cleared before the notify: a recovering pass must read `error` gone
           const recovered = error !== undefined;
           error = undefined;
           backoff = 0;
@@ -249,7 +233,6 @@ const makeStore = <C extends AnyCatalog, R>(
   };
 
   off = session.onT(refresh);
-  // a dead socket takes its stores with it — no retrying a peer that is gone
   offClose = session.onClose(close);
   refresh(session.t > 0 ? session.t : undefined);
 
