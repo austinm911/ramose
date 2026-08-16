@@ -30,7 +30,6 @@ import {
   type TypedReadSystemClient,
   type TypedReadWriteDatabaseClient,
   type TypedReadWriteSystemClient,
-  type TypedWriteDatabaseClient,
   type TypedWriteSystemClient,
   type ValueAtIdent,
   type WireEntity,
@@ -46,8 +45,6 @@ import {
   fromWrite,
   makeSystem,
   unsafeDatabase,
-  unsafeReadDatabase,
-  unsafeWriteDatabase,
 } from "../../src/schema/index.ts";
 
 // ── fixture catalog ────────────────────────────────────────────────────────
@@ -236,35 +233,6 @@ const eid = Eid.of(Movies, 1001);
 type _eidWrap = Expect<Equal<typeof eid, Eid<typeof Movies>>>;
 
 // literate pull is the happy path — see pull-types.ts for the full matrix.
-const pullFx = eid.pull({ name: User.name, age: User.age.optional });
-type PullSuccess = Effect.Success<typeof pullFx>;
-type _pullName = Expect<Equal<NonNullable<PullSuccess>["name"], string>>;
-type _pullAge = Expect<
-  Equal<NonNullable<PullSuccess>["age"], number | undefined>
->;
-type _pullNoIdent = Expect<
-  Equal<":user/name" extends keyof NonNullable<PullSuccess> ? true : false, false>
->;
-
-// keyword-soup pull remains (idents, still catalog-checked, all optional)
-const pullSoup = eid.pull([":user/name", ":user/age"] as const);
-type _soupName = Expect<
-  Equal<NonNullable<Effect.Success<typeof pullSoup>>[":user/name"], string | undefined>
->;
-type _soupAge = Expect<
-  Equal<NonNullable<Effect.Success<typeof pullSoup>>[":user/age"], number | undefined>
->;
-
-// bag: Movie.title on a user eid is legal (keys are the rename)
-const pullBag = eid.pull({ name: User.name, title: Movie.title });
-type _bagTitle = Expect<
-  Equal<NonNullable<Effect.Success<typeof pullBag>>["title"], string>
->;
-
-// @ts-expect-error unknown attr on the namespace
-eid.pull([User.nope]);
-// @ts-expect-error ident not in the catalog
-eid.pull([":user/nope"]);
 
 // ── asOf / history preserve the catalog parameter ──────────────────────────
 
@@ -277,30 +245,7 @@ type _asOfNoWrite = Expect<
   Equal<"transact" extends keyof typeof asOf ? true : false, false>
 >;
 
-// ── Read vs Write vs ReadWrite still distinguishes transact ────────────────
-
-type ReadK = keyof TypedReadDatabaseClient<typeof Movies>;
-type WriteK = keyof TypedWriteDatabaseClient<typeof Movies>;
-type RW = TypedReadWriteDatabaseClient<typeof Movies>;
-
-type _readNoTx = Expect<Equal<"transact" extends ReadK ? true : false, false>>;
-type _writeHasTx = Expect<Equal<"transact" extends WriteK ? true : false, true>>;
-type _writeNoQ = Expect<Equal<"q" extends WriteK ? true : false, false>>;
-type _rwHasBoth = Expect<
-  Equal<
-    "transact" extends keyof RW ? ("q" extends keyof RW ? true : false) : false,
-    true
-  >
->;
-
-const readOnly = unsafeReadDatabase(Movies);
-const writeOnly = unsafeWriteDatabase(Movies);
-void readOnly.q;
-void writeOnly.transact;
-// @ts-expect-error read client has no transact
-readOnly.transact;
-// @ts-expect-error write client has no q
-writeOnly.q;
+// Read vs Write vs ReadWrite key separation — see tx-types.ts.
 
 // ── tagged errors remain on the Effect (catchTags still typechecks) ────────
 
