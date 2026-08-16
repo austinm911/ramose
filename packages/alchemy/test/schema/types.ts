@@ -33,8 +33,6 @@ import {
   Long,
   Ref,
   makeSystem,
-  optional,
-  Struct,
   unsafeDatabase,
   unsafeReadDatabase,
   unsafeWriteDatabase,
@@ -193,8 +191,8 @@ const entityFx = db.entity(1001);
 type EntitySuccess = Effect.Success<typeof entityFx>;
 type _entity = Expect<Equal<EntitySuccess, Ada | undefined>>;
 
-// Struct pull is the happy path — see pull-types.ts for the full matrix.
-const pullFx = db.pull(1001, Struct({ name: User.name, age: optional(User.age) }));
+// literate pull is the happy path — see pull-types.ts for the full matrix.
+const pullFx = db.pull(1001, { name: User.name, age: User.age.optional });
 type PullSuccess = Effect.Success<typeof pullFx>;
 type _pullName = Expect<Equal<NonNullable<PullSuccess>["name"], string>>;
 type _pullAge = Expect<
@@ -213,8 +211,8 @@ type _soupAge = Expect<
   Equal<NonNullable<Effect.Success<typeof pullSoup>>[":user/age"], number | undefined>
 >;
 
-// bag: Movie.title on a user eid is legal (Struct keys are the rename)
-const pullBag = db.pull(1001, Struct({ name: User.name, title: Movie.title }));
+// bag: Movie.title on a user eid is legal (keys are the rename)
+const pullBag = db.pull(1001, { name: User.name, title: Movie.title });
 type _bagTitle = Expect<
   Equal<NonNullable<Effect.Success<typeof pullBag>>["title"], string>
 >;
