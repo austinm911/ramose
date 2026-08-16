@@ -77,16 +77,19 @@ ada.add(User.nope, "x")
 ada.add(User.name, 42)
 ```
 
-`entity` still returns the whole ident-keyed bag (no projection).
-`pull` is a **plain object**: callers map attr refs onto the result
-keys they want. The object *is* the pattern — no `Struct` wrap.
-A bare attr ref is required (`T`). `.optional` is maybe
-(`T | undefined`). `.with({ ... })` follows a ref (object, or `T[]`
-if many). Same syntax at every level; mix namespaces on one map.
-Keyword-soup ident arrays remain as an escape. `q` is a catalog-generic
-builder:
-bindings accumulate as clauses are added, and `find` produces a row
-tuple from the selected variables. Today's object/string `q<T>`
+There is no `db.entity` (the leftover ident-keyed bag) and no
+`db.pull`. `q` is a catalog-generic builder: bindings accumulate as
+clauses are added, and `find` produces a row tuple. A var bound in
+the entity slot, or against a `:db.type/ref` attr, is an **Eid
+wrapper** — not a bare `number`. String / long bindings stay
+primitives. `.pull` lives on that wrapper. The pattern is a **plain
+object**: callers map attr refs onto the result keys they want. The
+object *is* the pattern — no `Struct` wrap. A bare attr ref is
+required (`T`). `.optional` is maybe (`T | undefined`). `.with({ ... })`
+follows a ref (object, or `T[]` if many). Same syntax at every level;
+mix namespaces on one map. Keyword-soup ident arrays remain as an
+escape. A known number wraps the same way:
+`Eid.of(Movies, 1001).pull({ ... })`. Today's object/string `q<T>`
 stays as the escape hatch. `transactUntyped` is the write-side escape.
 `transactWire` is the keyword-soup form (`{ ":user/name": "Ada" }`),
 still catalog-checked — a bag, but not the Effect-savvy path.
@@ -94,11 +97,13 @@ still catalog-checked — a bag, but not the Effect-savvy path.
 not a handle.
 
 ```ts
-const ada = yield* db.entity(1001)
-// ada?.[":user/name"] : string | undefined
-// ada?.[":user/friends"] : readonly number[] | undefined
+const rows = yield* db.q((q) =>
+  q.where("?e", User.name, "?n").find("?e", "?n"),
+)
+// rows : readonly [Eid<typeof Movies>, string][]
+// rows[0][0] is an Eid, not number
 
-const pulled = yield* db.pull(1001, {
+const ada = yield* rows[0][0].pull({
   name: User.name,
   age: User.age.optional,
   source: Meta.source,
@@ -116,22 +121,17 @@ const pulled = yield* db.pull(1001, {
 // bestFriend: { name: string; age: number | undefined } | undefined
 // friends: readonly { name: string; age: number | undefined }[]
 
-const rows = yield* db.q((q) =>
-  q.where("?e", User.name, "?n").find("?n"),
-)
-// rows : readonly [string][]
-
 // fluent form is the same builder
 const also = yield* db.q().where("?e", User.age, "?a").find("?e", "?a")
-// also : readonly [number, number][]
+// also : readonly [Eid<typeof Movies>, number][]
 ```
 
 The attribute slot accepts an attr ref (`User.name`), a catalog ident
 (`":user/name"`), a variable (`"?a"`), or `_`. Restricting it to idents
 only is what made the previous attempt reject blanks and vars. A variable
-in the value slot of a known attr inherits that attr's type; a constant
-of the wrong type is a type error. `asOf` / `history` expose the same
-`q`.
+in the value slot of a known attr inherits that attr's type (an Eid
+when the attr is a ref); a constant of the wrong type is a type error.
+`asOf` / `history` expose the same `q`.
 
 Privilege, views, and tagged errors are the same split as the untyped
 client. `asOf` / `history` return a read client that still carries the
@@ -173,7 +173,7 @@ unique, index, isComponent, and doc are what the engine already persists.
   `create` / `connect`'s error channel. A real ensure would also need
   `RuntimeContext` (it is a transact); the typed signature already carries
   that requirement.
-- **Not implemented.** The typed client's `transact` / `entity` / `q` /
+- **Not implemented.** The typed client's `transact` / `q` / `Eid.pull` /
   `health` are proposal stubs (`Effect.die`). `create` / `connect` validate
   the name and return a typed client; they do not install schema against a
   live database.
@@ -195,16 +195,22 @@ it is keyword soup. Nested maps remain as a `NestedEntity` type
 lowers the builder's collected `:db/add` / `:db/retract` ops to what the
 peer already accepts.
 
-**Pull is a plain object, not ident keys.** An ident-keyed
-`db.pull(1001, [User.name])` → `{ ":user/name"?: string }` is honest
-about the engine, and it is the wrong happy path. Callers do not want
-to write `":user/name"` in application code, they cannot rename, they
-cannot mark required vs maybe, and they cannot nest a ref into a
-typed object. A nested map under namespace keys (`{ user: { name } }`)
-is the same mistake the write path already rejected: it partitions
-the entity and cannot mix `User.name` + `Meta.source`. Wrapping every
-pattern in `SchemaFx.Struct` was the same idea with extra ceremony —
-the plain object *is* the pattern.
+**Pull lives on the Eid from `q`, not on `db`.** `db.entity` was
+the leftover ident-keyed bag; it is gone. `db.pull(eid, pattern)`
+would have been a second door onto the same API — dropped. A `find`
+var bound as an entity (entity slot, or a `:db.type/ref` attr) is
+the wrapper; `.pull` is the one pull API. `Eid.of(Movies, 1001)`
+wraps a known number the same way.
+
+An ident-keyed `eid.pull([User.name])` → `{ ":user/name"?: string }`
+is honest about the engine, and it is the wrong happy path. Callers
+do not want to write `":user/name"` in application code, they cannot
+rename, they cannot mark required vs maybe, and they cannot nest a
+ref into a typed object. A nested map under namespace keys
+(`{ user: { name } }`) is the same mistake the write path already
+rejected: it partitions the entity and cannot mix `User.name` +
+`Meta.source`. Wrapping every pattern in `SchemaFx.Struct` was the
+same idea with extra ceremony — the plain object *is* the pattern.
 
 Keys are the names that come back (`name`, not `":user/name"`).
 Values are the same attr refs writes already use. A bare ref is
@@ -222,21 +228,23 @@ lowers `{ name: User.name }` to today's pull with `:as`
 is the decoded shape, not the wire. `[User.name, ":user/age"]`
 stays as the keyword-soup escape — ident keys, every field optional.
 
-`entity(eid)` still returns the whole bag (no projection). The catalog
-does not partition entities into types.
+The catalog does not partition entities into types. `Movie.title` on
+a user pull is legal if you name the key — that is the bag.
 
 **Typed `q` is a builder, not a Schema encoding of EDN.** The last writeup
 left `q<T = unknown>` as the escape hatch because a `where` slot restricted
 to catalog idents rejected `_` and variables. The builder keeps those
 legal: the attr slot is `User.name | ":user/name" | "?a" | "_"`. Bindings
-are a type-level map that grows with each `where`. `find("?n", "?age")`
-is a tuple of the bound types. The object/string `q<T>` remains for
-queries the builder does not type.
+are a type-level map that grows with each `where`. `find("?e", "?n")`
+is a tuple of the bound types — `Eid` then `string` when `?e` sat
+in the entity slot. The object/string `q<T>` remains for queries
+the builder does not type.
 
 Remaining limits (pull):
 
-- `entity(eid)` is still the whole ident-keyed bag. Use `pull` to
-  project and rename.
+- A var becomes an Eid only when bound in the entity slot or
+  against an attr with `valueType: ":db.type/ref"`. A `Ref` schema
+  without that option stays a `number`.
 - `.with` requires `valueType: ":db.type/ref"` on the attr.
   A `Ref` schema without that option is not enough for the type checker.
 - Reverse refs (`:user/_friends`), `:as` on the wire, `limit` /
@@ -264,7 +272,7 @@ Remaining limits (query builder):
 
 **Uuid wart.** Uuid attributes currently read back as `{ vt: 6, v: "…" }`,
 not a string (`fromJson` in `@ripple/core`). `SchemaFx.Uuid` is that tagged
-struct so `entity` / `pull` stay honest. `SchemaFx.UuidString` is a string
+struct so `eid.pull` stays honest. `SchemaFx.UuidString` is a string
 that still lowers to `:db.type/uuid`, for writes that want a canonical
 string. A real implementation has to pick one Type and decode the other;
 this proposal does not paper over the engine.
