@@ -19,8 +19,8 @@ export type AnyCatalog = Catalog<NamespaceMap>;
  *
  * ```ts
  * const Movies = Catalog({
- *   user: Namespace("user", { name: attr(Schema.String) }),
- *   movie: Namespace("movie", { title: attr(Schema.String) }),
+ *   user: Namespace("user", { name: Attr(Schema.String) }),
+ *   movie: Namespace("movie", { title: Attr(Schema.String) }),
  * })
  * ```
  *

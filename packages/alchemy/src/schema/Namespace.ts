@@ -41,7 +41,7 @@ export type StampedAttributes<
  * the prefix and the same map under an explicit key.
  *
  * ```ts
- * const User = Namespace("user", { name: attr(Schema.String) })
+ * const User = Namespace("user", { name: Attr(Schema.String) })
  * User.ns                 // "user"
  * User.name.ident         // ":user/name"
  * User.attributes.name    // same attr ref

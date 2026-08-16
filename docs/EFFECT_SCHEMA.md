@@ -21,19 +21,19 @@ import * as Schema from "effect/Schema"
 import { SchemaFx } from "@ripple/alchemy"
 
 const User = SchemaFx.Namespace("user", {
-  name: SchemaFx.attr(Schema.String, { unique: "identity" }),
-  age: SchemaFx.attr(SchemaFx.Long, { valueType: ":db.type/long" }),
-  friends: SchemaFx.attr(SchemaFx.Ref, { cardinality: "many", valueType: ":db.type/ref" }),
-  bestFriend: SchemaFx.attr(SchemaFx.Ref, { valueType: ":db.type/ref" }),
+  name: SchemaFx.Attr(Schema.String, { unique: "identity" }),
+  age: SchemaFx.Attr(SchemaFx.Long),
+  friends: SchemaFx.Attr(SchemaFx.Ref, { cardinality: "many" }),
+  bestFriend: SchemaFx.Attr(SchemaFx.Ref),
 })
 
 const Movie = SchemaFx.Namespace("movie", {
-  title: SchemaFx.attr(Schema.String, { index: true }),
-  year: SchemaFx.attr(SchemaFx.Long),
+  title: SchemaFx.Attr(Schema.String, { index: true }),
+  year: SchemaFx.Attr(SchemaFx.Long),
 })
 
 const Meta = SchemaFx.Namespace("meta", {
-  source: SchemaFx.attr(Schema.String),
+  source: SchemaFx.Attr(Schema.String),
 })
 
 const Movies = SchemaFx.Catalog({ user: User, movie: Movie, meta: Meta })
@@ -243,10 +243,12 @@ the builder does not type.
 Remaining limits (pull):
 
 - A var becomes an Eid only when bound in the entity slot or
-  against an attr with `valueType: ":db.type/ref"`. A `Ref` schema
-  without that option stays a `number`.
-- `.with` requires `valueType: ":db.type/ref"` on the attr.
-  A `Ref` schema without that option is not enough for the type checker.
+  against an attr whose inferred (or explicit) `valueType` is
+  `":db.type/ref"`. `Attr(Ref)` stamps that; `Attr(Schema.Number)`
+  does not.
+- `.with` is only callable on `:db.type/ref` attrs. `Attr(Ref)`
+  infers that; a non-ref (`Attr(Schema.String)`, `User.name`) types
+  `.with` as `never`.
 - Reverse refs (`:user/_friends`), `:as` on the wire, `limit` /
   `default`, and recursive `...` are not encoded. Use the ident-keyed
   escape or `q<T>`.
@@ -278,11 +280,13 @@ string. A real implementation has to pick one Type and decode the other;
 this proposal does not paper over the engine.
 
 **`Schema.Number` is double.** Ripple has both `:db.type/long` and
-`:db.type/double`. Plain `Schema.Number` lowers to double. `SchemaFx.Long`
-and `SchemaFx.Ref` are annotated `Schema.Number`s so inference can tell
-them apart without a parallel schema language. Override with
-`attr(schema, { valueType })` when the Schema is not a primitive or one of
-those helpers.
+`:db.type/double`. `Attr` infers `:db.type/*` from the Schema at the
+type level: `Schema.String` → string, `Schema.Number` → double,
+`Schema.Boolean` → boolean. Helpers (`Long`, `Ref`, `Uuid`,
+`UuidString`, `Instant`, `Bytes`) carry a brand so `Attr(Long)` /
+`Attr(Ref, { cardinality: "many" })` stamp long / ref without a
+`valueType` option. Explicit `valueType` remains an override for
+custom Schemas.
 
 **Cardinality-many is one add per datom.** `ada.add(User.friends, 1001)`
 asserts one ref. Call `add` again for the next. That matches today's
