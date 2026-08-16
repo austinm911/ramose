@@ -55,3 +55,16 @@ Correctness (`bun test packages/transactor`): contiguous `t` under 500
 concurrent clients; storage-fault injection → batch all-or-nothing, instance
 aborted, restart continues with no gaps/dupes; novelty frames + resume /
 gap catch-up; alarm-driven indexing.
+
+## Milestone status (as of this snapshot)
+
+| milestone | status | evidence |
+|---|---|---|
+| M0 scaffold | infra written for current Alchemy API; local `bun alchemy dev` runs Worker + 2 DOs + R2; e2e hits it | `alchemy.run.ts`, `test/e2e` (8/8 on local stack). Real `bun alchemy deploy` needs Cloudflare credentials (not available here). |
+| M1 core engine | **accepted** | 57 core tests; seek < 10 µs; 3-clause join p50 43 ms |
+| M2 transactor | **accepted** (in-process + local stack) | 13 transactor tests (contiguous t under 500 concurrent clients, fault injection + restart, novelty/gap catch-up, alarm indexing); ≥ 500 tx/s (2.5k in-process, 1.7k through the local Worker) |
+| M3 R2 store + caching | tiers verified in-process | 4 storage tests: cold ≤ depth GETs, repeat 0 R2 reads, dedupe, corrupt-tier fallback; e2e repeat query hits cache |
+| M4 incremental indexer | verified at 600k datoms (scaled from 10M) | exact new-object count == |reachable(new) − reachable(old)|; as-of via old root; consistent snapshots; bounded, re-arming runs |
+| M5 replica + novelty | e2e | reconnect under concurrent writes → no missed datoms; root flip drops novelty |
+| M6 peer + time travel + SDK | e2e | schema → transact → query → as-of → history → pull; persistence across a full stack restart verified manually |
+| M7 | not started | |
