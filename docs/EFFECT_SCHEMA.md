@@ -12,7 +12,9 @@ catalog can type do not collapse to `unknown`.
 ## Interface
 
 Namespaces compose into a catalog. Attribute names are the keys; idents are
-derived (`:user/name`) so they still map onto today's wire.
+derived (`:user/name`) so they still map onto today's wire. The namespace
+prefix lives on `User.ns`; `User.name` is the stamped attribute (an attr
+ref the query builder accepts).
 
 ```ts
 import * as Schema from "effect/Schema"
@@ -59,10 +61,12 @@ db.transact([{ user: { nope: "x" } }])
 db.transact([{ user: { name: 42 } }])
 ```
 
-`entity` / `pull` project catalog value types. `q` / `query` stay the
-untyped escape hatch they are today (`q<T = unknown>`). `transactUntyped`
-is the write-side escape. `transactWire` is the keyword-soup form
-(`{ ":user/name": "Ada" }`), still catalog-checked.
+`entity` / `pull` project catalog value types. `q` is a catalog-generic
+builder: bindings accumulate as clauses are added, and `find` produces a
+row tuple from the selected variables. Today's object/string `q<T>` stays
+as the escape hatch. `transactUntyped` is the write-side escape.
+`transactWire` is the keyword-soup form (`{ ":user/name": "Ada" }`), still
+catalog-checked.
 
 ```ts
 const ada = yield* db.entity(1001)
@@ -71,7 +75,23 @@ const ada = yield* db.entity(1001)
 
 const pulled = yield* db.pull(1001, [":user/name", ":user/age"])
 // pulled?.[":user/name"] : string | undefined
+
+const rows = yield* db.q((q) =>
+  q.where("?e", User.name, "?n").find("?n"),
+)
+// rows : readonly [string][]
+
+// fluent form is the same builder
+const also = yield* db.q().where("?e", User.age, "?a").find("?e", "?a")
+// also : readonly [number, number][]
 ```
+
+The attribute slot accepts an attr ref (`User.name`), a catalog ident
+(`":user/name"`), a variable (`"?a"`), or `_`. Restricting it to idents
+only is what made the previous attempt reject blanks and vars. A variable
+in the value slot of a known attr inherits that attr's type; a constant
+of the wrong type is a type error. `asOf` / `history` expose the same
+`q`.
 
 Privilege, views, and tagged errors are the same split as the untyped
 client. `asOf` / `history` return a read client that still carries the
@@ -128,10 +148,28 @@ the peer already accepts. Showing both is deliberate: the nested form is
 the one that typechecks cleanly; the wire form is the one a future
 implementation would send (or lower the nested form to).
 
-**`q` stays untyped.** Datalog variables and clause positions do not have a
-natural Schema encoding that is better than today's `q<T>`. Restricting the
-attribute slot in `where` to catalog idents would reject `_` and variables.
-The typed reads are `entity` and `pull`.
+**Typed `q` is a builder, not a Schema encoding of EDN.** The last writeup
+left `q<T = unknown>` as the escape hatch because a `where` slot restricted
+to catalog idents rejected `_` and variables. The builder keeps those
+legal: the attr slot is `User.name | ":user/name" | "?a" | "_"`. Bindings
+are a type-level map that grows with each `where`. `find("?n", "?age")`
+is a tuple of the bound types. The object/string `q<T>` remains for
+queries the builder does not type.
+
+Remaining limits, honestly:
+
+- A var or `_` in the *attr* slot leaves the value binding `unknown` —
+  the catalog cannot say which attr it is.
+- Predicate clauses (`(< ?age 18)`), `or` / `not` / rules, pull-in-find,
+  and aggregates have no builder encoding yet. Use the `q<T>` escape.
+- `:in` inputs are not on the builder (pass them on the escape hatch).
+- A string constant that looks like a var (`"?n"` as a *value* for
+  `:user/name`) is treated as a variable, not the three-character name.
+- Re-binding a var to a different type keeps the first binding; the
+  second `where` is not a type error.
+- History 5-tuples (`?e ?a ?v ?tx ?added`) are untyped.
+- Named find (`{ n: "?n" }`) is not offered; the tuple form infers
+  cleanly.
 
 **Uuid wart.** Uuid attributes currently read back as `{ vt: 6, v: "…" }`,
 not a string (`fromJson` in `@ripple/core`). `SchemaFx.Uuid` is that tagged
