@@ -1,7 +1,7 @@
 /** `db.live(q => …)` — a standing `db.q`, woken by this session's `t`. */
 
 import type { RuntimeContext } from "alchemy/RuntimeContext";
-import type * as Effect from "effect/Effect";
+import * as Effect from "effect/Effect";
 import type { QueryOptions } from "../Client.ts";
 import type { Session } from "../Session.ts";
 import type { AnyCatalog } from "./Catalog.ts";
@@ -24,13 +24,18 @@ import type {
 export interface LiveStore<T> {
   /** The current rows — `undefined` until the first result. Stable between changes. */
   get(): T | undefined;
+  /** Why the last pass failed, if it did. Cleared by the next good one. */
+  readonly error: unknown;
   /** Called on every change. Returns the unsubscribe. */
   subscribe(cb: () => void): () => void;
   /** Stop following the socket. The last snapshot stays readable. */
   close(): void;
 }
 
-/** Run an Effect outside Effect — the services captured when the session opened. */
+/**
+ * Run an Effect outside Effect — the services captured when the session opened.
+ * @internal
+ */
 export type LiveRun = <A>(
   effect: Effect.Effect<A, unknown, RuntimeContext>,
 ) => Promise<A>;
@@ -55,7 +60,8 @@ type Simplify<T> = { readonly [K in keyof T]: T[K] };
 
 /** One live row: the pull map's result, plus the entity it came from. */
 export type LiveRow<C extends AnyCatalog, P> = Simplify<
-  PullResult<C, P> & { readonly eid: Eid<C> }
+  // `Omit`: a map with its own `eid` key loses it, exactly as the row does
+  Omit<PullResult<C, P>, "eid"> & { readonly eid: Eid<C> }
 >;
 
 /** The vars in `B` bound as an entity — the only things live `find` accepts. */
@@ -130,6 +136,11 @@ const eidsOf = (result: unknown): Eid[] => {
   return out;
 };
 
+/** Pulls in flight per pass, and the retry backoff bounds in ms. */
+const PULL_CONCURRENCY = 16;
+const RETRY_MIN = 250;
+const RETRY_MAX = 5000;
+
 const makeStore = <C extends AnyCatalog, R>(
   node: LiveNode<C>,
   session: Session,
@@ -137,9 +148,12 @@ const makeStore = <C extends AnyCatalog, R>(
 ): LiveStore<R> => {
   const subscribers = new Set<() => void>();
   let snapshot: R | undefined;
+  let error: unknown;
   let basis: number | undefined;
   let inFlight = false;
   let wanted: number | undefined;
+  let backoff = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
   let off: (() => void) | undefined;
 
@@ -150,14 +164,23 @@ const makeStore = <C extends AnyCatalog, R>(
         .options(minT === undefined ? {} : { minT })
         .query(node.eidVar),
     );
-    // nothing moved, so neither does the snapshot's reference
-    if (closed || res.t === basis) return;
+    // the basis only moves forward, so neither does the snapshot's reference
+    if (closed || res.t <= (basis ?? -1)) return;
 
     const eids = eidsOf(res.result);
     let rows: unknown[] = eids;
     if (node.pattern !== undefined) {
-      const pulled = await Promise.all(
-        eids.map((eid) => run(eid.pull(node.pattern as never, { minT: res.t }))),
+      // minT is a floor, not a pin: rows may straddle bases, the next `t` reconciles
+      const pulled = await run(
+        Effect.forEach(
+          eids,
+          (eid) =>
+            eid
+              .pull(node.pattern as never, { minT: res.t })
+              // one unreadable row drops out; it does not cost the pass
+              .pipe(Effect.orElseSucceed(() => null)),
+          { concurrency: PULL_CONCURRENCY },
+        ),
       );
       if (closed) return;
       rows = [];
@@ -175,7 +198,7 @@ const makeStore = <C extends AnyCatalog, R>(
   /**
    * One pass at a time — a `t` seen mid-pass (the pass's own reply carries one)
    * is drained after it, and only if the pass did not already reach it. A pass
-   * that fails leaves the last good snapshot in place.
+   * that fails keeps the last good snapshot and comes back on a backoff.
    */
   const refresh = (minT: number | undefined): void => {
     if (closed) return;
@@ -184,12 +207,30 @@ const makeStore = <C extends AnyCatalog, R>(
       return;
     }
     inFlight = true;
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+    let failed = false;
     void settle(minT)
-      .catch(() => {})
+      .then(
+        () => {
+          error = undefined;
+          backoff = 0;
+        },
+        (cause: unknown) => {
+          failed = true;
+          error = cause;
+        },
+      )
       .finally(() => {
         inFlight = false;
         const next = wanted;
         wanted = undefined;
+        if (closed) return;
+        if (failed) {
+          backoff = backoff === 0 ? RETRY_MIN : Math.min(backoff * 2, RETRY_MAX);
+          timer = setTimeout(() => refresh(next ?? minT), backoff);
+          return;
+        }
         if (next !== undefined && next > (basis ?? 0)) refresh(next);
       });
   };
@@ -199,6 +240,9 @@ const makeStore = <C extends AnyCatalog, R>(
 
   return {
     get: () => snapshot,
+    get error() {
+      return error;
+    },
     subscribe: (cb) => {
       subscribers.add(cb);
       return () => {
@@ -207,6 +251,8 @@ const makeStore = <C extends AnyCatalog, R>(
     },
     close: () => {
       closed = true;
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
       off?.();
       off = undefined;
     },
@@ -234,6 +280,7 @@ const liveBuilder = <C extends AnyCatalog, B extends object>(
 /**
  * Build `db.live` for a client that rides a session socket. The store starts
  * following `session.onT` at once and keeps doing so until `close()`.
+ * @internal wired up by `SchemaFx.Session.connect`.
  */
 export const makeLive = <C extends AnyCatalog>(
   db: TypedReadDatabaseClient<C>,

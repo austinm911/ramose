@@ -19,6 +19,8 @@ interface Reply {
   status?: number;
   body?: unknown;
   headers?: Record<string, string>;
+  /** Answer after this many ms instead of on the next microtask. */
+  delay?: number;
 }
 
 /** Records every frame, answers with a canned reply, can push unsolicited ones. */
@@ -34,9 +36,11 @@ const fakePeer = (answer: (frame: Frame) => Reply | undefined) => {
       sent.push(frame);
       const reply = answer(frame);
       if (reply === undefined) return;
-      queueMicrotask(() =>
-        emit("message", { data: JSON.stringify({ id: frame.id, ...reply }) }),
-      );
+      const { delay, ...body } = reply;
+      const send = () =>
+        emit("message", { data: JSON.stringify({ id: frame.id, ...body }) });
+      if (delay === undefined) queueMicrotask(send);
+      else setTimeout(send, delay);
     },
     close: () => emit("close", {}),
     addEventListener: (type, cb) => {
@@ -76,14 +80,30 @@ const peerAt = (state: {
   names: Record<number, string | null>;
   /** what a transact acks with — the ensure lands at 2 */
   ackT?: number;
+  /** hold every q reply back this many ms */
+  qDelay?: number;
+  /** refuse this many q frames before answering */
+  qFails?: number;
+  /** eids whose pull the peer refuses */
+  pullFails?: number[];
 }) =>
   open((frame) => {
     switch (frame.op) {
       case "transact":
         return { body: { ...ensure, t: state.ackT ?? ensure.t } };
       case "q":
-        return { body: { t: state.t, root: state.t, result: state.rows } };
+        if ((state.qFails ?? 0) > 0) {
+          state.qFails = (state.qFails ?? 0) - 1;
+          return { status: 500, body: { error: "the replica is having a moment" } };
+        }
+        return {
+          body: { t: state.t, root: state.t, result: state.rows },
+          delay: state.qDelay,
+        };
       case "pull": {
+        if ((state.pullFails ?? []).includes(frame.eid as number)) {
+          return { status: 500, body: { error: "no" } };
+        }
         const name = state.names[frame.eid as number];
         return { body: { t: state.t, result: name == null ? null : { name } } };
       }
@@ -272,6 +292,112 @@ describe("the session's t is the wake", () => {
     peer.push({ op: "t", t: 20 });
     await settle();
     expect(peer.sent).toHaveLength(frames); // closed: nothing more is asked
+    session.close();
+  });
+});
+
+describe("a pass that overlaps, closes, or fails", () => {
+  test("a t that lands mid-pass is drained after it, at the newer fence", async () => {
+    const { db, peer, session } = await peerAt({
+      t: 5,
+      rows: [[1001]],
+      names: { 1001: "Ada" },
+      qDelay: 30,
+    });
+
+    const users = db.live((q) => q.where("?e", User.name, "_").find("?e"));
+    await Bun.sleep(5); // the q is out, its reply is not back
+    expect(peer.ops("q")).toHaveLength(1);
+
+    peer.push({ op: "t", t: 9 });
+    expect(peer.ops("q")).toHaveLength(1); // no second pass while one runs
+
+    await Bun.sleep(120);
+    expect(peer.ops("q").map((f) => f.minT)).toEqual([2, 9]);
+    expect(users.get()?.map((e) => e.id)).toEqual([1001]);
+    session.close();
+  });
+
+  test("close mid-pass emits nothing and asks for nothing more", async () => {
+    const { db, peer, session } = await peerAt({
+      t: 5,
+      rows: [[1001]],
+      names: { 1001: "Ada" },
+      qDelay: 30,
+    });
+
+    const users = db.live((q) =>
+      q.where("?e", User.name, "_").find("?e").pull({ name: User.name }),
+    );
+    let notified = 0;
+    users.subscribe(() => {
+      notified += 1;
+    });
+    await Bun.sleep(5);
+    users.close();
+
+    await Bun.sleep(120);
+    expect(notified).toBe(0);
+    expect(users.get()).toBeUndefined();
+    expect(peer.ops("pull")).toHaveLength(0);
+    session.close();
+  });
+
+  test("a subscriber registered before the first result fires when it lands", async () => {
+    const { db, session } = await peerAt({
+      t: 5,
+      rows: [[1001]],
+      names: { 1001: "Ada" },
+      qDelay: 20,
+    });
+
+    const users = db.live((q) => q.where("?e", User.name, "_").find("?e"));
+    let notified = 0;
+    users.subscribe(() => {
+      notified += 1;
+    });
+    expect(users.get()).toBeUndefined();
+
+    await Bun.sleep(120);
+    expect(notified).toBe(1);
+    expect(users.get()).toHaveLength(1);
+    session.close();
+  });
+
+  test("a failed pass records the error, then retries and recovers", async () => {
+    const { db, session } = await peerAt({
+      t: 5,
+      rows: [[1001]],
+      names: { 1001: "Ada" },
+      qFails: 1,
+    });
+
+    const users = db.live((q) => q.where("?e", User.name, "_").find("?e"));
+    await settle();
+    expect(users.get()).toBeUndefined();
+    expect(users.error).toBeDefined();
+
+    await Bun.sleep(400); // the first backoff is 250ms
+    expect(users.get()?.map((e) => e.id)).toEqual([1001]);
+    expect(users.error).toBeUndefined();
+    session.close();
+  });
+
+  test("one unreadable row drops out; the rest of the pass stands", async () => {
+    const { db, session } = await peerAt({
+      t: 5,
+      rows: [[1001], [1002], [1003]],
+      names: { 1001: "Ada", 1002: "Bob", 1003: "Cy" },
+      pullFails: [1002],
+    });
+
+    const users = db.live((q) =>
+      q.where("?e", User.name, "_").find("?e").pull({ name: User.name }),
+    );
+    await settle();
+
+    expect(users.get()?.map((r) => r.name)).toEqual(["Ada", "Cy"]);
+    expect(users.error).toBeUndefined();
     session.close();
   });
 });
