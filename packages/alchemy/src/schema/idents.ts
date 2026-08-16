@@ -1,9 +1,4 @@
-/**
- * Ident derivation and value-type lookup.
- *
- * `:user/name` is `:${namespace.ns}/${attributeKey}`. That is the same
- * string the untyped client already sends on the wire.
- */
+/** Ident derivation (`:ns/attr`) and value-type lookup against a catalog. */
 
 import type { Schema } from "effect/Schema";
 import type { AnyAttribute, Cardinality, ValueOf } from "./Attribute.ts";

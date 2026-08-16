@@ -1,21 +1,4 @@
-/**
- * Catalog-generic System / Database clients.
- *
- * Same privilege split as the untyped client (Read / Write / ReadWrite),
- * same `asOf` / `history` / `minT` / tagged errors, plus a catalog
- * parameter. `create` / `connect` take the catalog, validate the name
- * (`BadRequest`), and type ensure-schema onto the error channel
- * (`SchemaEnsureError`).
- *
- * Methods that would hit a peer are proposal stubs (`Effect.die`). They
- * exist to be typed. Name validation on create/connect is real. The
- * untyped client in `../Client.ts` is unchanged.
- *
- * `makeReadWriteSystemClient` (and the read/write halves) have the same
- * `(source: SystemSource) => Client` shape the Binding / Http / Local
- * layers are already generic over, so a catalog-typed system client drops
- * in without a new layer family.
- */
+/** Catalog-generic System / Database clients. Peer methods are stubs (`Effect.die`). */
 
 import type { TxData } from "@ripple/core";
 import type { RuntimeContext } from "alchemy/RuntimeContext";
@@ -83,21 +66,8 @@ export interface TypedWriteDatabaseClient<C extends AnyCatalog = AnyCatalog> {
   readonly name: string;
 
   /**
-   * Catalog-typed transaction. An entity is a bag — attrs from any
-   * namespace go on the same handle. Pass a generator: `transact` is
-   * what `yield*`s. Returns `TxAck` plus whatever error / context the
-   * body adds.
-   *
-   * ```ts
-   * yield* db.transact(function* (tx) {
-   *   const ada = yield* tx.entity()
-   *   yield* ada.add(User.name, "Ada")
-   *   yield* ada.add(Meta.source, "import")
-   * })
-   * ```
-   *
-   * An Effect-returning callback stays for composition
-   * (`(tx) => Effect.gen(...)`); it is not the default.
+   * Catalog-typed transaction. Generator is the happy path; an
+   * Effect-returning callback stays for composition.
    */
   transact<Eff extends Effect.Effect<any, any, any>, A = unknown>(
     build: (tx: TxBuilder<C>) => Generator<Eff, A, never>,

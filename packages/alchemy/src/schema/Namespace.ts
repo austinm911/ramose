@@ -1,14 +1,4 @@
-/**
- * A named group of attributes. The namespace prefix is `ns`:
- * `Namespace("user", { name })` derives `:user/name`, and `User.name` is
- * the stamped attribute (an attr ref the query builder accepts).
- *
- * `_tag`, `ns`, and `attributes` are reserved and must not be attribute
- * keys — they stay on the namespace object.
- *
- * Each stamped attr carries literate pull methods: `User.age.optional`
- * and `User.friends.with({ ... })`.
- */
+/** Named group of attributes. `User.name` is the stamped attr ref (`:user/name`). */
 
 import type { AnyAttribute } from "./Attribute.ts";
 import { nested, optional, type AttrPull } from "./Pull.ts";
@@ -36,19 +26,7 @@ export type StampedAttributes<
   readonly [K in keyof Attrs]: StampedAttribute<Ns, K & string, Attrs[K]>;
 };
 
-/**
- * A namespace is its stamped attributes, plus `ns` / `attributes` for
- * the prefix and the same map under an explicit key.
- *
- * ```ts
- * const User = Namespace("user", { name: Attr(Schema.String) })
- * User.ns                 // "user"
- * User.name.ident         // ":user/name"
- * User.attributes.name    // same attr ref
- * User.age.optional       // maybe-missing pull field
- * User.friends.with({ name: User.name })
- * ```
- */
+/** Stamped attributes plus `ns` / `attributes`. `User.name` is the attr ref. */
 export type Namespace<
   Name extends string = string,
   Attrs extends AttributeMap = AttributeMap,
@@ -91,10 +69,7 @@ const stamp = <Name extends string, Attrs extends AttributeMap>(
   return out as unknown as StampedAttributes<Name, Attrs>;
 };
 
-/**
- * Group attributes under one ident prefix. Attribute keys are also on
- * the namespace object so `User.name` is an attr ref.
- */
+/** Group attributes under one ident prefix. */
 export const Namespace = <
   const Name extends string,
   Attrs extends AttributeMap,

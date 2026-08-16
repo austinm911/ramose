@@ -1,10 +1,4 @@
-/**
- * Typechecked usage — the experience proof, not a markdown wish list.
- *
- * System → catalog → create → transact (generator) → q → eid.pull → asOf.
- * This file is compiled by `bun run typecheck`. It is not a runtime test
- * (create is real for the name check; everything past that is a stub).
- */
+/** Typechecked happy path: catalog → create → gen transact → q → eid.pull. */
 
 import type { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";
@@ -36,13 +30,7 @@ export const Meta = Namespace("meta", {
 
 export const Movies = Catalog({ user: User, movie: Movie, meta: Meta });
 
-/**
- * The happy path an Effect-savvy caller writes: `yield*`, inferred
- * success, `catchTags` on the tagged channel. One entity is a bag —
- * User.name and Meta.source on the same handle. `ada.add` is the write;
- * `q` binds entity / ref vars as an Eid wrapper; `.pull` is a plain
- * object of those attr refs (keys are the names that come back).
- */
+/** Happy path: gen transact, attr-ref q, pull through the q wrapper. */
 export const program = Effect.gen(function* () {
   const system = makeSystem({ url: "https://ripple.example.workers.dev" });
   const db = yield* system.create("movies", Movies);

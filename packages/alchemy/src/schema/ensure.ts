@@ -1,12 +1,4 @@
-/**
- * Lower a catalog to the ident-datom maps today's transactor already
- * accepts. Ensure is a *separate* transaction: you cannot define and use
- * an attribute in the same tx. Re-asserting `:db/ident` is an identity
- * upsert, so ensure is idempotent.
- *
- * This function does not talk to a peer. It is the lowering a future
- * `create(name, catalog)` would transact before handing back the client.
- */
+/** Lower a catalog to ident-datom maps. Ensure is a separate, idempotent schema tx. */
 
 import type { AnyAttribute } from "./Attribute.ts";
 import type { AnyCatalog } from "./Catalog.ts";

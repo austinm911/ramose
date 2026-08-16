@@ -1,36 +1,4 @@
-/**
- * Typed transaction forms.
- *
- * The primary surface is a catalog-generic **builder**. `transact`
- * accepts a generator directly — that is the happy path. An entity is a
- * bag of attributes: any catalog namespace can be asserted on the same
- * handle. Transactions do not prescribe a nested
- * `{ user: {…}, meta: {…} }` shape.
- *
- * ```ts
- * yield* db.transact(function* (tx) {
- *   const ada = yield* tx.entity()
- *   yield* ada.add(User.name, "Ada")
- *   yield* ada.add(User.age, 36)
- *   yield* ada.add(Meta.source, "import")
- *   yield* ada.retract(User.age, 35)
- * })
- * ```
- *
- * `ada.add` is the handle path. `tx.add(e, attr, value)` stays for an
- * eid / tempid / lookup that is not a handle. An Effect-returning
- * callback (`(tx) => Effect.gen(...)`) stays for composition; it is
- * not the default.
- *
- * `User.name` is the typed slot; the value type is correlated. Unknown
- * attr / wrong value type are type errors. Cardinality-many is one
- * `:db/add` per datom. Lookup refs and `:db/id` (eid / tempid) are
- * `tx.entity(1001)` / `tx.entity([User.name, "Ada"])`.
- *
- * Nested namespace maps and keyword-soup wire maps stay as types
- * (`NestedEntity` / `WireEntity`) and `transactWire` — not the happy
- * path. List-form ops are what the builder lowers to.
- */
+/** Catalog-generic transaction builder. `transact(function* (tx) { … })` is the happy path. */
 
 import * as Effect from "effect/Effect";
 import type { AnyAttribute, ValueOf } from "./Attribute.ts";
@@ -297,11 +265,7 @@ type NamespaceWrites<N extends { readonly attributes: Record<string, AnyAttribut
     [A in keyof N["attributes"]]+?: AttrWrites<N["attributes"][A]>;
   };
 
-/**
- * Nested entity map — secondary form. Keys are namespace *names*.
- * Prefer the builder: a nested map still groups attrs by namespace
- * instead of treating the entity as a bag.
- */
+/** Nested entity map — secondary form, not the happy path. */
 export type NestedEntity<C extends AnyCatalog> = {
   readonly ":db/id"?: EntityRef<C>;
 } & {
