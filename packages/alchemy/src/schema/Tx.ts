@@ -1,17 +1,34 @@
 /**
  * Typed transaction forms.
  *
- * The primary surface is a *nested* map keyed by namespace name, then
- * attribute key — `{ user: { name: "Ada" } }`. That infers cleanly and
- * feels like `Schema.Struct`. The keyword-soup wire form
- * (`{ ":user/name": "Ada" }`) is `WireEntity` / `transactWire`, kept
- * because it is what the peer already accepts.
+ * The primary surface is a catalog-generic **builder** used from
+ * `Effect.gen`. An entity is a bag of attributes: any catalog namespace
+ * can be asserted on the same handle. Transactions do not prescribe a
+ * nested `{ user: {…}, meta: {…} }` shape.
  *
- * List ops (`:db/add` / `:db/retract` / `:db/retractEntity`) stay, with
- * the attribute slot restricted to catalog idents and the value slot
- * correlated to that ident.
+ * ```ts
+ * yield* db.transact((tx) =>
+ *   Effect.gen(function* () {
+ *     const ada = yield* tx.entity()
+ *     yield* ada.add(User.name, "Ada")
+ *     yield* ada.add(User.age, 36)
+ *     yield* ada.add(Meta.source, "import")
+ *     yield* ada.retract(User.age, 35)
+ *   }),
+ * )
+ * ```
+ *
+ * `User.name` is the typed slot; the value type is correlated. Unknown
+ * attr / wrong value type are type errors. Cardinality-many is one
+ * `:db/add` per datom. Lookup refs and `:db/id` (eid / tempid) are
+ * `tx.entity(1001)` / `tx.entity([User.name, "Ada"])`.
+ *
+ * Nested namespace maps and keyword-soup wire maps stay as types
+ * (`NestedEntity` / `WireEntity`) and `transactWire` — not the happy
+ * path. List-form ops are what the builder lowers to.
  */
 
+import * as Effect from "effect/Effect";
 import type { AnyAttribute, ValueOf } from "./Attribute.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import type {
@@ -20,6 +37,204 @@ import type {
   ValueAtIdent,
   WriteAtIdent,
 } from "./idents.ts";
+
+// ── attr / value correlation ───────────────────────────────────────────────
+
+/**
+ * Attribute slot on the builder. An attr ref (`User.name`) or a catalog
+ * ident (`":user/name"`). Unknown idents are not in the union.
+ */
+export type TxAttr<C extends AnyCatalog> =
+  | { readonly ident: CatalogIdent<C> }
+  | CatalogIdent<C>;
+
+type IdentOfTxAttr<C extends AnyCatalog, A> = A extends {
+  readonly ident: infer I extends string;
+}
+  ? I
+  : A extends CatalogIdent<C>
+    ? A
+    : never;
+
+/** Value type correlated to a {@link TxAttr}. `never` when the attr is unknown. */
+export type TxValue<C extends AnyCatalog, A> =
+  IdentOfTxAttr<C, A> extends infer I
+    ? [I] extends [never]
+      ? never
+      : I extends string
+        ? ValueAtIdent<C, I>
+        : never
+    : never;
+
+/** Lookup ref written with an attr ref: `[User.name, "Ada"]`. */
+export type AttrRefLookup<C extends AnyCatalog> = {
+  [I in CatalogIdent<C>]: readonly [
+    { readonly ident: I },
+    ValueAtIdent<C, I>,
+  ];
+}[CatalogIdent<C>];
+
+export type TxEntity<C extends AnyCatalog> =
+  | EntityRef<C>
+  | EntityHandle<C>
+  | AttrRefLookup<C>;
+
+// ── collected ops (what a future impl would send) ──────────────────────────
+
+export type TxOp =
+  | readonly [":db/add", unknown, string, unknown]
+  | readonly [":db/retract", unknown, string]
+  | readonly [":db/retract", unknown, string, unknown]
+  | readonly [":db/retractEntity", unknown];
+
+export interface TxSpec {
+  readonly ops: readonly TxOp[];
+}
+
+// ── entity handle (a bag) ──────────────────────────────────────────────────
+
+/**
+ * A tempid / eid / lookup handle. `add` / `retract` take an attr from
+ * *any* catalog namespace — that is the bag.
+ */
+export interface EntityHandle<C extends AnyCatalog = AnyCatalog> {
+  readonly _tag: "EntityHandle";
+  readonly id: EntityRef<C>;
+
+  add<const A extends TxAttr<C>>(
+    attr: A,
+    value: TxValue<C, A>,
+  ): Effect.Effect<void>;
+
+  retract<const A extends TxAttr<C>>(
+    attr: A,
+    value?: TxValue<C, A>,
+  ): Effect.Effect<void>;
+
+  retractEntity(): Effect.Effect<void>;
+}
+
+// ── builder ────────────────────────────────────────────────────────────────
+
+/**
+ * Catalog-generic transaction builder. Methods are Effects so the body
+ * is `Effect.gen`. `db.transact` is the terminal that would submit.
+ */
+export interface TxBuilder<C extends AnyCatalog = AnyCatalog> {
+  readonly catalog: C;
+  readonly spec: TxSpec;
+
+  /**
+   * Allocate a tempid, or wrap an existing eid / tempid / lookup ref.
+   * `tx.entity()` → new handle; `tx.entity(1001)`; `tx.entity("ada")`;
+   * `tx.entity([User.name, "Ada"])`.
+   */
+  entity(): Effect.Effect<EntityHandle<C>>;
+  entity(id: TxEntity<C>): Effect.Effect<EntityHandle<C>>;
+
+  /** Assert one datom. Cardinality-many is one call per value. */
+  add<const A extends TxAttr<C>>(
+    e: TxEntity<C>,
+    attr: A,
+    value: TxValue<C, A>,
+  ): Effect.Effect<void>;
+
+  retract<const A extends TxAttr<C>>(
+    e: TxEntity<C>,
+    attr: A,
+    value?: TxValue<C, A>,
+  ): Effect.Effect<void>;
+
+  retractEntity(e: TxEntity<C>): Effect.Effect<void>;
+}
+
+const isAttrRef = (a: unknown): a is { readonly ident: string } =>
+  typeof a === "object" &&
+  a !== null &&
+  "ident" in a &&
+  typeof (a as { ident: unknown }).ident === "string";
+
+const isHandle = (e: unknown): e is EntityHandle =>
+  typeof e === "object" &&
+  e !== null &&
+  (e as { _tag?: unknown })._tag === "EntityHandle";
+
+const lowerAttr = (a: unknown): string =>
+  isAttrRef(a) ? a.ident : (a as string);
+
+const resolveEntity = (e: unknown): unknown => {
+  if (isHandle(e)) return e.id;
+  if (Array.isArray(e) && e.length === 2 && isAttrRef(e[0])) {
+    return [e[0].ident, e[1]];
+  }
+  return e;
+};
+
+const makeHandle = <C extends AnyCatalog>(
+  id: EntityRef<C>,
+  ops: TxOp[],
+): EntityHandle<C> => ({
+  _tag: "EntityHandle",
+  id,
+  add: (attr: unknown, value: unknown) =>
+    Effect.sync(() => {
+      ops.push([":db/add", id, lowerAttr(attr), value]);
+    }),
+  retract: (attr: unknown, value?: unknown) =>
+    Effect.sync(() => {
+      if (value === undefined) {
+        ops.push([":db/retract", id, lowerAttr(attr)]);
+      } else {
+        ops.push([":db/retract", id, lowerAttr(attr), value]);
+      }
+    }),
+  retractEntity: () =>
+    Effect.sync(() => {
+      ops.push([":db/retractEntity", id]);
+    }),
+});
+
+/**
+ * Start a catalog-typed transaction builder. Used by
+ * `db.transact(tx => …)` and by compile-time / runtime fixtures.
+ */
+export const txBuilder = <C extends AnyCatalog>(catalog: C): TxBuilder<C> => {
+  const ops: TxOp[] = [];
+  let next = 0;
+  const builder: TxBuilder<C> = {
+    catalog,
+    get spec() {
+      return { ops: ops.slice() };
+    },
+    entity: ((id?: TxEntity<C>) =>
+      Effect.sync(() => {
+        const resolved =
+          id === undefined
+            ? (`tmp-${++next}` as EntityRef<C>)
+            : (resolveEntity(id) as EntityRef<C>);
+        return makeHandle(resolved, ops);
+      })) as TxBuilder<C>["entity"],
+    add: (e: unknown, attr: unknown, value: unknown) =>
+      Effect.sync(() => {
+        ops.push([":db/add", resolveEntity(e), lowerAttr(attr), value]);
+      }),
+    retract: (e: unknown, attr: unknown, value?: unknown) =>
+      Effect.sync(() => {
+        if (value === undefined) {
+          ops.push([":db/retract", resolveEntity(e), lowerAttr(attr)]);
+        } else {
+          ops.push([":db/retract", resolveEntity(e), lowerAttr(attr), value]);
+        }
+      }),
+    retractEntity: (e: unknown) =>
+      Effect.sync(() => {
+        ops.push([":db/retractEntity", resolveEntity(e)]);
+      }),
+  };
+  return builder;
+};
+
+// ── secondary: nested maps / wire / list ops ───────────────────────────────
 
 type NamespaceName<C extends AnyCatalog> = {
   [K in keyof C["namespaces"]]: C["namespaces"][K]["ns"];
@@ -41,8 +256,9 @@ type NamespaceWrites<N extends { readonly attributes: Record<string, AnyAttribut
   };
 
 /**
- * Nested entity map. Keys are namespace *names* (`user`, not the catalog
- * key). Every attribute is optional — a tx does not have to set them all.
+ * Nested entity map — secondary form. Keys are namespace *names*.
+ * Prefer the builder: a nested map still groups attrs by namespace
+ * instead of treating the entity as a bag.
  */
 export type NestedEntity<C extends AnyCatalog> = {
   readonly ":db/id"?: EntityRef<C>;
@@ -50,7 +266,7 @@ export type NestedEntity<C extends AnyCatalog> = {
   [Name in NamespaceName<C>]+?: NamespaceWrites<NamespaceByName<C, Name>>;
 };
 
-/** Keyword-soup map the peer already speaks. */
+/** Keyword-soup map the peer already speaks. `transactWire`. */
 export type WireEntity<C extends AnyCatalog> = {
   readonly ":db/id"?: EntityRef<C>;
 } & {

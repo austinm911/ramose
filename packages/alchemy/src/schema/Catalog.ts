@@ -24,8 +24,9 @@ export type AnyCatalog = Catalog<NamespaceMap>;
  * })
  * ```
  *
- * Nested transact maps use each namespace's *name* (`user`, `movie`), not
- * the catalog key, so renaming the key does not change the ident.
+ * The transact builder addresses attrs via `User.name` (the stamped
+ * attr ref). The catalog key is only the composition key; `ns` is the
+ * ident prefix.
  */
 export const Catalog = <const Ns extends NamespaceMap>(
   namespaces: Ns,

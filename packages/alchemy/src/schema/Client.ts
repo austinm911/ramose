@@ -35,7 +35,7 @@ import { SchemaEnsureError } from "./Errors.ts";
 import type { EntityRef } from "./idents.ts";
 import { type QueryBuilder, queryBuilder } from "./Query.ts";
 import type { EntityMap, PullPattern, PullResult } from "./Read.ts";
-import type { TypedTx, WireTx } from "./Tx.ts";
+import type { TxBuilder, WireTx } from "./Tx.ts";
 
 export type OpenError = BadRequest | SchemaEnsureError;
 
@@ -93,10 +93,24 @@ export interface TypedWriteDatabaseClient<C extends AnyCatalog = AnyCatalog> {
   readonly catalog: C;
   readonly name: string;
 
-  /** Nested / list-form tx. Unknown attr or wrong value type → type error. */
-  transact(
-    tx: TypedTx<C>,
-  ): Effect.Effect<TxAck, DatabaseError, RuntimeContext>;
+  /**
+   * Catalog-typed transaction builder. An entity is a bag — attrs from
+   * any namespace go on the same handle. The callback is what `yield*`s;
+   * this returns `TxAck` plus whatever error / context the callback adds.
+   *
+   * ```ts
+   * yield* db.transact((tx) =>
+   *   Effect.gen(function* () {
+   *     const ada = yield* tx.entity()
+   *     yield* ada.add(User.name, "Ada")
+   *     yield* ada.add(Meta.source, "import")
+   *   }),
+   * )
+   * ```
+   */
+  transact<E = never, R = never>(
+    build: (tx: TxBuilder<C>) => Effect.Effect<unknown, E, R>,
+  ): Effect.Effect<TxAck, DatabaseError | E, RuntimeContext | R>;
 
   /** Keyword-soup maps (`{ ":user/name": "Ada" }`), still catalog-checked. */
   transactWire(
@@ -186,7 +200,8 @@ const makeWrite = <C extends AnyCatalog>(
 ): TypedWriteDatabaseClient<C> => ({
   catalog,
   name,
-  transact: () => die("transact"),
+  transact: ((_build: (tx: TxBuilder<C>) => Effect.Effect<unknown, unknown, unknown>) =>
+    die("transact")) as TypedWriteDatabaseClient<C>["transact"],
   transactWire: () => die("transactWire"),
   transactUntyped: () => die("transactUntyped"),
 });
