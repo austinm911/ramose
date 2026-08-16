@@ -22,8 +22,9 @@ import { SchemaFx } from "@ripple/alchemy"
 
 const User = SchemaFx.Namespace("user", {
   name: SchemaFx.attr(Schema.String, { unique: "identity" }),
-  age: SchemaFx.attr(SchemaFx.Long),
-  friends: SchemaFx.attr(SchemaFx.Ref, { cardinality: "many" }),
+  age: SchemaFx.attr(SchemaFx.Long, { valueType: ":db.type/long" }),
+  friends: SchemaFx.attr(SchemaFx.Ref, { cardinality: "many", valueType: ":db.type/ref" }),
+  bestFriend: SchemaFx.attr(SchemaFx.Ref, { valueType: ":db.type/ref" }),
 })
 
 const Movie = SchemaFx.Namespace("movie", {
@@ -77,12 +78,15 @@ ada.add(User.name, 42)
 ```
 
 `entity` still returns the whole ident-keyed bag (no projection).
-`pull` is a `Schema.Struct`-shaped pattern: callers map attr refs onto
-the result keys they want. Required fields are `T`; `optional` is
-`T | undefined`; `nested` follows a ref (object, or `T[]` if many).
-Keyword-soup ident arrays remain as an escape. `q` is a catalog-generic
-builder: bindings accumulate as clauses are added, and `find` produces
-a row tuple from the selected variables. Today's object/string `q<T>`
+`pull` is a **plain object**: callers map attr refs onto the result
+keys they want. The object *is* the pattern — no `Struct` wrap.
+A bare attr ref is required (`T`). `.optional` is maybe
+(`T | undefined`). `.with({ ... })` follows a ref (object, or `T[]`
+if many). Same syntax at every level; mix namespaces on one map.
+`Struct` / `optional()` / `nested()` stay as aliases. Keyword-soup
+ident arrays remain as an escape. `q` is a catalog-generic builder:
+bindings accumulate as clauses are added, and `find` produces a row
+tuple from the selected variables. Today's object/string `q<T>`
 stays as the escape hatch. `transactUntyped` is the write-side escape.
 `transactWire` is the keyword-soup form (`{ ":user/name": "Ada" }`),
 still catalog-checked — a bag, but not the Effect-savvy path.
@@ -94,25 +98,23 @@ const ada = yield* db.entity(1001)
 // ada?.[":user/name"] : string | undefined
 // ada?.[":user/friends"] : readonly number[] | undefined
 
-const Friend = SchemaFx.Struct({
+const pulled = yield* db.pull(1001, {
   name: User.name,
-  age: SchemaFx.optional(User.age),
-})
-const pulled = yield* db.pull(
-  1001,
-  SchemaFx.Struct({
+  age: User.age.optional,
+  source: Meta.source,
+  bestFriend: User.bestFriend.optional.with({
     name: User.name,
-    age: SchemaFx.optional(User.age),
-    source: Meta.source,
-    friends: SchemaFx.nested(User.friends, Friend),
+    age: User.age.optional,
   }),
-)
-// pulled : {
-//   readonly name: string
-//   readonly age: number | undefined
-//   readonly source: string
-//   readonly friends: readonly { readonly name: string; readonly age: number | undefined }[]
-// } | null
+  friends: User.friends.with({
+    name: User.name,
+    age: User.age.optional,
+  }),
+})
+// name: string
+// age: number | undefined
+// bestFriend: { name: string; age: number | undefined } | undefined
+// friends: readonly { name: string; age: number | undefined }[]
 
 const rows = yield* db.q((q) =>
   q.where("?e", User.name, "?n").find("?n"),
@@ -193,26 +195,30 @@ it is keyword soup. Nested maps remain as a `NestedEntity` type
 lowers the builder's collected `:db/add` / `:db/retract` ops to what the
 peer already accepts.
 
-**Pull is a Struct, not ident keys.** An ident-keyed
+**Pull is a plain object, not ident keys.** An ident-keyed
 `db.pull(1001, [User.name])` → `{ ":user/name"?: string }` is honest
 about the engine, and it is the wrong happy path. Callers do not want
 to write `":user/name"` in application code, they cannot rename, they
 cannot mark required vs maybe, and they cannot nest a ref into a
 typed object. A nested map under namespace keys (`{ user: { name } }`)
 is the same mistake the write path already rejected: it partitions
-the entity and cannot mix `User.name` + `Meta.source`.
+the entity and cannot mix `User.name` + `Meta.source`. Wrapping every
+pattern in `SchemaFx.Struct` was the same idea with extra ceremony —
+the plain object *is* the pattern.
 
-`SchemaFx.Struct` is the Effect-shaped answer. Keys are the names that
-come back (`name`, not `":user/name"`). Values are the same attr refs
-writes already use. `optional` is `Schema.optional`. `nested(ref, pattern)`
-follows a `:db.type/ref` — card-one is an object, card-many is
-`readonly T[]`. `pick(User, "name", "age")` is `Schema.pick` for the
-same-namespace case. Recursion is just a nested Struct; two levels
-typecheck. The catalog is still a bag: `Movie.title` on a user pull
-is legal if you name the key.
+Keys are the names that come back (`name`, not `":user/name"`).
+Values are the same attr refs writes already use. A bare ref is
+required. `User.age.optional` is maybe (`T | undefined`).
+`User.friends.with({ ... })` follows a `:db.type/ref` — card-one is
+an object, card-many is `readonly T[]`. `.optional.with({ ... })`
+is a maybe-nested field. Same syntax at every level. Recursion is
+just another map inside `.with`; two levels typecheck. The catalog
+is still a bag: `Movie.title` on a user pull is legal if you name
+the key. `pick(User, "name", "age")` is the same-namespace shortcut.
+`Struct` / `optional()` / `nested()` remain as aliases.
 
 The engine can still return ident maps. A future implementation
-lowers `Struct({ name: User.name })` to today's pull with `:as`
+lowers `{ name: User.name }` to today's pull with `:as`
 (`(:user/name :as "name")`) and nested map specs. The typed result
 is the decoded shape, not the wire. `[User.name, ":user/age"]`
 stays as the keyword-soup escape — ident keys, every field optional.
@@ -230,10 +236,10 @@ queries the builder does not type.
 
 Remaining limits (pull):
 
-- `entity(eid)` is still the whole ident-keyed bag. Use `pull` + Struct
-  to project and rename.
-- `nested` requires `valueType: ":db.type/ref"` on the attr. A `Ref`
-  schema without that option is not enough for the type checker.
+- `entity(eid)` is still the whole ident-keyed bag. Use `pull` to
+  project and rename.
+- `.with` / `nested` require `valueType: ":db.type/ref"` on the attr.
+  A `Ref` schema without that option is not enough for the type checker.
 - Reverse refs (`:user/_friends`), `:as` on the wire, `limit` /
   `default`, and recursive `...` are not encoded. Use the ident-keyed
   escape or `q<T>`.
