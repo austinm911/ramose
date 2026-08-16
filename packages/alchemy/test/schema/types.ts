@@ -19,13 +19,11 @@ import {
   type Equal,
   type Expect,
   type Extends,
-  type NestedEntity,
   Namespace,
   type OpenError,
   SchemaEnsureError,
   type TypedReadDatabaseClient,
   type TypedReadWriteDatabaseClient,
-  type TypedTx,
   type TypedWriteDatabaseClient,
   type ValueAtIdent,
   type WireEntity,
@@ -184,17 +182,6 @@ const _validTx = db.transact(function* (tx) {
 });
 void _validTx;
 
-// secondary: nested / list-form types still exist (not the transact happy path)
-const _validNested: TypedTx<typeof Movies> = [
-  { user: { name: "Ada", age: 36 }, meta: { source: "import" } },
-  { movie: { title: "Arrival", year: 2016 } },
-  { ":db/id": "ada", user: { name: "Ada" } },
-  [":db/add", "ada", ":user/name", "Ada"],
-  [":db/retract", 1001, ":user/age", 36],
-  [":db/retractEntity", 1001],
-];
-void _validNested;
-
 const _validWire: WireEntity<typeof Movies> = {
   ":db/id": "ada",
   ":user/name": "Ada",
@@ -205,22 +192,10 @@ const _validWire: WireEntity<typeof Movies> = {
 void db.transactWire([_validWire]);
 void db.transactUntyped([{ ":user/name": "Ada" }]);
 
-// ── wire / nested secondary forms still reject unknown / wrong types ───────
-
-// @ts-expect-error unknown nested attribute
-const _badNestedAttr: NestedEntity<typeof Movies> = { user: { nope: "x" } };
-void _badNestedAttr;
-
-// @ts-expect-error unknown namespace
-const _badNestedNs: NestedEntity<typeof Movies> = { studio: { name: "A24" } };
-void _badNestedNs;
+// ── wire form still rejects unknown / wrong types ───────────────────────────
 
 // @ts-expect-error unknown wire ident
 db.transactWire([{ ":user/nope": "x" }]);
-
-// @ts-expect-error name is string, not number
-const _badNestedVal: NestedEntity<typeof Movies> = { user: { name: 42 } };
-void _badNestedVal;
 
 // @ts-expect-error wire name is string, not number
 db.transactWire([{ ":user/name": 42 }]);
@@ -314,6 +289,7 @@ const caught = db
       QueryBudgetExceeded: (e) => Effect.succeed(e.clause),
       Internal: (e) => Effect.succeed(e.message),
       NetworkError: (e) => Effect.succeed(e.message),
+      MissingPeer: (e) => Effect.succeed(e.message),
     }),
   );
 type CaughtSuccess = Effect.Success<typeof caught>;
@@ -350,16 +326,6 @@ type _openedErr = Expect<Equal<Effect.Error<typeof opened>, never>>;
 type _createR = Expect<
   Extends<RuntimeContext, Effect.Services<typeof created>>
 >;
-
-// ── nested entity shape ────────────────────────────────────────────────────
-
-type Nested = NestedEntity<typeof Movies>;
-const _nestedOk: Nested = { user: { name: "Ada" }, movie: { title: "Dune" } };
-void _nestedOk;
-
-// cardinality-many in the nested form is an array of refs
-const _manyOk: Nested = { user: { friends: [1001, 1002] } };
-void _manyOk;
 
 // keep AnyCatalog / DatabaseError referenced so unused-import never fires
 type _hold = [AnyCatalog, DatabaseError];

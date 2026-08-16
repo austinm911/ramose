@@ -16,6 +16,7 @@ import {
   toJson,
 } from "@ripple/core";
 import { RuntimeContext } from "alchemy/RuntimeContext";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type { FetchLike } from "../../src/Client.ts";
@@ -23,7 +24,9 @@ import { systemSource } from "../../src/Client.ts";
 import {
   Attr,
   Catalog,
+  Eid,
   Long,
+  MissingPeer,
   Namespace,
   Ref,
   SchemaEnsureError,
@@ -31,6 +34,7 @@ import {
   makeReadSystemClient,
   makeSystem,
   makeWriteSystemClient,
+  unsafeDatabase,
 } from "../../src/schema/index.ts";
 
 const User = Namespace("user", {
@@ -363,18 +367,21 @@ describe("request shapes (fake fetch)", () => {
     expect(calls[3].body).toEqual({ tx: [{ ":user/name": "Bob" }] });
   });
 
-  test("privilege: read has q, write has transact", async () => {
-    const { fetch } = recorder(() => ({
+  test("privilege: read has q and skips ensure; write has transact", async () => {
+    const { calls, fetch } = recorder(() => ({
       body: { t: 1, txEid: 1, tempids: {}, datoms: 0, result: [], root: 1 },
     }));
     const source = systemSource({ url: "https://peer.example.com", fetch });
     const read = makeReadSystemClient(source);
     const write = makeWriteSystemClient(source);
     const r = await run(read.create("movies", Movies));
-    const w = await run(write.create("movies", Movies));
     expect("transact" in r).toBe(false);
-    expect("q" in w).toBe(false);
+    expect(calls.filter((c) => c.url.endsWith("/transact"))).toHaveLength(0);
     await run(r.q((q) => q.where("?e", User.name, "?n").find("?n")));
+
+    const w = await run(write.create("movies", Movies));
+    expect("q" in w).toBe(false);
+    expect(calls.filter((c) => c.url.endsWith("/transact")).length).toBeGreaterThan(0);
     await run(
       w.transact(function* (tx) {
         const e = yield* tx.entity();
@@ -530,5 +537,118 @@ describe("in-process peer", () => {
       b.q((q) => q.where("?e", User.name, "?n").find("?n")),
     );
     expect(rows).toEqual([["Ada"]]);
+  });
+});
+
+describe("pull required vs optional (in-process)", () => {
+  test("required missing → null; optional missing → undefined; nested many filters; required nested missing → parent null", async () => {
+    const { fetch } = inProcessPeer();
+    const system = makeSystem({ url: "https://peer.local", fetch });
+    const db = await run(system.create("movies", Movies));
+
+    await run(
+      db.transact(function* (tx) {
+        const ada = yield* tx.entity();
+        yield* ada.add(User.name, "Ada");
+
+        const alonzo = yield* tx.entity();
+        yield* alonzo.add(User.name, "Alonzo");
+        yield* ada.add(User.friends, alonzo.id as never);
+
+        const ghost = yield* tx.entity();
+        yield* ghost.add(User.age, 1);
+        yield* ada.add(User.friends, ghost.id as never);
+      }),
+    );
+
+    const rows = await run(
+      db.q((q) => q.where("?e", User.name, "Ada").find("?e")),
+    );
+    const ada = rows[0][0];
+    expect(isEid(ada)).toBe(true);
+
+    const requiredAge = await run(ada.pull({ name: User.name, age: User.age }));
+    expect(requiredAge).toBeNull();
+
+    const optionalAge = await run(
+      ada.pull({ name: User.name, age: User.age.optional }),
+    );
+    expect(optionalAge).toEqual({ name: "Ada", age: undefined });
+
+    const friends = await run(
+      ada.pull({
+        name: User.name,
+        friends: User.friends.with({ name: User.name }),
+      }),
+    );
+    expect(friends).not.toBeNull();
+    expect(friends!.friends.map((f) => f.name)).toEqual(["Alonzo"]);
+
+    const requiredBest = await run(
+      ada.pull({
+        name: User.name,
+        bestFriend: User.bestFriend.with({ name: User.name }),
+      }),
+    );
+    expect(requiredBest).toBeNull();
+
+    const optionalBest = await run(
+      ada.pull({
+        name: User.name,
+        bestFriend: User.bestFriend.optional.with({ name: User.name }),
+      }),
+    );
+    expect(optionalBest).toEqual({ name: "Ada", bestFriend: undefined });
+  });
+});
+
+describe("effect honesty", () => {
+  test("Eid.of without pullFn fails MissingPeer", async () => {
+    const e = await runFail(Eid.of(Movies, 1001).pull({ name: User.name }));
+    expect(e._tag).toBe("MissingPeer");
+    expect(e).toBeInstanceOf(MissingPeer);
+  });
+
+  test("unsafeDatabase without a peer fails MissingPeer", async () => {
+    const db = unsafeDatabase(Movies);
+    const e = await runFail(
+      db.q((q) => q.where("?e", User.name, "?n").find("?n")),
+    );
+    expect(e._tag).toBe("MissingPeer");
+  });
+
+  test("generator transact propagates yielded failures and does not submit", async () => {
+    class Extra extends Data.TaggedError("Extra")<{
+      readonly message: string;
+    }> {}
+    const { fetch } = inProcessPeer();
+    const system = makeSystem({ url: "https://peer.local", fetch });
+    const db = await run(system.create("movies", Movies));
+    const e = await runFail(
+      db.transact(function* (tx) {
+        const ada = yield* tx.entity();
+        yield* ada.add(User.name, "Ada");
+        return yield* Effect.fail(new Extra({ message: "nope" }));
+      }),
+    );
+    expect(e._tag).toBe("Extra");
+    const rows = await run(
+      db.q((q) => q.where("?e", User.name, "?n").find("?n")),
+    );
+    expect(rows).toEqual([]);
+  });
+
+  test("transactWire rejects unknown idents before the peer", async () => {
+    const { calls, fetch } = recorder(() => ({
+      body: { t: 1, txEid: 1, tempids: {}, datoms: 0 },
+    }));
+    const system = makeSystem({ url: "https://peer.example.com", fetch });
+    const db = await run(system.create("movies", Movies));
+    calls.length = 0;
+    const e = await runFail(
+      db.transactWire([{ ":user/nope": "x" }] as never),
+    );
+    expect(e._tag).toBe("BadRequest");
+    expect(calls).toHaveLength(0);
   });
 });

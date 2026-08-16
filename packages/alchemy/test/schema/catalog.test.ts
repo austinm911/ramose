@@ -13,6 +13,8 @@ import {
   schemaTx,
   txBuilder,
   lowerPullPattern,
+  lowerWireTx,
+  reshapePullResult,
   Long,
   Ref,
 } from "../../src/schema/index.ts";
@@ -21,6 +23,7 @@ const User = Namespace("user", {
   name: Attr(Schema.String, { unique: "identity", doc: "display name" }),
   age: Attr(Long),
   friends: Attr(Ref, { cardinality: "many" }),
+  bestFriend: Attr(Ref),
 });
 
 const Meta = Namespace("meta", {
@@ -49,6 +52,11 @@ describe("schemaTx", () => {
         ":db/ident": ":user/friends",
         ":db/valueType": ":db.type/ref",
         ":db/cardinality": ":db.cardinality/many",
+      },
+      {
+        ":db/ident": ":user/bestFriend",
+        ":db/valueType": ":db.type/ref",
+        ":db/cardinality": ":db.cardinality/one",
       },
       {
         ":db/ident": ":meta/source",
@@ -133,5 +141,99 @@ describe("pull lowering", () => {
       ":user/age",
       "*",
     ]);
+  });
+});
+
+describe("reshapePullResult", () => {
+  test("required field missing → null; optional missing → undefined", () => {
+    expect(
+      reshapePullResult({ name: User.name, age: User.age }, { name: "Ada" }),
+    ).toBeNull();
+    expect(
+      reshapePullResult(
+        { name: User.name, age: User.age.optional },
+        { name: "Ada" },
+      ),
+    ).toEqual({ name: "Ada", age: undefined });
+  });
+
+  test("required card-one .with missing or incomplete → parent null", () => {
+    expect(
+      reshapePullResult(
+        {
+          name: User.name,
+          bestFriend: User.bestFriend.with({ name: User.name }),
+        },
+        { name: "Ada" },
+      ),
+    ).toBeNull();
+    expect(
+      reshapePullResult(
+        {
+          name: User.name,
+          bestFriend: User.bestFriend.with({ name: User.name }),
+        },
+        { name: "Ada", bestFriend: { ":db/id": 9 } },
+      ),
+    ).toBeNull();
+    expect(
+      reshapePullResult(
+        {
+          name: User.name,
+          bestFriend: User.bestFriend.optional.with({ name: User.name }),
+        },
+        { name: "Ada" },
+      ),
+    ).toEqual({ name: "Ada", bestFriend: undefined });
+  });
+
+  test("required scalar null is missing", () => {
+    expect(
+      reshapePullResult(
+        { name: User.name, age: User.age },
+        { name: "Ada", age: null },
+      ),
+    ).toBeNull();
+  });
+
+  test("nested many filters incomplete children; empty after filter is []", () => {
+    expect(
+      reshapePullResult(
+        { friends: User.friends.with({ name: User.name }) },
+        {
+          friends: [
+            { name: "Alonzo" },
+            { ":db/id": 2 },
+            { name: null },
+          ],
+        },
+      ),
+    ).toEqual({ friends: [{ name: "Alonzo" }] });
+    expect(
+      reshapePullResult(
+        { friends: User.friends.with({ name: User.name }) },
+        { friends: [{ ":db/id": 2 }] },
+      ),
+    ).toEqual({ friends: [] });
+  });
+});
+
+describe("lowerWireTx", () => {
+  test("copies catalog maps and list ops; rejects unknown idents", () => {
+    const ok = Effect.runSync(
+      lowerWireTx(Movies, [
+        { ":user/name": "Ada", ":user/age": 36 },
+        [":db/add", "tmp-1", ":meta/source", "import"],
+        [":db/retractEntity", 1001],
+      ]),
+    );
+    expect(ok).toEqual([
+      { ":user/name": "Ada", ":user/age": 36 },
+      [":db/add", "tmp-1", ":meta/source", "import"],
+      [":db/retractEntity", 1001],
+    ]);
+    const bad = Effect.runSync(Effect.flip(lowerWireTx(Movies, [{ ":user/nope": "x" }])));
+    expect(bad._tag).toBe("BadRequest");
+    expect(bad.message).toContain(":user/nope");
   });
 });
