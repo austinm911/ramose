@@ -43,7 +43,7 @@ environment, any placeholder works for emulation.
 `@ripple/alchemy` exposes Ripple to Alchemy 2 the way `alchemy/Cloudflare`
 exposes KV: a resource for the thing, capabilities for using it, and one
 Effect-native client behind three transports. Full example (type-checked):
-`examples/alchemy-kv-style.ts`.
+`examples/kv-style/` (`resources.ts` + `app.ts` + `alchemy.run.ts`).
 
 ```ts
 import * as Alchemy from "alchemy";
