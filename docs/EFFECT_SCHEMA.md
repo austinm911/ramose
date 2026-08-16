@@ -32,9 +32,10 @@ const system = SchemaFx.makeSystem({ url })
 const db = yield* system.create("movies", Movies)
 ```
 
-`create` / `connect` take the catalog and **ensure** it. Name validation
-is still `BadRequest`. Ensure failure is `SchemaEnsureError` on the same
-Effect.
+`create` / `connect` on a write / read-write system take the catalog and
+**ensure** it. Name validation is still `BadRequest`. Ensure failure is
+`SchemaEnsureError` on the same Effect. A **read** system skips ensure
+(it cannot transact) and fails only on a bad name.
 
 **transact** — generator callback. An entity is a bag: attrs from any
 namespace on the same handle. `ada.add` is the write. `tx.add(e, attr, value)`
@@ -55,9 +56,15 @@ Object/string `q<T>` stays as the escape.
 **Eid.pull** — a `find` var bound as an entity (entity slot or
 `:db.type/ref`) is an Eid wrapper, not a number. `.pull` is a plain object
 of attr refs. Keys are the names that come back. A bare ref is required
-(`T`). `.optional` is maybe. `.with({ … })` follows a ref (object, or
-`T[]` if many). Mix namespaces on one map. Ident-keyed arrays stay as the
-escape. `Eid.of(Movies, 1001)` wraps a known number.
+(`T`): if that key is missing / null / undefined, the entity is dropped
+(`null` at the top level). `.optional` is maybe (`undefined` when
+absent). `.with({ … })` follows a ref (object, or `T[]` if many). A
+required nested ref that is missing, or whose nested object fails *its*
+required fields, drops the parent (or the nested item). Cardinality-many
+`.with` filters the array; `[]` after filter is still a valid many.
+`q` rows stay Eids; filtering happens at `.pull`. Mix namespaces on one
+map. Ident-keyed arrays stay as the escape. `Eid.of(Movies, 1001)` wraps
+a known number; `.pull` without a `pullFn` fails `MissingPeer`.
 
 ```ts
 const rows = yield* db.q((q) =>
@@ -91,14 +98,18 @@ Wraps today's untyped `Ripple.System` / `ReadWriteDatabaseClient`. Does not
 rewrite the transactor. Builder ops / pull maps / `schemaTx` lower onto
 what the peer already accepts (`:db/add`, pull with `:as`, ident maps).
 
-Real I/O (no proposal stubs on the happy path):
+Real I/O (no `Effect.die` on the public path):
 
-- `create` / `connect` — validate name, transact `schemaTx(catalog)`,
-  return the typed client
-- `transact` / `transactWire` / `transactUntyped` — collect ops, submit
-- `q` / `query` / `Eid.pull` / `info` / `health` — real reads
+- write / read-write `create` / `connect` — validate name, transact
+  `schemaTx(catalog)`, return the typed client
+- read `create` / `connect` — validate name, skip ensure
+- `transact` / `transactWire` / `transactUntyped` — collect ops, submit.
+  Generator `yield*` errors propagate (the tx is not submitted).
+  `transactWire` catalog-checks at runtime (`BadRequest` on unknown ident).
+- `q` / `query` / `Eid.pull` / `info` / `health` — real reads; pull
+  filters so the value matches the type
 
-`unsafeDatabase` / `Eid.of` without a peer still die (type-fixture
+`unsafeDatabase` / `Eid.of` without a peer fail `MissingPeer` (type-fixture
 helpers). Integration tests live in `packages/alchemy/test/schema/io.test.ts`.
 
 ## Out of scope
@@ -107,5 +118,5 @@ helpers). Integration tests live in `packages/alchemy/test/schema/io.test.ts`.
   handle is legal
 - `Struct` pull aliases / wrapping every pattern in `SchemaFx.Struct`
 - `db.entity` / `db.pull` as a second door
-- Nested-map transact (`{ user: { name } }`) as the happy path —
-  `NestedEntity` is secondary only
+- Nested-map transact (`{ user: { name } }`) — deleted; the bag is
+  `ada.add` / `transactWire`
