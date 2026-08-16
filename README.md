@@ -13,6 +13,7 @@ milestones; `bench/RESULTS.md` for recorded numbers.
 - `packages/replica` — QueryReplica DO (novelty subscriber, basis endpoint).
 - `packages/worker` — the peer Worker (HTTP API, edge query execution). Exports both DO classes.
 - `packages/client` — TS SDK.
+- `packages/alchemy` — Alchemy 2 + Effect interface (`Ripple.Database` resource, Read/Write/ReadWrite capabilities).
 - `bench/`, `test/e2e/` — benches and end-to-end tests.
 
 ## Commands
@@ -36,6 +37,53 @@ bun alchemy deploy --stage prod
 `ALCHEMY_STATE=local` keeps Alchemy's state in `.alchemy/` instead of the
 Cloudflare state store; the local runtime still wants an account id in the
 environment, any placeholder works for emulation.
+
+## Alchemy / Effect interface
+
+`@ripple/alchemy` exposes Ripple to Alchemy 2 the way `alchemy/Cloudflare`
+exposes KV: a resource for the thing, capabilities for using it, and one
+Effect-native client behind three transports. Full example (type-checked):
+`examples/alchemy-kv-style.ts`.
+
+```ts
+import * as Alchemy from "alchemy";
+import * as Cloudflare from "alchemy/Cloudflare";
+import * as Ripple from "@ripple/alchemy";
+import * as Layer from "effect/Layer";
+
+export const Peer = Cloudflare.Worker("Peer", { main: "./packages/worker/src/index.ts", env: { /* … */ } });
+export const Movies = Ripple.Database("Movies", { peer: Peer, name: "movies" });
+
+// inside an Effect-form Worker (deploy time: lowers a `service` binding to the peer)
+const db = yield* Ripple.ReadWriteDatabase(Movies);
+// per request
+const ack  = yield* db.transact([{ ":user/name": "Ada" }]);
+const rows = yield* db.q({ find: ["?n"], where: [["?e", ":user/name", "?n"]] }, [], { minT: ack.t });
+const past = yield* db.asOf(ack.t - 1).q(/* … */);
+const ada  = yield* db.entity(17);
+
+export default Alchemy.Stack("app", {
+  providers: Layer.mergeAll(Cloudflare.providers(), Ripple.providers()),
+  state: Cloudflare.state(),
+}, /* … */);
+```
+
+- **Resource** — `Ripple.Database(id, { peer, name?, token?, probe? })`, guard `Ripple.isDatabase`.
+  Attributes: `name`, `url`, `databaseUrl`, `peerName`, `token`. A Ripple database is a *name*
+  (the Transactor DO is `idFromName(name)`; the log lives under `db/<name>/…`), so the provider
+  creates nothing — it pins the name, derives the URLs, and proves the peer serves `/health`.
+  `destroy` forgets the name; it does **not** erase the log, the segments, or the DOs.
+- **Capabilities** — `Ripple.ReadDatabase` / `WriteDatabase` / `ReadWriteDatabase`.
+  Client: `transact`, `q`, `query` (with `x-ripple-*` meta), `pull`, `entity`, `info`, `health`,
+  and the `asOf(t)` / `history()` views; `minT` is the read fence.
+- **Layers** — `*DatabaseBinding` (Worker service binding to the peer, same-colo, no public hop),
+  `*DatabaseHttp` (plain HTTPS, works anywhere), `*DatabaseLocal` (`Alchemy.Action`, `alchemy dev`).
+- **Errors** — tagged, one per condition the peer/DOs report: `TxRejected`, `TransactorDead`,
+  `BadRequest`, `NotFound`, `Unauthorized`, `QueryBudgetExceeded`, `Internal`, `NetworkError`
+  (union `Ripple.DatabaseError`, guard `Ripple.isDatabaseError`). Catch them with
+  `Effect.catchTags` instead of reading status codes.
+- **Outside Alchemy** — `Ripple.Client.make({ url, name, token?, fetch? })` gives the same
+  Effect client to bun scripts and tests.
 
 ## Operations
 

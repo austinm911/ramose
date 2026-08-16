@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "scripts": {
-    "test": "bun test packages/core packages/storage packages/transactor packages/replica packages/worker",
+    "test": "bun test packages/core packages/storage packages/transactor packages/replica packages/worker packages/alchemy",
     "test:all": "bun test",
     "test:e2e": "bun test test/e2e",
     "typecheck": "bunx tsc --noEmit -p tsconfig.json",
@@ -31,6 +31,7 @@
     "typescript": "^5.6.0"
   },
   "dependencies": {
+    "@ripple/alchemy": "workspace:*",
     "@effect/platform-bun": ">=4.0.0-beta.105",
     "@effect/platform-node": ">=4.0.0-beta.105",
     "alchemy": "latest",

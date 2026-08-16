@@ -1,0 +1,182 @@
+/**
+ * Tagged failures for the Ripple database capabilities.
+ *
+ * These mirror, one-for-one, the error surface the peer Worker already
+ * speaks over HTTP (packages/worker/src/errors.ts,
+ * packages/transactor/src/errors.ts, packages/replica/src/errors.ts) so a
+ * caller can `Effect.catchTag("TxRejected", …)` on exactly the condition the
+ * database reported — no status-code sniffing.
+ *
+ * Wire shapes the classifier understands:
+ *
+ *   worker's own errors      { error, code?, clause?, cells?, limit?, stack? }   (no `tag`)
+ *   DO errors passed through { error, tag, message, code?, retryAfterMs? }
+ *
+ * `NetworkError` is the only failure with no server side: the request never
+ * produced a response (DNS, service binding down, aborted body).
+ */
+
+import * as Data from "effect/Data";
+
+/** A transaction was rejected by validation / tempid / unique resolution (409). */
+export class TxRejected extends Data.TaggedError("TxRejected")<{
+  readonly message: string;
+  readonly code: string;
+}> {}
+
+/** The transactor aborted and is rebuilding from durable state (503); retry after `retryAfterMs`. */
+export class TransactorDead extends Data.TaggedError("TransactorDead")<{
+  readonly message: string;
+  readonly retryAfterMs: number;
+}> {}
+
+/** Malformed request — bad query, unknown attribute, unbound variable, invalid db name (400). */
+export class BadRequest extends Data.TaggedError("BadRequest")<{
+  readonly message: string;
+}> {}
+
+/** No such route / database (404). */
+export class NotFound extends Data.TaggedError("NotFound")<{
+  readonly message: string;
+}> {}
+
+/** Missing or wrong bearer token (401). */
+export class Unauthorized extends Data.TaggedError("Unauthorized")<{
+  readonly message: string;
+}> {}
+
+/**
+ * The planner's intermediate relation would exceed the memory budget (413).
+ * Retryable with a narrower query. Both the peer's own guard
+ * (`QueryBudgetExceeded`) and the replica's (`QueryBudget`) land here.
+ */
+export class QueryBudgetExceeded extends Data.TaggedError(
+  "QueryBudgetExceeded",
+)<{
+  readonly message: string;
+  readonly code: string;
+  readonly clause: string;
+  readonly cells: number;
+  readonly limit: number;
+}> {}
+
+/** Anything else the server reported (500). */
+export class Internal extends Data.TaggedError("Internal")<{
+  readonly message: string;
+}> {}
+
+/** The request never produced a response (transport, DNS, service binding, aborted body). */
+export class NetworkError extends Data.TaggedError("NetworkError")<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
+
+export type DatabaseError =
+  | TxRejected
+  | TransactorDead
+  | BadRequest
+  | NotFound
+  | Unauthorized
+  | QueryBudgetExceeded
+  | Internal
+  | NetworkError;
+
+const TAGS = new Set([
+  "TxRejected",
+  "TransactorDead",
+  "BadRequest",
+  "NotFound",
+  "Unauthorized",
+  "QueryBudgetExceeded",
+  "Internal",
+  "NetworkError",
+]);
+
+export const isDatabaseError = (value: unknown): value is DatabaseError =>
+  typeof value === "object" &&
+  value !== null &&
+  TAGS.has((value as { _tag?: string })._tag ?? "");
+
+/** Minimal read-only view of the response headers (`Headers`, or a plain map in tests). */
+export interface HeaderLike {
+  get(name: string): string | null;
+}
+
+const str = (value: unknown, fallback: string): string =>
+  typeof value === "string" && value.length > 0 ? value : fallback;
+
+const num = (value: unknown, fallback: number): number =>
+  typeof value === "number" && Number.isFinite(value) ? value : fallback;
+
+/**
+ * Classify a non-2xx response into a tagged failure.
+ *
+ * The `tag` field (present only on errors the Transactor/QueryReplica DOs
+ * produced and the peer passed through verbatim) wins over the status code,
+ * because it is the stable discriminator; the peer's own errors carry no tag
+ * and are classified by status.
+ */
+export const fromResponse = (
+  status: number,
+  body: unknown,
+  headers?: HeaderLike,
+): DatabaseError => {
+  const b = (typeof body === "object" && body !== null ? body : {}) as Record<
+    string,
+    unknown
+  >;
+  const message = str(b.error ?? b.message, `HTTP ${status}`);
+  const budget = () =>
+    new QueryBudgetExceeded({
+      message,
+      code: str(b.code, "query/budget-exceeded"),
+      clause: str(b.clause, ""),
+      cells: num(b.cells, 0),
+      limit: num(b.limit, 0),
+    });
+
+  switch (b.tag) {
+    case "TxRejected":
+      return new TxRejected({ message, code: str(b.code, "tx/rejected") });
+    case "TransactorDead": {
+      const header = headers?.get("retry-after");
+      const retryAfterMs = num(
+        b.retryAfterMs,
+        header === null || header === undefined ? 0 : Number(header) * 1000,
+      );
+      return new TransactorDead({
+        message,
+        retryAfterMs: Number.isFinite(retryAfterMs) ? retryAfterMs : 0,
+      });
+    }
+    case "QueryBudget":
+      return budget();
+    case "BadRequest":
+      return new BadRequest({ message });
+    case "NotFound":
+      return new NotFound({ message });
+    case "Internal":
+      return new Internal({ message });
+  }
+
+  switch (status) {
+    case 400:
+      return new BadRequest({ message });
+    case 401:
+    case 403:
+      return new Unauthorized({ message });
+    case 404:
+      return new NotFound({ message });
+    case 409:
+      return new TxRejected({ message, code: str(b.code, "tx/rejected") });
+    case 413:
+      return budget();
+    case 503:
+      return new TransactorDead({
+        message,
+        retryAfterMs: num(b.retryAfterMs, Number(headers?.get("retry-after") ?? 0) * 1000 || 0),
+      });
+    default:
+      return new Internal({ message });
+  }
+};

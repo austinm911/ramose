@@ -1,0 +1,15 @@
+{
+  "name": "@ripple/alchemy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Alchemy 2 + Effect interface for Ripple: the Ripple.Database resource and the Read/Write/ReadWrite database capabilities (Binding / Http / Local).",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@ripple/core": "workspace:*",
+    "alchemy": "latest",
+    "effect": ">=4.0.0-beta.105"
+  }
+}
