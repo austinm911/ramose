@@ -85,7 +85,24 @@ distributed transactions across partitions.
 | `RIPPLE_QUERY_MAX_CELLS` | 1,572,864 (~48 MB) | planner memory guardrail per query; over-budget queries get 413 `query/budget-exceeded` |
 | `RIPPLE_RETAIN_ROOTS` / `RIPPLE_GC_EVERY_N_INDEXES` | 20 / 50 | root retention for `as-of`; GC cadence (mark & sweep against retained roots) |
 | `RIPPLE_LOG_LEVEL` | info | telemetry level |
-| `RIPPLE_TOKENS` | unset (auth off) | JSON `{ "<db>": "<token>", "*": "<token>" }` bearer tokens |
+| `RIPPLE_TOKENS` | unset (auth off) | bearer tokens: a plain string, or JSON `{ "<db>": "<token>", "*": "<token>" }` — see below |
+
+### `RIPPLE_TOKENS` forms
+
+Checked per request in `authorized()` (`packages/worker/src/index.ts`) against
+`Authorization: Bearer <token>` (or `?token=`), for the `:name` in the path:
+
+- **unset** — auth is off: every database name is open.
+- **a plain string** — that one token, for *every* database name.
+- **a JSON map** `{ "<db>": "<token>", "*": "<token>" }` — one token per name, with `"*"`
+  as the fallback. A name that is neither a key nor covered by `"*"` is unauthorized (401).
+
+Db-per-tenant consequence: a client created from a `Ripple.Database` resource sends that
+resource's single `token`, and `db.for(tenant)` keeps it — the *same* token goes to every
+tenant name it reaches. There is no token registrar, so an unbounded set of tenant databases
+needs `RIPPLE_TOKENS` unset, one plain string, or a map with a `"*"` fallback. A map without
+`"*"` only works for tenants you enumerate and roll out yourself (per-tenant tokens then mean
+per-tenant clients, e.g. `Ripple.Client.make({ url, name, token })`).
 
 ## Recovery notes
 
