@@ -20,7 +20,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type { FetchLike } from "../../src/Client.ts";
-import { systemSource } from "../../src/Client.ts";
+import { makeSystem as makeUntypedSystem, systemSource } from "../../src/Client.ts";
 import {
   Attr,
   Catalog,
@@ -30,6 +30,9 @@ import {
   Namespace,
   Ref,
   SchemaEnsureError,
+  fromRead,
+  fromReadWrite,
+  fromWrite,
   isEid,
   makeReadSystemClient,
   makeSystem,
@@ -388,6 +391,27 @@ describe("request shapes (fake fetch)", () => {
         yield* e.add(User.name, "Ada");
       }),
     );
+  });
+
+  test("fromReadWrite / fromWrite ensure; fromRead skips ensure", async () => {
+    const { calls, fetch } = recorder(() => ({
+      body: { t: 1, txEid: 1, tempids: {}, datoms: 0, result: [], root: 1 },
+    }));
+    const untyped = makeUntypedSystem({ url: "https://peer.example.com", fetch });
+    const rw = fromReadWrite(untyped);
+    const db = await run(rw.create("movies", Movies));
+    expect(db.catalog).toBe(Movies);
+    expect(calls.filter((c) => c.url.endsWith("/transact"))).toHaveLength(1);
+
+    const write = fromWrite(untyped);
+    await run(write.create("movies", Movies));
+    expect(calls.filter((c) => c.url.endsWith("/transact"))).toHaveLength(2);
+
+    const n = calls.length;
+    const read = fromRead(untyped);
+    const r = await run(read.create("movies", Movies));
+    expect("transact" in r).toBe(false);
+    expect(calls.length).toBe(n);
   });
 });
 

@@ -8,10 +8,13 @@ import type {
   QueryOptions,
   QueryResponse,
   ReadDatabaseClient,
+  ReadSystemClient,
   ReadWriteDatabaseClient,
+  ReadWriteSystemClient,
   SystemSource,
   TxAck,
   WriteDatabaseClient,
+  WriteSystemClient,
 } from "../Client.ts";
 import {
   makeReadSystemClient as makeUntypedReadSystemClient,
@@ -336,7 +339,7 @@ const openEnsuring = <C extends AnyCatalog, Raw extends WriteDatabaseClient, Cli
 };
 
 const openRead = <C extends AnyCatalog>(
-  source: SystemSource,
+  createRaw: (name: string) => Effect.Effect<ReadDatabaseClient, BadRequest>,
   name: string,
   catalog: C,
 ): Effect.Effect<TypedReadDatabaseClient<C>, BadRequest, RuntimeContext> => {
@@ -344,26 +347,26 @@ const openRead = <C extends AnyCatalog>(
     return Effect.fail(invalidDatabaseName(name));
   }
   return Effect.gen(function* () {
-    const raw = yield* makeUntypedReadSystemClient(source).create(name);
+    const raw = yield* createRaw(name);
     return makeRead(catalog, name, raw);
   });
 };
 
-/** Build the read half of the typed system client. */
-export const makeReadSystemClient = (
-  source: SystemSource,
-): TypedReadSystemClient => {
-  const untyped = makeUntypedReadSystemClient(source);
+/**
+ * Wrap an untyped read system (`Ripple.ReadSystem(Sys)`) so `create` /
+ * `connect` take a catalog. Skips ensure — a read client cannot transact.
+ */
+export const fromRead = (untyped: ReadSystemClient): TypedReadSystemClient => {
   const create = <C extends AnyCatalog>(name: string, catalog: C) =>
-    openRead(source, name, catalog);
+    openRead((n) => untyped.create(n), name, catalog);
   return { create, connect: create, health: () => untyped.health() };
 };
 
-/** Build the write half of the typed system client. */
-export const makeWriteSystemClient = (
-  source: SystemSource,
-): TypedWriteSystemClient => {
-  const untyped = makeUntypedWriteSystemClient(source);
+/**
+ * Wrap an untyped write system (`Ripple.WriteSystem(Sys)`) so `create` /
+ * `connect` take a catalog and ensure it.
+ */
+export const fromWrite = (untyped: WriteSystemClient): TypedWriteSystemClient => {
   const create = <C extends AnyCatalog>(name: string, catalog: C) =>
     openEnsuring(
       (n) => untyped.create(n),
@@ -374,11 +377,13 @@ export const makeWriteSystemClient = (
   return { create, connect: create, health: () => untyped.health() };
 };
 
-/** Build the read-write typed system client. */
-export const makeReadWriteSystemClient = (
-  source: SystemSource,
+/**
+ * Wrap an untyped read-write system (`Ripple.ReadWriteSystem(Sys)`) so
+ * `create` / `connect` take a catalog and ensure it.
+ */
+export const fromReadWrite = (
+  untyped: ReadWriteSystemClient,
 ): TypedReadWriteSystemClient => {
-  const untyped = makeUntypedReadWriteSystemClient(source);
   const create = <C extends AnyCatalog>(name: string, catalog: C) =>
     openEnsuring(
       (n) => untyped.create(n),
@@ -388,6 +393,22 @@ export const makeReadWriteSystemClient = (
     );
   return { create, connect: create, health: () => untyped.health() };
 };
+
+/** Build the read half of the typed system client. */
+export const makeReadSystemClient = (
+  source: SystemSource,
+): TypedReadSystemClient => fromRead(makeUntypedReadSystemClient(source));
+
+/** Build the write half of the typed system client. */
+export const makeWriteSystemClient = (
+  source: SystemSource,
+): TypedWriteSystemClient => fromWrite(makeUntypedWriteSystemClient(source));
+
+/** Build the read-write typed system client. */
+export const makeReadWriteSystemClient = (
+  source: SystemSource,
+): TypedReadWriteSystemClient =>
+  fromReadWrite(makeUntypedReadWriteSystemClient(source));
 
 /**
  * A typed system client over concrete values (no Alchemy Outputs).
