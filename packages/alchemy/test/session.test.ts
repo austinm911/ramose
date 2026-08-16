@@ -420,6 +420,33 @@ describe("a socket that goes away", () => {
     peer.drop();
     expect((await inFlight)._tag).toBe("NetworkError");
   });
+
+  test("onClose fires once, and at once on a session that is already dead", () => {
+    const peer = fakePeer(() => undefined);
+    const session = openSession({
+      url: "https://peer.example.com",
+      name: "movies",
+      connect: peer.connect,
+    });
+    let closes = 0;
+    session.onClose(() => {
+      closes += 1;
+    });
+    const off = session.onClose(() => {
+      closes += 10;
+    });
+    off(); // unsubscribed before the close: never called
+
+    peer.drop();
+    session.close();
+    expect(closes).toBe(1);
+
+    let late = 0;
+    session.onClose(() => {
+      late += 1;
+    });
+    expect(late).toBe(1);
+  });
 });
 
 describe("the typed client rides the socket", () => {
