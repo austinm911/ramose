@@ -22,8 +22,8 @@
  *   const ada = yield* tx.entity()
  *   yield* ada.add(User.name, "Ada")
  * })
- * const pulled = yield* db.pull(1001, { name: User.name, age: User.age.optional })
- * const rows = yield* db.q((q) => q.where("?e", User.name, "?n").find("?n"))
+ * const rows = yield* db.q((q) => q.where("?e", User.name, "?n").find("?e", "?n"))
+ * const pulled = yield* rows[0][0].pull({ name: User.name, age: User.age.optional })
  * ```
  */
 
@@ -35,6 +35,7 @@ export * from "./equal.ts";
 export * from "./Errors.ts";
 export * from "./idents.ts";
 export * from "./Namespace.ts";
+export * from "./Eid.ts";
 export {
   type AttrPull,
   type IdentPullAttr,

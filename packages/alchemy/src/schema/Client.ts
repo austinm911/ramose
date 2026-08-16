@@ -32,10 +32,7 @@ import { DATABASE_NAME_RE, invalidDatabaseName } from "../DatabaseName.ts";
 import type { BadRequest, DatabaseError } from "../DatabaseTypes.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import { SchemaEnsureError } from "./Errors.ts";
-import type { EntityRef } from "./idents.ts";
 import { type QueryBuilder, queryBuilder } from "./Query.ts";
-import type { IdentPullPattern, PullResult, ValidatePull } from "./Pull.ts";
-import type { EntityMap } from "./Read.ts";
 import type { TxBuilder, WireTx, YieldContext, YieldError } from "./Tx.ts";
 
 export type OpenError = BadRequest | SchemaEnsureError;
@@ -72,24 +69,6 @@ export interface TypedReadDatabaseClient<C extends AnyCatalog = AnyCatalog> {
     inputs?: unknown[],
     options?: QueryOptions,
   ): Effect.Effect<QueryResponse<T>, DatabaseError, RuntimeContext>;
-
-  /**
-   * Project an entity. The happy path is a plain object: keys are the
-   * names that come back, values are attr refs, `attr.optional`, or
-   * `attr.with({ ... })`. Same syntax at every level. The ident-keyed
-   * array remains as an escape (idents must be in the catalog; that
-   * is the `P & IdentPullPattern` branch).
-   */
-  pull<const P>(
-    eid: EntityRef<C>,
-    pattern: [P] extends [readonly unknown[]]
-      ? P & IdentPullPattern<C>
-      : ValidatePull<C, P>,
-  ): Effect.Effect<PullResult<C, P> | null, DatabaseError, RuntimeContext>;
-
-  entity(
-    eid: number,
-  ): Effect.Effect<EntityMap<C> | undefined, DatabaseError, RuntimeContext>;
 
   info(): Effect.Effect<Record<string, unknown>, DatabaseError, RuntimeContext>;
   health(): Effect.Effect<DatabaseHealth, DatabaseError, RuntimeContext>;
@@ -205,8 +184,6 @@ const makeRead = <C extends AnyCatalog>(
     return die("q");
   }) as TypedReadDatabaseClient<C>["q"],
   query: () => die("query"),
-  pull: () => die("pull"),
-  entity: () => die("entity"),
   info: () => die("info"),
   health: () => die("health"),
   asOf: () => makeRead(catalog, name),

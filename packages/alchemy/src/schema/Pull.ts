@@ -3,7 +3,7 @@
  * come back, values are attr refs. Same syntax at every level.
  *
  * ```ts
- * const pulled = yield* db.pull(1001, {
+ * const pulled = yield* eid.pull({
  *   name: User.name,
  *   age: User.age.optional,
  *   source: Meta.source,
@@ -277,7 +277,7 @@ export type ValidatePull<C extends AnyCatalog, P> = [IdentsIn<P>] extends [
   : "unknown attribute in pull pattern";
 
 /**
- * Inferred result of `db.pull(eid, pattern)`. Fields object → caller
+ * Inferred result of `eid.pull(pattern)`. Fields object → caller
  * keys, required vs optional honored. Array → ident keys, all optional.
  */
 export type PullResult<C extends AnyCatalog, P> = [P] extends [

@@ -11,11 +11,16 @@
  * selected bindings. Today's `q<T = unknown>(string | object)` stays as
  * the escape hatch on the client.
  *
+ * A var in the entity slot, or against a `:db.type/ref` attr, binds
+ * as an {@link Eid} — a wrapper with `.pull(pattern)`. String / long
+ * bindings stay primitives.
+ *
  * ```ts
  * const rows = yield* db.q((q) =>
- *   q.where("?e", User.name, "?n").find("?n"),
+ *   q.where("?e", User.name, "?n").find("?e", "?n"),
  * )
- * // rows : readonly [string][]
+ * // rows : readonly [Eid<C>, string][]
+ * const ada = yield* rows[0][0].pull({ name: User.name })
  * ```
  */
 
@@ -24,7 +29,8 @@ import * as Effect from "effect/Effect";
 import type { QueryOptions, QueryResponse } from "../Client.ts";
 import type { DatabaseError } from "../DatabaseTypes.ts";
 import type { AnyCatalog } from "./Catalog.ts";
-import type { CatalogIdent, ValueAtIdent } from "./idents.ts";
+import type { Eid } from "./Eid.ts";
+import type { AttrAtIdent, CatalogIdent, ValueAtIdent } from "./idents.ts";
 
 export type QueryVar = `?${string}`;
 export type QueryBlank = "_";
@@ -90,8 +96,30 @@ type Bind<B extends object, Name, T> = Name extends QueryVar
   : B;
 
 /**
- * Bind entity vars as eids (`number`), attr vars as idents (`string`),
- * and value vars as the attr's value type when the attr is known.
+ * Value-slot binding: a `:db.type/ref` attr yields {@link Eid};
+ * otherwise the attr's value type (or `unknown` if the attr is a
+ * var / `_`).
+ */
+export type BindValue<C extends AnyCatalog, A> =
+  ValueTypeOfSlot<C, A> extends ":db.type/ref"
+    ? Eid<C>
+    : ValueFromAttr<C, A>;
+
+type ValueTypeOfSlot<C extends AnyCatalog, A> = [A] extends [
+  { readonly valueType: infer VT },
+]
+  ? VT
+  : IdentOfSlot<C, A> extends infer I
+    ? [I] extends [never]
+      ? undefined
+      : I extends string
+        ? AttrAtIdent<C, I>["valueType"]
+        : undefined
+    : undefined;
+
+/**
+ * Bind entity vars as {@link Eid}, attr vars as idents (`string`),
+ * and value vars as {@link BindValue} when the attr is known.
  */
 export type BindClause<
   C extends AnyCatalog,
@@ -100,9 +128,9 @@ export type BindClause<
   A,
   V,
 > = Bind<
-  Bind<Bind<B, E, number>, A, string>,
+  Bind<Bind<B, E, Eid<C>>, A, string>,
   V,
-  ValueFromAttr<C, A>
+  BindValue<C, A>
 >;
 
 export type FindRow<
@@ -118,7 +146,7 @@ export type FindRow<
     ]
   : [];
 
-/** `readonly [string, number][]` — a readonly array of mutable row tuples. */
+/** `readonly [Eid<C>, string][]` — a readonly array of mutable row tuples. */
 export type FindRows<
   B extends object,
   Vars extends readonly QueryVar[],
@@ -154,7 +182,8 @@ export interface QueryBuilder<
 
   /**
    * Add one EAV clause. Bindings accumulate: a value-slot var against a
-   * known attr inherits that attr's type.
+   * known attr inherits that attr's type (an {@link Eid} when the attr
+   * is a ref).
    */
   where<
     const E extends EntitySlot,
@@ -171,8 +200,8 @@ export interface QueryBuilder<
 
   /**
    * Select variables. The row is a tuple of their bound types.
-   * `find("?n", "?age")` → `readonly [string, number][]` after those
-   * vars were bound against `:user/name` and `:user/age`.
+   * `find("?e", "?n")` → `readonly [Eid<C>, string][]` after `?e`
+   * was bound in the entity slot and `?n` against `:user/name`.
    */
   find<const Vars extends readonly QueryVar[]>(
     ...vars: Vars

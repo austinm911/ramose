@@ -1,7 +1,7 @@
 /**
  * Typechecked usage — the experience proof, not a markdown wish list.
  *
- * System → catalog → create → transact (generator) → entity / pull / q → asOf.
+ * System → catalog → create → transact (generator) → q → eid.pull → asOf.
  * This file is compiled by `bun run typecheck`. It is not a runtime test
  * (create is real for the name check; everything past that is a stub).
  */
@@ -40,8 +40,8 @@ export const Movies = Catalog({ user: User, movie: Movie, meta: Meta });
  * The happy path an Effect-savvy caller writes: `yield*`, inferred
  * success, `catchTags` on the tagged channel. One entity is a bag —
  * User.name and Meta.source on the same handle. `ada.add` is the write;
- * `pull` is a plain object of those attr refs (keys are the names that
- * come back); `q` takes the same refs in `where`.
+ * `q` binds entity / ref vars as an Eid wrapper; `.pull` is a plain
+ * object of those attr refs (keys are the names that come back).
  */
 export const program = Effect.gen(function* () {
   const system = makeSystem({ url: "https://ripple.example.workers.dev" });
@@ -59,9 +59,11 @@ export const program = Effect.gen(function* () {
     yield* arrival.add(Movie.year, 2016);
   });
 
-  const ada = yield* db.entity(1001);
-
-  const pulled = yield* db.pull(1001, {
+  const rows = yield* db.q((q) =>
+    q.where("?e", User.name, "?n").options({ minT: ack.t }).find("?e", "?n"),
+  );
+  // rows[0][0] is an Eid, not number
+  const pulled = yield* rows[0][0].pull({
     name: User.name,
     age: User.age.optional,
     source: Meta.source,
@@ -78,17 +80,16 @@ export const program = Effect.gen(function* () {
   // age: number | undefined
   // bestFriend: { name: string; age: number | undefined } | undefined
   // friends: readonly { name: string; age: number | undefined }[]
-  const requiredOnly = yield* db.pull(1001, { name: User.name });
-
-  const rows = yield* db.q((q) =>
-    q.where("?e", User.name, "?n").options({ minT: ack.t }).find("?n"),
-  );
+  const requiredOnly = yield* rows[0][0].pull({ name: User.name });
 
   const before = db.asOf(ack.t - 1);
   const hist = db.history();
-  const past = yield* before.entity(1001);
+  const pastRows = yield* before.q((q) =>
+    q.where("?e", User.name, "?n").find("?e"),
+  );
+  const past = yield* pastRows[0][0].pull({ name: User.name });
 
-  return { ack, ada, pulled, requiredOnly, rows, past, hist, catalog: db.catalog };
+  return { ack, pulled, requiredOnly, rows, past, hist, catalog: db.catalog };
 }).pipe(
   Effect.catchTags({
     BadRequest: (e) => Effect.succeed({ error: e._tag, message: e.message }),
