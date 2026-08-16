@@ -13,13 +13,9 @@ import {
   Namespace,
   isPullNested,
   isPullOptional,
-  isPullStruct,
-  nested,
-  optional,
   pick,
   queryBuilder,
   schemaTx,
-  Struct,
   txBuilder,
   Long,
   Ref,
@@ -165,23 +161,11 @@ describe("literate pull constructors", () => {
     expect(isPullNested(maybeBest.field)).toBe(true);
   });
 
-  test("Struct / optional / nested / pick remain as aliases", () => {
-    const friend = Struct({ name: User.name, age: optional(User.age) });
-    expect(isPullStruct(friend)).toBe(true);
-    expect(friend.fields.name.ident).toBe(":user/name");
-    expect(isPullOptional(friend.fields.age)).toBe(true);
-
-    const person = Struct({
-      name: User.name,
-      friends: nested(User.friends, friend),
-    });
-    expect(isPullNested(person.fields.friends)).toBe(true);
-    expect(person.fields.friends.attr.ident).toBe(":user/friends");
-
+  test("pick is a plain fields object, not a Struct wrap", () => {
     const picked = pick(User, "name", "age");
-    expect(isPullStruct(picked)).toBe(true);
-    expect(picked.fields.name.ident).toBe(":user/name");
-    expect(picked.fields.age.ident).toBe(":user/age");
+    expect(picked.name.ident).toBe(":user/name");
+    expect(picked.age.ident).toBe(":user/age");
+    expect("_tag" in picked).toBe(false);
   });
 });
 
