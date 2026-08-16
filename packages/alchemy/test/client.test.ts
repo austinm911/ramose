@@ -1,7 +1,8 @@
 /**
- * The Effect-native client against a fake `fetch`: request shapes, headers,
- * the `@ripple/core` JSON transport in both directions, and failures arriving
- * as tagged errors rather than thrown `Response`s.
+ * The Effect-native clients against a fake `fetch`: request shapes, headers,
+ * the `@ripple/core` JSON transport in both directions, failures arriving as
+ * tagged errors rather than thrown `Response`s — and the system client, whose
+ * `create` / `connect` scope all of that to one `/db/:name` without a request.
  *
  * `RuntimeContext.phantom` is what satisfies the `RuntimeContext` requirement
  * every client method carries (it exists so the Binding/Http layers can read
@@ -331,41 +332,66 @@ describe("failures", () => {
   });
 });
 
-describe("for (db-per-tenant)", () => {
+
+describe("system client (create / connect)", () => {
   const peer = (fetch: FetchLike) =>
-    Client.make({
-      url: "https://peer.example.com",
-      name: "control",
+    Client.makeSystem({
+      url: "https://peer.example.com/",
       token: Redacted.make("s3cret"),
       headers: { "x-ripple-replica-hint": "enam" },
       fetch,
     });
 
-  test("routes to /db/:tenant/* and leaves the client it came from alone", async () => {
-    const { calls, fetch } = recorder(() => ({ body: { t: 1, root: 0, result: [] } }));
-    const db = peer(fetch);
-    const tenant = db.for("tenant-x");
+  test("create scopes every route to /db/:name — and costs no request itself", async () => {
+    const { calls, fetch } = recorder(() => ({
+      body: { t: 1, root: 0, result: [], entity: { ":user/name": "Ada" } },
+    }));
+    const system = peer(fetch);
 
-    await run(tenant.transact([{ ":user/name": "Ada" }]));
-    await run(tenant.q("[]"));
-    await run(db.q("[]"));
+    const movies = await Effect.runPromise(system.create("movies"));
+    // opening a database is arithmetic on a path: nothing has been sent yet
+    expect(calls).toHaveLength(0);
+
+    await run(movies.transact([{ ":user/name": "Ada" }]));
+    await run(movies.q("[]"));
+    await run(movies.entity(17));
 
     expect(calls.map((c) => c.url)).toEqual([
-      "https://peer.example.com/db/tenant-x/transact",
-      "https://peer.example.com/db/tenant-x/query",
-      "https://peer.example.com/db/control/query",
+      "https://peer.example.com/db/movies/transact",
+      "https://peer.example.com/db/movies/query",
+      "https://peer.example.com/db/movies/entity/17",
     ]);
   });
 
-  test("the same fetch, token and headers carry over", async () => {
+  test("connect is create — the same function, and the same requests", async () => {
     const { calls, fetch } = recorder(() => ({ body: {} }));
-    const db = peer(fetch);
+    const system = peer(fetch);
+    expect(system.connect).toBe(system.create);
 
-    await run(db.info());
-    await run(db.for("tenant-x").info());
+    await run((await Effect.runPromise(system.create("movies"))).info());
+    await run((await Effect.runPromise(system.connect("movies"))).info());
 
-    // one recorder saw both: `for` reuses the very same FetchLike object
+    expect(calls.map((c) => c.url)).toEqual([
+      "https://peer.example.com/db/movies/info",
+      "https://peer.example.com/db/movies/info",
+    ]);
+  });
+
+  test("every database shares the peer's fetch, token and headers", async () => {
+    const { calls, fetch } = recorder(() => ({ body: {} }));
+    const system = peer(fetch);
+
+    const a = await Effect.runPromise(system.create("a"));
+    const b = await Effect.runPromise(system.create("b"));
+    await run(a.info());
+    await run(b.info());
+
+    // one recorder saw both: `create` reuses the very same FetchLike object
     expect(calls).toHaveLength(2);
+    expect(calls.map((c) => c.url)).toEqual([
+      "https://peer.example.com/db/a/info",
+      "https://peer.example.com/db/b/info",
+    ]);
     for (const call of calls) {
       expect(call.headers.authorization).toBe("Bearer s3cret");
       expect(call.headers["x-ripple-replica-hint"]).toBe("enam");
@@ -374,11 +400,11 @@ describe("for (db-per-tenant)", () => {
 
   test("a valid name survives percent-encoding unchanged", async () => {
     const { calls, fetch } = recorder(() => ({ body: {} }));
-    await run(peer(fetch).for("a.b-c_1").info());
+    await run((await Effect.runPromise(peer(fetch).create("a.b-c_1"))).info());
     expect(calls[0].url).toBe("https://peer.example.com/db/a.b-c_1/info");
   });
 
-  describe("an invalid name fails every request with BadRequest", () => {
+  describe("an invalid name fails the Effect with BadRequest", () => {
     for (const [label, name] of [
       ["empty", ""],
       ["leading dash", "-bad"],
@@ -388,60 +414,42 @@ describe("for (db-per-tenant)", () => {
     ] as const) {
       test(label, async () => {
         const { calls, fetch } = recorder(() => ({ body: {} }));
-        const db = peer(fetch);
+        const system = peer(fetch);
 
-        // never throws: `for` hands back a client, the failure is in the Effect
-        const bad = db.for(name);
-
-        for (const eff of [
-          bad.q("[]"),
-          bad.query("[]"),
-          bad.pull(17, "[*]"),
-          bad.entity(17),
-          bad.info(),
-          bad.health(),
-          bad.asOf(7).q("[]"),
-          bad.history().q("[]"),
-          bad.for("recovered").q("[]"),
-          bad.transact([]),
-        ]) {
+        for (const eff of [system.create(name), system.connect(name)]) {
           const e = await runFail(eff);
           expect(e._tag).toBe("BadRequest");
           expect(e.message).toContain(JSON.stringify(name));
         }
+        // the name never reached the peer
         expect(calls).toHaveLength(0);
       });
     }
   });
 
-  test("composes with asOf / history in either order", async () => {
+  test("the database it hands back composes with asOf / history", async () => {
     const { calls, fetch } = recorder(() => ({ body: { t: 1, root: 0, result: [] } }));
-    const db = peer(fetch);
+    const movies = await Effect.runPromise(peer(fetch).create("movies"));
 
-    await run(db.for("t").asOf(7).q("[]"));
-    await run(db.asOf(7).for("t").q("[]"));
-    await run(db.for("t").history().pull(17, "[*]"));
+    await run(movies.asOf(7).q("[]"));
+    await run(movies.history().pull(17, "[*]"));
 
-    expect(calls[0].url).toBe("https://peer.example.com/db/t/query");
+    expect(calls[0].url).toBe("https://peer.example.com/db/movies/query");
     expect(calls[0].body).toEqual({ query: "[]", inputs: [], asOf: 7 });
-    expect(calls[1].url).toBe(calls[0].url);
-    expect(calls[1].body).toEqual(calls[0].body);
-    expect(calls[2].url).toBe("https://peer.example.com/db/t/pull");
-    expect(calls[2].body).toEqual({ eid: 17, pattern: "[*]", history: true });
+    expect(calls[1].url).toBe("https://peer.example.com/db/movies/pull");
+    expect(calls[1].body).toEqual({ eid: 17, pattern: "[*]", history: true });
   });
 
-  test("chaining for again re-points from the peer, not from the last name", async () => {
-    const { calls, fetch } = recorder(() => ({ body: {} }));
-    await run(peer(fetch).for("a").for("b").info());
-    expect(calls[0].url).toBe("https://peer.example.com/db/b/info");
-  });
-
-  test("the read half's for stays read-only and the write half's write-only", async () => {
+  test("privilege follows the system: the read half cannot transact, the write half cannot query", async () => {
     const { calls, fetch } = recorder(() => ({ body: { t: 1, root: 0, result: [] } }));
-    const source = Client.source({ url: "https://peer.example.com", name: "control", fetch });
+    const source = Client.systemSource({ url: "https://peer.example.com", fetch });
 
-    const read = Client.makeReadClient(source).for("tenant-x");
-    const write = Client.makeWriteClient(source).for("tenant-x");
+    const read = await Effect.runPromise(
+      Client.makeReadSystemClient(source).create("movies"),
+    );
+    const write = await Effect.runPromise(
+      Client.makeWriteSystemClient(source).create("movies"),
+    );
 
     expect("transact" in read).toBe(false);
     expect("q" in write).toBe(false);
@@ -449,8 +457,18 @@ describe("for (db-per-tenant)", () => {
     await run(read.q("[]"));
     await run(write.transact([]));
     expect(calls.map((c) => c.url)).toEqual([
-      "https://peer.example.com/db/tenant-x/query",
-      "https://peer.example.com/db/tenant-x/transact",
+      "https://peer.example.com/db/movies/query",
+      "https://peer.example.com/db/movies/transact",
     ]);
+  });
+
+  test("health is the peer's, not a database's", async () => {
+    const { calls, fetch } = recorder(() => ({
+      body: { ok: true, service: "ripple", stage: "dev", time: 1 },
+    }));
+    const health = await run(peer(fetch).health());
+    expect(calls[0].url).toBe("https://peer.example.com/health");
+    expect(calls[0].url).not.toContain("/db/");
+    expect(health.ok).toBe(true);
   });
 });

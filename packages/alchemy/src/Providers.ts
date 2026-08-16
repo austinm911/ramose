@@ -18,7 +18,7 @@
 
 import * as Provider from "alchemy/Provider";
 import * as Layer from "effect/Layer";
-import { Database, DatabaseProvider } from "./Database.ts";
+import { System, SystemProvider } from "./System.ts";
 
 export class Providers extends Provider.ProviderCollection<Providers>()(
   "Ripple",
@@ -27,7 +27,7 @@ export class Providers extends Provider.ProviderCollection<Providers>()(
 export type ProviderRequirements = Layer.Services<ReturnType<typeof providers>>;
 
 export const providers = () =>
-  Layer.effect(Providers, Provider.collection([Database])).pipe(
-    Layer.provide(DatabaseProvider()),
+  Layer.effect(Providers, Provider.collection([System])).pipe(
+    Layer.provide(SystemProvider()),
     Layer.orDie,
   );

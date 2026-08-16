@@ -1,10 +1,12 @@
 /**
  * The database-name rule, kept on its own so both halves can use it.
  *
- * `Database.ts` validates the name it pins at deploy; `Client.ts` validates
- * the name handed to `client.for(...)` at runtime. The client must not reach
- * into `Database.ts` for it — that would drag the whole Alchemy resource
- * machinery into a client that is meant to run anywhere (`Client.make`).
+ * A Ripple database is a name, and the only thing that validates it before
+ * the peer does is `Client.ts` — `system.create(name)` / `system.connect(name)`
+ * check it synchronously, before a request is built. The client must not
+ * reach into `System.ts` for the rule: that would drag the whole Alchemy
+ * resource machinery into a client that is meant to run anywhere
+ * (`Client.make`).
  */
 
 import { BadRequest } from "./DatabaseTypes.ts";

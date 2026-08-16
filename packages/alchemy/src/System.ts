@@ -1,71 +1,71 @@
 /**
- * `Ripple.Database` — a logical Ripple database living on a peer Worker.
+ * `Ripple.System` — a Ripple peer, and every database it serves.
  *
  * A Ripple database is not a cloud object you create with an API call: it is
  * a *name*. The peer Worker routes `/db/:name/*` to a Transactor Durable
  * Object (`idFromName(name)`) and to region-local QueryReplicas, and the log
  * and segments live under `db/<name>/…` in R2. The first transaction
- * materializes it.
+ * materializes it. There is no create-database endpoint, and no list.
  *
- * So this resource does what there is to do: it pins the name (stable across
- * deploys, replaced only when you rename it), resolves the peer's URL, and —
- * on a live deploy — proves the peer is actually up before anything downstream
- * binds to it.
+ * So the resource is not a database — it is the peer that serves them all. It
+ * creates nothing: it resolves the peer's URL and, on a live deploy, proves
+ * the peer is actually up before anything downstream binds to it. Naming a
+ * database is a runtime act (`system.create(name)`), which is why one deploy
+ * can serve a database per tenant without a resource per tenant.
  *
  * @resource
  * @product Ripple
  * @category Storage & Databases
- * @section Creating a Database
- * @example Declaring a database on the peer Worker
+ * @section Creating a System
+ * @example Declaring the system on the peer Worker
  * ```typescript
  * import * as Cloudflare from "alchemy/Cloudflare";
  * import * as Ripple from "@ripple/alchemy";
  *
  * export const Peer = Cloudflare.Worker("Worker", { main: "./src/index.ts" });
- * export const Movies = Ripple.Database("Movies", { peer: Peer, name: "movies" });
+ * export const Sys = Ripple.System("Sys", { peer: Peer });
  * ```
  *
  * @section Using it from a Worker
- * @example Transact and query
+ * @example Open a database, then transact and query
  * ```typescript
- * const db = yield* Ripple.ReadWriteDatabase(Movies);
- * const ack = yield* db.transact([{ ":user/name": "Ada" }]);
- * const rows = yield* db.q({ find: ["?n"], where: [["?e", ":user/name", "?n"]] });
+ * const system = yield* Ripple.ReadWriteSystem(Sys);
+ * const movies = yield* system.create("movies");
+ * const ack = yield* movies.transact([{ ":user/name": "Ada" }]);
+ * const rows = yield* movies.q({ find: ["?n"], where: [["?e", ":user/name", "?n"]] });
  * ```
  *
- * Provide `Ripple.ReadWriteDatabaseBinding` (a Worker service binding to the
- * peer) or `Ripple.ReadWriteDatabaseHttp` (plain HTTPS) in the Worker's
- * runtime layer, and `Ripple.ReadWriteDatabaseLocal` inside an
- * `Alchemy.Action`. Use `Ripple.ReadDatabase` / `Ripple.WriteDatabase` for
- * least-privilege read- or write-only access.
+ * Provide `Ripple.ReadWriteSystemBinding` (a Worker service binding to the
+ * peer) or `Ripple.ReadWriteSystemHttp` (plain HTTPS) in the Worker's runtime
+ * layer, and `Ripple.ReadWriteSystemLocal` inside an `Alchemy.Action`. Use
+ * `Ripple.ReadSystem` / `Ripple.WriteSystem` for least-privilege read- or
+ * write-only access — the privilege follows through `create` onto the
+ * database client it hands back.
  */
 
 import type { Worker } from "alchemy/Cloudflare/Workers";
-import { isResolved } from "alchemy/Diff";
-import type { Input, InputProps } from "alchemy/Input";
+import type { InputProps } from "alchemy/Input";
 import * as ProviderLayer from "alchemy/Local/ProviderLayer";
-import { createPhysicalName } from "alchemy/PhysicalName";
 import * as Provider from "alchemy/Provider";
 import { isResourceOfType, Resource } from "alchemy/Resource";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
-import { DATABASE_NAME_RE, invalidDatabaseName } from "./DatabaseName.ts";
 import { BadRequest, NetworkError } from "./DatabaseTypes.ts";
 import type { Providers } from "./Providers.ts";
 
-export const isDatabase = (value: unknown): value is Database =>
-  isResourceOfType(value, "Ripple.Database");
+export const isSystem = (value: unknown): value is System =>
+  isResourceOfType(value, "Ripple.System");
 
 /**
- * The peer that serves this database: a `Cloudflare.Worker` (the resource, or
+ * The peer that serves this system: a `Cloudflare.Worker` (the resource, or
  * the Effect that declares it), an explicit `{ url }`, or a bare base URL.
  *
- * `workerName` is only needed by the `*DatabaseBinding` layers, which lower a
+ * `workerName` is only needed by the `*SystemBinding` layers, which lower a
  * `service` binding onto the host Worker; the `*Http` / `*Local` layers work
  * from `url` alone.
  */
-export type DatabasePeer =
+export type SystemPeer =
   | Worker
   | {
       readonly url: string | undefined;
@@ -74,43 +74,33 @@ export type DatabasePeer =
   | string;
 
 /** Deploy-time liveness probe of the peer (live provider only). */
-export interface DatabaseProbe {
+export interface SystemProbe {
   /** Total attempts before failing the deploy. @default 5 */
   readonly attempts?: number;
   /** Delay between attempts. @default 500 */
   readonly delayMs?: number;
 }
 
-export type DatabaseProps = {
+export type SystemProps = {
   /** The peer Worker (or a URL) that serves `/db/:name/*`. */
-  peer: DatabasePeer;
+  peer: SystemPeer;
   /**
-   * The database name — the `:name` in `/db/:name`. Must match
-   * `/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/`.
-   *
-   * @default ${stack}-${id}-${stage}-${instance}, lowercased
-   */
-  name?: string;
-  /**
-   * Bearer token for this database, when the peer is deployed with
-   * `RIPPLE_TOKENS`. Stored as a `Redacted` attribute and lowered onto
-   * consumers as a `secret_text` binding.
+   * Bearer token for this peer, when it is deployed with `RIPPLE_TOKENS`.
+   * Stored as a `Redacted` attribute and lowered onto consumers as a
+   * `secret_text` binding. One token covers every database name the peer
+   * serves (`RIPPLE_TOKENS` may map `"*"`).
    */
   token?: Redacted.Redacted<string> | string;
   /** Liveness probe on deploy; `false` skips it. */
-  probe?: DatabaseProbe | false;
+  probe?: SystemProbe | false;
 };
 
-export type Database = Resource<
-  "Ripple.Database",
-  DatabaseProps,
+export type System = Resource<
+  "Ripple.System",
+  SystemProps,
   {
-    /** The database name (the `:name` in `/db/:name`). */
-    name: string;
     /** Peer base URL, no trailing slash. */
     url: string;
-    /** `${url}/db/${name}` — the prefix every route hangs off. */
-    databaseUrl: string;
     /** The peer Worker's script name, or `""` when the peer was given as a URL. */
     peerName: string;
     /** The bearer token, when one was configured. */
@@ -120,60 +110,44 @@ export type Database = Resource<
   Providers
 >;
 
-const DatabaseResource = Resource<Database>("Ripple.Database");
+const SystemResource = Resource<System>("Ripple.System");
 
 /**
- * Declare a database.
+ * Declare a Ripple system.
  *
  * The peer may be given as a `Cloudflare.Worker` *declaration* — the value
  * `Cloudflare.Worker("Worker", …)` returns, which is a yieldable Effect, not
  * a resource instance. Resolving it is the declaration's job: `yield*`ing it
  * here registers (or reuses) the peer in the stack and hands back the
  * resource proxy whose attributes are `Output`s, which is what makes the
- * engine (a) order this database after the peer and (b) substitute the peer's
+ * engine (a) order this system after the peer and (b) substitute the peer's
  * real URL at reconcile. Passing the unyielded declaration straight into
  * `Props` would track no dependency and read `url` off a function
  * (`undefined`). Same move as `Cloudflare.DurableObject.from` /
  * `startContainer` make with a Worker/Container declaration.
  */
-export const Database = Object.assign(
-  (id: string, props: InputProps<DatabaseProps>) =>
-    DatabaseResource(
+export const System = Object.assign(
+  (id: string, props: InputProps<SystemProps>) =>
+    SystemResource(
       id,
       Effect.gen(function* () {
         const peer = props.peer as
-          | DatabasePeer
-          | Effect.Effect<DatabasePeer, unknown, never>;
+          | SystemPeer
+          | Effect.Effect<SystemPeer, unknown, never>;
         return {
           ...props,
           peer: Effect.isEffect(peer) ? yield* peer : peer,
         };
-      }) as unknown as Effect.Effect<InputProps<DatabaseProps>, never, never>,
+      }) as unknown as Effect.Effect<InputProps<SystemProps>, never, never>,
     ),
-  DatabaseResource,
-) as typeof DatabaseResource;
+  SystemResource,
+) as typeof SystemResource;
 
 export { DATABASE_NAME_RE } from "./DatabaseName.ts";
 
-/** Coerce a generated physical name into something `DATABASE_NAME_RE` accepts. */
-export const sanitizeDatabaseName = (name: string): string =>
-  name
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9._-]/g, "-")
-    .replace(/^[^a-z0-9]+/, "")
-    .slice(0, 64);
-
-const resolveName = (id: string, name: string | undefined) =>
-  Effect.gen(function* () {
-    if (name !== undefined) return name;
-    return sanitizeDatabaseName(
-      yield* createPhysicalName({ id, lowercase: true, maxLength: 64 }),
-    );
-  });
-
 /** `{ url, workerName }` out of whichever peer form was given. */
 export const resolvePeer = (
-  peer: DatabasePeer,
+  peer: SystemPeer,
 ): { url: string | undefined; workerName: string } => {
   if (typeof peer === "string") return { url: peer, workerName: "" };
   // At reconcile the engine has replaced the Worker's attribute Outputs with
@@ -187,9 +161,6 @@ export const resolvePeer = (
 };
 
 const trimSlashes = (url: string): string => url.replace(/\/+$/, "");
-
-export const databaseUrl = (url: string, name: string): string =>
-  `${trimSlashes(url)}/db/${encodeURIComponent(name)}`;
 
 const redact = (
   token: Redacted.Redacted<string> | string | undefined,
@@ -224,11 +195,11 @@ const healthOnce = (url: string) =>
   );
 
 /**
- * Probe the peer, with retries: a `Database` is usually reconciled seconds
+ * Probe the peer, with retries: a `System` is usually reconciled seconds
  * after the Worker that serves it was uploaded, and workers.dev routes take a
  * moment to propagate.
  */
-const probeHealth = (url: string, probe: DatabaseProbe | false | undefined) => {
+const probeHealth = (url: string, probe: SystemProbe | false | undefined) => {
   if (probe === false) return Effect.void;
   const attempts = Math.max(1, probe?.attempts ?? 5);
   const delayMs = probe?.delayMs ?? 500;
@@ -237,15 +208,7 @@ const probeHealth = (url: string, probe: DatabaseProbe | false | undefined) => {
   );
 };
 
-const attributes = Effect.fn(function* (
-  id: string,
-  props: DatabaseProps,
-  probe: boolean,
-) {
-  const name = yield* resolveName(id, props.name);
-  if (!DATABASE_NAME_RE.test(name)) {
-    return yield* Effect.fail(invalidDatabaseName(name));
-  }
+const attributes = Effect.fn(function* (props: SystemProps, probe: boolean) {
   const peer = resolvePeer(props.peer);
   if (peer.url === undefined || peer.url === "") {
     return yield* Effect.fail(
@@ -258,46 +221,23 @@ const attributes = Effect.fn(function* (
   const url = trimSlashes(peer.url);
   if (probe) yield* probeHealth(url, props.probe);
   return {
-    name,
     url,
-    databaseUrl: databaseUrl(url, name),
     peerName: peer.workerName,
     token: redact(props.token),
   };
 });
 
-const diff = Effect.fn(function* ({
-  id,
-  olds,
-  news,
-  output,
-}: {
-  readonly id: string;
-  readonly olds: DatabaseProps;
-  readonly news: Input<DatabaseProps>;
-  readonly output: Database["Attributes"] | undefined;
-}) {
-  if (!isResolved(news)) return undefined;
-  const oldName = output?.name ?? (yield* resolveName(id, olds?.name));
-  const newName = yield* resolveName(id, news.name);
-  // Renaming a database is not a rename: the Transactor DO is keyed by name
-  // and the log/segments live under `db/<name>/…`. A new name is a new,
-  // empty database.
-  if (newName !== oldName) return { action: "replace" } as const;
-  return undefined;
-});
-
 /**
  * Live provider. `reconcile` is idempotent — there is nothing to create, so
- * it resolves the name and the peer URL and proves the peer answers
- * `/health`.
+ * it resolves the peer URL and proves the peer answers `/health`.
+ *
+ * No `stables` and no `diff`: a system pins no name, so nothing about it can
+ * force a replacement. Repointing it at another peer is an ordinary update.
  */
 export const ProviderLive = () =>
-  Provider.succeed(Database, {
-    stables: ["name"],
-    diff,
-    reconcile: Effect.fn(function* ({ id, news }) {
-      return yield* attributes(id, news, true);
+  Provider.succeed(System, {
+    reconcile: Effect.fn(function* ({ news }) {
+      return yield* attributes(news, true);
     }),
     read: Effect.fn(function* ({ output }) {
       // Virtual: the persisted state row is the source of truth.
@@ -305,7 +245,7 @@ export const ProviderLive = () =>
     }),
     delete: Effect.fn(function* () {
       // Ripple databases are append-only and immutable; destroying the
-      // resource forgets the *name*, it does not erase the log, the segments
+      // resource forgets the *peer*, it does not erase any log, the segments
       // in R2, or the Durable Objects. Deleting the data is a separate,
       // deliberate act (empty the bucket, delete the DO namespaces).
     }),
@@ -313,11 +253,9 @@ export const ProviderLive = () =>
 
 /** Local provider (`alchemy dev`): same attributes, no liveness probe. */
 export const ProviderLocal = () =>
-  Provider.succeed(Database, {
-    stables: ["name"],
-    diff,
-    reconcile: Effect.fn(function* ({ id, news }) {
-      return yield* attributes(id, news, false);
+  Provider.succeed(System, {
+    reconcile: Effect.fn(function* ({ news }) {
+      return yield* attributes(news, false);
     }),
     read: Effect.fn(function* ({ output }) {
       return output ?? undefined;
@@ -325,8 +263,8 @@ export const ProviderLocal = () =>
     delete: Effect.fn(function* () {}),
   });
 
-export const DatabaseProvider = () =>
-  ProviderLayer.dual(Database, {
+export const SystemProvider = () =>
+  ProviderLayer.dual(System, {
     local: () => ProviderLocal(),
     live: () => ProviderLive(),
   });

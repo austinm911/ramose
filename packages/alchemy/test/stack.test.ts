@@ -12,8 +12,8 @@ import * as Alchemy from "alchemy";
 import * as Test from "alchemy/Test/Bun";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
-import { Database } from "../src/Database.ts";
 import { providers } from "../src/Providers.ts";
+import { System } from "../src/System.ts";
 
 /** A peer that is up, counting its health probes. */
 let probes = 0;
@@ -44,23 +44,22 @@ const { test } = Test.make({
   stage: "test",
 });
 
-describe("Ripple.Database", () => {
-  test.provider("resolves its name, urls and token", (stack) =>
+describe("Ripple.System", () => {
+  test.provider("resolves the peer url and token — and pins no database name", (stack) =>
     Effect.gen(function* () {
       const before = probes;
-      const movies = yield* stack.deploy(
-        Database("Movies", {
-          peer: peerUrl,
-          name: "movies",
-          token: Redacted.make("s3cret"),
-        }),
+      const sys = yield* stack.deploy(
+        System("Sys", { peer: peerUrl, token: Redacted.make("s3cret") }),
       );
 
-      expect(movies.name).toBe("movies");
-      expect(movies.url).toBe(peerUrl);
-      expect(movies.databaseUrl).toBe(`${peerUrl}/db/movies`);
-      expect(movies.peerName).toBe("");
-      expect(Redacted.value(movies.token!)).toBe("s3cret");
+      expect(sys.url).toBe(peerUrl);
+      expect(sys.peerName).toBe("");
+      expect(Redacted.value(sys.token!)).toBe("s3cret");
+      // a system is the peer, not a database: no name, no /db/:name prefix
+      const attributes = Object.keys(sys);
+      expect(attributes).toContain("url");
+      expect(attributes).not.toContain("name");
+      expect(attributes).not.toContain("databaseUrl");
       // the live provider proved the peer was up before anything bound to it
       expect(probes).toBeGreaterThan(before);
 
@@ -70,48 +69,22 @@ describe("Ripple.Database", () => {
 
   test.provider("takes the peer's url and script name from a Worker-shaped peer", (stack) =>
     Effect.gen(function* () {
-      const movies = yield* stack.deploy(
-        Database("Movies", {
-          peer: { url: `${peerUrl}/`, workerName: "ripple-peer" },
-          name: "movies",
-        }),
+      const sys = yield* stack.deploy(
+        System("Sys", { peer: { url: `${peerUrl}/`, workerName: "ripple-peer" } }),
       );
-      expect(movies.url).toBe(peerUrl);
-      expect(movies.peerName).toBe("ripple-peer");
-      expect(movies.token).toBeUndefined();
+      expect(sys.url).toBe(peerUrl);
+      expect(sys.peerName).toBe("ripple-peer");
+      expect(sys.token).toBeUndefined();
       yield* stack.destroy();
     }),
   );
 
-  test.provider("generates a legal database name when none is given", (stack) =>
+  test.provider("a redeploy of the same peer is a no-op", (stack) =>
     Effect.gen(function* () {
-      const movies = yield* stack.deploy(
-        Database("Movies", { peer: peerUrl, probe: false }),
-      );
-      // `${stack}-${id}-${stage}-${instance}`, lowercased, truncated to 64
-      expect(movies.name).toMatch(/^[a-z0-9][a-z0-9._-]{0,63}$/);
-      expect(movies.databaseUrl).toBe(`${peerUrl}/db/${movies.name}`);
-      yield* stack.destroy();
-    }),
-  );
-
-  test.provider("a redeploy with the same name is a no-op", (stack) =>
-    Effect.gen(function* () {
-      const props = { peer: peerUrl, name: "movies", probe: false } as const;
-      yield* stack.deploy(Database("Movies", props));
-      const plan = yield* stack.plan(Database("Movies", props));
+      const props = { peer: peerUrl, probe: false } as const;
+      yield* stack.deploy(System("Sys", props));
+      const plan = yield* stack.plan(System("Sys", props));
       expect(actions(plan)).toEqual(["noop"]);
-      yield* stack.destroy();
-    }),
-  );
-
-  test.provider("renaming the database replaces it — a new name is a new database", (stack) =>
-    Effect.gen(function* () {
-      yield* stack.deploy(Database("Movies", { peer: peerUrl, name: "movies", probe: false }));
-      const plan = yield* stack.plan(
-        Database("Movies", { peer: peerUrl, name: "films", probe: false }),
-      );
-      expect(actions(plan)).toEqual(["replace"]);
       yield* stack.destroy();
     }),
   );
@@ -120,10 +93,9 @@ describe("Ripple.Database", () => {
     Effect.gen(function* () {
       const result = yield* Effect.result(
         stack.deploy(
-          Database("Movies", {
+          System("Sys", {
             // loopback port 1: nothing listens, so connect() refuses immediately
             peer: "http://127.0.0.1:1",
-            name: "movies",
             probe: { attempts: 2, delayMs: 1 },
           }),
         ),

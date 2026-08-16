@@ -1,40 +1,43 @@
 /**
  * Shared scaffolding for the Worker-binding implementations of the Ripple
- * database capabilities.
+ * system capabilities.
  *
- * A Ripple database is reached over HTTP, and the cheapest, most private way
- * for one Worker to reach another on Cloudflare is a **service binding**:
- * `env.Movies.fetch(...)` dispatches to the peer Worker inside the same colo,
+ * A Ripple peer is reached over HTTP, and the cheapest, most private way for
+ * one Worker to reach another on Cloudflare is a **service binding**:
+ * `env.Sys.fetch(...)` dispatches to the peer Worker inside the same colo,
  * with no DNS, no TLS handshake, and no public hop. So the deploy-time half
- * lowers a `service` binding to the peer onto the host Worker (plus the
- * database name and, when configured, the bearer token as env values), and
- * the runtime half issues ordinary requests through that Fetcher against the
- * synthetic origin `https://ripple.internal` — the peer routes on the path,
- * never the host.
+ * lowers a `service` binding to the peer onto the host Worker (plus, when
+ * configured, the bearer token as an env value), and the runtime half issues
+ * ordinary requests through that Fetcher against the synthetic origin
+ * `https://ripple.internal` — the peer routes on the path, never the host.
+ *
+ * No database name is lowered: a system pins none. `system.create(name)`
+ * picks it per call, which is what lets one binding serve a database per
+ * tenant.
  *
  * Requires `peer` to have been given as a `Cloudflare.Worker` (a service
- * binding needs a script name). With a bare URL, use the `*DatabaseHttp`
- * layers instead.
+ * binding needs a script name). With a bare URL, use the `*SystemHttp` layers
+ * instead.
  */
 
 import type * as runtime from "@cloudflare/workers-types";
 import * as Binding from "alchemy/Binding";
 import { isWorker, WorkerEnvironment } from "alchemy/Cloudflare/Workers";
 import * as Effect from "effect/Effect";
-import type { DatabaseSource } from "./Client.ts";
-import type { Database } from "./Database.ts";
-import { bindOutput, bindToken, envKeys, required } from "./DatabaseRuntime.ts";
+import type { SystemSource } from "./Client.ts";
+import type { System } from "./System.ts";
+import { bindToken, envKeys } from "./SystemRuntime.ts";
 
 /** The origin the peer never looks at — service-binding dispatch ignores the host. */
 export const SERVICE_ORIGIN = "https://ripple.internal";
 
-export const makeDatabaseBinding = <Client>(options: {
-  makeClient: (source: DatabaseSource) => Client;
+export const makeSystemBinding = <Client>(options: {
+  makeClient: (source: SystemSource) => Client;
 }) =>
   Effect.gen(function* () {
     const env = yield* WorkerEnvironment;
 
-    return Effect.fn(function* (database: Database) {
+    return Effect.fn(function* (system: System) {
       if (!globalThis.__ALCHEMY_RUNTIME__) {
         // Total: `undefined` when there is no host (a plan-time invoke, or a
         // client provided directly in a script). A host that is not a Worker
@@ -45,48 +48,46 @@ export const makeDatabaseBinding = <Client>(options: {
           // A bare-URL peer has no script name, so the `service` binding
           // below would be lowered with an empty target. Fail here rather
           // than at the Cloudflare API (or, worse, on the first request).
-          if (typeof database.Props?.peer === "string") {
+          if (typeof system.Props?.peer === "string") {
             return yield* Effect.die(
               new Error(
-                `Ripple's *DatabaseBinding layers need a script name, and '${database.LogicalId}' was declared with a bare URL peer. Pass a Cloudflare.Worker as \`peer\`, or use the *DatabaseHttp layers.`,
+                `Ripple's *SystemBinding layers need a script name, and '${system.LogicalId}' was declared with a bare URL peer. Pass a Cloudflare.Worker as \`peer\`, or use the *SystemHttp layers.`,
               ),
             );
           }
-          yield* host.bind`${database}`({
+          yield* host.bind`${system}`({
             bindings: [
               {
                 type: "service",
-                name: envKeys(database).service,
-                service: database.peerName,
+                name: envKeys(system).service,
+                service: system.peerName,
               },
             ],
           });
         } else if (host !== undefined) {
           return yield* Effect.die(
             new Error(
-              `Ripple's *DatabaseBinding layers bind a Cloudflare Worker service binding, and the host is a '${host.Type}'. Use the *DatabaseHttp layers instead.`,
+              `Ripple's *SystemBinding layers bind a Cloudflare Worker service binding, and the host is a '${host.Type}'. Use the *SystemHttp layers instead.`,
             ),
           );
         }
       }
-      return options.makeClient(yield* makeBindingSource(env, database));
+      return options.makeClient(yield* makeBindingSource(env, system));
     });
   });
 
-/** The service-binding {@link DatabaseSource}: `env[LogicalId].fetch`, name + token from env. */
+/** The service-binding {@link SystemSource}: `env[LogicalId].fetch`, token from env. */
 export const makeBindingSource = (
   env: Record<string, any>,
-  database: Database,
-): Effect.Effect<DatabaseSource> =>
+  system: System,
+): Effect.Effect<SystemSource> =>
   Effect.gen(function* () {
-    const keys = envKeys(database);
-    const name = yield* bindOutput(keys.name, database.name);
-    const token = yield* bindToken(database);
+    const keys = envKeys(system);
+    const token = yield* bindToken(system);
     return {
       endpoint: Effect.gen(function* () {
         return {
           url: SERVICE_ORIGIN,
-          name: yield* required(keys.name, name),
           token: yield* token,
         };
       }),
@@ -98,7 +99,7 @@ export const makeBindingSource = (
         if (peer === undefined) {
           return Promise.reject(
             new Error(
-              `no service binding "${keys.service}" on this Worker — the peer must be a Cloudflare.Worker, or use the *DatabaseHttp layers`,
+              `no service binding "${keys.service}" on this Worker — the peer must be a Cloudflare.Worker, or use the *SystemHttp layers`,
             ),
           );
         }

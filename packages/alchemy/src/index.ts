@@ -8,14 +8,15 @@
  * import * as Layer from "effect/Layer";
  *
  * export const Peer = Cloudflare.Worker("Peer", { main: "./packages/worker/src/index.ts", env: { … } });
- * export const Movies = Ripple.Database("Movies", { peer: Peer, name: "movies" });
+ * export const Sys = Ripple.System("Sys", { peer: Peer });
  *
  * export default Alchemy.Stack("app", {
  *   providers: Layer.mergeAll(Cloudflare.providers(), Ripple.providers()),
  *   state: Cloudflare.state(),
  * }, Effect.gen(function* () {
- *   const movies = yield* Movies;
- *   return { databaseUrl: movies.databaseUrl };
+ *   const system = yield* Ripple.ReadWriteSystem(Sys);
+ *   const movies = yield* system.create("movies");
+ *   yield* movies.transact([{ ":user/name": "Ada" }]);
  * }));
  * ```
  */
@@ -30,25 +31,30 @@ export type {
   QueryOptions,
   QueryResponse,
   ReadDatabaseClient,
+  ReadSystemClient,
   ReadWriteDatabaseClient,
+  ReadWriteSystemClient,
+  SystemEndpoint,
+  SystemSource,
   TxAck,
   WriteDatabaseClient,
+  WriteSystemClient,
 } from "./Client.ts";
-export * from "./Database.ts";
-// `DatabaseBinding.ts` / `DatabaseHttp.ts` / `DatabaseLocal.ts` / `DatabaseRuntime.ts`
-// are capability-internal scaffolding and are deliberately NOT re-exported
-// (mirrors `alchemy/Cloudflare/KV/index.ts`).
 export * from "./DatabaseTypes.ts";
 export * from "./Providers.ts";
-export * from "./ReadDatabase.ts";
-export * from "./ReadDatabaseBinding.ts";
-export * from "./ReadDatabaseHttp.ts";
-export * from "./ReadDatabaseLocal.ts";
-export * from "./ReadWriteDatabase.ts";
-export * from "./ReadWriteDatabaseBinding.ts";
-export * from "./ReadWriteDatabaseHttp.ts";
-export * from "./ReadWriteDatabaseLocal.ts";
-export * from "./WriteDatabase.ts";
-export * from "./WriteDatabaseBinding.ts";
-export * from "./WriteDatabaseHttp.ts";
-export * from "./WriteDatabaseLocal.ts";
+export * from "./ReadSystem.ts";
+export * from "./ReadSystemBinding.ts";
+export * from "./ReadSystemHttp.ts";
+export * from "./ReadSystemLocal.ts";
+export * from "./ReadWriteSystem.ts";
+export * from "./ReadWriteSystemBinding.ts";
+export * from "./ReadWriteSystemHttp.ts";
+export * from "./ReadWriteSystemLocal.ts";
+export * from "./System.ts";
+// `SystemBinding.ts` / `SystemHttp.ts` / `SystemLocal.ts` / `SystemRuntime.ts`
+// are capability-internal scaffolding and are deliberately NOT re-exported
+// (mirrors `alchemy/Cloudflare/KV/index.ts`).
+export * from "./WriteSystem.ts";
+export * from "./WriteSystemBinding.ts";
+export * from "./WriteSystemHttp.ts";
+export * from "./WriteSystemLocal.ts";
