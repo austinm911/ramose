@@ -183,6 +183,8 @@ describe("observability: /info counters", () => {
     expect(m.batchResolveMs.count).toBe(h.transactor.stats.batches);
     expect(m.batchCommitMs.count).toBe(h.transactor.stats.batches);
     expect(m.batchLoopMs.count).toBe(h.transactor.stats.batches);
+    expect(m.batchQueueWaitMs.count).toBeGreaterThan(0);
+    expect(m.gapMs.count).toBeGreaterThanOrEqual(0);
     expect(m.resolveMs).toBeGreaterThan(0);
     expect(m.loopMs).toBeGreaterThan(0);
     expect(m.noveltyDatoms).toBe(h.transactor.connection.noveltyCount);

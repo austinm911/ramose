@@ -136,7 +136,10 @@ export async function handleWriteFrame(core: WriteCore, ws: SocketLike, message:
         return Promise.reject(err);
       }
     });
+    const tWait = performance.now();
     const settled = await Promise.allSettled(pending);
+    const waitMs = performance.now() - tWait;
+    if (waitMs > 2000) console.warn(`write-ws: allSettled ${waitMs.toFixed(0)}ms id=${frame.id} n=${pending.length}`);
     const acks = settled.map((r) => (r.status === "fulfilled" ? r.value : writeErrorBody(r.reason)));
     const t = frameBasis(acks);
     send(ws, t === undefined ? { id: frame.id, acks } : { id: frame.id, t, acks });

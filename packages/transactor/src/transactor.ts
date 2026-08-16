@@ -87,6 +87,8 @@ interface Pending {
   tx: TxData;
   resolve: (r: TxAck) => void;
   reject: (e: unknown) => void;
+  /** performance.now() when the tx was pushed onto the queue */
+  at: number;
 }
 
 const yieldToEventLoop = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
@@ -123,6 +125,10 @@ export class Transactor {
   readonly loopLatency = new Histogram();
   /** cost of one event-loop fence, measured once per batch when config.timingYields is on */
   readonly fenceLatency = new Histogram();
+  /** time each tx spent on the queue before takeBatch() */
+  readonly queueWaitLatency = new Histogram();
+  /** wall time between consecutive commitLoop while-iterations (a ≥9 s sample = loop was frozen) */
+  readonly gapLatency = new Histogram();
   /** Analytics Engine sink (no-op when the host has no dataset bound) */
   readonly metrics: TxMetrics;
   private readonly log: Logger;
@@ -273,7 +279,7 @@ export class Transactor {
   transact(tx: TxData): Promise<TxAck> {
     if (this.dead !== undefined) return Promise.reject(new TransactorDeadError(this.dead));
     return new Promise<TxAck>((resolve, reject) => {
-      this.queue.push({ tx, resolve, reject });
+      this.queue.push({ tx, resolve, reject, at: performance.now() });
       if (!this.committing) {
         this.committing = true;
         void this.commitLoop();
@@ -293,7 +299,15 @@ export class Transactor {
     try {
       await this.init();
       const fences = this.host.config.timingYields;
+      let prevIterAt: number | undefined;
       while (this.queue.length > 0 && this.dead === undefined) {
+        const iterAt = performance.now();
+        if (prevIterAt !== undefined) {
+          const gap = iterAt - prevIterAt;
+          this.gapLatency.observe(gap);
+          if (gap >= 9000) this.log.warn("commitLoop.frozen", { gapMs: round(gap) });
+        }
+        prevIterAt = iterAt;
         // Open the batching window: yield to the event loop once so requests
         // that are already in flight (separate events in a Durable Object)
         // land in the queue and share the coming storage write.
@@ -314,6 +328,7 @@ export class Transactor {
         const queueDepth = this.queue.length; // pending txs at dequeue (includes this batch)
         const tLoop = performance.now();
         const batch = this.takeBatch();
+        for (const p of batch) this.queueWaitLatency.observe(tLoop - p.at);
         const entries: LogEntry[] = [];
         const acks: { p: Pending; ack: TxAck }[] = [];
         const tResolve = performance.now();
@@ -491,6 +506,8 @@ export class Transactor {
         batchLoopMs: this.loopLatency.snapshot(),
         // fence cost per batch (config.timingYields; all zero when off) — the bias to subtract
         fenceMs: this.fenceLatency.snapshot(),
+        batchQueueWaitMs: this.queueWaitLatency.snapshot(),
+        gapMs: this.gapLatency.snapshot(),
         noveltyDatoms: this.conn.noveltyCount,
         queueDepth: this.queue.length,
         ...this.metrics.snapshot(),

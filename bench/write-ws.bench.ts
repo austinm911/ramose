@@ -35,9 +35,14 @@ const client = new RippleClient(url, { token: process.env.RIPPLE_TOKEN });
 const db = client.db(`bench-${Date.now().toString(36)}`);
 await db.transact([attribute(":k/id", "long", { unique: "identity" }), attribute(":k/v", "string")]);
 
+const BENCH_SLOW_MS = 2000;
+const runStart = performance.now();
+
 let done = 0; // txs acked
 let frames = 0; // frames / requests acked
 let errors = 0; // failed frames (a failed multi frame counts once)
+let slowFrames = 0;
+let pastDeadline = 0;
 const lat: number[] = []; // per-frame ack latency, ms
 const seenT = new Set<number>();
 let minT = Number.POSITIVE_INFINITY;
@@ -50,23 +55,39 @@ function recordT(t: number): void {
   if (t > maxT) maxT = t;
 }
 
+/** tMax ≪ maxTseen ⇒ committed on time, ack late ⇒ transport; tMax ≈ maxTseen ⇒ commit-loop/queue */
+function noteFrame(worker: number, frame: number, sentAt: number, dt: number, tMin: number | undefined, tMaxFrame: number | undefined, pending: number): void {
+  lat.push(dt);
+  if (Date.now() >= deadline) pastDeadline++;
+  if (dt <= BENCH_SLOW_MS) return;
+  slowFrames++;
+  console.error(
+    `SLOW-FRAME worker=${worker} frame=${frame} at=+${(sentAt - runStart).toFixed(0)}ms lat=${dt.toFixed(0)} tMin=${tMin ?? "-"} tMax=${tMaxFrame ?? "-"} maxTseen=${Number.isFinite(maxT) ? maxT : "-"} pending=${pending}`,
+  );
+}
+
 const tx = (id: number) => [{ ":k/id": id, ":k/v": "x" }];
 
 const deadline = Date.now() + seconds * 1000;
 
 async function httpWorker(id: number): Promise<void> {
   let i = 0;
+  let frame = 0;
   while (Date.now() < deadline) {
     const t0 = performance.now();
+    let tMin: number | undefined;
+    let tMaxFrame: number | undefined;
     try {
       const ack = await db.transact(tx(id * 1_000_000 + i++));
       done++;
       recordT(ack.t);
+      tMin = tMaxFrame = ack.t;
     } catch {
       errors++;
     }
     frames++;
-    lat.push(performance.now() - t0);
+    frame++;
+    noteFrame(id, frame, t0, performance.now() - t0, tMin, tMaxFrame, 0);
   }
 }
 
@@ -75,26 +96,38 @@ const sockets: RippleWriteSocket[] = [];
 async function wsWorker(id: number): Promise<void> {
   const sock = db.writeSocket();
   sockets.push(sock);
+  const readyT0 = performance.now();
   await sock.ready;
+  const readyDt = performance.now() - readyT0;
+  if (readyDt > BENCH_SLOW_MS) console.error(`SLOW-READY worker=${id} lat=${readyDt.toFixed(0)}`);
   let i = 0;
+  let frame = 0;
   while (Date.now() < deadline) {
     const t0 = performance.now();
+    let tMin: number | undefined;
+    let tMaxFrame: number | undefined;
     try {
       if (txsPerFrame === 1) {
         const ack = await sock.transact(tx(id * 1_000_000 + i++));
         done++;
         recordT(ack.t);
+        tMin = tMaxFrame = ack.t;
       } else {
         const batch = Array.from({ length: txsPerFrame }, () => tx(id * 1_000_000 + i++));
         const acks: TxAck[] = await sock.transactMany(batch);
         done += acks.length;
-        for (const a of acks) recordT(a.t);
+        for (const a of acks) {
+          recordT(a.t);
+          if (tMin === undefined || a.t < tMin) tMin = a.t;
+          if (tMaxFrame === undefined || a.t > tMaxFrame) tMaxFrame = a.t;
+        }
       }
     } catch {
       errors++;
     }
     frames++;
-    lat.push(performance.now() - t0);
+    frame++;
+    noteFrame(id, frame, t0, performance.now() - t0, tMin, tMaxFrame, sock.pending);
   }
 }
 
@@ -113,3 +146,8 @@ console.log(`ack latency (per frame${txsPerFrame > 1 ? `, ${txsPerFrame} tx per 
 console.log(`transactor batches=${info.transactor?.stats?.batches} maxBatch=${info.transactor?.stats?.maxBatch} avgBatch=${fmt((info.transactor?.stats?.txs ?? 0) / Math.max(1, info.transactor?.stats?.batches ?? 1))}`);
 console.log(`t range [${seenT.size ? minT : "-"}..${seenT.size ? maxT : "-"}] acked=${seenT.size} expected=${expected} gapFree=${gapFree}`);
 console.log(`colo=${info.meta?.colo ?? "-"}  db=${db.name}`);
+console.log(`slow frames=${slowFrames} maxFrameLat=${fmt(lat.length ? lat[lat.length - 1] : 0)} pastDeadline=${pastDeadline}`);
+const m = info.transactor?.metrics;
+console.log(`metrics batchLoopMs=${JSON.stringify(m?.batchLoopMs)} batchResolveMs=${JSON.stringify(m?.batchResolveMs)} batchCommitMs=${JSON.stringify(m?.batchCommitMs)} queueDepth=${m?.queueDepth}`);
+console.log(`store r2Gets=${info.transactor?.store?.r2Gets} ${JSON.stringify(info.transactor?.store)}`);
+console.log(`indexer runs=${info.transactor?.indexer?.runs} lastRun=${JSON.stringify(info.transactor?.indexer?.lastRun)}`);

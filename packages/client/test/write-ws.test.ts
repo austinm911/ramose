@@ -241,7 +241,7 @@ describe("RippleWriteSocket", () => {
     ws.open();
     await sock.ready;
     const empty = await sock.transactMany([]);
-    expect(empty).toEqual([]);
+    expect(empty.length).toBe(0);
     expect(empty.t).toBe(0);
     expect(ws.sent.length).toBe(0);
   });
