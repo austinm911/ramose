@@ -42,7 +42,7 @@
 
 import type { Worker } from "alchemy/Cloudflare/Workers";
 import { isResolved } from "alchemy/Diff";
-import type { Input } from "alchemy/Input";
+import type { Input, InputProps } from "alchemy/Input";
 import * as ProviderLayer from "alchemy/Local/ProviderLayer";
 import { createPhysicalName } from "alchemy/PhysicalName";
 import * as Provider from "alchemy/Provider";
@@ -119,7 +119,38 @@ export type Database = Resource<
   Providers
 >;
 
-export const Database = Resource<Database>("Ripple.Database");
+const DatabaseResource = Resource<Database>("Ripple.Database");
+
+/**
+ * Declare a database.
+ *
+ * The peer may be given as a `Cloudflare.Worker` *declaration* — the value
+ * `Cloudflare.Worker("Worker", …)` returns, which is a yieldable Effect, not
+ * a resource instance. Resolving it is the declaration's job: `yield*`ing it
+ * here registers (or reuses) the peer in the stack and hands back the
+ * resource proxy whose attributes are `Output`s, which is what makes the
+ * engine (a) order this database after the peer and (b) substitute the peer's
+ * real URL at reconcile. Passing the unyielded declaration straight into
+ * `Props` would track no dependency and read `url` off a function
+ * (`undefined`). Same move as `Cloudflare.DurableObject.from` /
+ * `startContainer` make with a Worker/Container declaration.
+ */
+export const Database = Object.assign(
+  (id: string, props: InputProps<DatabaseProps>) =>
+    DatabaseResource(
+      id,
+      Effect.gen(function* () {
+        const peer = props.peer as
+          | DatabasePeer
+          | Effect.Effect<DatabasePeer, unknown, never>;
+        return {
+          ...props,
+          peer: Effect.isEffect(peer) ? yield* peer : peer,
+        };
+      }) as unknown as Effect.Effect<InputProps<DatabaseProps>, never, never>,
+    ),
+  DatabaseResource,
+) as typeof DatabaseResource;
 
 /** A Ripple database name, as the peer Worker validates it (`validDbName`). */
 export const DATABASE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
