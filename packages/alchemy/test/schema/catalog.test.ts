@@ -11,8 +11,15 @@ import {
   Catalog,
   makeSystem,
   Namespace,
+  isPullNested,
+  isPullOptional,
+  isPullStruct,
+  nested,
+  optional,
+  pick,
   queryBuilder,
   schemaTx,
+  Struct,
   txBuilder,
   Long,
   Ref,
@@ -139,3 +146,25 @@ describe("transaction builder", () => {
     expect(tx.catalog).toBe(Movies);
   });
 });
+
+describe("pull Struct constructors", () => {
+  test("Struct / optional / nested / pick are tagged field specs", () => {
+    const friend = Struct({ name: User.name, age: optional(User.age) });
+    expect(isPullStruct(friend)).toBe(true);
+    expect(friend.fields.name.ident).toBe(":user/name");
+    expect(isPullOptional(friend.fields.age)).toBe(true);
+
+    const person = Struct({
+      name: User.name,
+      friends: nested(User.friends, friend),
+    });
+    expect(isPullNested(person.fields.friends)).toBe(true);
+    expect(person.fields.friends.attr.ident).toBe(":user/friends");
+
+    const picked = pick(User, "name", "age");
+    expect(isPullStruct(picked)).toBe(true);
+    expect(picked.fields.name.ident).toBe(":user/name");
+    expect(picked.fields.age.ident).toBe(":user/age");
+  });
+});
+
