@@ -121,7 +121,7 @@ describe("Ripple.Database", () => {
       const result = yield* Effect.result(
         stack.deploy(
           Database("Movies", {
-            // reserved TEST-NET-1 address: nothing answers, fast
+            // loopback port 1: nothing listens, so connect() refuses immediately
             peer: "http://127.0.0.1:1",
             name: "movies",
             probe: { attempts: 2, delayMs: 1 },

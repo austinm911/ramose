@@ -23,7 +23,7 @@ import { isWorker, WorkerEnvironment } from "alchemy/Cloudflare/Workers";
 import * as Effect from "effect/Effect";
 import type { DatabaseSource } from "./Client.ts";
 import type { Database } from "./Database.ts";
-import { envKeys, runtimeOutput, tokenOutput } from "./DatabaseRuntime.ts";
+import { bindOutput, bindToken, envKeys, required } from "./DatabaseRuntime.ts";
 
 /** The origin the peer never looks at — service-binding dispatch ignores the host. */
 export const SERVICE_ORIGIN = "https://ripple.internal";
@@ -42,6 +42,16 @@ export const makeDatabaseBinding = <Client>(options: {
         // deploying something that fails on the first request.
         const host = yield* Binding.Host;
         if (isWorker(host)) {
+          // A bare-URL peer has no script name, so the `service` binding
+          // below would be lowered with an empty target. Fail here rather
+          // than at the Cloudflare API (or, worse, on the first request).
+          if (typeof database.Props?.peer === "string") {
+            return yield* Effect.die(
+              new Error(
+                `Ripple's *DatabaseBinding layers need a script name, and '${database.LogicalId}' was declared with a bare URL peer. Pass a Cloudflare.Worker as \`peer\`, or use the *DatabaseHttp layers.`,
+              ),
+            );
+          }
           yield* host.bind`${database}`({
             bindings: [
               {
@@ -59,7 +69,7 @@ export const makeDatabaseBinding = <Client>(options: {
           );
         }
       }
-      return options.makeClient(makeBindingSource(env, database));
+      return options.makeClient(yield* makeBindingSource(env, database));
     });
   });
 
@@ -67,34 +77,35 @@ export const makeDatabaseBinding = <Client>(options: {
 export const makeBindingSource = (
   env: Record<string, any>,
   database: Database,
-): DatabaseSource => {
-  const keys = envKeys(database);
-  const name = runtimeOutput(keys.name, database.name);
-  const token = tokenOutput(database);
-  return {
-    endpoint: Effect.gen(function* () {
-      return {
-        url: SERVICE_ORIGIN,
-        name: yield* name,
-        token: yield* token,
-      };
-    }),
-    // Lazy — the WorkerEnvironment bindings are not populated until runtime.
-    fetch: (url, init) => {
-      const peer = (env as Record<string, runtime.Fetcher | undefined>)[
-        keys.service
-      ];
-      if (peer === undefined) {
-        return Promise.reject(
-          new Error(
-            `no service binding "${keys.service}" on this Worker — the peer must be a Cloudflare.Worker, or use the *DatabaseHttp layers`,
-          ),
-        );
-      }
-      return peer.fetch(
-        url as runtime.RequestInfo,
-        init as runtime.RequestInit,
-      ) as unknown as Promise<Response>;
-    },
-  };
-};
+): Effect.Effect<DatabaseSource> =>
+  Effect.gen(function* () {
+    const keys = envKeys(database);
+    const name = yield* bindOutput(keys.name, database.name);
+    const token = yield* bindToken(database);
+    return {
+      endpoint: Effect.gen(function* () {
+        return {
+          url: SERVICE_ORIGIN,
+          name: yield* required(keys.name, name),
+          token: yield* token,
+        };
+      }),
+      // Lazy — the WorkerEnvironment bindings are not populated until runtime.
+      fetch: (url, init) => {
+        const peer = (env as Record<string, runtime.Fetcher | undefined>)[
+          keys.service
+        ];
+        if (peer === undefined) {
+          return Promise.reject(
+            new Error(
+              `no service binding "${keys.service}" on this Worker — the peer must be a Cloudflare.Worker, or use the *DatabaseHttp layers`,
+            ),
+          );
+        }
+        return peer.fetch(
+          url as runtime.RequestInfo,
+          init as runtime.RequestInit,
+        ) as unknown as Promise<Response>;
+      },
+    };
+  });

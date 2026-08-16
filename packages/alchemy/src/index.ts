@@ -35,9 +35,9 @@ export type {
   WriteDatabaseClient,
 } from "./Client.ts";
 export * from "./Database.ts";
-export * from "./DatabaseBinding.ts";
-export * from "./DatabaseHttp.ts";
-export * from "./DatabaseLocal.ts";
+// `DatabaseBinding.ts` / `DatabaseHttp.ts` / `DatabaseLocal.ts` / `DatabaseRuntime.ts`
+// are capability-internal scaffolding and are deliberately NOT re-exported
+// (mirrors `alchemy/Cloudflare/KV/index.ts`).
 export * from "./DatabaseTypes.ts";
 export * from "./Providers.ts";
 export * from "./ReadDatabase.ts";
