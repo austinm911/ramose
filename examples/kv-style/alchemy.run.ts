@@ -11,12 +11,14 @@
  */
 
 import * as Ripple from "@ripple/alchemy";
+import { SchemaFx } from "@ripple/alchemy";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { App } from "./app.ts";
 import { Sys } from "./resources.ts";
+import { Movies } from "./schema.ts";
 
 // ── schema install as a deploy-time Action ─────────────────────────────────
 //
@@ -25,24 +27,16 @@ import { Sys } from "./resources.ts";
 // peer's freshly-deployed URL (the local workerd dev server's, under
 // `alchemy dev`).
 //
-// `create("movies")` is not a provisioning call: it validates the name and
-// returns a client for `/db/movies/…`. It is the transact below that
-// materializes the database.
+// Typed `create("movies", Movies)` validates the name and ensures the catalog
+// (a schema tx). That ensure *is* the install — there is no separate ident-map
+// transact. It has to run in the apply fn (the peer is not up at plan time).
 
 export const InstallSchema = Alchemy.Action(
   "InstallSchema",
   Effect.gen(function* () {
-    const system = yield* Ripple.WriteSystem(Sys);
-    const movies = yield* system.create("movies");
+    const system = SchemaFx.fromWrite(yield* Ripple.WriteSystem(Sys));
     return Effect.fn(function* () {
-      const ack = yield* movies.transact([
-        {
-          ":db/ident": ":user/name",
-          ":db/valueType": ":db.type/string",
-          ":db/cardinality": ":db.cardinality/one",
-        },
-      ]);
-      return { t: ack.t };
+      yield* system.create("movies", Movies);
     });
   }).pipe(Effect.provide(Ripple.WriteSystemLocal)),
 );
@@ -56,11 +50,10 @@ export default Alchemy.Stack(
   Effect.gen(function* () {
     const sys = yield* Sys;
     const app = yield* App;
-    const schema = yield* InstallSchema({});
+    yield* InstallSchema({});
     return {
       url: app.url,
       peerUrl: sys.url,
-      schemaT: schema.t,
     };
   }),
 );

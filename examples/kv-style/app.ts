@@ -13,11 +13,13 @@
  */
 
 import * as Ripple from "@ripple/alchemy";
+import { SchemaFx } from "@ripple/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import { Sys } from "./resources.ts";
+import { Movies, User } from "./schema.ts";
 
 // The Effect form: the outer generator runs at deploy time (it lowers a
 // `service` binding to the peer, plus the shared token); the handler runs per
@@ -28,17 +30,17 @@ export const App = Cloudflare.Worker(
   "App",
   { main: import.meta.url },
   Effect.gen(function* () {
-    const system = yield* Ripple.ReadWriteSystem(Sys);
+    // Bindings still yield the untyped system (`create(name)`). Wrap it so
+    // `create(name, Movies)` is catalog-typed and ensures the schema.
+    const system = SchemaFx.fromReadWrite(yield* Ripple.ReadWriteSystem(Sys));
 
     // ── databases are names ──────────────────────────────────────────────────
     //
-    // `system.create(name)` and `system.connect(name)` are the same call: an
-    // upsert that validates the name and hands back a database client — the
-    // *same* service binding, `fetch`, token and headers as the system, only
-    // pointed at `/db/:name/…` (the Transactor DO's `idFromName`). It touches
-    // the network not at all, so it is cheap on the request path; the first
-    // `transact` is what materializes the database. An invalid name fails the
-    // Effect with `BadRequest` (mapped to 400 below).
+    // `system.create(name, Movies)` validates the name and ensures the catalog
+    // (a schema tx — `:db/ident` is unique/identity, so re-asserting upserts).
+    // The untyped `create(name)` is still a zero-network upsert; the typed
+    // wrap's create transacts the schema. An invalid name fails with
+    // `BadRequest`; ensure failure is `SchemaEnsureError` (both mapped to 400).
     //
     // Db-per-tenant falls out of that: one `create` per request, no resource,
     // no deploy and no provisioning per tenant. The token is shared across
@@ -47,28 +49,14 @@ export const App = Cloudflare.Worker(
     // (docs/RUNBOOK.md).
     const tenantRoute = (tenantId: string) =>
       Effect.gen(function* () {
-        const tenant = yield* system.create(tenantId);
+        const tenant = yield* system.create(tenantId, Movies);
 
-        // Each tenant database starts empty: `:user/name` has to exist *in it*
-        // before anything can use the attribute (an attribute cannot be defined
-        // and used in the same transaction). `:db/ident` is
-        // `:db.unique/identity`, so re-asserting the same definition upserts the
-        // same entity — the install is idempotent, which is what makes it safe
-        // on the request path in this example. A real app would do it once, when
-        // the tenant is created.
-        yield* tenant.transact([
-          {
-            ":db/ident": ":user/name",
-            ":db/valueType": ":db.type/string",
-            ":db/cardinality": ":db.cardinality/one",
-          },
-        ]);
-
-        const ack = yield* tenant.transact([{ ":user/name": "Ada" }]);
-        const names = yield* tenant.q<string[][]>(
-          { find: ["?n"], where: [["?e", ":user/name", "?n"]] },
-          [],
-          { minT: ack.t },
+        const ack = yield* tenant.transact(function* (tx) {
+          const ada = yield* tx.entity();
+          yield* ada.add(User.name, "Ada");
+        });
+        const names = yield* tenant.q((q) =>
+          q.where("?e", User.name, "?n").options({ minT: ack.t }).find("?n"),
         );
         return yield* HttpServerResponse.json({ tenant: tenantId, t: ack.t, names });
       });
@@ -84,34 +72,33 @@ export const App = Cloudflare.Worker(
         if (path.startsWith("/t/")) return yield* tenantRoute(path.slice("/t/".length));
 
         // The default database. `InstallSchema` (alchemy.run.ts) already
-        // created this name at deploy time and transacted `:user/name` into
-        // it; connecting again is the same upsert.
-        const db = yield* system.create("movies");
+        // created this name at deploy time and ensured Movies; connecting
+        // again is the same upsert + ensure.
+        const db = yield* system.create("movies", Movies);
 
-        const ack = yield* db.transact([{ ":user/name": "Ada" }]);
+        const ack = yield* db.transact(function* (tx) {
+          const ada = yield* tx.entity();
+          yield* ada.add(User.name, "Ada");
+        });
 
         // Read your own write: `minT` fences the read against the `t` we just
         // got back, so a replica that has not caught up refetches its basis.
-        const names = yield* db.q<string[][]>(
-          { find: ["?n"], where: [["?e", ":user/name", "?n"]] },
-          [],
-          { minT: ack.t },
+        const names = yield* db.q((q) =>
+          q.where("?e", User.name, "?n").options({ minT: ack.t }).find("?n"),
         );
 
         // ...and the same query as of a past transaction.
-        const before = yield* db.asOf(ack.t - 1).q<string[][]>({
-          find: ["?n"],
-          where: [["?e", ":user/name", "?n"]],
-        });
-
-        // Entity ids are assigned by the transactor, so ask the index for one
-        // rather than guessing: the same query, projected on `?e`.
-        const eids = yield* db.q<number[][]>(
-          { find: ["?e"], where: [["?e", ":user/name", "?n"]] },
-          [],
-          { minT: ack.t },
+        const before = yield* db.asOf(ack.t - 1).q((q) =>
+          q.where("?e", User.name, "?n").find("?n"),
         );
-        const ada = eids.length === 0 ? undefined : yield* db.entity(eids[0][0]);
+
+        // Entity ids come back as Eid wrappers from `find("?e")`. Pull
+        // through the wrapper — a missing required field is `null`.
+        const rows = yield* db.q((q) =>
+          q.where("?e", User.name, "?n").options({ minT: ack.t }).find("?e"),
+        );
+        const ada =
+          rows.length === 0 ? null : yield* rows[0][0].pull({ name: User.name });
 
         return yield* HttpServerResponse.json({ t: ack.t, names, before, ada });
       }).pipe(
@@ -128,10 +115,13 @@ export const App = Cloudflare.Worker(
           QueryBudgetExceeded: (e) =>
             HttpServerResponse.json({ error: e.message, clause: e.clause }, { status: 413 }),
           BadRequest: (e) => HttpServerResponse.json({ error: e.message }, { status: 400 }),
+          SchemaEnsureError: (e) =>
+            HttpServerResponse.json({ error: e.message }, { status: 400 }),
           Unauthorized: (e) => HttpServerResponse.json({ error: e.message }, { status: 401 }),
           NotFound: (e) => HttpServerResponse.json({ error: e.message }, { status: 404 }),
           Internal: (e) => HttpServerResponse.json({ error: e.message }, { status: 500 }),
           NetworkError: (e) => HttpServerResponse.json({ error: e.message }, { status: 502 }),
+          MissingPeer: (e) => HttpServerResponse.json({ error: e.message }, { status: 502 }),
         }),
       ),
     };

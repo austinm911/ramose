@@ -5,15 +5,16 @@
  *
  * The resource is the *peer* (a Ripple system). A database is a *name* on it —
  * nothing is provisioned, so there is no resource per database: you `create`
- * (≡ `connect`) a name and transact.
+ * (≡ `connect`) a name with a catalog and the typed wrap ensures it.
  *
  * This directory is a *type-checked* example, not part of the deployed stack —
  * it is compiled by `bun run typecheck` so the public API can never drift from
  * the documentation, and it runs as-is under
  * `bun alchemy dev examples/kv-style/alchemy.run.ts`. To adopt it, copy the
- * three files into a project of your own.
+ * four files into a project of your own.
  *
  *   resources.ts    ← you are here: the Ripple deployment (peer + system)
+ *   schema.ts       shared catalog (User / Movies)
  *   app.ts          an app Worker that binds the system (its own module, so
  *                   `main: import.meta.url` bundles only the app)
  *   alchemy.run.ts  the stack: providers, the deploy-time schema Action, outputs
@@ -50,8 +51,10 @@ export const Peer = Cloudflare.Worker("Peer", {
  * `url`, carries the shared `token`, and proves the peer answers `/health`
  * before anything downstream binds to it.
  *
- * Databases come later and per use: `system.create("movies")` hands back a
- * client for `/db/movies/…`, and the first `transact` materializes it (the
- * Transactor DO is `idFromName("movies")`).
+ * Databases come later and per use: wrap the bound system
+ * (`SchemaFx.fromReadWrite`) and `create("movies", Movies)` hands back a
+ * typed client for `/db/movies/…` and ensures the catalog (a schema tx).
+ * The untyped `create("movies")` is still the zero-network name upsert.
+ * The Transactor DO is `idFromName("movies")`.
  */
 export const Sys = Ripple.System("Sys", { peer: Peer });
