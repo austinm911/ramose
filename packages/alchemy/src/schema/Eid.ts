@@ -4,7 +4,13 @@ import type { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";
 import type { DatabaseError } from "../DatabaseTypes.ts";
 import type { AnyCatalog } from "./Catalog.ts";
-import type { IdentPullPattern, PullResult, ValidatePull } from "./Pull.ts";
+import {
+  lowerPullPattern,
+  reshapePullResult,
+  type IdentPullPattern,
+  type PullResult,
+  type ValidatePull,
+} from "./Pull.ts";
 
 const die = <A, E = never, R = RuntimeContext>(
   what: string,
@@ -12,6 +18,11 @@ const die = <A, E = never, R = RuntimeContext>(
   Effect.die(
     new Error(`ripple/schema: proposal stub — ${what} (no peer I/O)`),
   );
+
+export type EidPull = (
+  id: number,
+  pattern: unknown[],
+) => Effect.Effect<unknown, DatabaseError, RuntimeContext>;
 
 export interface Eid<C extends AnyCatalog = AnyCatalog> {
   readonly _tag: "Eid";
@@ -28,11 +39,18 @@ export interface Eid<C extends AnyCatalog = AnyCatalog> {
 export const makeEid = <C extends AnyCatalog>(
   catalog: C,
   id: number,
+  pullFn?: EidPull,
 ): Eid<C> => ({
   _tag: "Eid",
   id,
   catalog,
-  pull: () => die("pull"),
+  pull: ((pattern: unknown) => {
+    if (!pullFn) return die("pull");
+    const wire = lowerPullPattern(pattern);
+    return pullFn(id, wire).pipe(
+      Effect.map((result) => reshapePullResult(pattern, result)),
+    );
+  }) as Eid<C>["pull"],
 });
 
 export const isEid = (value: unknown): value is Eid =>
@@ -44,6 +62,9 @@ export const isEid = (value: unknown): value is Eid =>
 
 /** Wrap a known eid. Query `find` already returns wrappers. */
 export const Eid = {
-  of: <C extends AnyCatalog>(catalog: C, id: number): Eid<C> =>
-    makeEid(catalog, id),
+  of: <C extends AnyCatalog>(
+    catalog: C,
+    id: number,
+    pullFn?: EidPull,
+  ): Eid<C> => makeEid(catalog, id, pullFn),
 };

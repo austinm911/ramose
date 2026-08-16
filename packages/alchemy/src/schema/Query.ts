@@ -132,6 +132,8 @@ export interface QuerySpec {
   readonly find: readonly string[];
   readonly where: readonly (readonly [unknown, unknown, unknown])[];
   readonly options?: QueryOptions | undefined;
+  /** Vars bound as an entity or `:db.type/ref` — wrapped as {@link Eid} on find. */
+  readonly eidVars?: readonly string[] | undefined;
 }
 
 const die = <A, E = never, R = RuntimeContext>(
@@ -148,6 +150,44 @@ const isAttrRef = (a: unknown): a is { readonly ident: string } =>
   typeof (a as { ident: unknown }).ident === "string";
 
 const lowerAttr = (a: unknown): unknown => (isAttrRef(a) ? a.ident : a);
+
+const isQueryVar = (x: unknown): x is QueryVar =>
+  typeof x === "string" && x.startsWith("?") && x.length > 1;
+
+const isRefAttr = (catalog: AnyCatalog, a: unknown): boolean => {
+  if (typeof a === "object" && a !== null && "valueType" in a) {
+    return (a as { valueType: unknown }).valueType === ":db.type/ref";
+  }
+  if (typeof a === "string" && a.startsWith(":")) {
+    for (const ns of Object.values(catalog.namespaces)) {
+      for (const attr of Object.values(ns.attributes)) {
+        if (attr.ident === a) return attr.valueType === ":db.type/ref";
+      }
+    }
+  }
+  return false;
+};
+
+/** I/O for `find` / `query`. The client supplies this; fixtures omit it. */
+export interface QueryIo {
+  find(
+    spec: QuerySpec,
+    vars: readonly QueryVar[],
+  ): Effect.Effect<unknown, DatabaseError, RuntimeContext>;
+  query(
+    spec: QuerySpec,
+    vars: readonly QueryVar[],
+  ): Effect.Effect<QueryResponse<unknown>, DatabaseError, RuntimeContext>;
+}
+
+/** Lower a builder spec to the JS query object the peer already accepts. */
+export const toQueryObject = (
+  spec: QuerySpec,
+  vars: readonly string[],
+): { find: string[]; where: unknown[][] } => ({
+  find: [...vars],
+  where: spec.where.map((clause) => [...clause]),
+});
 
 export interface QueryBuilder<
   C extends AnyCatalog = AnyCatalog,
@@ -196,19 +236,43 @@ export interface QueryBuilder<
 const makeBuilder = <C extends AnyCatalog, B extends object>(
   catalog: C,
   spec: QuerySpec,
+  io?: QueryIo,
 ): QueryBuilder<C, B> => ({
   catalog,
   spec,
-  where: (e: EntitySlot, a: unknown, v: unknown) =>
-    makeBuilder(catalog, {
-      find: spec.find,
-      where: [...spec.where, [e, lowerAttr(a), v] as const],
-      options: spec.options,
-    }),
+  where: (e: EntitySlot, a: unknown, v: unknown) => {
+    const eidVars = new Set(spec.eidVars ?? []);
+    if (isQueryVar(e)) eidVars.add(e);
+    if (isQueryVar(v) && isRefAttr(catalog, a)) eidVars.add(v);
+    return makeBuilder(
+      catalog,
+      {
+        find: spec.find,
+        where: [...spec.where, [e, lowerAttr(a), v] as const],
+        options: spec.options,
+        eidVars: [...eidVars],
+      },
+      io,
+    );
+  },
   options: (opts: QueryOptions) =>
-    makeBuilder(catalog, { ...spec, options: { ...spec.options, ...opts } }),
-  find: (..._vars: readonly QueryVar[]) => die("q"),
-  query: (..._vars: readonly QueryVar[]) => die("query"),
+    makeBuilder(
+      catalog,
+      { ...spec, options: { ...spec.options, ...opts } },
+      io,
+    ),
+  find: (...vars: readonly QueryVar[]) =>
+    io
+      ? (io.find({ ...spec, find: vars }, vars) as ReturnType<
+          QueryBuilder<C, B>["find"]
+        >)
+      : die("q"),
+  query: (...vars: readonly QueryVar[]) =>
+    io
+      ? (io.query({ ...spec, find: vars }, vars) as ReturnType<
+          QueryBuilder<C, B>["query"]
+        >)
+      : die("query"),
 }) as unknown as QueryBuilder<C, B>;
 
 /**
@@ -216,5 +280,6 @@ const makeBuilder = <C extends AnyCatalog, B extends object>(
  */
 export const queryBuilder = <C extends AnyCatalog>(
   catalog: C,
+  io?: QueryIo,
 ): QueryBuilder<C, {}> =>
-  makeBuilder(catalog, { find: [], where: [], options: undefined });
+  makeBuilder(catalog, { find: [], where: [], options: undefined }, io);
