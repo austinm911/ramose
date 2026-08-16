@@ -27,7 +27,7 @@ describe("transactor: group commit + monotonic t", () => {
     await h.transactor.init();
     expect(h.transactor.t).toBe(1);
     expect(h.logTs()).toEqual([1]);
-    expect(h.bucket.objects.size).toBeGreaterThan(0); // empty roots were written
+    expect(h.raw.objects.size).toBeGreaterThan(0); // empty roots were written (under db/test/)
   });
 
   test("concurrent clients get contiguous t; batches coalesce into few writes", async () => {
@@ -194,7 +194,7 @@ describe("transactor: HTTP + alarm", () => {
     expect(await h.fireAlarm()).toBe(true);
     const rec = h.transactor.currentRootRecord;
     expect(rec.t).toBe(h.transactor.t);
-    expect(h.bucket.objects.has("root/current")).toBe(true);
+    expect(h.raw.objects.has("db/test/root/current")).toBe(true);
     expect(h.transactor.earliestLogT()).toBeGreaterThan(1);
     // after indexing, novelty is empty and queries still see all entities
     expect(h.transactor.connection.noveltyCount).toBe(0);

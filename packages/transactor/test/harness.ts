@@ -6,6 +6,7 @@
  * contiguous `t`, no duplicates, batches all-or-nothing — can be checked.
  */
 import { Database } from "bun:sqlite";
+import { type R2Like, dbPrefix, prefixedBucket } from "@ripple/storage";
 import { MemoryBucket } from "@ripple/storage/memory.ts";
 export { MemoryBucket };
 import { DEFAULT_CONFIG, type SocketLike, type SqlLike, type TransactorConfig, type TransactorHost, Transactor } from "../src/index.ts";
@@ -56,7 +57,10 @@ export class Harness implements TransactorHost {
   readonly dbName: string;
   readonly db: Database;
   readonly sql: SqlLike;
-  readonly bucket: MemoryBucket;
+  /** the shared bucket (all databases) */
+  readonly raw: MemoryBucket;
+  /** this database's view of it (db/<name>/…), as the DO shell hands it to the Transactor */
+  readonly bucket: R2Like;
   readonly config: TransactorConfig;
   readonly subscribers = new Set<FakeSocket>();
   alarm: number | null = null;
@@ -72,7 +76,8 @@ export class Harness implements TransactorHost {
     // file-backed: WAL + fsync on every commit (so group commit pays for real durability)
     this.db.exec(opts.file ? "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;" : "PRAGMA synchronous = OFF;");
     this.sql = sqliteLike(this.db);
-    this.bucket = bucket ?? new MemoryBucket();
+    this.raw = bucket ?? new MemoryBucket();
+    this.bucket = prefixedBucket(this.raw, dbPrefix(this.dbName));
     this.config = { ...DEFAULT_CONFIG, ...opts.config };
     this.failAt = opts.failWriteAt;
     this.clock = opts.now ?? (() => Date.now());
@@ -113,7 +118,7 @@ export class Harness implements TransactorHost {
 
   /** Simulate the DO being evicted/restarted: a fresh Transactor over the same durable state. */
   restart(opts: Omit<HarnessOptions, "file"> = {}): Harness {
-    const h = new Harness({ ...opts, config: opts.config ?? this.config }, this.bucket);
+    const h = new Harness({ ...opts, dbName: this.dbName, config: opts.config ?? this.config }, this.raw);
     // share the SQLite database (same durable state) — reuse the same handle
     (h as any).db = this.db;
     (h as any).sql = this.sql;
