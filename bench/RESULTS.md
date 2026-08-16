@@ -193,3 +193,68 @@ kicks in (avg batch 1.2 → 6.4); reads are ~45 ms client p50 vs ~4–12 ms
 locally, of which ~37 ms is the server-side `x-ripple-ms` (Worker → replica DO
 basis fetch + edge query, i.e. an intra-Cloudflare hop that the single local
 isolate does not pay) and the rest is WAN RTT.
+
+## Cloudflare (replica-executed queries), stage `cf-e2e`, 2026-08-16 (second deploy)
+
+Change under test: the Worker's `/query` `/pull` `/entity` now **forward the
+read to the nearest `QueryReplicaDO` (`POST /query`)** — same `replicaId` /
+`locationHint` as the old `fetchBasis` — instead of fetching a basis and
+running datalog in the Worker (SPEC §8). Public API unchanged;
+`x-ripple-ms` is still Worker wall time for the read. Hypothesis: the ~37 ms
+server p50 in the section above was the extra basis hop.
+
+Worker host: `ripple-worker-dev-box-zobj7ehwvxnrrft3.tvanhens.workers.dev`
+(fresh stage; same client machine, IAD edge, one colo, one DO placement — **no
+multi-colo data**). Destroyed afterwards (`bun alchemy destroy`; `/health` →
+Cloudflare 1042 "worker not found").
+
+### e2e
+
+`RIPPLE_URL=<url> bun test test/e2e` → **9/9 pass** in 9.8 s (write smoke 300 tx in 1.17 s → 256 tx/s, max batch 110). Unit suite incl. the new Worker forwarding test: 84/84.
+
+### Write path (unchanged code path; `bun run bench/write-do.bench.ts <clients> 5`)
+
+| clients | tx/s | ack p50 | ack p95 | ack p99 | errors | transactor batches / max / avg |
+|---|---|---|---|---|---|---|
+| 8 | **172** | 32 ms | 92 ms | 160 ms | 0 | 727 / 4 / 1.21 |
+| 64 | **872** | 61 ms | 120 ms | 385 ms | 0 | 560 / 47 / 7.92 |
+
+(Same shape as the first deploy: 166 / 664 tx/s; run-to-run noise on a shared edge.)
+
+### Read path (`bun run bench/read-do.bench.ts` = 5000 people, 200 runs × 8 concurrent, warm)
+
+| query | previous CF (Worker executes): server p50 | **replica executes: client p50** | **client p95** | **server p50 (`x-ripple-ms`)** |
+|---|---|---|---|---|
+| point lookup (AVET) | 37 ms | 80.0 ms | 186.3 ms | **73 ms** |
+| entity attributes (EAVT) | 36 ms | 76.3 ms | 136.3 ms | **68 ms** |
+| city → friends → name (3-way join) | 39 ms | 79.1 ms | 139.1 ms | **70 ms** |
+| count by city (aggregate) | 38 ms | 83.1 ms | 101.3 ms | **76 ms** |
+
+Peer segment cache: all zeros (the Worker no longer touches segments; the
+replica's own R2/tier stats now travel back as `x-ripple-r2-gets` /
+`x-ripple-cache-hits`).
+
+Diagnostic extra run, **same data, 100 runs × 1 concurrent** (to separate
+per-request cost from queueing inside the DO):
+
+| query | client p50 | client p95 | server p50 |
+|---|---|---|---|
+| point lookup (AVET) | 46.2 ms | 56.1 ms | 39 ms |
+| entity attributes (EAVT) | 47.0 ms | 101.2 ms | 38 ms |
+| city → friends → name (join) | 49.9 ms | 107.3 ms | 41 ms |
+| count by city (aggregate) | 46.8 ms | 53.9 ms | 39 ms |
+
+**Verdict: server p50 did not move toward the 15 ms budget — it stayed at
+38–41 ms at concurrency 1 (identical to the old basis-fetch path) and
+roughly doubled to 68–76 ms at 8 concurrent.** The hypothesis was wrong: the
+~37 ms is not "basis fetch + a second hop", it is one Worker → replica-DO
+round trip, paid once either way (datalog itself is 1–3 ms). Moving execution
+into the DO made things worse under concurrency because a Durable Object is
+single-threaded: 8 in-flight reads now serialize their datalog inside one
+replica instead of running in parallel Worker isolates. Next hypothesis (not
+tested here, out of scope for this session): the DO placement — `hintFor("NA")`
+pins the replica with `locationHint: "wnam"` while this client/Worker sit at
+IAD, so every read may be paying a coast-to-coast RTT; a replica pinned near
+the requesting colo (or per-colo/continent-sub-region ids) plus keeping
+execution in the Worker (parallel isolates, one basis RTT) is the combination
+to measure next. Multi-colo scaling remains unmeasured.
