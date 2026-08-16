@@ -114,7 +114,12 @@ d("ripple e2e", () => {
     expect(info1.replica.novelty).toBeGreaterThan(0);
     // an index run flips the root → the replica drops the absorbed novelty (memory stays bounded)
     await db.index();
-    const info2 = await db.info();
+    // the root frame reaches the replica over its WebSocket a beat after index() acks (~100 ms on real Cloudflare)
+    let info2 = await db.info();
+    for (let i = 0; i < 40 && info2.replica.stats.rootFlips <= info1.replica.stats.rootFlips; i++) {
+      await Bun.sleep(250);
+      info2 = await db.info();
+    }
     expect(info2.replica.stats.rootFlips).toBeGreaterThan(info1.replica.stats.rootFlips);
     expect(info2.replica.novelty).toBeLessThan(info1.replica.novelty);
     expect(await db.q<number>(`[:find (count ?e) . :where [?e :user/email]]`)).toBe(before + 25);

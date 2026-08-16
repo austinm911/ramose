@@ -137,11 +137,59 @@ timed here (memory of the in-process harness); scale the 4M row linearly.
 
 | milestone | status | evidence |
 |---|---|---|
-| M0 scaffold | infra written for current Alchemy API; local `bun alchemy dev` runs Worker + 2 DOs + R2; e2e hits it | `alchemy.run.ts`, `test/e2e` (8/8 on local stack). Real `bun alchemy deploy` needs Cloudflare credentials (not available here). |
+| M0 scaffold | **accepted** — deployed to a real Cloudflare account (stage `cf-e2e`, 2026-08-16), e2e 9/9 + write/read benches against it, then destroyed | `alchemy.run.ts`, `test/e2e`; see "Cloudflare" section below |
 | M1 core engine | **accepted** | 57 core tests; seek < 10 µs; 3-clause join p50 43 ms |
 | M2 transactor | **accepted** (in-process + local stack) | 13 transactor tests (contiguous t under 500 concurrent clients, fault injection + restart, novelty/gap catch-up, alarm indexing); ≥ 500 tx/s (2.5k in-process, 1.7k through the local Worker) |
 | M3 R2 store + caching | tiers verified in-process | 4 storage tests: cold ≤ depth GETs, repeat 0 R2 reads, dedupe, corrupt-tier fallback; e2e repeat query hits cache |
 | M4 incremental indexer | verified at 600k datoms (scaled from 10M) | exact new-object count == |reachable(new) − reachable(old)|; as-of via old root; consistent snapshots; bounded, re-arming runs |
 | M5 replica + novelty | e2e | reconnect under concurrent writes → no missed datoms; root flip drops novelty |
 | M6 peer + time travel + SDK | e2e | schema → transact → query → as-of → history → pull; persistence across a full stack restart verified manually |
-| M7 | **done** (no prod deploy: no credentials) | planner memory guardrail (413 `query/budget-exceeded`, tested), write-ceiling load tests with/without group commit + warm read bench, structured logs/metrics per component, `docs/RUNBOOK.md`; timed indexer bench |
+| M7 | **done** (verified on a real Cloudflare deployment; see "Cloudflare" section) | planner memory guardrail (413 `query/budget-exceeded`, tested), write-ceiling load tests with/without group commit + warm read bench, structured logs/metrics per component, `docs/RUNBOOK.md`; timed indexer bench |
+
+## Cloudflare (real deployment, stage `cf-e2e`, 2026-08-16)
+
+`ALCHEMY_STAGE=cf-e2e bun alchemy deploy` → one Worker + `TransactorDO` +
+`QueryReplicaDO` (SQLite-backed) + one R2 bucket on a real Cloudflare account.
+Worker host: `ripple-worker-dev-box-3cdr6qso35cbzmpr.tvanhens.workers.dev`
+(workers.dev; no custom domain, no auth token). Client ran from a machine
+whose Cloudflare edge is **IAD** (`cf-ray …-IAD`; `/db/*/info` reports
+`region: "NA"` for the DOs), so every number below is one client → one colo
+→ one DO placement; **no multi-colo data was measured**. The stage was
+destroyed afterwards (`bun alchemy destroy`; `/health` → 404, Cloudflare error 1042 "worker not found"; a re-plan shows nothing left in the stage).
+
+### e2e (`RIPPLE_URL=<url> bun test test/e2e`)
+
+9/9 pass in ~9 s (schema → transact → query → as-of → history → pull,
+serialized `t` under 40 concurrent clients, replica reconnect under writes,
+root flip drops novelty, 413 `query/budget-exceeded`, write smoke). Write
+smoke: 300 tx in 1.15–1.4 s → **214–261 tx/s**, max batch 75–136. One
+assertion (root flip visible on the replica right after `index()` acks) is a
+~100 ms WebSocket propagation race on real CF that miniflare never showed;
+the test now polls for it (test-only change).
+
+### Write path (`bun run bench/write-do.bench.ts <clients> 5`, group commit on)
+
+| clients | tx/s | ack p50 | ack p95 | ack p99 | errors | transactor batches / max / avg |
+|---|---|---|---|---|---|---|
+| 8 | **166** | 36 ms | 94 ms | 120 ms | 0 | 719 / 5 / 1.17 |
+| 64 | **664** | 71 ms | 220 ms | 370 ms | 0 | 532 / 57 / 6.41 |
+
+### Read path (`bun run bench/read-do.bench.ts` = 5000 people, 200 runs × 8 concurrent, warm)
+
+| query | client p50 | client p95 | server p50 (`x-ripple-ms`) |
+|---|---|---|---|
+| point lookup (AVET) | 44.8 ms | 84.2 ms | 37 ms |
+| entity attributes (EAVT) | 44.4 ms | 100.1 ms | 36 ms |
+| city → friends → name (3-way join) | 49.0 ms | 102.9 ms | 39 ms |
+| count by city (aggregate) | 46.3 ms | 52.7 ms | 38 ms |
+
+Peer segment cache over the run: 7,252 peek hits, 10 R2 gets, 0 puts.
+
+**vs local miniflare (above):** writes 166 / 664 tx/s at 8 / 64 clients vs
+1,228 / 1,595 locally — the live path is dominated by client → edge → DO
+round-trip (~35 ms floor per ack, so 8 clients can only push ~200 tx/s and
+batches stay near 1), and throughput scales with concurrency as group commit
+kicks in (avg batch 1.2 → 6.4); reads are ~45 ms client p50 vs ~4–12 ms
+locally, of which ~37 ms is the server-side `x-ripple-ms` (Worker → replica DO
+basis fetch + edge query, i.e. an intra-Cloudflare hop that the single local
+isolate does not pay) and the rest is WAN RTT.
