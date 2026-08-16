@@ -147,8 +147,25 @@ describe("transaction builder", () => {
   });
 });
 
-describe("pull Struct constructors", () => {
-  test("Struct / optional / nested / pick are tagged field specs", () => {
+describe("literate pull constructors", () => {
+  test("attr.optional / attr.with are tagged field specs", () => {
+    expect(isPullOptional(User.age.optional)).toBe(true);
+    expect(User.age.optional.field.ident).toBe(":user/age");
+
+    const friends = User.friends.with({
+      name: User.name,
+      age: User.age.optional,
+    });
+    expect(isPullNested(friends)).toBe(true);
+    expect(friends.attr.ident).toBe(":user/friends");
+    expect(isPullOptional(friends.pattern.age)).toBe(true);
+
+    const maybeBest = User.friends.optional.with({ name: User.name });
+    expect(isPullOptional(maybeBest)).toBe(true);
+    expect(isPullNested(maybeBest.field)).toBe(true);
+  });
+
+  test("Struct / optional / nested / pick remain as aliases", () => {
     const friend = Struct({ name: User.name, age: optional(User.age) });
     expect(isPullStruct(friend)).toBe(true);
     expect(friend.fields.name.ident).toBe(":user/name");
