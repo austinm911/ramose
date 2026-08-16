@@ -35,7 +35,7 @@ import { SchemaEnsureError } from "./Errors.ts";
 import type { EntityRef } from "./idents.ts";
 import { type QueryBuilder, queryBuilder } from "./Query.ts";
 import type { EntityMap, PullPattern, PullResult } from "./Read.ts";
-import type { TxBuilder, WireTx } from "./Tx.ts";
+import type { TxBuilder, WireTx, YieldContext, YieldError } from "./Tx.ts";
 
 export type OpenError = BadRequest | SchemaEnsureError;
 
@@ -94,20 +94,29 @@ export interface TypedWriteDatabaseClient<C extends AnyCatalog = AnyCatalog> {
   readonly name: string;
 
   /**
-   * Catalog-typed transaction builder. An entity is a bag — attrs from
-   * any namespace go on the same handle. The callback is what `yield*`s;
-   * this returns `TxAck` plus whatever error / context the callback adds.
+   * Catalog-typed transaction. An entity is a bag — attrs from any
+   * namespace go on the same handle. Pass a generator: `transact` is
+   * what `yield*`s. Returns `TxAck` plus whatever error / context the
+   * body adds.
    *
    * ```ts
-   * yield* db.transact((tx) =>
-   *   Effect.gen(function* () {
-   *     const ada = yield* tx.entity()
-   *     yield* ada.add(User.name, "Ada")
-   *     yield* ada.add(Meta.source, "import")
-   *   }),
-   * )
+   * yield* db.transact(function* (tx) {
+   *   const ada = yield* tx.entity()
+   *   yield* ada.add(User.name, "Ada")
+   *   yield* ada.add(Meta.source, "import")
+   * })
    * ```
+   *
+   * An Effect-returning callback stays for composition
+   * (`(tx) => Effect.gen(...)`); it is not the default.
    */
+  transact<Eff extends Effect.Effect<any, any, any>, A = unknown>(
+    build: (tx: TxBuilder<C>) => Generator<Eff, A, never>,
+  ): Effect.Effect<
+    TxAck,
+    DatabaseError | YieldError<Eff>,
+    RuntimeContext | YieldContext<Eff>
+  >;
   transact<E = never, R = never>(
     build: (tx: TxBuilder<C>) => Effect.Effect<unknown, E, R>,
   ): Effect.Effect<TxAck, DatabaseError | E, RuntimeContext | R>;
@@ -200,8 +209,8 @@ const makeWrite = <C extends AnyCatalog>(
 ): TypedWriteDatabaseClient<C> => ({
   catalog,
   name,
-  transact: ((_build: (tx: TxBuilder<C>) => Effect.Effect<unknown, unknown, unknown>) =>
-    die("transact")) as TypedWriteDatabaseClient<C>["transact"],
+  transact: ((_build: (tx: TxBuilder<C>) => unknown) =>
+    die("transact")) as unknown as TypedWriteDatabaseClient<C>["transact"],
   transactWire: () => die("transactWire"),
   transactUntyped: () => die("transactUntyped"),
 });

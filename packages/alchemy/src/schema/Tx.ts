@@ -1,22 +1,26 @@
 /**
  * Typed transaction forms.
  *
- * The primary surface is a catalog-generic **builder** used from
- * `Effect.gen`. An entity is a bag of attributes: any catalog namespace
- * can be asserted on the same handle. Transactions do not prescribe a
- * nested `{ user: {…}, meta: {…} }` shape.
+ * The primary surface is a catalog-generic **builder**. `transact`
+ * accepts a generator directly — that is the happy path. An entity is a
+ * bag of attributes: any catalog namespace can be asserted on the same
+ * handle. Transactions do not prescribe a nested
+ * `{ user: {…}, meta: {…} }` shape.
  *
  * ```ts
- * yield* db.transact((tx) =>
- *   Effect.gen(function* () {
- *     const ada = yield* tx.entity()
- *     yield* ada.add(User.name, "Ada")
- *     yield* ada.add(User.age, 36)
- *     yield* ada.add(Meta.source, "import")
- *     yield* ada.retract(User.age, 35)
- *   }),
- * )
+ * yield* db.transact(function* (tx) {
+ *   const ada = yield* tx.entity()
+ *   yield* ada.add(User.name, "Ada")
+ *   yield* ada.add(User.age, 36)
+ *   yield* ada.add(Meta.source, "import")
+ *   yield* ada.retract(User.age, 35)
+ * })
  * ```
+ *
+ * `ada.add` is the handle path. `tx.add(e, attr, value)` stays for an
+ * eid / tempid / lookup that is not a handle. An Effect-returning
+ * callback (`(tx) => Effect.gen(...)`) stays for composition; it is
+ * not the default.
  *
  * `User.name` is the typed slot; the value type is correlated. Unknown
  * attr / wrong value type are type errors. Cardinality-many is one
@@ -118,7 +122,8 @@ export interface EntityHandle<C extends AnyCatalog = AnyCatalog> {
 
 /**
  * Catalog-generic transaction builder. Methods are Effects so the body
- * is `Effect.gen`. `db.transact` is the terminal that would submit.
+ * is a generator (or an Effect.gen callback). `db.transact` is the
+ * terminal that would submit.
  */
 export interface TxBuilder<C extends AnyCatalog = AnyCatalog> {
   readonly catalog: C;
@@ -147,6 +152,42 @@ export interface TxBuilder<C extends AnyCatalog = AnyCatalog> {
 
   retractEntity(e: TxEntity<C>): Effect.Effect<void>;
 }
+
+/**
+ * Error / context extracted from a generator body's yielded Effects.
+ * Same inference `Effect.gen` uses.
+ */
+export type YieldError<Eff> = [Eff] extends [never]
+  ? never
+  : [Eff] extends [Effect.Effect<infer _A, infer E, infer _R>]
+    ? E
+    : never;
+
+export type YieldContext<Eff> = [Eff] extends [never]
+  ? never
+  : [Eff] extends [Effect.Effect<infer _A, infer _E, infer R>]
+    ? R
+    : never;
+
+/**
+ * Generator body — the happy path:
+ * `db.transact(function* (tx) { … })`.
+ */
+export type TxGenBody<
+  C extends AnyCatalog,
+  Eff extends Effect.Effect<any, any, any> = Effect.Effect<any, any, any>,
+  A = unknown,
+> = (tx: TxBuilder<C>) => Generator<Eff, A, never>;
+
+/**
+ * Effect-returning callback — kept for composition
+ * (`(tx) => Effect.gen(...)` / `Effect.fn`). Not the default.
+ */
+export type TxEffectBody<
+  C extends AnyCatalog,
+  E = never,
+  R = never,
+> = (tx: TxBuilder<C>) => Effect.Effect<unknown, E, R>;
 
 const isAttrRef = (a: unknown): a is { readonly ident: string } =>
   typeof a === "object" &&
@@ -196,7 +237,8 @@ const makeHandle = <C extends AnyCatalog>(
 
 /**
  * Start a catalog-typed transaction builder. Used by
- * `db.transact(tx => …)` and by compile-time / runtime fixtures.
+ * `db.transact(function* (tx) { … })` and by compile-time / runtime
+ * fixtures.
  */
 export const txBuilder = <C extends AnyCatalog>(catalog: C): TxBuilder<C> => {
   const ops: TxOp[] = [];
