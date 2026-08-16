@@ -5,7 +5,14 @@
  * import * as Alchemy from "alchemy";
  * import * as Cloudflare from "alchemy/Cloudflare";
  * import * as Ripple from "@ripple/alchemy";
+ * import { SchemaFx } from "@ripple/alchemy";
+ * import * as Schema from "effect/Schema";
  * import * as Layer from "effect/Layer";
+ *
+ * export const User = SchemaFx.Namespace("user", {
+ *   name: SchemaFx.Attr(Schema.String, { unique: "identity" }),
+ * });
+ * export const Movies = SchemaFx.Catalog({ user: User });
  *
  * export const Peer = Cloudflare.Worker("Peer", { main: "./packages/worker/src/index.ts", env: { … } });
  * export const Sys = Ripple.System("Sys", { peer: Peer });
@@ -14,9 +21,12 @@
  *   providers: Layer.mergeAll(Cloudflare.providers(), Ripple.providers()),
  *   state: Cloudflare.state(),
  * }, Effect.gen(function* () {
- *   const system = yield* Ripple.ReadWriteSystem(Sys);
- *   const movies = yield* system.create("movies");
- *   yield* movies.transact([{ ":user/name": "Ada" }]);
+ *   const system = SchemaFx.fromReadWrite(yield* Ripple.ReadWriteSystem(Sys));
+ *   const movies = yield* system.create("movies", Movies);
+ *   yield* movies.transact(function* (tx) {
+ *     const ada = yield* tx.entity();
+ *     yield* ada.add(User.name, "Ada");
+ *   });
  * }));
  * ```
  */
