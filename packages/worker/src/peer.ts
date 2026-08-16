@@ -50,16 +50,21 @@ export function regionOf(request: Request): string {
 
 // ---- read-path knobs (per request by header, default by env, else the shipped default) ----
 //
-//   x-ripple-replica-hint: wnam|enam|…|auto   DO placement (hint is part of the replica id);
-//                                            `auto` = colo→hint (IAD→enam, SJC→wnam, …).
-//                                            Default: env RIPPLE_REPLICA_HINT (same values), else continent (NA→wnam).
+//   x-ripple-replica-hint: wnam|enam|…|auto|continent
+//                                            DO placement (hint is part of the replica id); `auto` = colo→hint
+//                                            (IAD→enam, SJC→wnam, …), `continent` = the old NA→wnam mapping.
+//                                            Default: env RIPPLE_REPLICA_HINT, else `auto` (gate 2026-08-16: same-colo
+//                                            basis misses 12–13 ms vs 68–77 ms; see bench/RESULTS.md).
 //   x-ripple-cache-basis: 0|1                 reuse an isolate-cached basis instead of calling the replica.
-//                                            Default: env RIPPLE_CACHE_BASIS, else 0.
-//   x-ripple-cache-mode: ttl|peer             ttl  = entry expires after 5 s (control; cross-isolate freshness = TTL).
-//                                            peer = no freshness timer; a write through this isolate invalidates,
-//                                                   `x-ripple-min-t` refetches when the entry is behind, and a long
-//                                                   safety TTL only bounds memory. Default: env RIPPLE_CACHE_MODE, else ttl.
-//   x-ripple-min-t: <t>                       client's last seen t; the read refetches if the cached basis is older.
+//                                            Default: env RIPPLE_CACHE_BASIS, else 1 (gate: 0 ms server p50 on hits).
+//   x-ripple-cache-mode: ttl|peer             ttl  = entry expires after 5 s (cross-isolate freshness bound = 5 s).
+//                                            peer = no freshness timer; only a write through this isolate or an
+//                                                   `x-ripple-min-t` the entry can't satisfy refetches; a long safety
+//                                                   TTL only bounds memory. Default: env RIPPLE_CACHE_MODE, else ttl
+//                                                   (gate: peer measured identical to ttl on the hit path, and its
+//                                                   cross-isolate staleness without min-t could not be measured).
+//   x-ripple-min-t: <t>                       client's last seen t; the read refetches if the cached basis is older
+//                                            (honored in both modes — read-your-writes across isolates).
 
 export type CacheMode = "ttl" | "peer";
 
@@ -82,10 +87,10 @@ export function coloHint(colo: string | undefined): string | undefined {
  *  `auto` (header or env) resolves colo→hint and falls back to the continent when the colo is unknown. */
 export function hintOf(request: Request, env?: Pick<RippleEnv, "RIPPLE_REPLICA_HINT">): string | undefined {
   const cf = (request as any).cf as { colo?: string } | undefined;
-  const pick = request.headers.get("x-ripple-replica-hint") ?? env?.RIPPLE_REPLICA_HINT ?? undefined;
+  const pick = request.headers.get("x-ripple-replica-hint") ?? env?.RIPPLE_REPLICA_HINT ?? "auto";
   if (pick === "auto") return coloHint(cf?.colo) ?? hintFor(regionOf(request));
   if (pick && HINTS.has(pick)) return pick;
-  return hintFor(regionOf(request));
+  return hintFor(regionOf(request)); // "continent" or anything unknown
 }
 
 /** Nearest replica stub for a request (deterministic id + location hint). */
@@ -96,8 +101,8 @@ export function nearestReplica(env: RippleEnv, db: string, request: Request): Du
 }
 
 export function wantsBasisCache(request: Request, env?: Pick<RippleEnv, "RIPPLE_CACHE_BASIS">): boolean {
-  const h = request.headers.get("x-ripple-cache-basis") ?? env?.RIPPLE_CACHE_BASIS;
-  return h === "1";
+  const h = request.headers.get("x-ripple-cache-basis") ?? env?.RIPPLE_CACHE_BASIS ?? "1";
+  return h !== "0";
 }
 
 export function cacheModeOf(request: Request, env?: Pick<RippleEnv, "RIPPLE_CACHE_MODE">): CacheMode {

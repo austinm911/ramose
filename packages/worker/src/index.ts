@@ -2,11 +2,11 @@
  * Ripple peer Worker — the HTTP API and the edge datalog executor.
  *
  * Read-path knobs (per request by header, default by env — see peer.ts):
- * `x-ripple-replica-hint: wnam|enam|…|auto` picks the replica DO placement (hint
- * is part of the DO id; auto = colo→hint); `x-ripple-cache-basis: 0|1` reuses an
- * isolate-cached basis instead of calling the replica each read;
- * `x-ripple-cache-mode: ttl|peer` picks the cache's consistency story (5 s TTL vs
- * write-through invalidation + `x-ripple-min-t` client fences).
+ * `x-ripple-replica-hint: wnam|enam|…|auto|continent` picks the replica DO placement
+ * (hint is part of the DO id; default `auto` = colo→hint); `x-ripple-cache-basis: 0|1`
+ * (default 1) reuses an isolate-cached basis instead of calling the replica each read;
+ * `x-ripple-cache-mode: ttl|peer` (default ttl = 5 s) picks the cache's consistency story;
+ * `x-ripple-min-t: <t>` makes a read refetch if the cached basis is older than t.
  *
  *   GET  /                                  demo app (CRUD + as-of history view)
  *   GET  /health

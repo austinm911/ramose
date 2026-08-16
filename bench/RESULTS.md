@@ -342,3 +342,147 @@ Summary (server p50, `x-ripple-ms`):
 | A | Worker | enam | off | **7 ms** | 31–33 ms |
 | B | Worker | wnam | on | **0 ms** | **0 ms** |
 | C | Worker | enam | on | **0 ms** | **0–3 ms** |
+
+## Cloudflare (cache/invalidation gate), stage `cf-e2e`, 2026-08-16 (fourth deploy)
+
+Question: is "basis cache on by default + real invalidation + colo-correct hint"
+better than today's default (cache off, hint `wnam`, replica hop per read)? The
+earlier B/C rows used opt-in headers and a 5 s TTL; this deploy adds the
+knobs below and measures them per request **on one deploy** (no redeploys
+between variants). Worker host
+`ripple-worker-dev-box-uax23drlds3vbl4b.tvanhens.workers.dev`; client and Worker
+in **IAD** (`cf-ray …-IAD`, `x-ripple-colo: IAD`).
+
+Knobs (`packages/worker/src/peer.ts`; header per request, env for the default):
+
+- `x-ripple-cache-basis: 0|1` (env `RIPPLE_CACHE_BASIS`) — isolate basis cache keyed `db|hint`.
+- `x-ripple-cache-mode: ttl|peer` (env `RIPPLE_CACHE_MODE`) — `ttl` = today's 5 s
+  expiry (control); `peer` = no freshness timer: a transact through this isolate
+  invalidates, `x-ripple-min-t: <t>` (client's last seen t) refetches when the cached
+  basis is behind (polls a lagging replica up to 5×20 ms), a 10 min safety TTL only bounds memory.
+- `x-ripple-replica-hint: wnam|enam|…|auto` (env `RIPPLE_REPLICA_HINT`) — `auto` = colo→hint
+  (IAD/EWR/ATL/… → `enam`, SJC/LAX/SEA/… → `wnam`); the hint is part of the replica DO id.
+- Diagnostics on every read: `x-ripple-basis-hit`, `x-ripple-basis-reason` (hit|off|miss|expired|min-t),
+  `x-ripple-basis-calls`, `x-ripple-basis-behind`, `x-ripple-cache-mode`.
+
+Defaults for this deploy = today's: cache off, mode ttl, hint = continent (`wnam` from IAD).
+e2e on defaults: **9/9** (write smoke 300 tx in 1.39 s → 215 tx/s, max batch 117). Unit suite 91/91.
+
+### Write path control (`bun run bench/write-do.bench.ts <clients> 10`) — unchanged
+
+| clients | tx/s | ack p50 | ack p95 | ack p99 | errors | batches / max / avg |
+|---|---|---|---|---|---|---|
+| 8 | 233 | 32 ms | 40 ms | 91 ms | 0 | 1694 / 8 / 1.38 |
+| 64 | 802 | 72 ms | 123 ms | 269 ms | 0 | 597 / 64 / 13.87 |
+
+### Read path (`bun run bench/read-do.bench.ts 5000 200 8` and `5000 100 1`, warm; server p50 = `x-ripple-ms`)
+
+Server p50 per query is identical across the four queries in every row except
+where noted (join at conc 8), so rows are collapsed:
+
+| id | what | headers | conc 8 server p50 | conc 1 server p50 | conc 8 client p50 | conc 1 client p50 | basis hits (conc 8 / conc 1) |
+|---|---|---|---|---|---|---|---|
+| prior baseline (deploy 3) | today's default | — | 36–39 ms | 38–41 ms | | | |
+| **D0** | today's default, this deploy | cache 0, hint wnam | **68 ms** | **76–78 ms** | 76–77 ms | 84–88 ms | 0 / 0 (off) |
+| **D1** | cache + old 5 s TTL (B replay) | cache 1, mode ttl, hint wnam | **0 ms** | **0 ms** | 6.6–9.9 ms | 6.7–8.0 ms | 800/800 / 399/400 |
+| **D2** | cache + peer invalidation, no min-t | cache 1, mode peer, hint wnam | **0 ms** | **0 ms** | 6.5–7.7 ms | 7.5–8.2 ms | 800/800 / 400/400 |
+| **D3** | D2 + colo hint enam | cache 1, mode peer, hint enam | **0 ms** (join 4 ms) | **0 ms** | 6.8–7.6 ms (join 17.6) | 6.7–8.4 ms | 800/800 / 400/400 |
+| A replay (D3 miss path) | cache off, hint enam | cache 0, hint enam | — | **12–13 ms** | — | 20–21 ms | 0 / 0 (off) |
+| **D4** | D2 + `x-ripple-min-t` = t of the bench's last write | cache 1, mode peer, hint wnam, min-t | **0 ms** | **0 ms** | 6.7–9.3 ms | 6.6–6.9 ms | 800/800 / 400/400 |
+| D4 (enam) | same with hint enam | cache 1, mode peer, hint enam, min-t | **0 ms** (join 3 ms) | **0 ms** | 6.8–7.6 ms (join 15.9) | 7.1–9.4 ms | 800/800 / 400/400 |
+
+Notes:
+
+- **D0 is worse than the deploy-3 baseline** (68/77 ms vs 36–40 ms). Same code path
+  as deploy 3; the `wnam` replica DO for each fresh bench db was evidently
+  placed further west this time. Placement under `wnam` from an IAD client is not
+  stable deploy to deploy — one more reason the hint should follow the colo.
+- The A replay is 12–13 ms this deploy vs 7 ms on deploy 3 (also placement noise, still same-colo).
+- D1 = D2 = D3 = D4 on the hit path: **0 ms server p50, 100% basis hits** at both
+  concurrencies. Dropping the 5 s timer (peer) neither helps nor hurts the hit path;
+  min-t is free when the cached basis already satisfies it (which it always does for
+  a client whose own writes went through the same isolate — invalidation runs first).
+- The join at conc 8 with hint enam is 3–4 ms server p50 (CPU contention in one
+  isolate, as in C); with hint wnam it is 0 ms because that isolate is warmer? — noise-level.
+- One D4 conc-8 run aborted in the bench's *seed* phase (`unknown attribute :person/city`
+  on the first read of a fresh db): the fresh replica DO's first `/basis` was behind
+  the transactor (`ensureConnected` waits 20 ms for hello + catch-up). Pre-existing
+  cold-replica race (e2e already polls for it), independent of the cache; the rerun passed.
+
+### Cross-isolate freshness (D2 / D4) — not observable from this vantage
+
+Probe (`bench/freshness.bench.ts 10 16`: one writer, 16 fresh-connection readers,
+first read right after each ack, then poll to visible):
+
+| mode | first-read stale | first-read cache hits | time-to-visible p50 / p95 / max |
+|---|---|---|---|
+| D2 peer, no min-t | 0/160 | 3/160 | 0 / 0 / 0 ms |
+| D4 peer, min-t = ack.t | 0/160 | 1/160 | 0 / 0 / 0 ms |
+| D1 ttl (control) | 0/160 | 1/160 | 0 / 0 / 0 ms |
+
+The 1–3/160 hit counts give it away: every reader landed on the **writer's**
+isolate, so the same-isolate invalidation (not TTL / min-t) made every first
+read a miss. Confirmed directly: 60 sequential fresh-connection curls (v4, v6,
+both anycast IPs, HTTP/1.1 and h2, varied local ports) all carried the same
+`cf-ray …f5ca-IAD` — one edge server, one isolate (1 miss, 59 hits). A second
+vantage (remote agent, 441 reads over 150 s at 250 ms while this host wrote
+every 6 s) also landed on `…f5ca-IAD` and saw every write on its next poll
+(hit=0 immediately after each ack, 0 stale). So: **stale rate 0/N and
+time-to-visible ≤ 1 poll for readers on the writer's isolate; readers on other
+isolates were never reached and are unmeasured.** No second colo was invented.
+By construction, on such an isolate: `ttl` → stale ≤ 5 s; `peer` without
+min-t → stale until that isolate writes / a min-t read / the 10 min safety TTL;
+`peer` or `ttl` **with** min-t → one extra `/basis` hop (the A/D0 miss cost:
+12–13 ms same-colo, 68–77 ms `wnam` from IAD) then fresh (unit-tested, incl. polling a lagging replica).
+
+### Gate
+
+| criterion | result |
+|---|---|
+| D1 still matches B | ✅ 0 ms / 0 ms, 100 % hits |
+| D2 warm server p50 ~0–3 ms | ✅ 0 ms / 0 ms |
+| D4 correct, warm p50 not back in the 30s | ✅ 0 ms / 0 ms, min-t satisfied by the invalidated-then-refilled entry (single isolate) |
+| writes unchanged | ✅ 233 / 802 tx/s vs 160 / 879 (noise) |
+| e2e 9/9 | ✅ |
+| cross-isolate stale rate / time-to-visible | ⚠️ unobservable from IAD (one isolate); peer-without-min-t is unbounded by design |
+
+**Go, partially.** The table proves the *cache* (0 ms hits) and the *colo-correct
+hint* (12–13 ms misses vs 68–77 ms) — those are now the defaults. It does **not**
+distinguish `peer` from `ttl`: identical on every measured row, and the only
+dimension where they differ (staleness on isolates that did not write, without
+min-t) could not be measured and is strictly worse for `peer` (10 min vs 5 s).
+`ttl` + `min-t` (min-t is honored in every mode) gives the same read-your-writes
+as `peer` with a 5 s bound for everyone else, so **`ttl` stays the default mode;
+`peer` remains opt-in** (`x-ripple-cache-mode: peer` / `RIPPLE_CACHE_MODE=peer`)
+until a multi-isolate measurement exists.
+
+### Defaults flipped (fifth deploy of the same stage, no code changes but the defaults)
+
+`x-ripple-cache-basis` default 1, `x-ripple-replica-hint` default `auto` (colo→hint;
+`continent` restores the old NA→wnam), `x-ripple-cache-mode` default `ttl`. e2e on no
+headers: **9/9** (write smoke 300 tx in 1.20 s → 250 tx/s). Unit suite 91/91.
+
+`bun run bench/read-do.bench.ts` with **no headers / no env** (the new default; `x-ripple-replica-hint: enam`, `x-ripple-cache-basis: 1`, `x-ripple-cache-mode: ttl` on every response):
+
+| query | conc 8 client p50 | conc 8 client p95 | conc 8 server p50 | hits/refetch | conc 1 client p50 | conc 1 client p95 | conc 1 server p50 | hits/refetch |
+|---|---|---|---|---|---|---|---|---|
+| point lookup (AVET) | 6.8 ms | 38.9 ms | **0 ms** | 193/7 | 6.9 ms | 115.3 ms | **0 ms** | 95/5 |
+| entity attrs (EAVT) | 7.3 ms | 67.0 ms | **0 ms** | 200/0 | 7.4 ms | 65.8 ms | **0 ms** | 100/0 |
+| city → friends → name (join) | 10.1 ms | 22.6 ms | **0 ms** | 200/0 | 9.9 ms | 95.9 ms | **0 ms** | 98/2 |
+| count by city (agg) | 6.9 ms | 34.3 ms | **0 ms** | 200/0 | 7.3 ms | 69.6 ms | **0 ms** | 96/4 |
+
+= variant C, by default. The `refetch` column is the ttl mode's cost: one
+same-colo `/basis` hop per 5 s per isolate (the p95 bumps), which peer mode would
+remove at the price above. Summary vs the 36–39 ms baseline:
+
+| id | server p50 conc 8 | conc 1 |
+|---|---|---|
+| deploy-3 baseline (cache off, wnam) | 36–39 ms | 38–41 ms |
+| D0 this deploy (cache off, wnam) | 68 ms | 76–78 ms |
+| D1 cache + ttl, wnam | 0 ms | 0 ms |
+| D2 cache + peer, wnam | 0 ms | 0 ms |
+| D3 cache + peer, enam | 0 ms (join 4) | 0 ms |
+| D4 D2 + min-t (wnam / enam) | 0 ms / 0 ms (join 3) | 0 ms / 0 ms |
+| **new default, no headers** (cache + ttl, auto=enam) | **0 ms** | **0 ms** |
+
+Stage destroyed after the run (`bun alchemy destroy` → Worker + Store deleted, `/health` → 404). alchemy-state-store untouched.

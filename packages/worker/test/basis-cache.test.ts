@@ -46,10 +46,11 @@ describe("basis cache knobs", () => {
     Date.now = realNow;
   });
 
-  test("cache off (default): every read calls GET /basis", async () => {
+  test("cache off (header 0): every read calls GET /basis; hint continent = wnam from IAD", async () => {
     const { env, calls } = fakeEnv(() => 5);
-    const a = await fetchBasisWithStats(env, "demo", req());
-    const b = await fetchBasisWithStats(env, "demo", req());
+    const off = { "x-ripple-cache-basis": "0", "x-ripple-replica-hint": "continent" };
+    const a = await fetchBasisWithStats(env, "demo", req(off));
+    const b = await fetchBasisWithStats(env, "demo", req(off));
     expect(a.hit).toBe(false);
     expect(a.reason).toBe("off");
     expect(b.hit).toBe(false);
@@ -59,9 +60,12 @@ describe("basis cache knobs", () => {
     expect(calls[0].hint).toBe("wnam");
   });
 
-  test("cache on: first read misses, second hits without touching the replica; keyed by db|hint", async () => {
+  test("cache on (default): first read misses, second hits without touching the replica; keyed by db|hint", async () => {
     const { env, calls } = fakeEnv(() => 5);
-    const h = { "x-ripple-cache-basis": "1" };
+    const h = { "x-ripple-replica-hint": "wnam" };
+    expect(wantsBasisCache(req())).toBe(true);
+    expect(wantsBasisCache(req({ "x-ripple-cache-basis": "0" }))).toBe(false);
+    expect(wantsBasisCache(req(), { RIPPLE_CACHE_BASIS: "0" })).toBe(false);
     const a = await fetchBasisWithStats(env, "demo", req(h));
     const b = await fetchBasisWithStats(env, "demo", req(h));
     expect(a.reason).toBe("miss");
@@ -80,14 +84,13 @@ describe("basis cache knobs", () => {
     expect((await fetchBasisWithStats(env, "demo", req(h))).hit).toBe(true);
   });
 
-  test("env RIPPLE_CACHE_BASIS=1 turns the cache on by default; header 0 overrides", async () => {
-    const { env, calls } = fakeEnv(() => 5, { RIPPLE_CACHE_BASIS: "1" });
-    expect(wantsBasisCache(req(), env)).toBe(true);
-    expect(wantsBasisCache(req({ "x-ripple-cache-basis": "0" }), env)).toBe(false);
-    await fetchBasisWithStats(env, "demo", req());
-    expect((await fetchBasisWithStats(env, "demo", req())).hit).toBe(true);
-    expect((await fetchBasisWithStats(env, "demo", req({ "x-ripple-cache-basis": "0" }))).reason).toBe("off");
-    expect(calls.length).toBe(2);
+  test("env RIPPLE_CACHE_BASIS=0 turns the cache off by default; header 1 overrides", async () => {
+    const { env, calls } = fakeEnv(() => 5, { RIPPLE_CACHE_BASIS: "0" });
+    expect((await fetchBasisWithStats(env, "demo", req())).reason).toBe("off");
+    expect((await fetchBasisWithStats(env, "demo", req())).reason).toBe("off");
+    await fetchBasisWithStats(env, "demo", req({ "x-ripple-cache-basis": "1" }));
+    expect((await fetchBasisWithStats(env, "demo", req({ "x-ripple-cache-basis": "1" }))).hit).toBe(true);
+    expect(calls.length).toBe(3);
   });
 
   test("a transact through this isolate invalidates: next read refetches and sees the new t", async () => {
@@ -167,11 +170,21 @@ describe("basis cache knobs", () => {
     const d = await fetchBasisWithStats(never.env, "demo", req({ ...peer, "x-ripple-min-t": "99" }));
     expect(d.behind).toBe(true);
     expect(d.calls).toBeGreaterThan(1);
-    // min-t also fences in ttl mode (no cache) — pass-through, one call
+    // min-t also fences with the cache off — pass-through, one call
     const off = fakeEnv(() => 3);
-    const e = await fetchBasisWithStats(off.env, "demo", req({ "x-ripple-min-t": "3" }));
+    const e = await fetchBasisWithStats(off.env, "demo", req({ "x-ripple-min-t": "3", "x-ripple-cache-basis": "0" }));
     expect(e.reason).toBe("off");
     expect(e.calls).toBe(1);
+    // and in ttl mode (the default) with the cache on: behind → refetch, satisfied → hit
+    let tt = 4;
+    const ttl = fakeEnv(() => tt);
+    clearBasisCache();
+    await fetchBasisWithStats(ttl.env, "demo", req());
+    tt = 6;
+    const f = await fetchBasisWithStats(ttl.env, "demo", req({ "x-ripple-min-t": "6" }));
+    expect(f.reason).toBe("min-t");
+    expect(f.basis.t).toBe(6);
+    expect((await fetchBasisWithStats(ttl.env, "demo", req({ "x-ripple-min-t": "6" }))).hit).toBe(true);
   });
 
   test("a stale refetch never overwrites a newer cached entry", async () => {
@@ -197,8 +210,12 @@ describe("colo → hint", () => {
     expect(coloHint(undefined)).toBeUndefined();
   });
 
-  test("hintOf precedence: header > env > continent; auto resolves the colo (default stays wnam for NA)", () => {
-    expect(hintOf(req())).toBe("wnam"); // today's default: continent, even from IAD
+  test("hintOf precedence: header > env > auto; auto resolves the colo (IAD → enam), continent = old wnam", () => {
+    expect(hintOf(req())).toBe("enam"); // default is now colo-correct
+    expect(hintOf(req({}, { continent: "NA", colo: "SJC" }))).toBe("wnam");
+    expect(hintOf(req({}, { continent: "NA" }))).toBe("wnam"); // unknown colo → continent
+    expect(hintOf(req({ "x-ripple-replica-hint": "continent" }))).toBe("wnam"); // old default, opt-in
+    expect(hintOf(req(), { RIPPLE_REPLICA_HINT: "continent" })).toBe("wnam");
     expect(hintOf(req({ "x-ripple-replica-hint": "enam" }))).toBe("enam");
     expect(hintOf(req({ "x-ripple-replica-hint": "auto" }))).toBe("enam"); // IAD
     expect(hintOf(req({ "x-ripple-replica-hint": "auto" }, { continent: "NA", colo: "SJC" }))).toBe("wnam");
@@ -214,6 +231,6 @@ describe("colo → hint", () => {
     const { env } = fakeEnv(() => 1);
     expect(replicaId(env, "demo", "NA", 1, "wnam").toString()).toBe("demo|NA|wnam|0");
     expect(replicaId(env, "demo", "NA", 1, "enam").toString()).toBe("demo|NA|enam|0");
-    expect(replicaId(env, "demo", "NA").toString()).toBe("demo|NA|wnam|0");
+    expect(replicaId(env, "demo", "NA").toString()).toBe("demo|NA|wnam|0"); // continent fallback when no hint is passed
   });
 });
