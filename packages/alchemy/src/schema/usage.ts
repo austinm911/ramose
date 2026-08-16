@@ -1,9 +1,7 @@
 /** Typechecked happy path: catalog → create → gen transact → q → eid.pull. */
 
-import type { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import type { DatabaseError } from "../DatabaseTypes.ts";
 import { Attr } from "./Attribute.ts";
 import { Catalog } from "./Catalog.ts";
 import { makeSystem } from "./Client.ts";
@@ -98,8 +96,3 @@ export const program = Effect.gen(function* () {
 export type ProgramSuccess = Effect.Success<typeof program>;
 export type ProgramError = Effect.Error<typeof program>;
 export type ProgramServices = Effect.Services<typeof program>;
-
-type _Runtime = ProgramServices extends RuntimeContext ? true : false;
-type _NoLeftoverError = [ProgramError] extends [never] ? true : false;
-type _HasDatabaseError = DatabaseError;
-void 0 as unknown as [_Runtime, _NoLeftoverError, _HasDatabaseError];
