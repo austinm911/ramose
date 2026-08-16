@@ -58,3 +58,4 @@ export * from "./WriteSystem.ts";
 export * from "./WriteSystemBinding.ts";
 export * from "./WriteSystemHttp.ts";
 export * from "./WriteSystemLocal.ts";
+export * as SchemaFx from "./schema/index.ts";
