@@ -12,6 +12,7 @@ import {
   queryBuilder,
   schemaTx,
   txBuilder,
+  lowerPullPattern,
   Long,
   Ref,
 } from "../../src/schema/index.ts";
@@ -101,5 +102,36 @@ describe("transaction builder", () => {
       [":db/add", [":user/name", "Ada"], ":meta/source", "lookup"],
     ]);
     expect(tx.catalog).toBe(Movies);
+  });
+});
+
+
+describe("pull lowering", () => {
+  test("literate map becomes :as / nested AST the peer already accepts", () => {
+    expect(
+      lowerPullPattern({
+        name: User.name,
+        age: User.age.optional,
+        friends: User.friends.with({ name: User.name }),
+      }),
+    ).toEqual([
+      { kind: "attr", attr: ":user/name", reverse: false, as: "name" },
+      { kind: "attr", attr: ":user/age", reverse: false, as: "age" },
+      {
+        kind: "attr",
+        attr: ":user/friends",
+        reverse: false,
+        as: "friends",
+        sub: [{ kind: "attr", attr: ":user/name", reverse: false, as: "name" }],
+      },
+    ]);
+  });
+
+  test("ident-keyed array stays ident strings", () => {
+    expect(lowerPullPattern([User.name, ":user/age", "*"])).toEqual([
+      ":user/name",
+      ":user/age",
+      "*",
+    ]);
   });
 });
