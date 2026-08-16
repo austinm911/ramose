@@ -16,7 +16,6 @@ import {
   attr,
   type CatalogIdent,
   Catalog,
-  type EntityMap,
   type Equal,
   type Expect,
   type Extends,
@@ -32,6 +31,7 @@ import {
   type WireEntity,
   Long,
   Ref,
+  Eid,
   makeSystem,
   unsafeDatabase,
   unsafeReadDatabase,
@@ -178,21 +178,13 @@ void _badNestedVal;
 // @ts-expect-error wire name is string, not number
 db.transactWire([{ ":user/name": 42 }]);
 
-// ── entity / pull infer attr value types ───────────────────────────────────
+// ── eid wrapper / pull infer attr value types ──────────────────────────────
 
-type Ada = EntityMap<typeof Movies>;
-type _eid = Expect<Equal<Ada[":db/id"], number>>;
-type _adaName = Expect<Equal<Ada[":user/name"], string | undefined>>;
-type _adaAge = Expect<Equal<Ada[":user/age"], number | undefined>>;
-type _adaFriends = Expect<Equal<Ada[":user/friends"], readonly number[] | undefined>>;
-type _adaTitle = Expect<Equal<Ada[":movie/title"], string | undefined>>;
-
-const entityFx = db.entity(1001);
-type EntitySuccess = Effect.Success<typeof entityFx>;
-type _entity = Expect<Equal<EntitySuccess, Ada | undefined>>;
+const eid = Eid.of(Movies, 1001);
+type _eidWrap = Expect<Equal<typeof eid, Eid<typeof Movies>>>;
 
 // literate pull is the happy path — see pull-types.ts for the full matrix.
-const pullFx = db.pull(1001, { name: User.name, age: User.age.optional });
+const pullFx = eid.pull({ name: User.name, age: User.age.optional });
 type PullSuccess = Effect.Success<typeof pullFx>;
 type _pullName = Expect<Equal<NonNullable<PullSuccess>["name"], string>>;
 type _pullAge = Expect<
@@ -203,7 +195,7 @@ type _pullNoIdent = Expect<
 >;
 
 // keyword-soup pull remains (idents, still catalog-checked, all optional)
-const pullSoup = db.pull(1001, [":user/name", ":user/age"] as const);
+const pullSoup = eid.pull([":user/name", ":user/age"] as const);
 type _soupName = Expect<
   Equal<NonNullable<Effect.Success<typeof pullSoup>>[":user/name"], string | undefined>
 >;
@@ -212,15 +204,15 @@ type _soupAge = Expect<
 >;
 
 // bag: Movie.title on a user eid is legal (keys are the rename)
-const pullBag = db.pull(1001, { name: User.name, title: Movie.title });
+const pullBag = eid.pull({ name: User.name, title: Movie.title });
 type _bagTitle = Expect<
   Equal<NonNullable<Effect.Success<typeof pullBag>>["title"], string>
 >;
 
 // @ts-expect-error unknown attr on the namespace
-db.pull(1001, [User.nope]);
+eid.pull([User.nope]);
 // @ts-expect-error ident not in the catalog
-db.pull(1001, [":user/nope"]);
+eid.pull([":user/nope"]);
 
 // ── asOf / history preserve the catalog parameter ──────────────────────────
 
@@ -241,22 +233,22 @@ type RW = TypedReadWriteDatabaseClient<typeof Movies>;
 
 type _readNoTx = Expect<Equal<"transact" extends ReadK ? true : false, false>>;
 type _writeHasTx = Expect<Equal<"transact" extends WriteK ? true : false, true>>;
-type _writeNoEntity = Expect<Equal<"entity" extends WriteK ? true : false, false>>;
+type _writeNoQ = Expect<Equal<"q" extends WriteK ? true : false, false>>;
 type _rwHasBoth = Expect<
   Equal<
-    "transact" extends keyof RW ? ("entity" extends keyof RW ? true : false) : false,
+    "transact" extends keyof RW ? ("q" extends keyof RW ? true : false) : false,
     true
   >
 >;
 
 const readOnly = unsafeReadDatabase(Movies);
 const writeOnly = unsafeWriteDatabase(Movies);
-void readOnly.entity;
+void readOnly.q;
 void writeOnly.transact;
 // @ts-expect-error read client has no transact
 readOnly.transact;
-// @ts-expect-error write client has no entity
-writeOnly.entity;
+// @ts-expect-error write client has no q
+writeOnly.q;
 
 // ── tagged errors remain on the Effect (catchTags still typechecks) ────────
 

@@ -124,13 +124,13 @@ type RW = TypedReadWriteDatabaseClient<typeof Movies>;
 
 type _readNoTx = Expect<Equal<"transact" extends ReadK ? true : false, false>>;
 type _writeHasTx = Expect<Equal<"transact" extends WriteK ? true : false, true>>;
-type _writeNoEntity = Expect<
-  Equal<"entity" extends WriteK ? true : false, false>
+type _writeNoQ = Expect<
+  Equal<"q" extends WriteK ? true : false, false>
 >;
 type _rwHasBoth = Expect<
   Equal<
     "transact" extends keyof RW
-      ? "entity" extends keyof RW
+      ? "q" extends keyof RW
         ? true
         : false
       : false,
@@ -140,12 +140,12 @@ type _rwHasBoth = Expect<
 
 const readOnly = unsafeReadDatabase(Movies);
 const writeOnly = unsafeWriteDatabase(Movies);
-void readOnly.entity;
+void readOnly.q;
 void writeOnly.transact;
 // @ts-expect-error read client has no transact
 readOnly.transact;
-// @ts-expect-error write client has no entity
-writeOnly.entity;
+// @ts-expect-error write client has no q
+writeOnly.q;
 
 const writeTx = writeOnly.transact(function* (tx) {
   const e = yield* tx.entity();

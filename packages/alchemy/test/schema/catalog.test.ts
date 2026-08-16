@@ -9,6 +9,8 @@ import { RuntimeContext } from "alchemy/RuntimeContext";
 import {
   attr,
   Catalog,
+  Eid,
+  isEid,
   makeSystem,
   Namespace,
   isPullNested,
@@ -166,6 +168,17 @@ describe("literate pull constructors", () => {
     expect(picked.name.ident).toBe(":user/name");
     expect(picked.age.ident).toBe(":user/age");
     expect("_tag" in picked).toBe(false);
+  });
+});
+
+describe("eid wrapper", () => {
+  test("Eid.of wraps a known number", () => {
+    const eid = Eid.of(Movies, 1001);
+    expect(isEid(eid)).toBe(true);
+    expect(eid._tag).toBe("Eid");
+    expect(eid.id).toBe(1001);
+    expect(eid.catalog).toBe(Movies);
+    expect(typeof eid.pull).toBe("function");
   });
 });
 
