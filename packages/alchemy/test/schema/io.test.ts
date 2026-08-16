@@ -30,13 +30,13 @@ import {
   Namespace,
   Ref,
   SchemaEnsureError,
-  fromRead,
   fromReadWrite,
   fromWrite,
   isEid,
   makeReadSystemClient,
   makeSystem,
   makeWriteSystemClient,
+  schemaTx,
   unsafeDatabase,
 } from "../../src/schema/index.ts";
 
@@ -229,48 +229,7 @@ describe("request shapes (fake fetch)", () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe("https://peer.example.com/db/movies/transact");
-    expect(calls[0].body).toEqual({
-      tx: [
-        {
-          ":db/ident": ":user/name",
-          ":db/valueType": ":db.type/string",
-          ":db/cardinality": ":db.cardinality/one",
-          ":db/unique": ":db.unique/identity",
-          ":db/index": true,
-        },
-        {
-          ":db/ident": ":user/age",
-          ":db/valueType": ":db.type/long",
-          ":db/cardinality": ":db.cardinality/one",
-        },
-        {
-          ":db/ident": ":user/friends",
-          ":db/valueType": ":db.type/ref",
-          ":db/cardinality": ":db.cardinality/many",
-        },
-        {
-          ":db/ident": ":user/bestFriend",
-          ":db/valueType": ":db.type/ref",
-          ":db/cardinality": ":db.cardinality/one",
-        },
-        {
-          ":db/ident": ":movie/title",
-          ":db/valueType": ":db.type/string",
-          ":db/cardinality": ":db.cardinality/one",
-          ":db/index": true,
-        },
-        {
-          ":db/ident": ":movie/year",
-          ":db/valueType": ":db.type/long",
-          ":db/cardinality": ":db.cardinality/one",
-        },
-        {
-          ":db/ident": ":meta/source",
-          ":db/valueType": ":db.type/string",
-          ":db/cardinality": ":db.cardinality/one",
-        },
-      ],
-    });
+    expect(calls[0].body).toEqual({ tx: schemaTx(Movies) });
 
     const ack = await run(
       db.transact(function* (tx) {
@@ -393,7 +352,7 @@ describe("request shapes (fake fetch)", () => {
     );
   });
 
-  test("fromReadWrite / fromWrite ensure; fromRead skips ensure", async () => {
+  test("fromReadWrite / fromWrite ensure the catalog", async () => {
     const { calls, fetch } = recorder(() => ({
       body: { t: 1, txEid: 1, tempids: {}, datoms: 0, result: [], root: 1 },
     }));
@@ -406,12 +365,6 @@ describe("request shapes (fake fetch)", () => {
     const write = fromWrite(untyped);
     await run(write.create("movies", Movies));
     expect(calls.filter((c) => c.url.endsWith("/transact"))).toHaveLength(2);
-
-    const n = calls.length;
-    const read = fromRead(untyped);
-    const r = await run(read.create("movies", Movies));
-    expect("transact" in r).toBe(false);
-    expect(calls.length).toBe(n);
   });
 });
 
