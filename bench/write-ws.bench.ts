@@ -148,6 +148,6 @@ console.log(`t range [${seenT.size ? minT : "-"}..${seenT.size ? maxT : "-"}] ac
 console.log(`colo=${info.meta?.colo ?? "-"}  db=${db.name}`);
 console.log(`slow frames=${slowFrames} maxFrameLat=${fmt(lat.length ? lat[lat.length - 1] : 0)} pastDeadline=${pastDeadline}`);
 const m = info.transactor?.metrics;
-console.log(`metrics batchLoopMs=${JSON.stringify(m?.batchLoopMs)} batchResolveMs=${JSON.stringify(m?.batchResolveMs)} batchCommitMs=${JSON.stringify(m?.batchCommitMs)} queueDepth=${m?.queueDepth}`);
+console.log(`metrics batchLoopMs=${JSON.stringify(m?.batchLoopMs)} batchResolveMs=${JSON.stringify(m?.batchResolveMs)} batchCommitMs=${JSON.stringify(m?.batchCommitMs)} batchQueueWaitMs=${JSON.stringify(m?.batchQueueWaitMs)} gapMs=${JSON.stringify(m?.gapMs)} queueDepth=${m?.queueDepth}`);
 console.log(`store r2Gets=${info.transactor?.store?.r2Gets} ${JSON.stringify(info.transactor?.store)}`);
 console.log(`indexer runs=${info.transactor?.indexer?.runs} lastRun=${JSON.stringify(info.transactor?.indexer?.lastRun)}`);
