@@ -30,6 +30,24 @@ const tuning = (...names: string[]): Record<string, string> =>
 /** Content-addressed segment / log / root storage. Everything except `root/current` is immutable. */
 export const Store = Cloudflare.R2.Bucket("Store");
 
+/**
+ * Workers Analytics Engine dataset for tx/http telemetry (`env.ANALYTICS`).
+ *
+ * Declared with the `env` form rather than the doc's two-phase Effect form
+ * (`Cloudflare.Worker(name, props, Effect.gen(… WriteDataset(Analytics) …))`):
+ * that form binds under the *dataset resource's* logical id and expects the
+ * Worker body to be authored inline (`main: import.meta.url`, handlers
+ * returned from the generator). This Worker is a plain async Worker whose
+ * script also re-exports both Durable Object classes (single-script pattern,
+ * packages/worker/src/index.ts), so the DOs would lose their env. The `env`
+ * form emits the same binding — `{ type: "analytics_engine", name: "ANALYTICS",
+ * dataset: "ripple_tx" }` (alchemy/src/Cloudflare/Workers/WorkerAsyncBindings.ts
+ * `isDataset` arm) — under the name we choose, so the Worker *and* both DOs see
+ * `env.ANALYTICS.writeDataPoint`. The Effect-shaped client lives in the Worker
+ * instead (packages/worker/src/analytics.ts).
+ */
+export const Analytics = Cloudflare.AnalyticsEngine.Dataset("Analytics", { dataset: "ripple_tx" });
+
 /** One Transactor per logical database (single writer); N QueryReplicas per database. */
 export const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "TransactorDO" });
 export const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
@@ -41,6 +59,7 @@ export const Worker = Cloudflare.Worker("Worker", {
     STORE: Store,
     TRANSACTOR: Transactor,
     REPLICA: Replica,
+    ANALYTICS: Analytics,
     RIPPLE_STAGE: stage,
     // tuning knobs (see packages/transactor/src/env.ts); only bound when set
     ...tuning("RIPPLE_MAX_BATCH", "RIPPLE_QUERY_MAX_CELLS", "RIPPLE_LOG_LEVEL", "RIPPLE_INDEX_TX_THRESHOLD", "RIPPLE_INDEX_INTERVAL_MS", "RIPPLE_LOG_KEEP_TXS", "RIPPLE_REPLICA_HINT", "RIPPLE_CACHE_BASIS", "RIPPLE_CACHE_MODE"),
