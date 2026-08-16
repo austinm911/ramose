@@ -99,8 +99,8 @@ export default Alchemy.Stack("app", {
   is cheap on the request path, and the client it returns is the same peer/service binding,
   `fetch`, token and headers pointed at `/db/:name/…`. The name is validated
   (`/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/`) — an invalid one **fails the Effect** with
-  `BadRequest`. The **token is shared** across every name, so unbounded tenants want
-  `RIPPLE_TOKENS` unset, a single string, or a `"*"` fallback (`docs/RUNBOOK.md`).
+  `BadRequest`. The **token is shared** across every name — it is the peer's one
+  `RIPPLE_TOKEN`, ignored when the peer has it unset (`docs/RUNBOOK.md`).
 - **Outside Alchemy** — `Ripple.Client.make({ url, name, token?, fetch? })` gives the same
   Effect database client to bun scripts and tests, and `Ripple.Client.makeSystem({ url, token?,
   fetch? })` the system client (`create` / `connect` / `health`).

@@ -9,8 +9,8 @@ export interface RippleEnv {
   ANALYTICS?: AnalyticsEngineDatasetLike;
   /** stage name (dev / prod) */
   RIPPLE_STAGE?: string;
-  /** JSON map { "<db>": "<token>" } or a single admin token; empty = auth disabled */
-  RIPPLE_TOKENS?: string;
+  /** one shared bearer token, checked for every database name; empty = auth disabled */
+  RIPPLE_TOKEN?: string;
   /** indexer tuning */
   RIPPLE_INDEX_INTERVAL_MS?: string;
   RIPPLE_INDEX_TX_THRESHOLD?: string;

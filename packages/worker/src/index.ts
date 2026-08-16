@@ -19,7 +19,7 @@
  *
  * Reads: basis (root + novelty) from the nearest QueryReplica DO → Db over
  * cached segments → datalog here in the Worker. Writes: forwarded to the
- * Transactor DO. Auth: per-db bearer token (RIPPLE_TOKENS), disabled if unset.
+ * Transactor DO. Auth: one shared bearer token (RIPPLE_TOKEN), disabled if unset.
  *
  * The request is one Effect: routing failures are `Data.TaggedError`s
  * (errors.ts) mapped back to responses with `Effect.catchTags`, and every
@@ -65,19 +65,12 @@ const CORS = {
   "access-control-expose-headers": "x-ripple-ms,x-ripple-r2-gets,x-ripple-cache-hits,x-ripple-basis-t,x-ripple-basis-hit,x-ripple-basis-reason,x-ripple-basis-calls,x-ripple-basis-behind,x-ripple-replica-hint,x-ripple-cache-basis,x-ripple-cache-mode,x-ripple-colo",
 };
 
-function authorized(env: RippleEnv, db: string, request: Request): boolean {
-  if (!env.RIPPLE_TOKENS) return true;
+/** One shared bearer token (`RIPPLE_TOKEN`) for every database name; unset = auth off. */
+function authorized(env: RippleEnv, request: Request): boolean {
+  if (!env.RIPPLE_TOKEN) return true;
   const header = request.headers.get("authorization") ?? "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : new URL(request.url).searchParams.get("token") ?? "";
-  let map: Record<string, string> | string;
-  try {
-    map = JSON.parse(env.RIPPLE_TOKENS);
-  } catch {
-    map = env.RIPPLE_TOKENS;
-  }
-  if (typeof map === "string") return token === map;
-  const expected = map[db] ?? map["*"];
-  return expected !== undefined && token === expected;
+  return token === env.RIPPLE_TOKEN;
 }
 
 function validDbName(name: string): boolean {
@@ -243,7 +236,7 @@ const handle = (request: Request, env: RippleEnv, t0: number, info: RequestInfo)
     info.path = rest;
     info.route = routeOf(rest, request.method);
     if (!validDbName(db)) return yield* Effect.fail(new BadRequest({ message: "invalid database name" }));
-    if (!authorized(env, db, request)) return yield* Effect.fail(new Unauthorized({}));
+    if (!authorized(env, request)) return yield* Effect.fail(new Unauthorized({}));
 
     return yield* Effect.tryPromise({
       try: () => route(request, env, url, db, rest, t0),
