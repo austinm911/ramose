@@ -37,6 +37,11 @@ bun alchemy deploy --stage prod
 Cloudflare state store; the local runtime still wants an account id in the
 environment, any placeholder works for emulation.
 
+## Operations
+
+See `docs/RUNBOOK.md` (metrics/events to watch, the single-writer write
+ceiling and how to split a database, tuning knobs, recovery).
+
 ## HTTP API (Worker)
 
 ```
