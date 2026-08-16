@@ -1,5 +1,5 @@
 /**
- * Carrying a {@link Database}'s attributes into the runtime.
+ * Carrying a {@link System}'s attributes into the runtime.
  *
  * A resource attribute is an `Output`, not a value: at deploy time it is a
  * promise the engine has not kept yet, and inside the deployed bundle it is
@@ -16,7 +16,7 @@
  * its init Effect runs (`alchemy/ActionRuntimeContext.ts`) — at apply time the
  * resolve context's `set` is a no-op. So `bind` MUST be called while the host
  * is still initializing, i.e. inside the capability's `Effect.fn(function*
- * (database) { … })`, not per request. Binding lazily from inside a client
+ * (system) { … })`, not per request. Binding lazily from inside a client
  * method registers nothing and reads back `undefined`.
  *
  * NOT exported from `index.ts` — internal scaffolding shared by the Binding,
@@ -26,15 +26,20 @@
 import * as Output from "alchemy/Output";
 import * as Effect from "effect/Effect";
 import type * as Redacted from "effect/Redacted";
-import type { Database } from "./Database.ts";
+import type { System } from "./System.ts";
 
-/** Binding / env-var names a database contributes to its consumer. */
-export const envKeys = (database: Pick<Database, "LogicalId">) => ({
+/**
+ * Binding / env-var names a system contributes to its consumer.
+ *
+ * There is no `_DB` key: a system pins no database name. The name is chosen
+ * per call by `system.create(name)`, so nothing about it can be lowered at
+ * deploy time.
+ */
+export const envKeys = (system: Pick<System, "LogicalId">) => ({
   /** The service binding (and the `env` key the Fetcher arrives under). */
-  service: database.LogicalId,
-  url: `${database.LogicalId}_URL`,
-  name: `${database.LogicalId}_DB`,
-  token: `${database.LogicalId}_TOKEN`,
+  service: system.LogicalId,
+  url: `${system.LogicalId}_URL`,
+  token: `${system.LogicalId}_TOKEN`,
 });
 
 /**
@@ -60,11 +65,11 @@ export const bindOutput = <A>(
  * nothing. The empty string does, and the client treats it as "no token".
  */
 export const bindToken = (
-  database: Database,
+  system: System,
 ): Effect.Effect<Effect.Effect<Redacted.Redacted<string> | string>> =>
   bindOutput(
-    envKeys(database).token,
-    database.token.pipe(Output.map((token) => token ?? "")) as Output.Output<
+    envKeys(system).token,
+    system.token.pipe(Output.map((token) => token ?? "")) as Output.Output<
       Redacted.Redacted<string> | string
     >,
   );
@@ -73,7 +78,7 @@ export const bindToken = (
  * Read a bound value that must be there. A missing key means the binding was
  * never registered on this host (the capability was provided somewhere the
  * host could not take bindings), which would otherwise surface as a request
- * to `https://undefined/db/undefined/...`.
+ * to `https://undefined/db/...`.
  */
 export const required = (
   key: string,
@@ -84,7 +89,7 @@ export const required = (
       value === undefined || value === null || value === ""
         ? Effect.die(
             new Error(
-              `ripple: no value bound under "${key}" — the database capability must be provided on a host that takes bindings (a Cloudflare.Worker, or an Alchemy.Action via the *DatabaseLocal layers)`,
+              `ripple: no value bound under "${key}" — the system capability must be provided on a host that takes bindings (a Cloudflare.Worker, or an Alchemy.Action via the *SystemLocal layers)`,
             ),
           )
         : Effect.succeed(value),
