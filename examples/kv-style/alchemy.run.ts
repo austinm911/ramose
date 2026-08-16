@@ -16,7 +16,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { App } from "./app.ts";
-import { Movies } from "./resources.ts";
+import { Sys } from "./resources.ts";
 
 // ── schema install as a deploy-time Action ─────────────────────────────────
 //
@@ -24,13 +24,18 @@ import { Movies } from "./resources.ts";
 // they use the `*Local` layer: no host Worker, no service binding — just the
 // peer's freshly-deployed URL (the local workerd dev server's, under
 // `alchemy dev`).
+//
+// `create("movies")` is not a provisioning call: it validates the name and
+// returns a client for `/db/movies/…`. It is the transact below that
+// materializes the database.
 
 export const InstallSchema = Alchemy.Action(
   "InstallSchema",
   Effect.gen(function* () {
-    const db = yield* Ripple.WriteDatabase(Movies);
+    const system = yield* Ripple.WriteSystem(Sys);
+    const movies = yield* system.create("movies");
     return Effect.fn(function* () {
-      const ack = yield* db.transact([
+      const ack = yield* movies.transact([
         {
           ":db/ident": ":user/name",
           ":db/valueType": ":db.type/string",
@@ -39,7 +44,7 @@ export const InstallSchema = Alchemy.Action(
       ]);
       return { t: ack.t };
     });
-  }).pipe(Effect.provide(Ripple.WriteDatabaseLocal)),
+  }).pipe(Effect.provide(Ripple.WriteSystemLocal)),
 );
 
 export default Alchemy.Stack(
@@ -49,12 +54,12 @@ export default Alchemy.Stack(
     state: Alchemy.localState(),
   },
   Effect.gen(function* () {
-    const movies = yield* Movies;
+    const sys = yield* Sys;
     const app = yield* App;
     const schema = yield* InstallSchema({});
     return {
       url: app.url,
-      databaseUrl: movies.databaseUrl,
+      peerUrl: sys.url,
       schemaT: schema.t,
     };
   }),

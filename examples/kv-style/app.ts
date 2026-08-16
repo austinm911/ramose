@@ -1,5 +1,5 @@
 /**
- * An app Worker that uses the database declared in `resources.ts`.
+ * An app Worker that uses the Ripple system declared in `resources.ts`.
  *
  * This lives in its own module for a reason: `main: import.meta.url` makes the
  * Worker its own bundle entrypoint, and alchemy's virtual entry does
@@ -17,33 +17,36 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import { Movies } from "./resources.ts";
+import { Sys } from "./resources.ts";
 
 // The Effect form: the outer generator runs at deploy time (it lowers a
-// `service` binding to the peer, plus the database name as an env value); the
-// handler runs per request against `env.Movies.fetch` — same colo, no public
-// hop, no TLS handshake.
+// `service` binding to the peer, plus the shared token); the handler runs per
+// request against `env.Sys.fetch` — same colo, no public hop, no TLS
+// handshake.
 
 export const App = Cloudflare.Worker(
   "App",
   { main: import.meta.url },
   Effect.gen(function* () {
-    const db = yield* Ripple.ReadWriteDatabase(Movies);
+    const system = yield* Ripple.ReadWriteSystem(Sys);
 
-    // ── db-per-tenant ────────────────────────────────────────────────────────
+    // ── databases are names ──────────────────────────────────────────────────
     //
-    // `db.for(name)` is the *same* client — same service binding, same fetch,
-    // same token, same headers — pointed at another Ripple database name (the
-    // `:name` in `/db/:name/…`, i.e. the Transactor DO's `idFromName`). It is
-    // synchronous like `asOf`, so there is no resource, no deploy and no
-    // provisioning per tenant; the name is validated, and an invalid one does
-    // not throw here — every request on the derived client fails `BadRequest`
-    // (mapped to 400 below). The token is shared, so `RIPPLE_TOKENS` must be
-    // unset / one string / a `"*"` map for an open-ended set of tenants
-    // (docs/RUNBOOK.md).
+    // `system.create(name)` and `system.connect(name)` are the same call: an
+    // upsert that validates the name and hands back a database client — the
+    // *same* service binding, `fetch`, token and headers as the system, only
+    // pointed at `/db/:name/…` (the Transactor DO's `idFromName`). It touches
+    // the network not at all, so it is cheap on the request path; the first
+    // `transact` is what materializes the database. An invalid name fails the
+    // Effect with `BadRequest` (mapped to 400 below).
+    //
+    // Db-per-tenant falls out of that: one `create` per request, no resource,
+    // no deploy and no provisioning per tenant. The token is shared across
+    // every name, so `RIPPLE_TOKENS` must be unset / one string / a `"*"` map
+    // for an open-ended set of tenants (docs/RUNBOOK.md).
     const tenantRoute = (tenantId: string) =>
       Effect.gen(function* () {
-        const tenant = db.for(tenantId);
+        const tenant = yield* system.create(tenantId);
 
         // Each tenant database starts empty: `:user/name` has to exist *in it*
         // before anything can use the attribute (an attribute cannot be defined
@@ -78,6 +81,11 @@ export const App = Cloudflare.Worker(
         const request = yield* HttpServerRequest.HttpServerRequest;
         const path = request.url.split("?")[0] ?? "/";
         if (path.startsWith("/t/")) return yield* tenantRoute(path.slice("/t/".length));
+
+        // The default database. `InstallSchema` (alchemy.run.ts) already
+        // created this name at deploy time and transacted `:user/name` into
+        // it; connecting again is the same upsert.
+        const db = yield* system.create("movies");
 
         const ack = yield* db.transact([{ ":user/name": "Ada" }]);
 
@@ -126,7 +134,7 @@ export const App = Cloudflare.Worker(
         }),
       ),
     };
-  }).pipe(Effect.provide(Ripple.ReadWriteDatabaseBinding)),
+  }).pipe(Effect.provide(Ripple.ReadWriteSystemBinding)),
 );
 
 export default App;

@@ -97,12 +97,12 @@ Checked per request in `authorized()` (`packages/worker/src/index.ts`) against
 - **a JSON map** `{ "<db>": "<token>", "*": "<token>" }` — one token per name, with `"*"`
   as the fallback. A name that is neither a key nor covered by `"*"` is unauthorized (401).
 
-Db-per-tenant consequence: a client created from a `Ripple.Database` resource sends that
-resource's single `token`, and `db.for(tenant)` keeps it — the *same* token goes to every
-tenant name it reaches. There is no token registrar, so an unbounded set of tenant databases
-needs `RIPPLE_TOKENS` unset, one plain string, or a map with a `"*"` fallback. A map without
-`"*"` only works for tenants you enumerate and roll out yourself (per-tenant tokens then mean
-per-tenant clients, e.g. `Ripple.Client.make({ url, name, token })`).
+Db-per-tenant consequence: a client obtained from a `Ripple.System` resource sends that
+resource's single `token`, and `system.create(tenant)` keeps it — the *same* token goes to
+every tenant name it opens. There is no token registrar, so an unbounded set of tenant
+databases needs `RIPPLE_TOKENS` unset, one plain string, or a map with a `"*"` fallback. A map
+without `"*"` only works for tenants you enumerate and roll out yourself (per-tenant tokens
+then mean per-tenant clients, e.g. `Ripple.Client.make({ url, name, token })`).
 
 ## Recovery notes
 

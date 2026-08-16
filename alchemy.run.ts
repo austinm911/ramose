@@ -73,26 +73,29 @@ export const Worker = Cloudflare.Worker("Worker", {
 export type WorkerEnv = Cloudflare.InferEnv<typeof Worker>;
 
 /**
- * A logical Ripple database on this peer (`@ripple/alchemy`).
+ * The Ripple system on this peer (`@ripple/alchemy`).
  *
- * Nothing is provisioned: the Transactor DO is `idFromName("movies")` and the
- * log/segments live under `db/movies/…` in the bucket, so the first
- * transaction materializes it. What the resource buys is a *pinned* name that
- * other stacks and Workers can depend on, plus a deploy-time proof that the
- * peer is actually serving (`GET /health`) before anything binds to it.
+ * Nothing is provisioned and no database name is pinned here: a Ripple
+ * database is a *name*, the Transactor DO is `idFromName(name)` and the
+ * log/segments live under `db/<name>/…` in the bucket, so the first
+ * transaction materializes it. What the resource buys is the deployment —
+ * the peer's resolved `url`, the shared bearer `token`, and a deploy-time
+ * proof that the peer is actually serving (`GET /health`) before anything
+ * binds to it.
  *
- * Consumers get an Effect-native client — `yield* Ripple.ReadWriteDatabase(Movies)`
- * — over a Worker service binding to this peer, plain HTTPS, or an Action.
+ * Consumers get an Effect-native client — `yield* Ripple.ReadWriteSystem(Sys)`,
+ * then `yield* system.create("movies")` for a database client — over a Worker
+ * service binding to this peer, plain HTTPS, or an Action.
  * See examples/kv-style/ (resources.ts + app.ts + alchemy.run.ts).
  *
  * Note the same async-env limitation as `Analytics` above: a custom resource
  * cannot be declared in a Worker's `env: {}` (the classifier chain in
  * alchemy/src/Cloudflare/Workers/WorkerAsyncBindings.ts is closed over
  * Cloudflare's own resource types). Attribute Outputs still work —
- * `env: { MOVIES_URL: Movies.databaseUrl }` lowers to a `plain_text`
- * binding — and the `Ripple.*Database*` capabilities bind themselves.
+ * `env: { RIPPLE_URL: Sys.url }` lowers to a `plain_text` binding — and the
+ * `Ripple.*System*` capabilities bind themselves.
  */
-export const Movies = Ripple.Database("Movies", { peer: Worker, name: "movies" });
+export const Sys = Ripple.System("Sys", { peer: Worker });
 
 export default Alchemy.Stack(
   "ripple",
@@ -104,7 +107,7 @@ export default Alchemy.Stack(
   },
   Effect.gen(function* () {
     const worker = yield* Worker;
-    const movies = yield* Movies;
-    return { url: worker.url, databaseUrl: movies.databaseUrl };
+    const sys = yield* Sys;
+    return { url: worker.url, peerUrl: sys.url };
   }),
 );
