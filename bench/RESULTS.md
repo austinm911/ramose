@@ -258,3 +258,87 @@ IAD, so every read may be paying a coast-to-coast RTT; a replica pinned near
 the requesting colo (or per-colo/continent-sub-region ids) plus keeping
 execution in the Worker (parallel isolates, one basis RTT) is the combination
 to measure next. Multi-colo scaling remains unmeasured.
+
+## Cloudflare (placement vs basis cache), stage `cf-e2e`, 2026-08-16 (third deploy)
+
+Worker-local execution restored (`fetchBasis` → `dbFromBasis` → `query`/`pull`
+in the Worker; the replica-executed forwarding above is gone). Two knobs,
+switchable **per request by header** so one deploy covers all variants:
+
+- `x-ripple-replica-hint: wnam | enam` — DO location hint; the hint is now part
+  of the replica id (`${db}|${region}|${hint}|${shard}`) so `enam` creates a
+  fresh DO in the east instead of reusing the wnam one. Default: `hintFor(continent)` = `wnam` for NA (old behavior).
+- `x-ripple-cache-basis: 0 | 1` — module-scope basis cache in the Worker isolate,
+  keyed `db|hint`, invalidated by a write through this Worker or a 5 s TTL. Default 0.
+
+Client passes both via `headers`; `bench/read-do.bench.ts` reads
+`RIPPLE_REPLICA_HINT` / `RIPPLE_CACHE_BASIS`. Worker host
+`ripple-worker-dev-box-dig2mjnjv4e53lyb.tvanhens.workers.dev`; client and Worker
+in **IAD** (cf-ray `…-IAD`, `x-ripple-colo: IAD` on every query) — one colo, **no
+multi-colo data**. Destroyed afterwards (`/health` → 404).
+
+e2e on defaults (Worker executes, hint wnam, cache off): **9/9 pass** (write smoke 300 tx in 1.20 s → 251 tx/s, max batch 80). Unit suite 81/81 (the forwarding test was removed with the forwarding).
+
+### Write path control (`bun run bench/write-do.bench.ts <clients> 10`) — unchanged, as expected
+
+| clients | tx/s | ack p50 | ack p95 | ack p99 | errors | batches / max / avg |
+|---|---|---|---|---|---|---|
+| 8 | 160 | 35 ms | 95 ms | 152 ms | 0 | 1176 / 6 / 1.37 |
+| 64 | 879 | 59 ms | 130 ms | 241 ms | 0 | 937 / 56 / 9.48 |
+
+### Read path (`bun run bench/read-do.bench.ts 5000 200 8` and `5000 100 1`, warm; server p50 = `x-ripple-ms`)
+
+Baseline (first deploy, Worker executes, hint wnam, no cache): server p50 **36–39 ms** at conc 8, **38–41 ms** at conc 1. Replica-executed (second deploy): 68–76 ms at conc 8.
+
+**A — Worker executes, hint `enam` (same colo as IAD), cache off**
+
+| query | conc 8 client p50 | conc 8 client p95 | conc 8 server p50 | conc 1 client p50 | conc 1 client p95 | conc 1 server p50 |
+|---|---|---|---|---|---|---|
+| point lookup (AVET) | 43.5 ms | 63.6 ms | **32 ms** | 20.8 ms | 27.2 ms | **7 ms** |
+| entity attrs (EAVT) | 43.9 ms | 109.9 ms | **31 ms** | 22.0 ms | 79.9 ms | **7 ms** |
+| city → friends → name (join) | 48.0 ms | 262.5 ms | **32 ms** | 23.9 ms | 35.7 ms | **7 ms** |
+| count by city (agg) | 45.6 ms | 59.6 ms | **33 ms** | 22.3 ms | 29.1 ms | **7 ms** |
+
+Verdict: at conc 1 the same-colo hint takes server p50 from ~40 ms to **7 ms**
+(the basis hop is now intra-colo, not IAD↔west coast). At conc 8 it only moves
+36–39 → 31–33 ms: 8 concurrent `/basis` calls serialize on the single replica
+DO, so the queue, not the wire, dominates. Placement alone does not reach 15 ms under load.
+
+**B — Worker executes, hint `wnam` (old placement), basis cache on**
+
+| query | conc 8 client p50 | conc 8 client p95 | conc 8 server p50 | conc 1 client p50 | conc 1 client p95 | conc 1 server p50 |
+|---|---|---|---|---|---|---|
+| point lookup (AVET) | 7.5 ms | 29.9 ms | **0 ms** | 7.0 ms | 9.4 ms | **0 ms** |
+| entity attrs (EAVT) | 7.2 ms | 66.0 ms | **0 ms** | 7.8 ms | 68.1 ms | **0 ms** |
+| city → friends → name (join) | 7.9 ms | 68.5 ms | **0 ms** | 7.7 ms | 63.2 ms | **0 ms** |
+| count by city (agg) | 6.8 ms | 13.1 ms | **0 ms** | 7.2 ms | 9.8 ms | **0 ms** |
+
+Verdict: with the basis cached in the isolate the whole read is **<1 ms of
+Worker time** (server p50 rounds to 0); client p50 ≈ 7 ms is the client↔IAD
+RTT. Placement becomes irrelevant once the basis hop is skipped. Well past 15 ms.
+Cost: reads can be up to 5 s stale relative to writes made through *other*
+Workers/isolates (writes through the same isolate invalidate immediately).
+
+**C — Worker executes, hint `enam`, basis cache on**
+
+| query | conc 8 client p50 | conc 8 client p95 | conc 8 server p50 | conc 1 client p50 | conc 1 client p95 | conc 1 server p50 |
+|---|---|---|---|---|---|---|
+| point lookup (AVET) | 7.0 ms | 10.5 ms | **0 ms** | 7.1 ms | 8.8 ms | **0 ms** |
+| entity attrs (EAVT) | 7.4 ms | 65.2 ms | **0 ms** | 7.1 ms | 64.8 ms | **0 ms** |
+| city → friends → name (join) | 17.7 ms | 35.1 ms | **3 ms** | 8.9 ms | 11.3 ms | **0 ms** |
+| count by city (agg) | 7.0 ms | 11.8 ms | **0 ms** | 7.1 ms | 8.6 ms | **0 ms** |
+
+Verdict: same as B (0 ms server p50; the join's 3 ms at conc 8 is CPU
+contention in one isolate). Cache-miss refills are cheaper here (7 ms vs ~40 ms
+per the A/baseline conc-1 numbers) so C is the better default combination, but
+the cache is what moves the number, not the hint.
+
+Summary (server p50, `x-ripple-ms`):
+
+| variant | execution | hint | basis cache | conc 1 | conc 8 |
+|---|---|---|---|---|---|
+| baseline (deploy 1) | Worker | wnam | off | 38–41 ms | 36–39 ms |
+| replica-executed (deploy 2) | Replica | wnam | — | 38–41 ms | 68–76 ms |
+| A | Worker | enam | off | **7 ms** | 31–33 ms |
+| B | Worker | wnam | on | **0 ms** | **0 ms** |
+| C | Worker | enam | on | **0 ms** | **0–3 ms** |

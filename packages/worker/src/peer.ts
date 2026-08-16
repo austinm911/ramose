@@ -25,10 +25,12 @@ export function segmentSource(env: RippleEnv, db: string): R2NodeStore {
   return source;
 }
 
-/** Deterministic replica choice: hash(db, region) → one of `shards` replicas per region. */
-export function replicaId(env: RippleEnv, db: string, region: string, shards = 1): DurableObjectId {
+/** Deterministic replica choice: hash(db, region) → one of `shards` replicas per region.
+ *  The location hint is part of the id, so switching hints (e.g. wnam → enam) creates a
+ *  fresh DO placed near the new hint instead of reusing one placed elsewhere. */
+export function replicaId(env: RippleEnv, db: string, region: string, shards = 1, hint: string | undefined = hintFor(region)): DurableObjectId {
   const shard = shards > 1 ? fnv1a(`${db}|${region}`) % shards : 0;
-  return env.REPLICA.idFromName(`${db}|${region}|${shard}`);
+  return env.REPLICA.idFromName(hint ? `${db}|${region}|${hint}|${shard}` : `${db}|${region}|${shard}`);
 }
 
 function fnv1a(s: string): number {
@@ -46,10 +48,19 @@ export function regionOf(request: Request): string {
   return cf?.continent ?? "global";
 }
 
+const HINTS = new Set(["wnam", "enam", "sam", "weur", "eeur", "apac", "oc", "afr", "me"]);
+
+/** Location hint for a request: `x-ripple-replica-hint` header if valid, else the continent default. */
+export function hintOf(request: Request): string | undefined {
+  const h = request.headers.get("x-ripple-replica-hint");
+  return h && HINTS.has(h) ? h : hintFor(regionOf(request));
+}
+
 /** Nearest replica stub for a request (deterministic id + location hint). */
 export function nearestReplica(env: RippleEnv, db: string, request: Request): DurableObjectStub {
   const region = regionOf(request);
-  return env.REPLICA.get(replicaId(env, db, region), { locationHint: hintFor(region) } as any);
+  const hint = hintOf(request);
+  return env.REPLICA.get(replicaId(env, db, region, 1, hint), { locationHint: hint } as any);
 }
 
 /** Response headers a forwarded read copies from the replica onto the public response. */
@@ -71,14 +82,36 @@ export async function readFromReplica(env: RippleEnv, db: string, request: Reque
   return new Response(res.body, { status: res.status, headers });
 }
 
+// ---- isolate basis cache (opt-in per request via x-ripple-cache-basis: 1) ----
+// Keyed by db|hint. Reused until a write through this Worker (invalidateBasis) or the
+// entry ages past BASIS_TTL_MS; other Workers' writes are only seen after that TTL.
+const basisCache = new Map<string, { basis: Basis; at: number }>();
+const BASIS_TTL_MS = 5_000;
+
+export function invalidateBasis(db: string): void {
+  for (const k of basisCache.keys()) if (k.startsWith(`${db}|`)) basisCache.delete(k);
+}
+
+export function wantsBasisCache(request: Request): boolean {
+  return request.headers.get("x-ripple-cache-basis") === "1";
+}
+
 export async function fetchBasis(env: RippleEnv, db: string, request: Request): Promise<Basis> {
+  const useCache = wantsBasisCache(request);
+  const key = `${db}|${hintOf(request) ?? ""}`;
+  if (useCache) {
+    const hit = basisCache.get(key);
+    if (hit && Date.now() - hit.at < BASIS_TTL_MS) return hit.basis;
+  }
   const stub = nearestReplica(env, db, request);
   const res = await stub.fetch(`https://replica/basis?db=${encodeURIComponent(db)}`);
   if (!res.ok) throw new Error(`replica basis failed: ${res.status} ${await res.text()}`);
-  return (await res.json()) as Basis;
+  const basis = (await res.json()) as Basis;
+  if (useCache) basisCache.set(key, { basis, at: Date.now() });
+  return basis;
 }
 
-function hintFor(continent: string): string | undefined {
+export function hintFor(continent: string): string | undefined {
   switch (continent) {
     case "NA": return "wnam";
     case "EU": return "weur";

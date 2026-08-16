@@ -19,7 +19,11 @@ if (!url) {
 const people = Number(process.argv[2] ?? 5000);
 const runs = Number(process.argv[3] ?? 200);
 const conc = Number(process.argv[4] ?? 8);
-const client = new RippleClient(url, { token: process.env.RIPPLE_TOKEN });
+const headers: Record<string, string> = {};
+if (process.env.RIPPLE_REPLICA_HINT) headers["x-ripple-replica-hint"] = process.env.RIPPLE_REPLICA_HINT;
+if (process.env.RIPPLE_CACHE_BASIS) headers["x-ripple-cache-basis"] = process.env.RIPPLE_CACHE_BASIS;
+const client = new RippleClient(url, { token: process.env.RIPPLE_TOKEN, headers });
+console.log(`variant: hint=${process.env.RIPPLE_REPLICA_HINT ?? "(default)"} cacheBasis=${process.env.RIPPLE_CACHE_BASIS ?? "0"}`);
 const db = client.db(`readbench-${Date.now().toString(36)}`);
 
 await db.transact([
@@ -50,7 +54,8 @@ const QUERIES: Record<string, { q: string; inputs?: unknown[] }> = {
 
 const results: Record<string, unknown> = {};
 for (const [name, { q, inputs }] of Object.entries(QUERIES)) {
-  await db.query(q, inputs); // warm
+  const warm = await db.query(q, inputs); // warm
+  if (warm.meta?.colo || warm.meta?.replicaHint) console.log(`  ${name}: worker colo=${warm.meta?.colo ?? "?"} replicaHint=${warm.meta?.replicaHint ?? "?"}`);
   const client_ms: number[] = [], server_ms: number[] = [];
   let i = 0;
   await Promise.all(

@@ -15,6 +15,7 @@ import type { TxData } from "@ripple/core";
 export interface ClientOptions {
   token?: string;
   fetch?: typeof fetch;
+  /** Extra request headers, e.g. `x-ripple-replica-hint: enam`, `x-ripple-cache-basis: 1` (read-path knobs). */
   headers?: Record<string, string>;
 }
 
@@ -30,7 +31,7 @@ export interface QueryResponse<T = unknown> {
   root: number;
   result: T;
   explain?: unknown[];
-  meta: { ms: number | null; r2Gets: number | null; cacheHits: number | null };
+  meta: { ms: number | null; r2Gets: number | null; cacheHits: number | null; colo?: string; replicaHint?: string };
 }
 
 export class RippleError extends Error {
@@ -76,7 +77,7 @@ export class RippleClient {
     if (!res.ok) throw new RippleError(parsed?.error ?? `HTTP ${res.status}`, res.status, parsed?.code);
     const out = fromJson(parsed) as any;
     if (out && typeof out === "object" && !Array.isArray(out)) {
-      out.meta = { ms: num(res.headers.get("x-ripple-ms")), r2Gets: num(res.headers.get("x-ripple-r2-gets")), cacheHits: num(res.headers.get("x-ripple-cache-hits")) };
+      out.meta = { ms: num(res.headers.get("x-ripple-ms")), r2Gets: num(res.headers.get("x-ripple-r2-gets")), cacheHits: num(res.headers.get("x-ripple-cache-hits")), colo: res.headers.get("x-ripple-colo") ?? undefined, replicaHint: res.headers.get("x-ripple-replica-hint") ?? undefined };
     }
     return out as T;
   }
