@@ -1,0 +1,277 @@
+import { describe, expect, test } from "bun:test";
+import { RuntimeContext } from "alchemy/RuntimeContext";
+import * as Effect from "effect/Effect";
+import type { WebSocketLike } from "../src/Session.ts";
+import { Session as SchemaFxSession } from "../src/schema/index.ts";
+
+import { Movies, User } from "./schema/fixture.ts";
+
+const run = <A, E>(eff: Effect.Effect<A, E, RuntimeContext>) =>
+  Effect.runPromise(eff.pipe(Effect.provide(RuntimeContext.phantom)));
+
+interface Frame {
+  id: number;
+  op: string;
+  [field: string]: unknown;
+}
+
+interface Reply {
+  status?: number;
+  body?: unknown;
+  headers?: Record<string, string>;
+}
+
+/** Records every frame, answers with a canned reply, can push unsolicited ones. */
+const fakePeer = (answer: (frame: Frame) => Reply | undefined) => {
+  const sent: Frame[] = [];
+  const listeners = new Map<string, ((ev: unknown) => void)[]>();
+  const emit = (type: string, ev: unknown) => {
+    for (const cb of listeners.get(type) ?? []) cb(ev);
+  };
+  const socket: WebSocketLike = {
+    send: (data) => {
+      const frame = JSON.parse(data) as Frame;
+      sent.push(frame);
+      const reply = answer(frame);
+      if (reply === undefined) return;
+      queueMicrotask(() =>
+        emit("message", { data: JSON.stringify({ id: frame.id, ...reply }) }),
+      );
+    },
+    close: () => emit("close", {}),
+    addEventListener: (type, cb) => {
+      listeners.set(type, [...(listeners.get(type) ?? []), cb]);
+    },
+  };
+  return {
+    sent,
+    connect: () => socket,
+    ops: (op: string) => sent.filter((f) => f.op === op),
+    /** An unsolicited server frame (`{ op: "t", t }`). */
+    push: (frame: unknown) => emit("message", { data: JSON.stringify(frame) }),
+  };
+};
+
+const ensure = { t: 2, txEid: 1, tempids: { "tmp-1": 1001 }, datoms: 4 };
+
+/** Every pass is a handful of microtasks; a tick is plenty. */
+const settle = () => Bun.sleep(20);
+
+const open = (answer: (frame: Frame) => Reply | undefined) => {
+  const peer = fakePeer(answer);
+  return run(
+    SchemaFxSession.connect({
+      url: "https://peer.example.com",
+      name: "movies",
+      catalog: Movies,
+      connect: peer.connect,
+    }),
+  ).then((session) => ({ ...session, peer }));
+};
+
+/** The peer everything below shares: one q, one pull per row, `t` on demand. */
+const peerAt = (state: {
+  t: number;
+  rows: number[][];
+  names: Record<number, string | null>;
+  /** what a transact acks with — the ensure lands at 2 */
+  ackT?: number;
+}) =>
+  open((frame) => {
+    switch (frame.op) {
+      case "transact":
+        return { body: { ...ensure, t: state.ackT ?? ensure.t } };
+      case "q":
+        return { body: { t: state.t, root: state.t, result: state.rows } };
+      case "pull": {
+        const name = state.names[frame.eid as number];
+        return { body: { t: state.t, result: name == null ? null : { name } } };
+      }
+      default:
+        return { status: 404, body: { error: "no such op" } };
+    }
+  });
+
+describe("db.live is a standing db.q", () => {
+  test("undefined first, then the q's rows pulled into the map", async () => {
+    const state = { t: 5, rows: [[1001], [1002]], names: { 1001: "Ada", 1002: "Bob" } };
+    const { db, peer, session } = await peerAt(state);
+
+    const users = db.live((q) =>
+      q.where("?e", User.name, "?n").find("?e").pull({ name: User.name }),
+    );
+    expect(users.get()).toBeUndefined();
+    await settle();
+
+    expect(users.get()).toEqual([
+      { name: "Ada", eid: expect.objectContaining({ id: 1001 }) },
+      { name: "Bob", eid: expect.objectContaining({ id: 1002 }) },
+    ]);
+
+    // the ensure is frame 1; the q is fenced at the basis this socket has seen
+    expect(peer.sent[0].op).toBe("transact");
+    expect(peer.ops("q")).toEqual([
+      {
+        id: 2,
+        op: "q",
+        query: { find: ["?e"], where: [["?e", ":user/name", "?n"]] },
+        inputs: [],
+        minT: 2,
+      },
+    ]);
+    // one pull per row, fenced at the q's own t
+    const pattern = [{ kind: "attr", attr: ":user/name", reverse: false, as: "name" }];
+    expect(
+      peer
+        .ops("pull")
+        .map((f) => ({ eid: f.eid, minT: f.minT, pattern: f.pattern }))
+        .sort((a, b) => (a.eid as number) - (b.eid as number)),
+    ).toEqual([
+      { eid: 1001, minT: 5, pattern },
+      { eid: 1002, minT: 5, pattern },
+    ]);
+    session.close();
+  });
+
+  test("no .pull is a store of eids, and no pull frames", async () => {
+    const state = { t: 5, rows: [[1001], [1002]], names: {} };
+    const { db, peer, session } = await peerAt(state);
+
+    const eids = db.live((q) => q.where("?e", User.name, "_").find("?e"));
+    await settle();
+
+    expect(eids.get()?.map((e) => e.id)).toEqual([1001, 1002]);
+    expect(peer.ops("pull")).toHaveLength(0);
+    expect(peer.ops("q")[0].query).toEqual({
+      find: ["?e"],
+      where: [["?e", ":user/name", "_"]],
+    });
+    session.close();
+  });
+
+  test("a row whose pull comes back null is dropped", async () => {
+    const state = {
+      t: 5,
+      rows: [[1001], [1002]],
+      names: { 1001: "Ada", 1002: null },
+    };
+    const { db, session } = await peerAt(state);
+
+    const users = db.live((q) =>
+      q.where("?e", User.name, "_").find("?e").pull({ name: User.name }),
+    );
+    await settle();
+
+    expect(users.get()).toEqual([
+      { name: "Ada", eid: expect.objectContaining({ id: 1001 }) },
+    ]);
+    session.close();
+  });
+});
+
+describe("the session's t is the wake", () => {
+  test("a t frame re-runs at that fence; an unmoved basis short-circuits", async () => {
+    const state: Parameters<typeof peerAt>[0] = {
+      t: 5,
+      rows: [[1001]],
+      names: { 1001: "Ada" },
+    };
+    const { db, peer, session } = await peerAt(state);
+
+    const users = db.live((q) =>
+      q.where("?e", User.name, "_").find("?e").pull({ name: User.name }),
+    );
+    await settle();
+    const first = users.get();
+    let notified = 0;
+    users.subscribe(() => {
+      notified += 1;
+    });
+
+    // the basis moved, but the peer answers with the same t: nothing changed
+    peer.push({ op: "t", t: 9 });
+    await settle();
+    expect(peer.ops("q")).toHaveLength(2);
+    expect(peer.ops("q")[1].minT).toBe(9);
+    expect(peer.ops("pull")).toHaveLength(1); // no second pull round
+    expect(notified).toBe(0);
+    expect(users.get()).toBe(first); // the same reference, for useSyncExternalStore
+
+    // now the peer really has moved
+    state.t = 12;
+    state.rows = [[1001], [1002]];
+    state.names = { 1001: "Ada", 1002: "Bob" };
+    peer.push({ op: "t", t: 13 });
+    await settle();
+
+    expect(peer.ops("q")[2].minT).toBe(13);
+    expect(peer.ops("pull").slice(1).every((f) => f.minT === 12)).toBe(true);
+    expect(notified).toBe(1);
+    expect(users.get()).not.toBe(first);
+    expect(users.get()?.map((r) => r.name)).toEqual(["Ada", "Bob"]);
+    session.close();
+  });
+
+  test("a transact on the same socket refreshes with no invalidation call", async () => {
+    const state: Parameters<typeof peerAt>[0] = {
+      t: 5,
+      rows: [[1001]],
+      names: { 1001: "Ada", 1002: "Bob" },
+    };
+    const { db, peer, session } = await peerAt(state);
+
+    const users = db.live((q) =>
+      q.where("?e", User.name, "_").find("?e").pull({ name: User.name }),
+    );
+    await settle();
+    expect(users.get()).toHaveLength(1);
+
+    // the write's own ack carries the new basis
+    state.t = 30;
+    state.ackT = 30;
+    state.rows = [[1001], [1002]];
+    await run(
+      db.transact(function* (tx) {
+        const bob = yield* tx.entity();
+        yield* bob.add(User.name, "Bob");
+      }),
+    );
+    await settle();
+
+    expect(users.get()?.map((r) => r.name)).toEqual(["Ada", "Bob"]);
+    expect(peer.ops("q").at(-1)?.minT).toBe(30);
+    session.close();
+  });
+
+  test("subscribe returns an unsubscribe, and close stops the socket wake", async () => {
+    const state = { t: 5, rows: [[1001]], names: { 1001: "Ada" } };
+    const { db, peer, session } = await peerAt(state);
+
+    const users = db.live((q) => q.where("?e", User.name, "_").find("?e"));
+    await settle();
+
+    let notified = 0;
+    const off = users.subscribe(() => {
+      notified += 1;
+    });
+    state.t = 12;
+    state.rows = [[1001], [1002]];
+    peer.push({ op: "t", t: 12 });
+    await settle();
+    expect(notified).toBe(1);
+
+    off();
+    state.t = 13;
+    peer.push({ op: "t", t: 13 });
+    await settle();
+    expect(notified).toBe(1); // unsubscribed, but the store still tracks
+    expect(users.get()).toHaveLength(2);
+
+    users.close();
+    const frames = peer.sent.length;
+    peer.push({ op: "t", t: 20 });
+    await settle();
+    expect(peer.sent).toHaveLength(frames); // closed: nothing more is asked
+    session.close();
+  });
+});
