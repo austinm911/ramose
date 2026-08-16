@@ -156,16 +156,22 @@ const makeStore = <C extends AnyCatalog, R>(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
   let off: (() => void) | undefined;
+  let offClose: (() => void) | undefined;
 
-  /** One pass: the q at the fence, then a pull per row. */
-  const settle = async (minT: number | undefined): Promise<void> => {
+  // copy: a subscriber may unsubscribe itself while being notified
+  const notify = (): void => {
+    for (const cb of [...subscribers]) cb();
+  };
+
+  /** One pass: the q at the fence, then a pull per row. `true` if it published. */
+  const settle = async (minT: number | undefined): Promise<boolean> => {
     const res = await run(
       node.builder
         .options(minT === undefined ? {} : { minT })
         .query(node.eidVar),
     );
     // the basis only moves forward, so neither does the snapshot's reference
-    if (closed || res.t <= (basis ?? -1)) return;
+    if (closed || res.t <= (basis ?? -1)) return false;
 
     const eids = eidsOf(res.result);
     let rows: unknown[] = eids;
@@ -177,12 +183,11 @@ const makeStore = <C extends AnyCatalog, R>(
           (eid) =>
             eid
               .pull(node.pattern as never, { minT: res.t })
-              // one unreadable row drops out; it does not cost the pass
               .pipe(Effect.orElseSucceed(() => null)),
           { concurrency: PULL_CONCURRENCY },
         ),
       );
-      if (closed) return;
+      if (closed) return false;
       rows = [];
       pulled.forEach((row, i) => {
         if (row !== null && row !== undefined) rows.push({ ...row, eid: eids[i] });
@@ -191,15 +196,9 @@ const makeStore = <C extends AnyCatalog, R>(
 
     basis = res.t;
     snapshot = rows as R;
-    // copy: a subscriber may unsubscribe itself while being notified
-    for (const cb of [...subscribers]) cb();
+    return true;
   };
 
-  /**
-   * One pass at a time — a `t` seen mid-pass (the pass's own reply carries one)
-   * is drained after it, and only if the pass did not already reach it. A pass
-   * that fails keeps the last good snapshot and comes back on a backoff.
-   */
   const refresh = (minT: number | undefined): void => {
     if (closed) return;
     if (inFlight) {
@@ -212,13 +211,17 @@ const makeStore = <C extends AnyCatalog, R>(
     let failed = false;
     void settle(minT)
       .then(
-        () => {
+        (published) => {
+          // cleared before the notify: a recovering pass must read `error` gone
+          const recovered = error !== undefined;
           error = undefined;
           backoff = 0;
+          if (!closed && (published || recovered)) notify();
         },
         (cause: unknown) => {
           failed = true;
           error = cause;
+          if (!closed) notify();
         },
       )
       .finally(() => {
@@ -235,7 +238,19 @@ const makeStore = <C extends AnyCatalog, R>(
       });
   };
 
+  const close = (): void => {
+    closed = true;
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+    off?.();
+    off = undefined;
+    offClose?.();
+    offClose = undefined;
+  };
+
   off = session.onT(refresh);
+  // a dead socket takes its stores with it — no retrying a peer that is gone
+  offClose = session.onClose(close);
   refresh(session.t > 0 ? session.t : undefined);
 
   return {
@@ -249,13 +264,7 @@ const makeStore = <C extends AnyCatalog, R>(
         subscribers.delete(cb);
       };
     },
-    close: () => {
-      closed = true;
-      if (timer !== undefined) clearTimeout(timer);
-      timer = undefined;
-      off?.();
-      off = undefined;
-    },
+    close,
   };
 };
 
@@ -277,11 +286,7 @@ const liveBuilder = <C extends AnyCatalog, B extends object>(
     find: (v: QueryVar) => liveFind({ builder, eidVar: v, pattern: undefined }),
   }) as unknown as LiveQueryBuilder<C, B>;
 
-/**
- * Build `db.live` for a client that rides a session socket. The store starts
- * following `session.onT` at once and keeps doing so until `close()`.
- * @internal wired up by `SchemaFx.Session.connect`.
- */
+/** @internal wired up by `SchemaFx.Session.connect`. */
 export const makeLive = <C extends AnyCatalog>(
   db: TypedReadDatabaseClient<C>,
   session: Session,

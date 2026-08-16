@@ -43,6 +43,8 @@ export interface Session {
   readonly t: number;
   /** Subscribe to basis movement. Returns the unsubscribe. */
   onT(cb: (t: number) => void): () => void;
+  /** Run `cb` once when this socket dies — closed by us, or by the peer. */
+  onClose(cb: () => void): () => void;
   /** Close the socket; every in-flight request fails with `NetworkError`. */
   close(): void;
 }
@@ -197,6 +199,7 @@ export const openSession = (options: SessionOptions): Session => {
   >();
   const queued: string[] = [];
   const listeners = new Set<(t: number) => void>();
+  const closeListeners = new Set<() => void>();
   let nextId = 1;
   let basisT = 0;
   let open = socket.readyState === undefined || socket.readyState === OPEN;
@@ -218,6 +221,9 @@ export const openSession = (options: SessionOptions): Session => {
     const waiting = [...pending.values()];
     pending.clear();
     for (const p of waiting) p.reject(dead);
+    const closing = [...closeListeners];
+    closeListeners.clear();
+    for (const cb of closing) cb();
   };
 
   socket.addEventListener("open", () => {
@@ -276,6 +282,17 @@ export const openSession = (options: SessionOptions): Session => {
       listeners.add(cb);
       return () => {
         listeners.delete(cb);
+      };
+    },
+    onClose: (cb) => {
+      // already dead: there is no later close to wait for
+      if (dead !== undefined) {
+        cb();
+        return () => {};
+      }
+      closeListeners.add(cb);
+      return () => {
+        closeListeners.delete(cb);
       };
     },
     close: () => {

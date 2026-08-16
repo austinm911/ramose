@@ -53,7 +53,6 @@ export const connect = <C extends AnyCatalog>(
     const db = yield* system
       .create(options.name, options.catalog)
       .pipe(Effect.tapError(() => Effect.sync(() => session.close())));
-    // live stores run outside Effect, on the services this connect was given
     const context = yield* Effect.context<RuntimeContext>();
     const run: LiveRun = Effect.runPromiseWith(context);
     const client: TypedLiveDatabaseClient<C> = {

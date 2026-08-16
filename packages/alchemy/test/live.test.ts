@@ -84,6 +84,8 @@ const peerAt = (state: {
   qDelay?: number;
   /** refuse this many q frames before answering */
   qFails?: number;
+  /** hold every pull reply back this many ms */
+  pullDelay?: number;
   /** eids whose pull the peer refuses */
   pullFails?: number[];
 }) =>
@@ -105,7 +107,10 @@ const peerAt = (state: {
           return { status: 500, body: { error: "no" } };
         }
         const name = state.names[frame.eid as number];
-        return { body: { t: state.t, result: name == null ? null : { name } } };
+        return {
+          body: { t: state.t, result: name == null ? null : { name } },
+          delay: state.pullDelay,
+        };
       }
       default:
         return { status: 404, body: { error: "no such op" } };
@@ -296,6 +301,81 @@ describe("the session's t is the wake", () => {
   });
 });
 
+describe("session.close() closes the stores it handed out", () => {
+  test("a store in backoff stops retrying the dead socket", async () => {
+    const { db, peer, session } = await peerAt({
+      t: 5,
+      rows: [[1001]],
+      names: { 1001: "Ada" },
+      qFails: 9,
+    });
+
+    const users = db.live((q) => q.where("?e", User.name, "_").find("?e"));
+    let notified = 0;
+    users.subscribe(() => {
+      notified += 1;
+    });
+    await settle();
+    expect(users.error).toBeDefined(); // the retry timer is armed
+    expect(notified).toBe(1);
+
+    session.close();
+    await Bun.sleep(600); // two backoffs would have fired by now
+    expect(notified).toBe(1); // no pass ran against the dead peer
+    expect(peer.ops("q")).toHaveLength(1);
+  });
+
+  test("the last snapshot stays readable, and no t wakes it again", async () => {
+    const state = { t: 5, rows: [[1001]], names: { 1001: "Ada" } };
+    const { db, peer, session } = await peerAt(state);
+
+    const users = db.live((q) => q.where("?e", User.name, "_").find("?e"));
+    await settle();
+    const last = users.get();
+    let notified = 0;
+    users.subscribe(() => {
+      notified += 1;
+    });
+
+    session.close();
+    state.t = 12;
+    state.rows = [[1001], [1002]];
+    peer.push({ op: "t", t: 12 });
+    await settle();
+
+    expect(peer.ops("q")).toHaveLength(1);
+    expect(notified).toBe(0);
+    expect(users.get()).toBe(last);
+  });
+
+  test("a reconnect does not leave the old store retrying the old socket", async () => {
+    const first = await peerAt({
+      t: 5,
+      rows: [[1001]],
+      names: { 1001: "Ada" },
+      qFails: 9,
+    });
+    const stale = first.db.live((q) => q.where("?e", User.name, "_").find("?e"));
+    let staleNotified = 0;
+    stale.subscribe(() => {
+      staleNotified += 1;
+    });
+    await settle();
+    expect(staleNotified).toBe(1);
+    const staleError = stale.error;
+    first.session.close();
+
+    const second = await peerAt({ t: 5, rows: [[1001], [1002]], names: {} });
+    const fresh = second.db.live((q) => q.where("?e", User.name, "_").find("?e"));
+    await Bun.sleep(600);
+
+    expect(staleNotified).toBe(1);
+    expect(stale.error).toBe(staleError); // no later pass touched it
+    expect(fresh.get()?.map((e) => e.id)).toEqual([1001, 1002]);
+    second.session.close();
+  });
+});
+
 describe("a pass that overlaps, closes, or fails", () => {
   test("a t that lands mid-pass is drained after it, at the newer fence", async () => {
     const { db, peer, session } = await peerAt({
@@ -343,6 +423,35 @@ describe("a pass that overlaps, closes, or fails", () => {
     session.close();
   });
 
+  test("close during the pull round publishes nothing and asks for nothing more", async () => {
+    const { db, peer, session } = await peerAt({
+      t: 5,
+      rows: [[1001], [1002]],
+      names: { 1001: "Ada", 1002: "Bob" },
+      pullDelay: 40,
+    });
+
+    const users = db.live((q) =>
+      q.where("?e", User.name, "_").find("?e").pull({ name: User.name }),
+    );
+    let notified = 0;
+    users.subscribe(() => {
+      notified += 1;
+    });
+    await Bun.sleep(10); // the q is back, both pulls are out
+    expect(peer.ops("pull")).toHaveLength(2);
+
+    users.close();
+    const frames = peer.sent.length;
+    peer.push({ op: "t", t: 9 });
+
+    await Bun.sleep(150); // the pulls land, on a store that is gone
+    expect(notified).toBe(0);
+    expect(users.get()).toBeUndefined();
+    expect(peer.sent).toHaveLength(frames);
+    session.close();
+  });
+
   test("a subscriber registered before the first result fires when it lands", async () => {
     const { db, session } = await peerAt({
       t: 5,
@@ -380,6 +489,57 @@ describe("a pass that overlaps, closes, or fails", () => {
     await Bun.sleep(400); // the first backoff is 250ms
     expect(users.get()?.map((e) => e.id)).toEqual([1001]);
     expect(users.error).toBeUndefined();
+    session.close();
+  });
+
+  test("subscribers hear the error land, and hear it cleared on the recovery", async () => {
+    const { db, session } = await peerAt({
+      t: 5,
+      rows: [[1001]],
+      names: { 1001: "Ada" },
+      qFails: 1,
+    });
+
+    const users = db.live((q) => q.where("?e", User.name, "_").find("?e"));
+    const seen: unknown[] = [];
+    users.subscribe(() => seen.push(users.error));
+
+    await settle();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBeDefined();
+
+    await Bun.sleep(400); // the first backoff is 250ms
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toBeUndefined(); // the recovering pass reads no error
+    expect(users.get()?.map((e) => e.id)).toEqual([1001]);
+    session.close();
+  });
+
+  test("a recovery whose rows did not move still notifies", async () => {
+    const state: Parameters<typeof peerAt>[0] = {
+      t: 5,
+      rows: [[1001]],
+      names: { 1001: "Ada" },
+    };
+    const { db, peer, session } = await peerAt(state);
+
+    const users = db.live((q) => q.where("?e", User.name, "_").find("?e"));
+    await settle();
+    const first = users.get();
+    const seen: unknown[] = [];
+    users.subscribe(() => seen.push(users.error));
+
+    state.qFails = 1;
+    peer.push({ op: "t", t: 9 });
+    await settle();
+    expect(seen).toHaveLength(1);
+    expect(users.error).toBeDefined();
+
+    await Bun.sleep(400);
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toBeUndefined();
+    expect(users.error).toBeUndefined();
+    expect(users.get()).toBe(first); // same basis, same reference
     session.close();
   });
 
