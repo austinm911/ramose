@@ -108,6 +108,31 @@ the whole run). **Multi-colo read scaling was not measured**: this
 environment has no Cloudflare credentials, so there is one local isolate and
 no geographic distribution; only a real deployment can produce those numbers.
 
+## M7 — timed incremental index runs (`bun run bench/indexer.bench.ts`)
+
+In-process (Transactor over in-memory R2 + bun:sqlite): seed N people
+(4 datoms each) into segment trees, write a **scattered** delta of 10k txs
+(¼ inserts, ¾ single-datom updates on entities spread over the whole id
+range), then time one index run. "new objects" is exactly
+|reachable(new) − reachable(old)| (asserted in the M4 test).
+
+| people (datoms) | leaf / fan-out | tree objects (depth) | run | new objects (rewritten) | per tx |
+|---|---|---|---|---|---|
+| 300k (1.2M) | 3000 / 1024 | 1,125 (2) | 1.65 s | 925 (82%) — 4.5 MB | 0.09 obj, 0.17 ms |
+| 300k (1.2M) | 500 / 64 | 6,723 (3) | 3.13 s | 5,231 (78%) — 5.5 MB | 0.52 obj, 0.31 ms |
+| 1M (4M) | 3000 / 1024 | 3,695 (3) | 4.25 s | 2,425 (66%) — 12.3 MB | 0.24 obj, 0.43 ms |
+
+Reading: with 10k *uniformly scattered* single-datom updates the delta
+touches most leaves of every index (300k people / 3000-datom leaves ≈ 400 EAVT
+leaves; 10k random entities hit nearly all of them), so the rewritten
+fraction is high by construction — cost is O(touched paths), and here almost
+every path is touched. The absolute cost is what matters for the DO budget:
+~0.2–0.4 ms and ~10–20 KB of new objects per transaction at this scale, i.e.
+a bounded 5k-tx run stays around 1–2 s of CPU. Localised deltas (one tenant's
+entities, monotone ids) touch a handful of leaves and rewrite < 1% (see the M4
+test: 60 txs on 600k datoms → < 10% of objects). A 10M-datom run was not
+timed here (memory of the in-process harness); scale the 4M row linearly.
+
 ## Milestone status (as of this snapshot)
 
 | milestone | status | evidence |
@@ -119,4 +144,4 @@ no geographic distribution; only a real deployment can produce those numbers.
 | M4 incremental indexer | verified at 600k datoms (scaled from 10M) | exact new-object count == |reachable(new) − reachable(old)|; as-of via old root; consistent snapshots; bounded, re-arming runs |
 | M5 replica + novelty | e2e | reconnect under concurrent writes → no missed datoms; root flip drops novelty |
 | M6 peer + time travel + SDK | e2e | schema → transact → query → as-of → history → pull; persistence across a full stack restart verified manually |
-| M7 | not started | |
+| M7 | **done** (no prod deploy: no credentials) | planner memory guardrail (413 `query/budget-exceeded`, tested), write-ceiling load tests with/without group commit + warm read bench, structured logs/metrics per component, `docs/RUNBOOK.md`; timed indexer bench |
