@@ -19,6 +19,7 @@
  * const system = SchemaFx.makeSystem({ url: "https://peer" })
  * const db = yield* system.create("movies", Movies)
  * yield* db.transact([{ user: { name: "Ada" } }])
+ * const rows = yield* db.q((q) => q.where("?e", User.name, "?n").find("?n"))
  * ```
  */
 
@@ -30,6 +31,7 @@ export * from "./equal.ts";
 export * from "./Errors.ts";
 export * from "./idents.ts";
 export * from "./Namespace.ts";
+export * from "./Query.ts";
 export * from "./Read.ts";
 export * from "./Tx.ts";
 export * from "./valueTypes.ts";

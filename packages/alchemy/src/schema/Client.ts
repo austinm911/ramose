@@ -33,6 +33,7 @@ import type { BadRequest, DatabaseError } from "../DatabaseTypes.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import { SchemaEnsureError } from "./Errors.ts";
 import type { EntityRef } from "./idents.ts";
+import { type QueryBuilder, queryBuilder } from "./Query.ts";
 import type { EntityMap, PullPattern, PullResult } from "./Read.ts";
 import type { TypedTx, WireTx } from "./Tx.ts";
 
@@ -47,6 +48,18 @@ export interface TypedReadDatabaseClient<C extends AnyCatalog = AnyCatalog> {
   readonly catalog: C;
   readonly name: string;
 
+  /** Start a catalog-typed query builder. */
+  q(): QueryBuilder<C, {}>;
+  /**
+   * Callback form: `yield* db.q(q => q.where(...).find(...))`.
+   * The builder tracks bindings; `find` is the typed terminal.
+   */
+  q<A>(
+    build: (
+      q: QueryBuilder<C, {}>,
+    ) => Effect.Effect<A, DatabaseError, RuntimeContext>,
+  ): Effect.Effect<A, DatabaseError, RuntimeContext>;
+  /** Untyped escape hatch — today's object / string query. */
   q<T = unknown>(
     query: string | object,
     inputs?: unknown[],
@@ -142,7 +155,22 @@ const makeRead = <C extends AnyCatalog>(
 ): TypedReadDatabaseClient<C> => ({
   catalog,
   name,
-  q: () => die("q"),
+  q: ((
+    queryOrBuild?:
+      | string
+      | object
+      | ((
+          q: QueryBuilder<C, {}>,
+        ) => Effect.Effect<unknown, DatabaseError, RuntimeContext>),
+    _inputs?: unknown[],
+    _options?: QueryOptions,
+  ) => {
+    if (queryOrBuild === undefined) return queryBuilder(catalog);
+    if (typeof queryOrBuild === "function") {
+      return queryOrBuild(queryBuilder(catalog));
+    }
+    return die("q");
+  }) as TypedReadDatabaseClient<C>["q"],
   query: () => die("query"),
   pull: () => die("pull"),
   entity: () => die("entity"),
