@@ -37,7 +37,7 @@ import {
 export interface SystemEndpoint {
   /** Peer base URL, no trailing slash (e.g. `https://ripple.example.workers.dev`). */
   readonly url: string;
-  /** Bearer token; ignored when the peer runs with `RIPPLE_TOKENS` unset. */
+  /** The peer's one bearer token, used for every database name; ignored when the peer runs with `RIPPLE_TOKEN` unset. */
   readonly token?: Redacted.Redacted<string> | string | undefined;
   /** Extra headers on every request (e.g. `x-ripple-replica-hint`). */
   readonly headers?: Record<string, string> | undefined;

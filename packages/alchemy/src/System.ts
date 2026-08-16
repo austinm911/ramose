@@ -85,10 +85,11 @@ export type SystemProps = {
   /** The peer Worker (or a URL) that serves `/db/:name/*`. */
   peer: SystemPeer;
   /**
-   * Bearer token for this peer, when it is deployed with `RIPPLE_TOKENS`.
+   * Bearer token for this peer, when it is deployed with `RIPPLE_TOKEN`.
    * Stored as a `Redacted` attribute and lowered onto consumers as a
-   * `secret_text` binding. One token covers every database name the peer
-   * serves (`RIPPLE_TOKENS` may map `"*"`).
+   * `secret_text` binding. This is the peer's one token: it covers every
+   * database name the peer serves, and is ignored when the peer has
+   * `RIPPLE_TOKEN` unset.
    */
   token?: Redacted.Redacted<string> | string;
   /** Liveness probe on deploy; `false` skips it. */

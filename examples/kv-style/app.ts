@@ -42,8 +42,9 @@ export const App = Cloudflare.Worker(
     //
     // Db-per-tenant falls out of that: one `create` per request, no resource,
     // no deploy and no provisioning per tenant. The token is shared across
-    // every name, so `RIPPLE_TOKENS` must be unset / one string / a `"*"` map
-    // for an open-ended set of tenants (docs/RUNBOOK.md).
+    // every name: it is the peer's one `RIPPLE_TOKEN`, checked for every
+    // tenant database and ignored when the peer has it unset
+    // (docs/RUNBOOK.md).
     const tenantRoute = (tenantId: string) =>
       Effect.gen(function* () {
         const tenant = yield* system.create(tenantId);
