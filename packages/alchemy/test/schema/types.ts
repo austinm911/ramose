@@ -9,7 +9,12 @@
 import type { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import type { TxAck } from "../../src/Client.ts";
+import type {
+  ReadSystemClient,
+  ReadWriteSystemClient,
+  TxAck,
+  WriteSystemClient,
+} from "../../src/Client.ts";
 import { BadRequest, type DatabaseError } from "../../src/DatabaseTypes.ts";
 import {
   type AnyCatalog,
@@ -23,8 +28,11 @@ import {
   type OpenError,
   SchemaEnsureError,
   type TypedReadDatabaseClient,
+  type TypedReadSystemClient,
   type TypedReadWriteDatabaseClient,
+  type TypedReadWriteSystemClient,
   type TypedWriteDatabaseClient,
+  type TypedWriteSystemClient,
   type ValueAtIdent,
   type WireEntity,
   Long,
@@ -34,6 +42,9 @@ import {
   Instant,
   Bytes,
   Eid,
+  fromRead,
+  fromReadWrite,
+  fromWrite,
   makeSystem,
   unsafeDatabase,
   unsafeReadDatabase,
@@ -142,6 +153,26 @@ Typed.n.with({ s: Typed.s });
 const system = makeSystem({ url: "https://peer.example" });
 const created = system.create("movies", Movies);
 const connected = system.connect("movies", Movies);
+
+// Alchemy bindings return the untyped system; wrap to get create(name, catalog).
+declare const untypedRead: ReadSystemClient;
+declare const untypedWrite: WriteSystemClient;
+declare const untypedRW: ReadWriteSystemClient;
+const typedR = fromRead(untypedRead);
+const typedW = fromWrite(untypedWrite);
+const typedRW = fromReadWrite(untypedRW);
+type _fromR = Expect<Equal<typeof typedR, TypedReadSystemClient>>;
+type _fromW = Expect<Equal<typeof typedW, TypedWriteSystemClient>>;
+type _fromRW = Expect<Equal<typeof typedRW, TypedReadWriteSystemClient>>;
+const wrapCreated = typedRW.create("movies", Movies);
+const wrapRead = typedR.create("movies", Movies);
+type _wrapClient = Expect<
+  Equal<Effect.Success<typeof wrapCreated>, TypedReadWriteDatabaseClient<typeof Movies>>
+>;
+type _wrapErr = Expect<
+  Equal<Effect.Error<typeof wrapCreated>, BadRequest | SchemaEnsureError>
+>;
+type _wrapReadErr = Expect<Equal<Effect.Error<typeof wrapRead>, BadRequest>>;
 
 type CreatedClient = Effect.Success<typeof created>;
 type ConnectedClient = Effect.Success<typeof connected>;
