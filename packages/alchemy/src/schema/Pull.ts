@@ -355,30 +355,86 @@ export const lowerPullPattern = (pattern: unknown): unknown[] => {
 };
 
 /**
- * Fill required card-many holes with `[]` and reshape nested maps.
- * Ident-keyed arrays are left as the peer returned them.
+ * Enforce required vs optional so the TypeScript type matches the value.
+ *
+ * A bare attr is required: missing / null / undefined drops the entity
+ * (`null` at the top level). `.optional` may be missing (`undefined`).
+ * Required `.with` drops the parent when the ref is missing or the nested
+ * object fails *its* required fields. Cardinality-many `.with` filters the
+ * array (empty `[]` is still a valid many). Ident-keyed arrays are left as
+ * the peer returned them (all optional in the type).
  */
 export const reshapePullResult = (pattern: unknown, result: unknown): unknown => {
-  if (result === null || result === undefined) return result;
+  if (result === null || result === undefined) return null;
   if (Array.isArray(pattern)) return result;
-  if (typeof result !== "object") return result;
+  const filtered = filterPull(pattern, result);
+  return filtered === undefined ? null : filtered;
+};
+
+const isPresent = (value: unknown): boolean =>
+  value !== undefined && value !== null;
+
+/** `undefined` means this entity failed a required field and should be dropped. */
+const filterPull = (pattern: unknown, result: unknown): unknown => {
+  if (!isPresent(result)) return undefined;
+  if (Array.isArray(pattern)) return result;
+  if (typeof result !== "object") return undefined;
+
   const fields = fieldsOf(pattern);
   const rec = result as Record<string, unknown>;
-  const out: Record<string, unknown> = { ...rec };
+  const out: Record<string, unknown> = {};
+
   for (const [key, field] of Object.entries(fields)) {
     const info = inspectPullField(field);
-    if (!(key in rec) || rec[key] === undefined) {
-      if (!info.optional && info.many) out[key] = [];
+    const raw = rec[key];
+    const missing = !isPresent(raw);
+
+    if (info.nestedPattern !== undefined) {
+      if (info.many) {
+        if (missing) {
+          out[key] = info.optional ? undefined : [];
+          continue;
+        }
+        const arr = Array.isArray(raw) ? raw : [raw];
+        const kept: unknown[] = [];
+        for (const item of arr) {
+          const child = filterPull(info.nestedPattern, item);
+          if (child !== undefined) kept.push(child);
+        }
+        out[key] = kept;
+        continue;
+      }
+      if (missing) {
+        if (info.optional) {
+          out[key] = undefined;
+          continue;
+        }
+        return undefined;
+      }
+      const child = filterPull(info.nestedPattern, raw);
+      if (child === undefined) {
+        if (info.optional) {
+          out[key] = undefined;
+          continue;
+        }
+        return undefined;
+      }
+      out[key] = child;
       continue;
     }
-    if (info.nestedPattern !== undefined) {
-      const val = rec[key];
-      if (info.many && Array.isArray(val)) {
-        out[key] = val.map((item) => reshapePullResult(info.nestedPattern, item));
-      } else {
-        out[key] = reshapePullResult(info.nestedPattern, val);
+
+    if (missing) {
+      if (info.optional) {
+        out[key] = undefined;
+        continue;
       }
+      if (info.many) {
+        out[key] = [];
+        continue;
+      }
+      return undefined;
     }
+    out[key] = info.many && !Array.isArray(raw) ? [raw] : raw;
   }
   return out;
 };
