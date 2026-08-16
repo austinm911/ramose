@@ -188,9 +188,11 @@ const runTxBody = <C extends AnyCatalog>(
 ): Effect.Effect<TxData, any, any> => {
   const tx = txBuilder(catalog);
   const out = build(tx);
-  const ops = (): Effect.Effect<TxData> => Effect.succeed([...tx.spec.ops]);
-  if (isGenerator(out)) return runGenerator(out).pipe(Effect.andThen(ops));
-  return (out as Effect.Effect<unknown, any, any>).pipe(Effect.andThen(ops));
+  const ops = (): Effect.Effect<TxData> => Effect.succeed(tx.spec.ops as TxData);
+  const body = isGenerator(out)
+    ? runGenerator(out)
+    : (out as Effect.Effect<unknown, any, any>);
+  return body.pipe(Effect.andThen(ops));
 };
 
 const wrapRows = <C extends AnyCatalog>(
@@ -238,16 +240,14 @@ const queryIo = <C extends AnyCatalog>(
       ),
 });
 
-const pullFnOf = (raw: ReadDatabaseClient): EidPull => (id, pattern) =>
-  raw.pull(id, pattern);
-
 const makeRead = <C extends AnyCatalog>(
   catalog: C,
   name: string,
   raw?: ReadDatabaseClient,
 ): TypedReadDatabaseClient<C> => {
-  const pullFn = raw ? pullFnOf(raw) : undefined;
-  const io = raw && pullFn ? queryIo(catalog, raw, pullFn) : undefined;
+  const io = raw
+    ? queryIo(catalog, raw, (id, pattern) => raw.pull(id, pattern))
+    : undefined;
   return {
     catalog,
     name,
@@ -322,33 +322,20 @@ const ensureSchema = (
     ),
   );
 
-const openEnsuring = <C extends AnyCatalog, Raw extends WriteDatabaseClient, Client>(
+/** Name check, open the raw client, optionally ensure the catalog, wrap. */
+const open = <Raw, Client, E = never>(
   createRaw: (name: string) => Effect.Effect<Raw, BadRequest>,
   name: string,
-  catalog: C,
   wrap: (raw: Raw) => Client,
-): Effect.Effect<Client, OpenError, RuntimeContext> => {
+  ensure?: (raw: Raw) => Effect.Effect<void, E, RuntimeContext>,
+): Effect.Effect<Client, BadRequest | E, RuntimeContext> => {
   if (!DATABASE_NAME_RE.test(name)) {
     return Effect.fail(invalidDatabaseName(name));
   }
   return Effect.gen(function* () {
     const raw = yield* createRaw(name);
-    yield* ensureSchema(raw, catalog);
+    if (ensure) yield* ensure(raw);
     return wrap(raw);
-  });
-};
-
-const openRead = <C extends AnyCatalog>(
-  createRaw: (name: string) => Effect.Effect<ReadDatabaseClient, BadRequest>,
-  name: string,
-  catalog: C,
-): Effect.Effect<TypedReadDatabaseClient<C>, BadRequest, RuntimeContext> => {
-  if (!DATABASE_NAME_RE.test(name)) {
-    return Effect.fail(invalidDatabaseName(name));
-  }
-  return Effect.gen(function* () {
-    const raw = yield* createRaw(name);
-    return makeRead(catalog, name, raw);
   });
 };
 
@@ -358,7 +345,7 @@ const openRead = <C extends AnyCatalog>(
  */
 export const fromRead = (untyped: ReadSystemClient): TypedReadSystemClient => {
   const create = <C extends AnyCatalog>(name: string, catalog: C) =>
-    openRead((n) => untyped.create(n), name, catalog);
+    open((n) => untyped.create(n), name, (raw) => makeRead(catalog, name, raw));
   return { create, connect: create, health: () => untyped.health() };
 };
 
@@ -368,11 +355,11 @@ export const fromRead = (untyped: ReadSystemClient): TypedReadSystemClient => {
  */
 export const fromWrite = (untyped: WriteSystemClient): TypedWriteSystemClient => {
   const create = <C extends AnyCatalog>(name: string, catalog: C) =>
-    openEnsuring(
+    open(
       (n) => untyped.create(n),
       name,
-      catalog,
       (raw) => makeWrite(catalog, name, raw),
+      (raw) => ensureSchema(raw, catalog),
     );
   return { create, connect: create, health: () => untyped.health() };
 };
@@ -385,11 +372,11 @@ export const fromReadWrite = (
   untyped: ReadWriteSystemClient,
 ): TypedReadWriteSystemClient => {
   const create = <C extends AnyCatalog>(name: string, catalog: C) =>
-    openEnsuring(
+    open(
       (n) => untyped.create(n),
       name,
-      catalog,
       (raw) => makeReadWrite(catalog, name, raw),
+      (raw) => ensureSchema(raw, catalog),
     );
   return { create, connect: create, health: () => untyped.health() };
 };
