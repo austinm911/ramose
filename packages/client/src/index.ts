@@ -133,6 +133,11 @@ export class RippleDb {
   info(): Promise<any> {
     return this.client.request("GET", this.path("/info"));
   }
+  /** Chaos/ops: drop the replica's novelty subscription (it must resume with no missed datoms). */
+  reconnectReplica(): Promise<{ ok: boolean; t: number }> {
+    return this.client.request("POST", this.path("/admin/replica/reconnect"));
+  }
+
   /** Force an index run (admin). */
   index(): Promise<any> {
     return this.client.request("POST", this.path("/admin/index"));

@@ -81,6 +81,11 @@ export default {
         const res = await transactor().fetch(txUrl("/transact"), { method: "POST", body: await request.text(), headers: { "content-type": "application/json" } });
         return new Response(res.body, { status: res.status, headers: { "content-type": "application/json", ...CORS, "x-ripple-ms": String(Date.now() - t0) } });
       }
+      if (rest === "/admin/replica/reconnect" && request.method === "POST") {
+        // chaos/ops: drop the nearest replica's novelty subscription; it must resume with no missed datoms
+        const res = await env.REPLICA.get(replicaId(env, db, regionOf(request))).fetch(`https://replica/admin/reconnect?db=${encodeURIComponent(db)}`, { method: "POST" });
+        return new Response(res.body, { status: res.status, headers: { "content-type": "application/json", ...CORS } });
+      }
       if (rest.startsWith("/admin/") && request.method === "POST") {
         const res = await transactor().fetch(txUrl(rest), { method: "POST" });
         return new Response(res.body, { status: res.status, headers: { "content-type": "application/json", ...CORS } });

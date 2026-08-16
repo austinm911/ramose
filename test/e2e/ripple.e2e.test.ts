@@ -96,6 +96,30 @@ d("ripple e2e", () => {
     expect(count).toBe(42);
   });
 
+  test("M5: replica reconnect resumes with no missed datoms; root flips drop novelty", async () => {
+    // writes land while the replica is (re)connecting: nothing may be missed
+    const before = await db.q<number>(`[:find (count ?e) . :where [?e :user/email]]`);
+    const [rc, ...acks] = await Promise.all([
+      db.reconnectReplica(),
+      ...Array.from({ length: 25 }, (_, i) => db.transact([{ ":user/name": `r${i}`, ":user/email": `r${i}@example.com` }])),
+    ]);
+    expect(rc.ok).toBe(true);
+    const lastT = Math.max(...acks.map((a) => a.t));
+    // read-your-writes: the basis served after the last ack covers it
+    const q = await db.query(`[:find (count ?e) . :where [?e :user/email]]`);
+    expect(q.t).toBeGreaterThanOrEqual(lastT);
+    expect(q.result).toBe(before + 25);
+    const info1 = await db.info();
+    expect(info1.replica.t).toBeGreaterThanOrEqual(lastT);
+    expect(info1.replica.novelty).toBeGreaterThan(0);
+    // an index run flips the root → the replica drops the absorbed novelty (memory stays bounded)
+    await db.index();
+    const info2 = await db.info();
+    expect(info2.replica.stats.rootFlips).toBeGreaterThan(info1.replica.stats.rootFlips);
+    expect(info2.replica.novelty).toBeLessThan(info1.replica.novelty);
+    expect(await db.q<number>(`[:find (count ?e) . :where [?e :user/email]]`)).toBe(before + 25);
+  });
+
   test("write throughput smoke (group commit)", async () => {
     const N = 300;
     const t0 = performance.now();
