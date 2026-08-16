@@ -18,10 +18,11 @@
  *
  * const system = SchemaFx.makeSystem({ url: "https://peer" })
  * const db = yield* system.create("movies", Movies)
- * yield* db.transact((tx) => Effect.gen(function* () {
+ * yield* db.transact(function* (tx) {
  *   const ada = yield* tx.entity()
  *   yield* ada.add(User.name, "Ada")
- * }))
+ * })
+ * const pulled = yield* db.pull(1001, [User.name])
  * const rows = yield* db.q((q) => q.where("?e", User.name, "?n").find("?n"))
  * ```
  */
