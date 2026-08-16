@@ -42,31 +42,51 @@ environment, any placeholder works for emulation.
 
 `@ripple/alchemy` exposes Ripple to Alchemy 2 the way `alchemy/Cloudflare`
 exposes KV: a resource for the thing, capabilities for using it, and one
-Effect-native client behind three transports. Full example (type-checked):
-`examples/kv-style/` (`resources.ts` + `app.ts` + `alchemy.run.ts`).
+Effect-native client behind three transports. The typed happy path is
+`SchemaFx` (catalog → `create(name, catalog)` → gen transact → builder `q`
+→ `eid.pull`). Full example (type-checked): `examples/kv-style/`
+(`resources.ts` + `schema.ts` + `app.ts` + `alchemy.run.ts`). The compile-time
+walkthrough is `packages/alchemy/src/schema/usage.ts`.
 
 ```ts
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Ripple from "@ripple/alchemy";
+import { SchemaFx } from "@ripple/alchemy";
+import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
+
+export const User = SchemaFx.Namespace("user", {
+  name: SchemaFx.Attr(Schema.String, { unique: "identity" }),
+});
+export const Movies = SchemaFx.Catalog({ user: User });
 
 export const Peer = Cloudflare.Worker("Peer", { main: "./packages/worker/src/index.ts", env: { /* … */ } });
 export const Sys  = Ripple.System("Sys", { peer: Peer });
 
 // inside an Effect-form Worker (deploy time: lowers a `service` binding to the peer)
-const system = yield* Ripple.ReadWriteSystem(Sys);
-// per request — a database is a name; `create` is an upsert, no network
-const db   = yield* system.create("movies");
-const ack  = yield* db.transact([{ ":user/name": "Ada" }]);
-const rows = yield* db.q({ find: ["?n"], where: [["?e", ":user/name", "?n"]] }, [], { minT: ack.t });
-const past = yield* db.asOf(ack.t - 1).q(/* … */);
-const ada  = yield* db.entity(17);
+const system = SchemaFx.fromReadWrite(yield* Ripple.ReadWriteSystem(Sys));
+// per request — a database is a name; typed create upserts the name and ensures the catalog
+const db  = yield* system.create("movies", Movies);
+const ack = yield* db.transact(function* (tx) {
+  const ada = yield* tx.entity();
+  yield* ada.add(User.name, "Ada");
+});
+const rows = yield* db.q((q) =>
+  q.where("?e", User.name, "?n").options({ minT: ack.t }).find("?e", "?n"),
+);
+const past = yield* db.asOf(ack.t - 1).q((q) =>
+  q.where("?e", User.name, "?n").find("?e"),
+);
+const ada = yield* rows[0][0].pull({ name: User.name }); // missing required → null
 
 // db-per-tenant: same peer/token, another name
 const tenantId = (yield* HttpServerRequest).url.split("/")[2]; // GET /t/:tenant
-const tenant   = yield* system.create(tenantId);               // invalid name → fails with BadRequest
-const tack     = yield* tenant.transact([{ ":user/name": "Ada" }]);
+const tenant   = yield* system.create(tenantId, Movies);       // invalid name → BadRequest; ensure fail → SchemaEnsureError
+const tack     = yield* tenant.transact(function* (tx) {
+  const e = yield* tx.entity();
+  yield* e.add(User.name, "Ada");
+});
 
 export default Alchemy.Stack("app", {
   providers: Layer.mergeAll(Cloudflare.providers(), Ripple.providers()),
@@ -79,31 +99,39 @@ export default Alchemy.Stack("app", {
   a Ripple database is a **name** (the Transactor DO is `idFromName(name)`; the log lives
   under `db/<name>/…`), there is no create-database endpoint and no list, so the provider
   creates nothing — it resolves the peer's URL, carries the shared token, and proves the peer
-  serves `/health`. `system.create(name)` and `system.connect(name)` are the same upsert:
-  they validate the name and return a client; the **first transact materializes** the
-  database. `destroy` forgets the resource; it does **not** erase any log, segments or DOs.
-- **Capabilities** — `Ripple.ReadSystem` / `WriteSystem` / `ReadWriteSystem`.
-  System client: `create(name)` / `connect(name)` → a database client, plus `health()` (the
-  peer's, not db-scoped). Database client: `transact`, `q`, `query` (with `x-ripple-*` meta),
-  `pull`, `entity`, `info`, `health`, and the `asOf(t)` / `history()` views; `minT` is the
-  read fence. Privilege follows the system — `WriteSystem.create` hands back a write-only
-  database client.
+  serves `/health`. The untyped `create(name)` / `connect(name)` are the same zero-network
+  upsert: they validate the name and return a client; the first data transact materializes
+  the database. The typed wrap (`SchemaFx.fromReadWrite(system).create(name, catalog)`)
+  still upserts the name, then **ensures** the catalog with a schema tx. `destroy` forgets
+  the resource; it does **not** erase any log, segments or DOs.
+- **Capabilities** — `Ripple.ReadSystem` / `WriteSystem` / `ReadWriteSystem` still yield
+  the untyped system (`create(name)`). Wrap with `SchemaFx.fromRead` / `fromWrite` /
+  `fromReadWrite` for the catalog-generic client: `create(name, catalog)` / `connect`
+  (write / read-write **ensure**; read skips ensure). Typed database client: `transact`
+  (gen), `q` (builder), `query` (with `x-ripple-*` meta), `info`, `health`, and the
+  `asOf(t)` / `history()` views. Pull is `eid.pull` on a `find` Eid — there is no
+  `entity` on the typed surface. `minT` is the read fence. Privilege follows the
+  system — `fromWrite(WriteSystem).create` hands back a write-only database client.
 - **Layers** — `*SystemBinding` (Worker service binding to the peer, same-colo, no public hop),
   `*SystemHttp` (plain HTTPS, works anywhere), `*SystemLocal` (`Alchemy.Action`, `alchemy dev`).
 - **Errors** — tagged, one per condition the peer/DOs report: `TxRejected`, `TransactorDead`,
   `BadRequest`, `NotFound`, `Unauthorized`, `QueryBudgetExceeded`, `Internal`, `NetworkError`
-  (union `Ripple.DatabaseError`, guard `Ripple.isDatabaseError`). Catch them with
-  `Effect.catchTags` instead of reading status codes.
-- **Db-per-tenant** — one `system.create(tenantId)` per request. No resource per tenant, no
-  deploy, no provisioning, no schema generics: `create` touches the network not at all, so it
-  is cheap on the request path, and the client it returns is the same peer/service binding,
-  `fetch`, token and headers pointed at `/db/:name/…`. The name is validated
-  (`/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/`) — an invalid one **fails the Effect** with
-  `BadRequest`. The **token is shared** across every name — it is the peer's one
-  `RIPPLE_TOKEN`, ignored when the peer has it unset (`docs/RUNBOOK.md`).
-- **Outside Alchemy** — `Ripple.Client.make({ url, name, token?, fetch? })` gives the same
-  Effect database client to bun scripts and tests, and `Ripple.Client.makeSystem({ url, token?,
-  fetch? })` the system client (`create` / `connect` / `health`).
+  (union `Ripple.DatabaseError`, guard `Ripple.isDatabaseError`), plus `SchemaEnsureError`
+  when write `create` / `connect` cannot install the catalog. Name check is still
+  `BadRequest`. Catch them with `Effect.catchTags` instead of reading status codes.
+- **Db-per-tenant** — one `system.create(tenantId, Movies)` per request. No resource per
+  tenant, no deploy, no provisioning. The typed create **does** touch the network (ensure
+  is a schema tx); the untyped `create(name)` is still the zero-network upsert. The client
+  it returns is the same peer/service binding, `fetch`, token and headers pointed at
+  `/db/:name/…`. The name is validated (`/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/`) — an
+  invalid one **fails the Effect** with `BadRequest`; ensure failure is `SchemaEnsureError`.
+  The **token is shared** across every name — it is the peer's one `RIPPLE_TOKEN`, ignored
+  when the peer has it unset (`docs/RUNBOOK.md`).
+- **Outside Alchemy** — `Ripple.Client.make({ url, name, token?, fetch? })` gives the
+  untyped Effect database client to bun scripts and tests, and
+  `Ripple.Client.makeSystem({ url, token?, fetch? })` the untyped system client
+  (`create(name)` / `connect` / `health`). `SchemaFx.makeSystem({ url, token?, fetch? })`
+  is the typed equivalent (`create(name, catalog)`).
 
 ## Operations
 
