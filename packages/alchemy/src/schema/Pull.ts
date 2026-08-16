@@ -254,3 +254,131 @@ export type PullAttr<C extends AnyCatalog> = IdentPullAttr<C>;
 
 /** @deprecated Array form only. Prefer a plain fields object. */
 export type PullPattern<C extends AnyCatalog> = IdentPullPattern<C>;
+
+
+// ── wire lowering ──────────────────────────────────────────────────────────
+
+const isAttrRef = (a: unknown): a is { readonly ident: string } =>
+  typeof a === "object" &&
+  a !== null &&
+  "ident" in a &&
+  typeof (a as { ident: unknown }).ident === "string";
+
+const identOf = (field: unknown): string => {
+  if (typeof field === "string") return field;
+  if (isAttrRef(field)) return field.ident;
+  throw new Error(`ripple/schema: pull field is not an attr ref: ${String(field)}`);
+};
+
+const fieldsOf = (pattern: unknown): Record<string, unknown> => {
+  if (isPullStruct(pattern)) return pattern.fields as Record<string, unknown>;
+  if (typeof pattern === "object" && pattern !== null && !Array.isArray(pattern)) {
+    return pattern as Record<string, unknown>;
+  }
+  return {};
+};
+
+const cardinalityOf = (field: unknown): "one" | "many" => {
+  const card = (field as { cardinality?: unknown } | null)?.cardinality;
+  return card === "many" ? "many" : "one";
+};
+
+/** Inspect a literate pull field: optional / many / nested pattern. */
+export const inspectPullField = (
+  field: unknown,
+): {
+  readonly optional: boolean;
+  readonly many: boolean;
+  readonly nestedPattern: unknown | undefined;
+  readonly attr: unknown;
+} => {
+  let optional = false;
+  let current = field;
+  if (isPullOptional(current)) {
+    optional = true;
+    current = current.field;
+  }
+  if (isPullNested(current)) {
+    return {
+      optional,
+      many: cardinalityOf(current.attr) === "many",
+      nestedPattern: current.pattern,
+      attr: current.attr,
+    };
+  }
+  return {
+    optional,
+    many: cardinalityOf(current) === "many",
+    nestedPattern: undefined,
+    attr: current,
+  };
+};
+
+const lowerField = (as: string, field: unknown): unknown => {
+  const info = inspectPullField(field);
+  if (info.nestedPattern !== undefined) {
+    return {
+      kind: "attr",
+      attr: identOf(info.attr),
+      reverse: false,
+      as,
+      sub: lowerLiterateMap(info.nestedPattern),
+    };
+  }
+  return {
+    kind: "attr",
+    attr: identOf(info.attr),
+    reverse: false,
+    as,
+  };
+};
+
+const lowerLiterateMap = (pattern: unknown): unknown[] => {
+  const fields = fieldsOf(pattern);
+  return Object.entries(fields).map(([key, field]) => lowerField(key, field));
+};
+
+const lowerIdentPull = (pattern: readonly unknown[]): unknown[] =>
+  pattern.map((a) => {
+    if (a === "*") return "*";
+    if (isAttrRef(a)) return a.ident;
+    return a;
+  });
+
+/**
+ * Lower a literate pull map (or ident-keyed array escape) to a peer pull
+ * pattern. Literate maps become AST specs with `:as` / nested `sub`.
+ */
+export const lowerPullPattern = (pattern: unknown): unknown[] => {
+  if (Array.isArray(pattern)) return lowerIdentPull(pattern);
+  return lowerLiterateMap(pattern);
+};
+
+/**
+ * Fill required card-many holes with `[]` and reshape nested maps.
+ * Ident-keyed arrays are left as the peer returned them.
+ */
+export const reshapePullResult = (pattern: unknown, result: unknown): unknown => {
+  if (result === null || result === undefined) return result;
+  if (Array.isArray(pattern)) return result;
+  if (typeof result !== "object") return result;
+  const fields = fieldsOf(pattern);
+  const rec = result as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...rec };
+  for (const [key, field] of Object.entries(fields)) {
+    const info = inspectPullField(field);
+    if (!(key in rec) || rec[key] === undefined) {
+      if (!info.optional && info.many) out[key] = [];
+      continue;
+    }
+    if (info.nestedPattern !== undefined) {
+      const val = rec[key];
+      if (info.many && Array.isArray(val)) {
+        out[key] = val.map((item) => reshapePullResult(info.nestedPattern, item));
+      } else {
+        out[key] = reshapePullResult(info.nestedPattern, val);
+      }
+    }
+  }
+  return out;
+};

@@ -26,7 +26,9 @@ export {
   isPullNested,
   isPullOptional,
   isPullStruct,
+  lowerPullPattern,
   pick,
+  reshapePullResult,
 } from "./Pull.ts";
 export * from "./Query.ts";
 export * from "./Read.ts";
