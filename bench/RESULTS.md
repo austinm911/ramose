@@ -486,3 +486,82 @@ remove at the price above. Summary vs the 36–39 ms baseline:
 | **new default, no headers** (cache + ttl, auto=enam) | **0 ms** | **0 ms** |
 
 Stage destroyed after the run (`bun alchemy destroy` → Worker + Store deleted, `/health` → 404). alchemy-state-store untouched.
+
+## Cloudflare (client-held write WebSocket), stage `cf-ws`, 2026-08-16
+
+**Question:** does a client-held write socket raise remote tx/s past the
+~700–800 tx/s per-request Worker→DO admission ceiling, or only shave client RTT?
+
+**Method.** `ALCHEMY_STAGE=cf-ws bun alchemy deploy` (this branch, commit
+`eb504b4`) → Worker `ripple-worker-dev-box-iz6ivo54nqq7bg2y.tvanhens.workers.dev`,
+client on a machine whose edge is **IAD** (`cf-ray …-IAD`), same one-colo caveat
+as every earlier section. Shape under test:
+`client --WS--> Worker request (its IoContext stays open) --stub.fetch(Upgrade)--> Transactor DO`
+— the Worker returns the DO's socket straight through in that same request
+(`GET /db/:name/write-ws`); one client connection = one Worker request = one DO
+socket, no Worker-side pool, DO side is a plain `server.accept()` (non-hibernating,
+so `ctx.getWebSockets()` / the replica broadcast are untouched). Frames
+`{id, tx}` / `{id, txs}` → the unchanged `Transactor.transact` group-commit
+path (every tx of a `txs` frame is queued in one tick → one batch), reply
+`{id, …ack}` / `{id, acks}` / `{id, error}`. Default off: `POST /transact`
+unchanged. Bench: `bun run bench/write-ws.bench.ts <http|ws> <clients> 10 [txsPerFrame]`
+(same DB setup, tx shape and metrics as `write-do.bench.ts`; the `http` mode *is*
+`write-do`, re-checked once with `write-do.bench.ts` itself = 724 tx/s @64).
+Fresh database per run; ~10 s each; each row below is one run, several rows per
+variant because run-to-run noise on this path is ±30 %.
+
+### 64 clients
+
+| variant | tx/s | ack p50 | ack p95 | ack p99 | errors | batches / max / avg | t gap-free |
+|---|---|---|---|---|---|---|---|
+| control `POST /transact` (write-do) | 724 | 76 ms | 138 ms | 444 ms | 0 | 599 / 64 / 12.2 | ✅ |
+| control (write-ws.bench http) | 530 · 697 · 602 | 77–110 ms | 166–179 ms | 310–484 ms | 0 | 238–702 / 64 / 10–22 | ✅ |
+| **WS, 1 tx / frame** | **1213 · 894 · 1079** | 48–66 ms | 78–112 ms | 189–326 ms | 0 | 531–759 / 61–63 / 16–17 | ✅ |
+| **WS, 8 tx / frame** | **1447 · 1420 · 1136 · 1215** (+ one run 724: 14 144 tx in 19.5 s — a single frame acked ~9 s late; 0 errors, gap-free; not reproduced in 4 repeats) | 298–445 ms | 620–840 ms | 665–1060 ms | 0 | 74–101 / 336–512 / 149–169 | ✅ |
+| WS, 32 tx / frame | 1174 | 1223 ms | 3490 ms | 3505 ms | 0 | 21 / 1792 / 594 | ✅ |
+
+### 8 clients
+
+| variant | tx/s | ack p50 | ack p95 | ack p99 | errors | batches / max / avg | t gap-free |
+|---|---|---|---|---|---|---|---|
+| control `POST /transact` | 313 · 241 | 23–31 ms | 32–41 ms | 105–109 ms | 0 | 1511–2186 / 8 / 1.4–1.6 | ✅ |
+| WS, 1 tx / frame | 335 | 22 ms | 28 ms | 64 ms | 0 | 2457 / 7 / 1.37 | ✅ |
+| **WS, 8 tx / frame** | **1125 · 1094** | 55 ms | 94 ms | 142–186 ms | 0 | 540–636 / 56 / 18–20 | ✅ |
+| WS, 32 tx / frame | 946 | 214 ms | 523 ms | 543 ms | 0 | 112 / 224 / 87 | ✅ |
+
+Ack latency for multi-tx frames is per frame (= per tx, since every tx in the
+frame waits for the whole frame). `t` was gap-free in every run
+(`maxT − minT + 1 === acked txs`), one writer, persist-before-ack unchanged.
+Live smoke on the same stage: single ack, a 2-tx frame → t 4, 5, an unknown
+attribute rejected per id (`{id, error}`), the writes visible to a following
+query; `GET /db/:name/write-ws` without Upgrade → 400, invalid name → 400.
+
+### Hypothesis check
+
+- *"Single-tx frames ≈ control (better RTT, not more tx/s)"* — **not confirmed
+  at 64 clients**: 894–1213 tx/s vs 530–724 for the same 64 clients (p50 48–66 ms
+  vs 76–110 ms). Removing the per-request Worker→DO admission (one `stub.fetch`
+  per connection instead of per tx) is worth ~1.5× on its own at 64 clients. At
+  8 clients it is ≈ control (335 vs 241–313; both RTT-bound at ~22–30 ms/ack).
+- *"Multi-tx frames are the only lever past the admit ceiling"* — **partly**:
+  8 tx/frame is the best row at both concurrencies (1.1–1.45k tx/s; at 8 clients
+  it is 3.5–4.7× control) but at 64 clients it is only ~1.2× the single-frame
+  socket, and it buys that with 300–450 ms p50 acks and 150–170-tx batches.
+  32 tx/frame is *slower* than 8 (batches of 600–1800, p95 3.5 s @64): the
+  transactor's group-commit, not admission, is now the ceiling (~1.2–1.4k tx/s
+  from this colo).
+
+### Call
+
+**Keep, off by default; only worth turning on with batching for bulk writers.**
+The socket is correct (0 errors, dense t, per-id errors) and it does raise
+remote tx/s: ~1.5× at 64 clients even one tx per frame, up to ~2× (64) / ~4×
+(8) with 8 tx per frame. But the wins above ~1.2k tx/s stop at the DO's commit
+loop, multi-tx frames trade ack latency for it (p50 ×4–6), the Worker cannot
+`invalidateBasis` per frame (cached reads see WS writes only via ttl /
+`x-ripple-min-t`), and the DO stays resident while any write socket is open.
+Not shipped as the default write path; `POST /transact` unchanged. One
+unexplained ~9 s ack stall in 5 ws×8 runs at 64 clients (no error, no gap)
+should be understood before anyone relies on the socket for latency.
+
+Stage destroyed after the run (`ALCHEMY_STAGE=cf-ws bun alchemy destroy --yes` → Sys + Worker + Store deleted; `/health` → 404).
