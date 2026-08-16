@@ -48,29 +48,27 @@ const db = yield* system.create("movies", Movies)
 // db : TypedReadWriteDatabaseClient<typeof Movies>
 ```
 
-The typed write surface is an `Effect.gen` builder. An entity is a **bag
-of attributes**: any catalog namespace can be asserted on the same handle.
-Transactions do not prescribe a nested `{ user: {…}, meta: {…} }` shape —
-that forced an entity to live under one namespace key and made metadata
-namespaces awkward. `User.name` is the typed slot; the value type is
-correlated. The builder is what `yield*`s; `db.transact` returns
-`Effect<TxAck, DatabaseError, RuntimeContext>` plus whatever the callback
-adds.
+The typed write surface is a generator `transact` accepts directly. An
+entity is a **bag of attributes**: any catalog namespace can be asserted
+on the same handle. Transactions do not prescribe a nested
+`{ user: {…}, meta: {…} }` shape — that forced an entity to live under
+one namespace key and made metadata namespaces awkward. `User.name` is
+the typed slot; the value type is correlated. `ada.add` is the handle
+path. `db.transact` returns `Effect<TxAck, DatabaseError, RuntimeContext>`
+plus whatever the body adds. An Effect-returning callback
+(`(tx) => Effect.gen(...)`) stays for composition; it is not the default.
 
 ```ts
-yield* db.transact((tx) =>
-  Effect.gen(function* () {
-    const ada = yield* tx.entity()
-    yield* ada.add(User.name, "Ada")
-    yield* ada.add(User.age, 36)
-    yield* ada.add(Meta.source, "import")  // different namespace, same entity
-    yield* ada.retract(User.age, 35)
+yield* db.transact(function* (tx) {
+  const ada = yield* tx.entity()
+  yield* ada.add(User.name, "Ada")
+  yield* ada.add(User.age, 36)
+  yield* ada.add(Meta.source, "import")  // different namespace, same entity
+  yield* ada.retract(User.age, 35)
 
-    const arrival = yield* tx.entity()
-    yield* arrival.add(Movie.title, "Arrival")
-    yield* tx.add("ada", User.name, "Ada")  // eid / tempid / lookup also work
-  }),
-)
+  const arrival = yield* tx.entity()
+  yield* arrival.add(Movie.title, "Arrival")
+})
 
 // type error: unknown attr
 ada.add(User.nope, "x")
@@ -78,19 +76,23 @@ ada.add(User.nope, "x")
 ada.add(User.name, 42)
 ```
 
-`entity` / `pull` project catalog value types. `q` is a catalog-generic
-builder: bindings accumulate as clauses are added, and `find` produces a
-row tuple from the selected variables. Today's object/string `q<T>` stays
-as the escape hatch. `transactUntyped` is the write-side escape.
-`transactWire` is the keyword-soup form (`{ ":user/name": "Ada" }`), still
-catalog-checked — a bag, but not the Effect-savvy path.
+`entity` / `pull` project catalog value types. `pull` takes the same
+attr refs as writes (`User.name`); the result map is still keyed by
+ident — that is what the engine returns. Keyword-soup idents remain as
+an overload. `q` is a catalog-generic builder: bindings accumulate as
+clauses are added, and `find` produces a row tuple from the selected
+variables. Today's object/string `q<T>` stays as the escape hatch.
+`transactUntyped` is the write-side escape. `transactWire` is the
+keyword-soup form (`{ ":user/name": "Ada" }`), still catalog-checked —
+a bag, but not the Effect-savvy path. `tx.add(e, attr, value)` stays
+for an eid / tempid / lookup that is not a handle.
 
 ```ts
 const ada = yield* db.entity(1001)
 // ada?.[":user/name"] : string | undefined
 // ada?.[":user/friends"] : readonly number[] | undefined
 
-const pulled = yield* db.pull(1001, [":user/name", ":user/age"])
+const pulled = yield* db.pull(1001, [User.name, User.age])
 // pulled?.[":user/name"] : string | undefined
 
 const rows = yield* db.q((q) =>
@@ -162,13 +164,23 @@ attributes from *any* catalog namespace (think metadata namespaces:
 `User.name` and `Meta.source` on the same entity). A nested
 `{ user: { name: "Ada" } }` map prescribes a shape and puts the entity
 under one namespace key — you cannot naturally mix namespaces. The
-`Effect.gen` builder is the typed default: `tx.entity()` is a handle,
+generator `transact` is the typed default: `tx.entity()` is a handle,
 `ada.add(User.name, "Ada")` is one datom, value type is correlated to the
-attr ref. `transactWire` (`{ ":user/name": "Ada" }`) is still a bag and
-still catalog-checked, but it is keyword soup. Nested maps remain as a
-`NestedEntity` type (secondary / lowering), not the happy path. A future
-implementation lowers the builder's collected `:db/add` / `:db/retract`
-ops to what the peer already accepts.
+attr ref. `tx.add(e, attr, value)` is for eid / tempid / lookup, not the
+lead. An Effect-returning callback stays for composition. `transactWire`
+(`{ ":user/name": "Ada" }`) is still a bag and still catalog-checked, but
+it is keyword soup. Nested maps remain as a `NestedEntity` type
+(secondary / lowering), not the happy path. A future implementation
+lowers the builder's collected `:db/add` / `:db/retract` ops to what the
+peer already accepts.
+
+**Reads speak attr refs.** `db.pull(1001, [User.name, User.age])` is the
+same language as writes. The result map is keyed by ident
+(`":user/name"`) because that is what the engine returns; the *call*
+accepts `User.name`. Keyword-soup idents remain as an overload.
+`entity(eid)` still returns the whole bag (no projection). The catalog
+does not partition entities into types — `Movie.title` on a user handle
+(or in a user pull) typechecks. That is the bag.
 
 **Typed `q` is a builder, not a Schema encoding of EDN.** The last writeup
 left `q<T = unknown>` as the escape hatch because a `where` slot restricted
