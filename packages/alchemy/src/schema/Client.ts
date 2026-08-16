@@ -34,7 +34,8 @@ import type { AnyCatalog } from "./Catalog.ts";
 import { SchemaEnsureError } from "./Errors.ts";
 import type { EntityRef } from "./idents.ts";
 import { type QueryBuilder, queryBuilder } from "./Query.ts";
-import type { EntityMap, PullPattern, PullResult } from "./Read.ts";
+import type { IdentPullPattern, PullResult, ValidatePull } from "./Pull.ts";
+import type { EntityMap } from "./Read.ts";
 import type { TxBuilder, WireTx, YieldContext, YieldError } from "./Tx.ts";
 
 export type OpenError = BadRequest | SchemaEnsureError;
@@ -72,9 +73,17 @@ export interface TypedReadDatabaseClient<C extends AnyCatalog = AnyCatalog> {
     options?: QueryOptions,
   ): Effect.Effect<QueryResponse<T>, DatabaseError, RuntimeContext>;
 
-  pull<const P extends PullPattern<C>>(
+  /**
+   * Project an entity. The happy path is a Struct: keys are the names
+   * that come back, values are attr refs / `optional` / `nested`.
+   * The ident-keyed array remains as an escape (idents must be in the
+   * catalog; that is the `P & IdentPullPattern` branch).
+   */
+  pull<const P>(
     eid: EntityRef<C>,
-    pattern: P,
+    pattern: [P] extends [readonly unknown[]]
+      ? P & IdentPullPattern<C>
+      : ValidatePull<C, P>,
   ): Effect.Effect<PullResult<C, P> | null, DatabaseError, RuntimeContext>;
 
   entity(

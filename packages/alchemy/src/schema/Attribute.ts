@@ -22,6 +22,9 @@ export interface AttributeOptions {
   /**
    * Override `:db.type/*` inference. Required when the value Schema is not
    * a primitive or one of the helpers in `valueTypes.ts`.
+   *
+   * Captured as a type parameter so `nested(attr, …)` can require a ref
+   * (`valueType: ":db.type/ref"`) without a parallel schema language.
    */
   readonly valueType?: DbValueType;
 }
@@ -38,10 +41,17 @@ type UniqueOf<O> = [O] extends [{ readonly unique: infer U }]
     : undefined
   : undefined;
 
+type ValueTypeOf<O> = [O] extends [{ readonly valueType: infer V }]
+  ? V extends DbValueType
+    ? V
+    : undefined
+  : undefined;
+
 export interface Attribute<
   S extends Schema.Top = Schema.Top,
   Card extends Cardinality = Cardinality,
   Unique extends Uniqueness | undefined = Uniqueness | undefined,
+  VT extends DbValueType | undefined = DbValueType | undefined,
 > {
   readonly _tag: "Attribute";
   readonly schema: S;
@@ -50,13 +60,14 @@ export interface Attribute<
   readonly index: boolean;
   readonly isComponent: boolean;
   readonly doc: string | undefined;
-  readonly valueType: DbValueType | undefined;
+  readonly valueType: VT;
 }
 
 export type AnyAttribute = Attribute<
   Schema.Top,
   Cardinality,
-  Uniqueness | undefined
+  Uniqueness | undefined,
+  DbValueType | undefined
 >;
 
 /**
@@ -68,11 +79,11 @@ export type AnyAttribute = Attribute<
  * ```
  */
 export const attr: {
-  <S extends Schema.Top>(schema: S): Attribute<S, "one", undefined>;
+  <S extends Schema.Top>(schema: S): Attribute<S, "one", undefined, undefined>;
   <S extends Schema.Top, const O extends AttributeOptions>(
     schema: S,
     options: O,
-  ): Attribute<S, CardOf<O>, UniqueOf<O>>;
+  ): Attribute<S, CardOf<O>, UniqueOf<O>, ValueTypeOf<O>>;
 } = ((schema: Schema.Top, options?: AttributeOptions) => ({
   _tag: "Attribute" as const,
   schema,

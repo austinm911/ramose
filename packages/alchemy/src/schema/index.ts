@@ -22,7 +22,7 @@
  *   const ada = yield* tx.entity()
  *   yield* ada.add(User.name, "Ada")
  * })
- * const pulled = yield* db.pull(1001, [User.name])
+ * const pulled = yield* db.pull(1001, SchemaFx.Struct({ name: User.name }))
  * const rows = yield* db.q((q) => q.where("?e", User.name, "?n").find("?n"))
  * ```
  */
@@ -35,6 +35,7 @@ export * from "./equal.ts";
 export * from "./Errors.ts";
 export * from "./idents.ts";
 export * from "./Namespace.ts";
+export * from "./Pull.ts";
 export * from "./Query.ts";
 export * from "./Read.ts";
 export * from "./Tx.ts";
