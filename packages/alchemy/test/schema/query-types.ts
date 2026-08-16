@@ -10,7 +10,6 @@ import * as Schema from "effect/Schema";
 import {
   Attr,
   Catalog,
-  type CatalogIdent,
   type Eid,
   type Equal,
   type Expect,
@@ -201,7 +200,3 @@ type _helper = Expect<
     readonly [string, Eid<typeof Movies>][]
   >
 >;
-
-// keep CatalogIdent referenced
-type _idents = CatalogIdent<typeof Movies>;
-void 0 as unknown as _idents;

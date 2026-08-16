@@ -175,5 +175,3 @@ type _handle = Expect<
     EntityHandle<typeof Movies>
   >
 >;
-
-void 0 as unknown as [_crossNsAck, _viaEffect, _retractAck, _writeTx, _handle];

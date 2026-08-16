@@ -15,9 +15,8 @@ import type {
   TxAck,
   WriteSystemClient,
 } from "../../src/Client.ts";
-import { BadRequest, type DatabaseError } from "../../src/DatabaseTypes.ts";
+import { BadRequest } from "../../src/DatabaseTypes.ts";
 import {
-  type AnyCatalog,
   Attr,
   type CatalogIdent,
   Catalog,
@@ -357,7 +356,3 @@ type _openedErr = Expect<Equal<Effect.Error<typeof opened>, never>>;
 type _createR = Expect<
   Extends<RuntimeContext, Effect.Services<typeof created>>
 >;
-
-// keep AnyCatalog / DatabaseError referenced so unused-import never fires
-type _hold = [AnyCatalog, DatabaseError];
-void 0 as unknown as _hold;
