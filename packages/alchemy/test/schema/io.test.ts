@@ -18,17 +18,11 @@ import {
 import { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
 import type { FetchLike } from "../../src/Client.ts";
 import { makeSystem as makeUntypedSystem, systemSource } from "../../src/Client.ts";
 import {
-  Attr,
-  Catalog,
   Eid,
-  Long,
   MissingPeer,
-  Namespace,
-  Ref,
   SchemaEnsureError,
   fromReadWrite,
   fromWrite,
@@ -40,20 +34,7 @@ import {
   unsafeDatabase,
 } from "../../src/schema/index.ts";
 
-const User = Namespace("user", {
-  name: Attr(Schema.String, { unique: "identity" }),
-  age: Attr(Long),
-  friends: Attr(Ref, { cardinality: "many" }),
-  bestFriend: Attr(Ref),
-});
-const Movie = Namespace("movie", {
-  title: Attr(Schema.String, { index: true }),
-  year: Attr(Long),
-});
-const Meta = Namespace("meta", {
-  source: Attr(Schema.String),
-});
-const Movies = Catalog({ user: User, movie: Movie, meta: Meta });
+import { Meta, Movie, Movies, User } from "./fixture.ts";
 
 const run = <A, E>(eff: Effect.Effect<A, E, RuntimeContext>) =>
   Effect.runPromise(eff.pipe(Effect.provide(RuntimeContext.phantom)));

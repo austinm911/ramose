@@ -6,33 +6,16 @@
  */
 
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
 import {
-  Attr,
-  Catalog,
   type Eid,
   type Equal,
   type Expect,
   type FindRows,
-  Long,
-  Namespace,
-  Ref,
   type TypedReadDatabaseClient,
   unsafeDatabase,
 } from "../../src/schema/index.ts";
 
-const User = Namespace("user", {
-  name: Attr(Schema.String, { unique: "identity" }),
-  age: Attr(Long),
-  friends: Attr(Ref, { cardinality: "many" }),
-});
-
-const Movie = Namespace("movie", {
-  title: Attr(Schema.String, { index: true }),
-  year: Attr(Long),
-});
-
-const Movies = Catalog({ user: User, movie: Movie });
+import { Movie, Movies, User } from "./fixture.ts";
 const db = unsafeDatabase(Movies);
 
 // ── find row type matches bound attr types ─────────────────────────────────

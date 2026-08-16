@@ -9,33 +9,14 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import {
   Attr,
-  Catalog,
   type Equal,
   type Expect,
-  Long,
   Namespace,
   Eid,
   pick,
-  Ref,
 } from "../../src/schema/index.ts";
 
-const User = Namespace("user", {
-  name: Attr(Schema.String, { unique: "identity" }),
-  age: Attr(Long),
-  friends: Attr(Ref, { cardinality: "many" }),
-  bestFriend: Attr(Ref),
-});
-
-const Movie = Namespace("movie", {
-  title: Attr(Schema.String, { index: true }),
-  year: Attr(Long),
-});
-
-const Meta = Namespace("meta", {
-  source: Attr(Schema.String),
-});
-
-const Movies = Catalog({ user: User, movie: Movie, meta: Meta });
+import { Meta, Movie, Movies, User } from "./fixture.ts";
 const eid = Eid.of(Movies, 1001);
 
 // ── renamed keys, required vs optional ─────────────────────────────────────

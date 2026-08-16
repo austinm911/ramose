@@ -47,24 +47,7 @@ import {
   unsafeDatabase,
 } from "../../src/schema/index.ts";
 
-// ── fixture catalog ────────────────────────────────────────────────────────
-
-const User = Namespace("user", {
-  name: Attr(Schema.String, { unique: "identity" }),
-  age: Attr(Long),
-  friends: Attr(Ref, { cardinality: "many" }),
-});
-
-const Movie = Namespace("movie", {
-  title: Attr(Schema.String, { index: true }),
-  year: Attr(Long),
-});
-
-const Meta = Namespace("meta", {
-  source: Attr(Schema.String),
-});
-
-const Movies = Catalog({ user: User, movie: Movie, meta: Meta });
+import { Meta, Movie, Movies, User } from "./fixture.ts";
 
 // ── catalog / namespace / attr inference ───────────────────────────────────
 
@@ -93,7 +76,13 @@ type _ageType = Expect<
 type _idents = Expect<
   Equal<
     CatalogIdent<typeof Movies>,
-    ":user/name" | ":user/age" | ":user/friends" | ":movie/title" | ":movie/year" | ":meta/source"
+    | ":user/name"
+    | ":user/age"
+    | ":user/friends"
+    | ":user/bestFriend"
+    | ":movie/title"
+    | ":movie/year"
+    | ":meta/source"
   >
 >;
 type _valueName = Expect<Equal<ValueAtIdent<typeof Movies, ":user/name">, string>>;
