@@ -1,0 +1,100 @@
+# Reef
+
+The flagship demo: a Linear-style, multi-tenant, real-time issue tracker where
+**every workspace is its own Ripple database**. One app exercises every
+headline feature — reactivity (`db.live`), multi-tenancy (`db.install()` at
+runtime), auth (Better Auth JWTs verified by the peer against a compiled
+`Ripple.Policy`), immutability (`db.asOf` time travel + `db.history`), and a
+StyleX design system with dark/light themes.
+
+## Run it
+
+From the repo root:
+
+```sh
+CI=1 ALCHEMY_STATE=local \
+  CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef \
+  CLOUDFLARE_API_TOKEN=x \
+  bun alchemy dev examples/reef/alchemy.run.ts   # peer :1337, auth Worker :1338
+bunx vite examples/reef                          # UI on :5173
+```
+
+Sign up (accounts are auto-verified — the demo ships no mailer), create a
+workspace, and you are on the board. Open a second browser window on the same
+account to watch writes propagate live.
+
+> Local caveat (also noted in `.cursor/CLOUD.md`): under miniflare,
+> cross-*connection* novelty does not propagate between isolates, so two
+> different sign-ins see each other's writes on reconnect rather than live.
+> Same-connection live — every board interaction — works locally; the full
+> cross-tab story needs a real Cloudflare deploy.
+
+## The architecture
+
+```
+browser SPA (Vite + React 19 + StyleX)
+  ├── cookies ──────────► auth Worker   BetterAuth on D1: sign-in, orgs,
+  │                       (:1338)       JWKS, POST /api/ripple-token
+  └── JWT per request ──► Ripple peer   RIPPLE_POLICY + JWKS verify,
+                          (:1337)       Transactor/QueryReplica DOs, R2
+```
+
+The browser is the **only** Ripple data-plane client. The auth Worker never
+talks to the peer, so the resource graph is a DAG: the peer's env needs the
+auth Worker's URL (for `RIPPLE_JWKS_URL`), and the auth Worker needs nothing
+back.
+
+A workspace is born entirely from the browser: Better Auth org create →
+`POST /api/ripple-token` mints a 15-minute JWT with
+`ripple: { db: <slug>, class: <role> }` → `ripple.db(slug, Reef).install()` →
+seed labels + the creator's `user` row. No resource, no deploy — a database is
+a name.
+
+## The shape
+
+| file | what it is |
+|---|---|
+| `schema.ts` | the catalog: `user`, `issue`, `comment`, `label` namespaces |
+| `policy.ts` | `Ripple.Policy.policy` — classes `admin`/`member`/`viewer`, `preset` ownership (creator/author pinned to the caller), `issue.privateNote` masked to admin |
+| `queries.ts` | every navigational query and pull shape; compiled against the policy in tests |
+| `rank.ts` | fractional ranking — a drag writes one `:issue/rank` double |
+| `roles.ts` / `shared.ts` | Better Auth access-control roles and the constants both Workers and the SPA share |
+| `api.ts` | the auth Worker: BetterAuth (organization + jwt plugins) on D1, `POST /api/ripple-token`, and the built SPA as Worker assets |
+| `resources.ts` / `alchemy.run.ts` | the peer (R2 + DOs + compiled policy via `Ripple.authEnv`) and the one stack wiring both Workers |
+| `src/` | the SPA: auth screens, workspace picker, live kanban board, issue detail, time travel |
+| `test/` | policy compilation + masked-pull checks, role→class mapping, ranking — part of `bun run test` |
+
+## What each screen demonstrates
+
+- **Workspace picker** — multi-tenancy. Creating "Coral Team" runs
+  `ripple.db("coral-team").install()` under the creator's freshly-minted
+  admin JWT. Switching workspaces disposes the `ManagedRuntime` and builds a
+  new `Ripple.layer` whose `token` Effect re-mints on every reconnect and
+  transact, so 15-minute tokens refresh themselves.
+- **Board** — reactivity. Columns render one `db.live(boardQuery)` stream;
+  a drag writes two datoms (status + rank) and the board re-renders when the
+  peer's basis ticks. There is no refetch code anywhere in the app.
+- **Issue detail** — policy in the small. The admin-only note is
+  `Issue.privateNote.optional` in pull shapes (required pulls of a masked
+  attribute fail *at compile time* — see `test/policy.test.ts`), and comments
+  carry `preset` authorship.
+- **Invite → viewer** — enforcement is server-side. A viewer's UI is polite
+  (no + buttons, a `viewer` badge), but the proof is that a forced write comes
+  back from the peer as `Unauthorized` and surfaces as a toast:
+  "server denied op: issue:status".
+- **Time travel** — immutability. The slider re-renders the whole board via
+  `db.asOf(t)` — same queries, one extra argument — and deleted issues are
+  recovered from `db.history`.
+
+## Deploying to real Cloudflare
+
+```sh
+bun alchemy deploy examples/reef/alchemy.run.ts          # first pass: Workers + D1 + R2
+VITE_RIPPLE_URL=<peerUrl> bunx vite build examples/reef  # bake the peer URL into the SPA
+bun alchemy deploy examples/reef/alchemy.run.ts          # second pass: ship the assets
+```
+
+The API token needs the `todos` e2e permissions (Workers Scripts, R2 — see
+CONTRIBUTING.md) **plus `Account / D1 / Edit`** for the Better Auth database.
+The deployed SPA is served by the auth Worker itself, so cookies stay
+same-origin with no proxy.
