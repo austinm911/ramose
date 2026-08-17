@@ -3,7 +3,6 @@
  */
 
 import * as Ripple from "@ripple/alchemy";
-import { SchemaFx } from "@ripple/alchemy";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
@@ -14,7 +13,7 @@ import { Todos } from "./schema.ts";
 export const InstallSchema = Alchemy.Action(
   "InstallSchema",
   Effect.gen(function* () {
-    const system = SchemaFx.fromWrite(yield* Ripple.WriteSystem(Sys));
+    const system = Ripple.fromWrite(yield* Ripple.WriteSystem(Sys));
     return Effect.fn(function* () {
       yield* system.create("todos", Todos);
     });

@@ -18,7 +18,7 @@ import {
   Namespace,
   Policy as P,
   Ref,
-} from "../../src/schema/index.ts";
+} from "../../src/db/internal.ts";
 
 const User = Namespace("user", {
   sub: Attr(Schema.String, { unique: "identity" }),

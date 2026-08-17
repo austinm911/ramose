@@ -1,16 +1,15 @@
 /** Entity id wrapper — `.pull(...)` lives here, not on `db`. */
 
-import type { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";
 import type { QueryOptions } from "../Client.ts";
-import type { DatabaseError } from "../DatabaseTypes.ts";
+import type { DbError } from "./Errors.ts";
 import type { AnyCatalog } from "./Catalog.ts";
-import { noPeer, type MissingPeer } from "./Errors.ts";
+import { noPeer, type MissingPeer } from "./SchemaErrors.ts";
 import {
   lowerPullPattern,
   reshapePullResult,
   type IdentPullPattern,
-  type PullResult,
+  type Pull,
   type ValidatePull,
 } from "./Pull.ts";
 
@@ -18,9 +17,9 @@ export type EidPull = (
   id: number,
   pattern: unknown[],
   options?: QueryOptions,
-) => Effect.Effect<unknown, DatabaseError, RuntimeContext>;
+) => Effect.Effect<unknown, DbError>;
 
-export type EidPullError = DatabaseError | MissingPeer;
+export type EidPullError = DbError | MissingPeer;
 
 export interface Eid<C extends AnyCatalog = AnyCatalog> {
   readonly _tag: "Eid";
@@ -36,7 +35,7 @@ export interface Eid<C extends AnyCatalog = AnyCatalog> {
       ? P & IdentPullPattern<C>
       : ValidatePull<C, P>,
     options?: QueryOptions,
-  ): Effect.Effect<PullResult<C, P> | null, EidPullError, RuntimeContext>;
+  ): Effect.Effect<Pull<C, P> | null, EidPullError>;
 }
 
 export const makeEid = <C extends AnyCatalog>(

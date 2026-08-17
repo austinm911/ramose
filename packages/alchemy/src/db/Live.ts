@@ -1,6 +1,5 @@
 /** `db.live(q => …)` — a standing `db.q`, woken by this session's `t`. */
 
-import type { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";
 import type { QueryOptions } from "../Client.ts";
 import type { Session } from "../Session.ts";
@@ -10,7 +9,7 @@ import type {
   TypedReadWriteDatabaseClient,
 } from "./Client.ts";
 import { isEid, type Eid } from "./Eid.ts";
-import type { PullResult, ValidatePull } from "./Pull.ts";
+import type { Pull, ValidatePull } from "./Pull.ts";
 import type {
   AttrSlot,
   BindClause,
@@ -34,7 +33,7 @@ export interface LiveStore<T> {
 
 /** @internal */
 export type LiveRun = <A>(
-  effect: Effect.Effect<A, unknown, RuntimeContext>,
+  effect: Effect.Effect<A, unknown>,
 ) => Promise<A>;
 
 /** @internal the query a live store re-runs. */
@@ -58,7 +57,7 @@ type Simplify<T> = { readonly [K in keyof T]: T[K] };
 /** One live row: the pull map's result, plus the entity it came from. */
 export type LiveRow<C extends AnyCatalog, P> = Simplify<
   // `Omit`: a map with its own `eid` key loses it, exactly as the row does
-  Omit<PullResult<C, P>, "eid"> & { readonly eid: Eid<C> }
+  Omit<Pull<C, P>, "eid"> & { readonly eid: Eid<C> }
 >;
 
 /** The vars in `B` bound as an entity — the only things live `find` accepts. */
@@ -269,7 +268,7 @@ const liveBuilder = <C extends AnyCatalog, B extends object>(
     find: (v: QueryVar) => liveFind({ builder, eidVar: v, pattern: undefined }),
   }) as unknown as LiveQueryBuilder<C, B>;
 
-/** @internal wired up by `SchemaFx.Session.connect`. */
+/** @internal wired up by `Session.connect`. */
 export const makeLive = <C extends AnyCatalog>(
   db: TypedReadDatabaseClient<C>,
   session: Session,

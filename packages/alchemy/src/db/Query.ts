@@ -1,13 +1,12 @@
 /** Catalog-generic datalog builder. Bindings accumulate; `find` is the typed terminal. */
 
-import type { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";
 import type { QueryOptions, QueryResponse } from "../Client.ts";
-import type { DatabaseError } from "../DatabaseTypes.ts";
+import type { DbError } from "./Errors.ts";
 import { lowerAttr } from "./attrRef.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import type { Eid } from "./Eid.ts";
-import { noPeer, type MissingPeer } from "./Errors.ts";
+import { noPeer, type MissingPeer } from "./SchemaErrors.ts";
 import type { AttrAtIdent, CatalogIdent, ValueAtIdent } from "./idents.ts";
 
 export type QueryVar = `?${string}`;
@@ -138,6 +137,23 @@ export interface QuerySpec {
   readonly eidVars?: readonly string[] | undefined;
 }
 
+/**
+ * A built query: the lowered spec, the vars its terminal selects, and the row
+ * type `R` those vars yield.
+ *
+ * `db.q` runs one once and `db.live` stands one up — those two terminals over
+ * a single {@link QueryBuilder} callback land with the `Db` redesign. Today
+ * the builder's own `find` / `query` are the terminals, and this is the shape
+ * they lower to.
+ */
+export interface Query<C extends AnyCatalog = AnyCatalog, R = unknown> {
+  readonly catalog: C;
+  readonly spec: QuerySpec;
+  readonly vars: readonly QueryVar[];
+  /** Phantom: the row type the selected vars yield. Never present at runtime. */
+  readonly _result?: R;
+}
+
 const isQueryVar = (x: unknown): x is QueryVar =>
   typeof x === "string" && x.startsWith("?") && x.length > 1;
 
@@ -160,11 +176,11 @@ export interface QueryIo {
   find(
     spec: QuerySpec,
     vars: readonly QueryVar[],
-  ): Effect.Effect<unknown, DatabaseError, RuntimeContext>;
+  ): Effect.Effect<unknown, DbError>;
   query(
     spec: QuerySpec,
     vars: readonly QueryVar[],
-  ): Effect.Effect<QueryResponse<unknown>, DatabaseError, RuntimeContext>;
+  ): Effect.Effect<QueryResponse<unknown>, DbError>;
 }
 
 /** Lower a builder spec to the JS query object the peer already accepts. */
@@ -208,16 +224,12 @@ export interface QueryBuilder<
    */
   find<const Vars extends readonly QueryVar[]>(
     ...vars: Vars
-  ): Effect.Effect<FindRows<B, Vars>, DatabaseError | MissingPeer, RuntimeContext>;
+  ): Effect.Effect<FindRows<B, Vars>, DbError | MissingPeer>;
 
   /** Same as {@link find} but keeps `t` / `root` / `explain` / meta. */
   query<const Vars extends readonly QueryVar[]>(
     ...vars: Vars
-  ): Effect.Effect<
-    QueryResponse<FindRows<B, Vars>>,
-    DatabaseError | MissingPeer,
-    RuntimeContext
-  >;
+  ): Effect.Effect<QueryResponse<FindRows<B, Vars>>, DbError | MissingPeer>;
 }
 
 const makeBuilder = <C extends AnyCatalog, B extends object>(

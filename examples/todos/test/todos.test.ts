@@ -1,13 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { Session } from "@ripple/alchemy/schema";
+import { Session } from "@ripple/alchemy/db";
 import { Connection, fromJson, pull, query, toJson } from "@ripple/core";
-import { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";
 import { Todos } from "../schema.ts";
 import { addTodo, deleteTodo, setDone, todoQuery } from "../src/todos.ts";
 
-const run = <A, E>(effect: Effect.Effect<A, E, RuntimeContext>) =>
-  Effect.runPromise(effect.pipe(Effect.provide(RuntimeContext.phantom)));
+const run = <A, E>(effect: Effect.Effect<A, E>) =>
+  Effect.runPromise(effect);
 
 interface Frame {
   id?: number;

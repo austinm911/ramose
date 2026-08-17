@@ -218,7 +218,7 @@ export type ValidatePull<C extends AnyCatalog, P> = [IdentsIn<P>] extends [
  * Inferred result of `eid.pull(pattern)`. Fields object → caller
  * keys, required vs optional honored. Array → ident keys, all optional.
  */
-export type PullResult<C extends AnyCatalog, P> = [P] extends [
+export type Pull<C extends AnyCatalog, P> = [P] extends [
   readonly unknown[],
 ]
   ? P extends IdentPullPattern<C>

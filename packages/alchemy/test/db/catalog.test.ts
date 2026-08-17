@@ -17,7 +17,7 @@ import {
   reshapePullResult,
   Long,
   Ref,
-} from "../../src/schema/index.ts";
+} from "../../src/db/internal.ts";
 
 const User = Namespace("user", {
   name: Attr(Schema.String, { unique: "identity", doc: "display name" }),
@@ -233,7 +233,7 @@ describe("lowerWireTx", () => {
       [":db/retractEntity", 1001],
     ]);
     const bad = Effect.runSync(Effect.flip(lowerWireTx(Movies, [{ ":user/nope": "x" }])));
-    expect(bad._tag).toBe("BadRequest");
+    expect(bad._tag).toBe("InvalidRequest");
     expect(bad.message).toContain(":user/nope");
   });
 });

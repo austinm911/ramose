@@ -1,7 +1,7 @@
 /** Shared fixture catalog for the schema tests / compile-time fixtures. */
 
 import * as Schema from "effect/Schema";
-import { Attr, Catalog, Long, Namespace, Ref } from "../../src/schema/index.ts";
+import { Attr, Catalog, Long, Namespace, Ref } from "../../src/db/internal.ts";
 
 export const User = Namespace("user", {
   name: Attr(Schema.String, { unique: "identity" }),

@@ -52,7 +52,7 @@ export const Peer = Cloudflare.Worker("Peer", {
  * before anything downstream binds to it.
  *
  * Databases come later and per use: wrap the bound system
- * (`SchemaFx.fromReadWrite`) and `create("movies", Movies)` hands back a
+ * (`Ripple.fromReadWrite`) and `create("movies", Movies)` hands back a
  * typed client for `/db/movies/…` and ensures the catalog (a schema tx).
  * The untyped `create("movies")` is still the zero-network name upsert.
  * The Transactor DO is `idFromName("movies")`.

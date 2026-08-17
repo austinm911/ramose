@@ -1,13 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";
 import type { WebSocketLike } from "../src/Session.ts";
-import { Session as SchemaFxSession } from "../src/schema/index.ts";
+import { Session as TypedSession } from "../src/db/internal.ts";
 
-import { Movies, User } from "./schema/fixture.ts";
+import { Movies, User } from "./db/fixture.ts";
 
-const run = <A, E>(eff: Effect.Effect<A, E, RuntimeContext>) =>
-  Effect.runPromise(eff.pipe(Effect.provide(RuntimeContext.phantom)));
+const run = <A, E>(eff: Effect.Effect<A, E>) =>
+  Effect.runPromise(eff);
 
 interface Frame {
   id: number;
@@ -64,7 +63,7 @@ const settle = () => Bun.sleep(20);
 const open = (answer: (frame: Frame) => Reply | undefined) => {
   const peer = fakePeer(answer);
   return run(
-    SchemaFxSession.connect({
+    TypedSession.connect({
       url: "https://peer.example.com",
       name: "movies",
       catalog: Movies,

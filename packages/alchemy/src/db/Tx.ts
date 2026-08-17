@@ -1,7 +1,7 @@
 /** Catalog-generic transaction builder. `transact(function* (tx) { … })` is the happy path. */
 
 import * as Effect from "effect/Effect";
-import { BadRequest } from "../DatabaseTypes.ts";
+import { InvalidRequest } from "./Errors.ts";
 import { isAttrRef, lowerAttr } from "./attrRef.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import type {
@@ -49,7 +49,7 @@ export type AttrRefLookup<C extends AnyCatalog> = {
 
 export type TxEntity<C extends AnyCatalog> =
   | EntityRef<C>
-  | EntityHandle<C>
+  | Entity<C>
   | AttrRefLookup<C>;
 
 // ── collected ops (what a future impl would send) ──────────────────────────
@@ -70,8 +70,8 @@ export interface TxSpec {
  * A tempid / eid / lookup handle. `add` / `retract` take an attr from
  * *any* catalog namespace — that is the bag.
  */
-export interface EntityHandle<C extends AnyCatalog = AnyCatalog> {
-  readonly _tag: "EntityHandle";
+export interface Entity<C extends AnyCatalog = AnyCatalog> {
+  readonly _tag: "Entity";
   readonly id: EntityRef<C>;
 
   add<const A extends TxAttr<C>>(
@@ -94,7 +94,7 @@ export interface EntityHandle<C extends AnyCatalog = AnyCatalog> {
  * is a generator (or an Effect.gen callback). `db.transact` is the
  * terminal that would submit.
  */
-export interface TxBuilder<C extends AnyCatalog = AnyCatalog> {
+export interface Tx<C extends AnyCatalog = AnyCatalog> {
   readonly catalog: C;
   readonly spec: TxSpec;
 
@@ -103,8 +103,8 @@ export interface TxBuilder<C extends AnyCatalog = AnyCatalog> {
    * `tx.entity()` → new handle; `tx.entity(1001)`; `tx.entity("ada")`;
    * `tx.entity([User.name, "Ada"])`.
    */
-  entity(): Effect.Effect<EntityHandle<C>>;
-  entity(id: TxEntity<C>): Effect.Effect<EntityHandle<C>>;
+  entity(): Effect.Effect<Entity<C>>;
+  entity(id: TxEntity<C>): Effect.Effect<Entity<C>>;
 
   /** Assert one datom. Cardinality-many is one call per value. */
   add<const A extends TxAttr<C>>(
@@ -146,7 +146,7 @@ export type TxGenBody<
   C extends AnyCatalog,
   Eff extends Effect.Effect<any, any, any> = Effect.Effect<any, any, any>,
   A = unknown,
-> = (tx: TxBuilder<C>) => Generator<Eff, A, never>;
+> = (tx: Tx<C>) => Generator<Eff, A, never>;
 
 /**
  * Effect-returning callback — kept for composition
@@ -156,12 +156,12 @@ export type TxEffectBody<
   C extends AnyCatalog,
   E = never,
   R = never,
-> = (tx: TxBuilder<C>) => Effect.Effect<unknown, E, R>;
+> = (tx: Tx<C>) => Effect.Effect<unknown, E, R>;
 
-const isHandle = (e: unknown): e is EntityHandle =>
+const isHandle = (e: unknown): e is Entity =>
   typeof e === "object" &&
   e !== null &&
-  (e as { _tag?: unknown })._tag === "EntityHandle";
+  (e as { _tag?: unknown })._tag === "Entity";
 
 const resolveEntity = (e: unknown): unknown => {
   if (isHandle(e)) return e.id;
@@ -174,8 +174,8 @@ const resolveEntity = (e: unknown): unknown => {
 const makeHandle = <C extends AnyCatalog>(
   id: EntityRef<C>,
   ops: TxOp[],
-): EntityHandle<C> => ({
-  _tag: "EntityHandle",
+): Entity<C> => ({
+  _tag: "Entity",
   id,
   add: (attr: unknown, value: unknown) =>
     Effect.sync(() => {
@@ -200,10 +200,10 @@ const makeHandle = <C extends AnyCatalog>(
  * `db.transact(function* (tx) { … })` and by compile-time / runtime
  * fixtures.
  */
-export const txBuilder = <C extends AnyCatalog>(catalog: C): TxBuilder<C> => {
+export const txBuilder = <C extends AnyCatalog>(catalog: C): Tx<C> => {
   const ops: TxOp[] = [];
   let next = 0;
-  const builder: TxBuilder<C> = {
+  const builder: Tx<C> = {
     catalog,
     get spec() {
       return { ops: ops.slice() };
@@ -215,7 +215,7 @@ export const txBuilder = <C extends AnyCatalog>(catalog: C): TxBuilder<C> => {
             ? (`tmp-${++next}` as EntityRef<C>)
             : (resolveEntity(id) as EntityRef<C>);
         return makeHandle(resolved, ops);
-      })) as TxBuilder<C>["entity"],
+      })) as Tx<C>["entity"],
     add: (e: unknown, attr: unknown, value: unknown) =>
       Effect.sync(() => {
         ops.push([":db/add", resolveEntity(e), lowerAttr(attr), value]);
@@ -248,20 +248,20 @@ const catalogIdents = (catalog: AnyCatalog): Set<string> => {
   return out;
 };
 
-const unknownAttr = (ident: unknown): BadRequest =>
-  new BadRequest({
+const unknownAttr = (ident: unknown): InvalidRequest =>
+  new InvalidRequest({
     message: `ripple/schema: unknown attribute ${String(ident)}`,
   });
 
 /**
  * Catalog-check a keyword-soup / list-form tx and copy it to a fresh
  * `unknown[]` the untyped client can submit. Unknown idents fail with
- * `BadRequest` — no silent cast past the bag.
+ * `InvalidRequest` — no silent cast past the bag.
  */
 export const lowerWireTx = (
   catalog: AnyCatalog,
   tx: readonly unknown[],
-): Effect.Effect<unknown[], BadRequest> => {
+): Effect.Effect<unknown[], InvalidRequest> => {
   const idents = catalogIdents(catalog);
   const out: unknown[] = [];
   for (const item of tx) {
@@ -284,7 +284,7 @@ export const lowerWireTx = (
         continue;
       }
       return Effect.fail(
-        new BadRequest({
+        new InvalidRequest({
           message: `ripple/schema: unknown tx op ${String(op)}`,
         }),
       );
@@ -304,7 +304,7 @@ export const lowerWireTx = (
       continue;
     }
     return Effect.fail(
-      new BadRequest({
+      new InvalidRequest({
         message: `ripple/schema: invalid transactWire item (${typeof item})`,
       }),
     );

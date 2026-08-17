@@ -1,11 +1,10 @@
-import { Session } from "@ripple/alchemy/schema";
-import { RuntimeContext } from "alchemy/RuntimeContext";
+import { Session } from "@ripple/alchemy/db";
 import * as Effect from "effect/Effect";
 import { Todos } from "../schema.ts";
 
 export const run = <A, E>(
-  effect: Effect.Effect<A, E, RuntimeContext>,
-): Promise<A> => Effect.runPromise(effect.pipe(Effect.provide(RuntimeContext.phantom)));
+  effect: Effect.Effect<A, E>,
+): Promise<A> => Effect.runPromise(effect);
 
 export const { session, db } = await run(
   Session.connect({

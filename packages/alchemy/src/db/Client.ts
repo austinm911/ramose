@@ -1,7 +1,6 @@
 /** Catalog-generic System / Database clients. Wraps today's untyped Ripple client. */
 
-import type { TxData } from "@ripple/core";
-import type { RuntimeContext } from "alchemy/RuntimeContext";
+import type { TxData } from "@ripple/core/tx.ts";
 import * as Effect from "effect/Effect";
 import type {
   DatabaseHealth,
@@ -24,11 +23,11 @@ import {
   type SystemClientOptions,
 } from "../Client.ts";
 import { DATABASE_NAME_RE, invalidDatabaseName } from "../DatabaseName.ts";
-import type { BadRequest, DatabaseError } from "../DatabaseTypes.ts";
 import type { AnyCatalog } from "./Catalog.ts";
+import type { DbError, InvalidRequest } from "./Errors.ts";
 import { makeEid, type EidPull } from "./Eid.ts";
 import { schemaTx } from "./ensure.ts";
-import { MissingPeer, noPeer, SchemaEnsureError } from "./Errors.ts";
+import { MissingPeer, noPeer, SchemaEnsureError } from "./SchemaErrors.ts";
 import {
   queryBuilder,
   toQueryObject,
@@ -40,15 +39,15 @@ import {
 import {
   lowerWireTx,
   txBuilder,
-  type TxBuilder,
+  type Tx,
   type WireTx,
   type YieldContext,
   type YieldError,
 } from "./Tx.ts";
 
-export type OpenError = BadRequest | SchemaEnsureError;
+export type OpenError = InvalidRequest | SchemaEnsureError;
 
-export type IoError = DatabaseError | MissingPeer;
+export type IoError = DbError | MissingPeer;
 
 /** Read half, generic on the catalog. No `transact`. */
 export interface TypedReadDatabaseClient<C extends AnyCatalog = AnyCatalog> {
@@ -62,25 +61,23 @@ export interface TypedReadDatabaseClient<C extends AnyCatalog = AnyCatalog> {
    * The builder tracks bindings; `find` is the typed terminal.
    */
   q<A, E = IoError>(
-    build: (
-      q: QueryBuilder<C, {}>,
-    ) => Effect.Effect<A, E, RuntimeContext>,
-  ): Effect.Effect<A, E, RuntimeContext>;
+    build: (q: QueryBuilder<C, {}>) => Effect.Effect<A, E>,
+  ): Effect.Effect<A, E>;
   /** Untyped escape hatch — today's object / string query. */
   q<T = unknown>(
     query: string | object,
     inputs?: unknown[],
     options?: QueryOptions,
-  ): Effect.Effect<T, IoError, RuntimeContext>;
+  ): Effect.Effect<T, IoError>;
 
   query<T = unknown>(
     query: string | object,
     inputs?: unknown[],
     options?: QueryOptions,
-  ): Effect.Effect<QueryResponse<T>, IoError, RuntimeContext>;
+  ): Effect.Effect<QueryResponse<T>, IoError>;
 
-  info(): Effect.Effect<Record<string, unknown>, IoError, RuntimeContext>;
-  health(): Effect.Effect<DatabaseHealth, IoError, RuntimeContext>;
+  info(): Effect.Effect<Record<string, unknown>, IoError>;
+  health(): Effect.Effect<DatabaseHealth, IoError>;
 
   asOf(t: number): TypedReadDatabaseClient<C>;
   history(): TypedReadDatabaseClient<C>;
@@ -96,25 +93,25 @@ export interface TypedWriteDatabaseClient<C extends AnyCatalog = AnyCatalog> {
    * Effect-returning callback stays for composition.
    */
   transact<Eff extends Effect.Effect<any, any, any>, A = unknown>(
-    build: (tx: TxBuilder<C>) => Generator<Eff, A, never>,
+    build: (tx: Tx<C>) => Generator<Eff, A, never>,
   ): Effect.Effect<
     TxAck,
-    DatabaseError | YieldError<Eff> | MissingPeer,
-    RuntimeContext | YieldContext<Eff>
+    DbError | YieldError<Eff> | MissingPeer,
+    YieldContext<Eff>
   >;
   transact<E = never, R = never>(
-    build: (tx: TxBuilder<C>) => Effect.Effect<unknown, E, R>,
-  ): Effect.Effect<TxAck, DatabaseError | E | MissingPeer, RuntimeContext | R>;
+    build: (tx: Tx<C>) => Effect.Effect<unknown, E, R>,
+  ): Effect.Effect<TxAck, DbError | E | MissingPeer, R>;
 
   /** Keyword-soup maps (`{ ":user/name": "Ada" }`), still catalog-checked. */
   transactWire(
     tx: WireTx<C>,
-  ): Effect.Effect<TxAck, DatabaseError | MissingPeer, RuntimeContext>;
+  ): Effect.Effect<TxAck, DbError | MissingPeer>;
 
   /** Today's untyped escape hatch. */
   transactUntyped(
     tx: TxData,
-  ): Effect.Effect<TxAck, DatabaseError | MissingPeer, RuntimeContext>;
+  ): Effect.Effect<TxAck, DbError | MissingPeer>;
 }
 
 export interface TypedReadWriteDatabaseClient<C extends AnyCatalog = AnyCatalog>
@@ -123,43 +120,43 @@ export interface TypedReadWriteDatabaseClient<C extends AnyCatalog = AnyCatalog>
 
 export interface TypedReadSystemClient {
   /**
-   * Open a typed read client. Name validation is `BadRequest`.
+   * Open a typed read client. Name validation is `InvalidRequest`.
    * Does **not** ensure the catalog — a read client cannot transact.
    * Schema must already be present (or be ensured by a write client).
    */
   create<C extends AnyCatalog>(
     name: string,
     catalog: C,
-  ): Effect.Effect<TypedReadDatabaseClient<C>, BadRequest, RuntimeContext>;
+  ): Effect.Effect<TypedReadDatabaseClient<C>, InvalidRequest>;
   connect<C extends AnyCatalog>(
     name: string,
     catalog: C,
-  ): Effect.Effect<TypedReadDatabaseClient<C>, BadRequest, RuntimeContext>;
-  health(): Effect.Effect<DatabaseHealth, DatabaseError, RuntimeContext>;
+  ): Effect.Effect<TypedReadDatabaseClient<C>, InvalidRequest>;
+  health(): Effect.Effect<DatabaseHealth, DbError>;
 }
 
 export interface TypedWriteSystemClient {
   create<C extends AnyCatalog>(
     name: string,
     catalog: C,
-  ): Effect.Effect<TypedWriteDatabaseClient<C>, OpenError, RuntimeContext>;
+  ): Effect.Effect<TypedWriteDatabaseClient<C>, OpenError>;
   connect<C extends AnyCatalog>(
     name: string,
     catalog: C,
-  ): Effect.Effect<TypedWriteDatabaseClient<C>, OpenError, RuntimeContext>;
-  health(): Effect.Effect<DatabaseHealth, DatabaseError, RuntimeContext>;
+  ): Effect.Effect<TypedWriteDatabaseClient<C>, OpenError>;
+  health(): Effect.Effect<DatabaseHealth, DbError>;
 }
 
 export interface TypedReadWriteSystemClient {
   create<C extends AnyCatalog>(
     name: string,
     catalog: C,
-  ): Effect.Effect<TypedReadWriteDatabaseClient<C>, OpenError, RuntimeContext>;
+  ): Effect.Effect<TypedReadWriteDatabaseClient<C>, OpenError>;
   connect<C extends AnyCatalog>(
     name: string,
     catalog: C,
-  ): Effect.Effect<TypedReadWriteDatabaseClient<C>, OpenError, RuntimeContext>;
-  health(): Effect.Effect<DatabaseHealth, DatabaseError, RuntimeContext>;
+  ): Effect.Effect<TypedReadWriteDatabaseClient<C>, OpenError>;
+  health(): Effect.Effect<DatabaseHealth, DbError>;
 }
 
 const isGenerator = (
@@ -184,7 +181,7 @@ const runGenerator = (
 
 const runTxBody = <C extends AnyCatalog>(
   catalog: C,
-  build: (tx: TxBuilder<C>) => unknown,
+  build: (tx: Tx<C>) => unknown,
 ): Effect.Effect<TxData, any, any> => {
   const tx = txBuilder(catalog);
   const out = build(tx);
@@ -259,7 +256,7 @@ const makeRead = <C extends AnyCatalog>(
         | object
         | ((
             q: QueryBuilder<C, {}>,
-          ) => Effect.Effect<unknown, DatabaseError, RuntimeContext>),
+          ) => Effect.Effect<unknown, DbError>),
       inputs?: unknown[],
       options?: QueryOptions,
     ) => {
@@ -285,7 +282,7 @@ const makeWrite = <C extends AnyCatalog>(
 ): TypedWriteDatabaseClient<C> => ({
   catalog,
   name,
-  transact: ((build: (tx: TxBuilder<C>) => unknown) => {
+  transact: ((build: (tx: Tx<C>) => unknown) => {
     if (!raw) return noPeer("transact");
     return runTxBody(catalog, build).pipe(
       Effect.flatMap((ops) => raw.transact(ops)),
@@ -312,7 +309,7 @@ const makeReadWrite = <C extends AnyCatalog>(
 const ensureSchema = (
   raw: WriteDatabaseClient,
   catalog: AnyCatalog,
-): Effect.Effect<void, SchemaEnsureError, RuntimeContext> =>
+): Effect.Effect<void, SchemaEnsureError> =>
   raw.transact([...schemaTx(catalog)]).pipe(
     Effect.map(() => undefined),
     Effect.mapError(
@@ -326,11 +323,11 @@ const ensureSchema = (
 
 /** Name check, open the raw client, optionally ensure the catalog, wrap. */
 const open = <Raw, Client, E = never>(
-  createRaw: (name: string) => Effect.Effect<Raw, BadRequest>,
+  createRaw: (name: string) => Effect.Effect<Raw, InvalidRequest>,
   name: string,
   wrap: (raw: Raw) => Client,
-  ensure?: (raw: Raw) => Effect.Effect<void, E, RuntimeContext>,
-): Effect.Effect<Client, BadRequest | E, RuntimeContext> => {
+  ensure?: (raw: Raw) => Effect.Effect<void, E>,
+): Effect.Effect<Client, InvalidRequest | E> => {
   if (!DATABASE_NAME_RE.test(name)) {
     return Effect.fail(invalidDatabaseName(name));
   }

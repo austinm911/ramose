@@ -13,7 +13,6 @@
  */
 
 import * as Ripple from "@ripple/alchemy";
-import { SchemaFx } from "@ripple/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
@@ -32,7 +31,7 @@ export const App = Cloudflare.Worker(
   Effect.gen(function* () {
     // Bindings still yield the untyped system (`create(name)`). Wrap it so
     // `create(name, Movies)` is catalog-typed and ensures the schema.
-    const system = SchemaFx.fromReadWrite(yield* Ripple.ReadWriteSystem(Sys));
+    const system = Ripple.fromReadWrite(yield* Ripple.ReadWriteSystem(Sys));
 
     // ── databases are names ──────────────────────────────────────────────────
     //
@@ -40,7 +39,7 @@ export const App = Cloudflare.Worker(
     // (a schema tx — `:db/ident` is unique/identity, so re-asserting upserts).
     // The untyped `create(name)` is still a zero-network upsert; the typed
     // wrap's create transacts the schema. An invalid name fails with
-    // `BadRequest`; ensure failure is `SchemaEnsureError` (both mapped to 400).
+    // `InvalidRequest`; ensure failure is `SchemaEnsureError` (both mapped to 400).
     //
     // Db-per-tenant falls out of that: one `create` per request, no resource,
     // no deploy and no provisioning per tenant. The token is shared across
@@ -66,7 +65,7 @@ export const App = Cloudflare.Worker(
         // `HttpServerRequest.fromWeb` strips the origin, so `url` is already
         // "/path?query". Valid database names are URL-safe by construction, so
         // the raw segment is used as-is: anything percent-encoded (say
-        // `/t/bad%2Fname`) simply fails the name check → `BadRequest` → 400.
+        // `/t/bad%2Fname`) simply fails the name check → `InvalidRequest` → 400.
         const request = yield* HttpServerRequest.HttpServerRequest;
         const path = request.url.split("?")[0] ?? "/";
         if (path.startsWith("/t/")) return yield* tenantRoute(path.slice("/t/".length));
@@ -107,19 +106,19 @@ export const App = Cloudflare.Worker(
         Effect.catchTags({
           TxRejected: (e) =>
             HttpServerResponse.json({ error: e.message, code: e.code }, { status: 409 }),
-          TransactorDead: (e) =>
+          Unavailable: (e) =>
             HttpServerResponse.json(
               { error: e.message },
               { status: 503, headers: { "retry-after": String(Math.ceil(e.retryAfterMs / 1000)) } },
             ),
           QueryBudgetExceeded: (e) =>
             HttpServerResponse.json({ error: e.message, clause: e.clause }, { status: 413 }),
-          BadRequest: (e) => HttpServerResponse.json({ error: e.message }, { status: 400 }),
+          InvalidRequest: (e) => HttpServerResponse.json({ error: e.message }, { status: 400 }),
           SchemaEnsureError: (e) =>
             HttpServerResponse.json({ error: e.message }, { status: 400 }),
           Unauthorized: (e) => HttpServerResponse.json({ error: e.message }, { status: 401 }),
-          NotFound: (e) => HttpServerResponse.json({ error: e.message }, { status: 404 }),
-          Internal: (e) => HttpServerResponse.json({ error: e.message }, { status: 500 }),
+          DatabaseNotFound: (e) => HttpServerResponse.json({ error: e.message }, { status: 404 }),
+          InternalError: (e) => HttpServerResponse.json({ error: e.message }, { status: 500 }),
           NetworkError: (e) => HttpServerResponse.json({ error: e.message }, { status: 502 }),
           MissingPeer: (e) => HttpServerResponse.json({ error: e.message }, { status: 502 }),
         }),

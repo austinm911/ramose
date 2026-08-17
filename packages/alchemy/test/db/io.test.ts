@@ -15,7 +15,6 @@ import {
   query,
   toJson,
 } from "@ripple/core";
-import { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import type { FetchLike } from "../../src/Client.ts";
@@ -32,16 +31,16 @@ import {
   makeWriteSystemClient,
   schemaTx,
   unsafeDatabase,
-} from "../../src/schema/index.ts";
+} from "../../src/db/internal.ts";
 
 import { Meta, Movie, Movies, User } from "./fixture.ts";
 
-const run = <A, E>(eff: Effect.Effect<A, E, RuntimeContext>) =>
-  Effect.runPromise(eff.pipe(Effect.provide(RuntimeContext.phantom)));
+const run = <A, E>(eff: Effect.Effect<A, E>) =>
+  Effect.runPromise(eff);
 
-const runFail = <A, E>(eff: Effect.Effect<A, E, RuntimeContext>) =>
+const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
   Effect.runPromise(
-    Effect.flip(eff).pipe(Effect.provide(RuntimeContext.phantom)),
+    Effect.flip(eff),
   );
 
 interface Call {
@@ -199,7 +198,7 @@ describe("request shapes (fake fetch)", () => {
     const { calls, fetch } = recorder(() => ({ body: {} }));
     const system = makeSystem({ url: "https://peer.example.com", fetch });
     const e = await runFail(system.create("BAD NAME", Movies));
-    expect(e._tag).toBe("BadRequest");
+    expect(e._tag).toBe("InvalidRequest");
     expect(calls).toHaveLength(0);
   });
 
@@ -307,7 +306,7 @@ describe("request shapes (fake fetch)", () => {
     expect(calls[1].headers["x-ripple-min-t"]).toBeUndefined();
   });
 
-  test("ensure failure is SchemaEnsureError, not the raw DatabaseError", async () => {
+  test("ensure failure is SchemaEnsureError, not the raw DbError", async () => {
     const { fetch } = recorder(() => ({
       status: 409,
       body: { error: "unique conflict", tag: "TxRejected", code: "tx/unique-conflict" },
@@ -485,13 +484,13 @@ describe("in-process peer", () => {
       db.transactUntyped([[":db/add", 1, ":user/nope", "x"]]).pipe(
         Effect.catchTags({
           TxRejected: (e) => Effect.succeed({ error: e._tag, message: e.message }),
-          TransactorDead: (e) => Effect.succeed({ error: e._tag, message: e.message }),
-          BadRequest: (e) => Effect.succeed({ error: e._tag, message: e.message }),
-          NotFound: (e) => Effect.succeed({ error: e._tag, message: e.message }),
+          Unavailable: (e) => Effect.succeed({ error: e._tag, message: e.message }),
+          InvalidRequest: (e) => Effect.succeed({ error: e._tag, message: e.message }),
+          DatabaseNotFound: (e) => Effect.succeed({ error: e._tag, message: e.message }),
           Unauthorized: (e) => Effect.succeed({ error: e._tag, message: e.message }),
           QueryBudgetExceeded: (e) =>
             Effect.succeed({ error: e._tag, message: e.message }),
-          Internal: (e) => Effect.succeed({ error: e._tag, message: e.message }),
+          InternalError: (e) => Effect.succeed({ error: e._tag, message: e.message }),
           NetworkError: (e) => Effect.succeed({ error: e._tag, message: e.message }),
         }),
       ),
@@ -501,14 +500,14 @@ describe("in-process peer", () => {
     const opened = await run(
       system.create("nope!", Movies).pipe(
         Effect.catchTags({
-          BadRequest: (e) => Effect.succeed({ error: e._tag, message: e.message }),
+          InvalidRequest: (e) => Effect.succeed({ error: e._tag, message: e.message }),
           SchemaEnsureError: (e) =>
             Effect.succeed({ error: e._tag, message: e.message }),
         }),
       ),
     );
     expect(opened).toEqual(
-      expect.objectContaining({ error: "BadRequest" }),
+      expect.objectContaining({ error: "InvalidRequest" }),
     );
 
     const health = await run(system.health());
@@ -675,7 +674,7 @@ describe("effect honesty", () => {
     const e = await runFail(
       db.transactWire([{ ":user/nope": "x" }] as never),
     );
-    expect(e._tag).toBe("BadRequest");
+    expect(e._tag).toBe("InvalidRequest");
     expect(calls).toHaveLength(0);
   });
 });

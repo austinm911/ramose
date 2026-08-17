@@ -9,13 +9,13 @@
  * (`Client.make`).
  */
 
-import { BadRequest } from "./DatabaseTypes.ts";
+import { InvalidRequest } from "./db/Errors.ts";
 
 /** A Ripple database name, as the peer Worker validates it (`validDbName`). */
 export const DATABASE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 
 /** The failure a name that does not match {@link DATABASE_NAME_RE} produces. */
-export const invalidDatabaseName = (name: string): BadRequest =>
-  new BadRequest({
+export const invalidDatabaseName = (name: string): InvalidRequest =>
+  new InvalidRequest({
     message: `ripple: invalid database name ${JSON.stringify(name)} — must match ${DATABASE_NAME_RE}`,
   });

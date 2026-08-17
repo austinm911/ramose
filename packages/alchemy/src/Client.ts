@@ -20,18 +20,17 @@
  * and uuids survive the round trip — same as `@ripple/client`.
  */
 
-import { fromJson, toJson } from "@ripple/core";
-import type { TxData } from "@ripple/core";
-import type { RuntimeContext } from "alchemy/RuntimeContext";
+import { fromJson, toJson } from "@ripple/core/json.ts";
+import type { TxData } from "@ripple/core/tx.ts";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import { DATABASE_NAME_RE, invalidDatabaseName } from "./DatabaseName.ts";
 import {
-  type BadRequest,
-  type DatabaseError,
+  type DbError,
   fromResponse,
+  type InvalidRequest,
   NetworkError,
-} from "./DatabaseTypes.ts";
+} from "./db/Errors.ts";
 
 /** Where a system client sends, with which credential. Resolved per call. */
 export interface SystemEndpoint {
@@ -60,18 +59,18 @@ export type FetchLike = (
 ) => Promise<Response>;
 
 /**
- * Everything the client builders need. `endpoint` is an Effect so Alchemy
- * Outputs resolve lazily, per call — which is where the `RuntimeContext`
- * requirement on every client method comes from (see `SystemRuntime.ts`).
+ * Everything the client builders need. `endpoint` is an Effect so an Alchemy
+ * Output can be read when the capability binds (see `SystemRuntime.ts`); it
+ * requires nothing, so neither does any client method.
  */
 export interface SystemSource {
-  readonly endpoint: Effect.Effect<SystemEndpoint, never, RuntimeContext>;
+  readonly endpoint: Effect.Effect<SystemEndpoint>;
   readonly fetch: FetchLike;
 }
 
 /** The same, plus the database name every `/db/:name` route hangs off. */
 export interface DatabaseSource {
-  readonly endpoint: Effect.Effect<DatabaseEndpoint, never, RuntimeContext>;
+  readonly endpoint: Effect.Effect<DatabaseEndpoint>;
   readonly fetch: FetchLike;
 }
 
@@ -128,32 +127,28 @@ export interface ReadDatabaseClient {
     query: string | object,
     inputs?: unknown[],
     options?: QueryOptions,
-  ): Effect.Effect<T, DatabaseError, RuntimeContext>;
+  ): Effect.Effect<T, DbError>;
   /** Run a datalog query and keep `t` / `root` / `explain` / the `x-ripple-*` meta. */
   query<T = unknown>(
     query: string | object,
     inputs?: unknown[],
     options?: QueryOptions,
-  ): Effect.Effect<QueryResponse<T>, DatabaseError, RuntimeContext>;
+  ): Effect.Effect<QueryResponse<T>, DbError>;
   /** Pull a pattern from one entity (eid, lookup ref, or ident). */
   pull<T = Record<string, unknown> | null>(
     eid: number | string | [string, unknown],
     pattern: string | unknown[],
     options?: QueryOptions,
-  ): Effect.Effect<T, DatabaseError, RuntimeContext>;
+  ): Effect.Effect<T, DbError>;
   /** The whole entity map, or `undefined` when it has no datoms. */
   entity(
     eid: number,
     options?: QueryOptions,
-  ): Effect.Effect<
-    Record<string, unknown> | undefined,
-    DatabaseError,
-    RuntimeContext
-  >;
+  ): Effect.Effect<Record<string, unknown> | undefined, DbError>;
   /** Transactor + replica + peer stats for this database. */
-  info(): Effect.Effect<Record<string, unknown>, DatabaseError, RuntimeContext>;
+  info(): Effect.Effect<Record<string, unknown>, DbError>;
   /** Peer liveness (`GET /health`), not database-scoped. */
-  health(): Effect.Effect<DatabaseHealth, DatabaseError, RuntimeContext>;
+  health(): Effect.Effect<DatabaseHealth, DbError>;
   /** Read-only view as of transaction `t`. */
   asOf(t: number): ReadDatabaseClient;
   /** History view — asserts *and* retracts, with tx and op. */
@@ -163,7 +158,7 @@ export interface ReadDatabaseClient {
 /** Write half. */
 export interface WriteDatabaseClient {
   /** Submit a transaction; resolves once it is committed and durable. */
-  transact(tx: TxData): Effect.Effect<TxAck, DatabaseError, RuntimeContext>;
+  transact(tx: TxData): Effect.Effect<TxAck, DbError>;
 }
 
 export interface ReadWriteDatabaseClient
@@ -178,35 +173,35 @@ export interface ReadWriteDatabaseClient
  * Durable Object; the first `transact` materializes the database, whether or
  * not it already had datoms. Only the *name* can be wrong, and it is checked
  * against {@link DATABASE_NAME_RE} before anything else, so an illegal name
- * fails the Effect with `BadRequest` instead of reaching the peer.
+ * fails the Effect with `InvalidRequest` instead of reaching the peer.
  */
 export interface ReadSystemClient {
   /** A read client for Ripple database `name` on this peer. */
-  create(name: string): Effect.Effect<ReadDatabaseClient, BadRequest>;
+  create(name: string): Effect.Effect<ReadDatabaseClient, InvalidRequest>;
   /** Alias of {@link ReadSystemClient.create} — same implementation. */
-  connect(name: string): Effect.Effect<ReadDatabaseClient, BadRequest>;
+  connect(name: string): Effect.Effect<ReadDatabaseClient, InvalidRequest>;
   /** Peer liveness (`GET /health`), not database-scoped. */
-  health(): Effect.Effect<DatabaseHealth, DatabaseError, RuntimeContext>;
+  health(): Effect.Effect<DatabaseHealth, DbError>;
 }
 
 /** Write half of the peer. @see ReadSystemClient */
 export interface WriteSystemClient {
   /** A write client for Ripple database `name` on this peer. */
-  create(name: string): Effect.Effect<WriteDatabaseClient, BadRequest>;
+  create(name: string): Effect.Effect<WriteDatabaseClient, InvalidRequest>;
   /** Alias of {@link WriteSystemClient.create} — same implementation. */
-  connect(name: string): Effect.Effect<WriteDatabaseClient, BadRequest>;
+  connect(name: string): Effect.Effect<WriteDatabaseClient, InvalidRequest>;
   /** Peer liveness (`GET /health`), not database-scoped. */
-  health(): Effect.Effect<DatabaseHealth, DatabaseError, RuntimeContext>;
+  health(): Effect.Effect<DatabaseHealth, DbError>;
 }
 
 /** Read + write. @see ReadSystemClient */
 export interface ReadWriteSystemClient {
   /** A read-write client for Ripple database `name` on this peer. */
-  create(name: string): Effect.Effect<ReadWriteDatabaseClient, BadRequest>;
+  create(name: string): Effect.Effect<ReadWriteDatabaseClient, InvalidRequest>;
   /** Alias of {@link ReadWriteSystemClient.create} — same implementation. */
-  connect(name: string): Effect.Effect<ReadWriteDatabaseClient, BadRequest>;
+  connect(name: string): Effect.Effect<ReadWriteDatabaseClient, InvalidRequest>;
   /** Peer liveness (`GET /health`), not database-scoped. */
-  health(): Effect.Effect<DatabaseHealth, DatabaseError, RuntimeContext>;
+  health(): Effect.Effect<DatabaseHealth, DbError>;
 }
 
 /** The `asOf` / `history` coordinates a read view carries. */
@@ -258,14 +253,14 @@ interface RawResult {
  */
 const send = <E extends SystemEndpoint>(
   source: {
-    readonly endpoint: Effect.Effect<E, never, RuntimeContext>;
+    readonly endpoint: Effect.Effect<E>;
     readonly fetch: FetchLike;
   },
   method: string,
   path: (endpoint: E) => string,
   body?: unknown,
   extra?: Record<string, string>,
-): Effect.Effect<RawResult, DatabaseError, RuntimeContext> =>
+): Effect.Effect<RawResult, DbError> =>
   Effect.gen(function* () {
     const endpoint = yield* source.endpoint;
     const headers: Record<string, string> = {
@@ -339,7 +334,7 @@ const makeRead = (source: DatabaseSource, view: View): ReadDatabaseClient => {
     q: string | object,
     inputs: unknown[] = [],
     options: QueryOptions = {},
-  ): Effect.Effect<QueryResponse<T>, DatabaseError, RuntimeContext> =>
+  ): Effect.Effect<QueryResponse<T>, DbError> =>
     send(
       source,
       "POST",
@@ -462,7 +457,7 @@ const scope = (source: SystemSource, name: string): DatabaseSource => ({
  */
 const opener =
   <Client>(source: SystemSource, make: (source: DatabaseSource) => Client) =>
-  (name: string): Effect.Effect<Client, BadRequest> =>
+  (name: string): Effect.Effect<Client, InvalidRequest> =>
     DATABASE_NAME_RE.test(name)
       ? Effect.succeed(make(scope(source, name)))
       : Effect.fail(invalidDatabaseName(name));

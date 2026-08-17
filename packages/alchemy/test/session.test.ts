@@ -1,20 +1,19 @@
 import { describe, expect, test } from "bun:test";
-import { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Client from "../src/Client.ts";
 import type { FetchLike } from "../src/Client.ts";
 import { openSession, type WebSocketLike } from "../src/Session.ts";
-import { isEid, Session as SchemaFxSession } from "../src/schema/index.ts";
+import { isEid, Session as TypedSession } from "../src/db/internal.ts";
 
-import { Movies, User } from "./schema/fixture.ts";
+import { Movies, User } from "./db/fixture.ts";
 
-const run = <A, E>(eff: Effect.Effect<A, E, RuntimeContext>) =>
-  Effect.runPromise(eff.pipe(Effect.provide(RuntimeContext.phantom)));
+const run = <A, E>(eff: Effect.Effect<A, E>) =>
+  Effect.runPromise(eff);
 
-const runFail = <A, E>(eff: Effect.Effect<A, E, RuntimeContext>) =>
+const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
   Effect.runPromise(
-    Effect.flip(eff).pipe(Effect.provide(RuntimeContext.phantom)),
+    Effect.flip(eff),
   );
 
 interface Frame {
@@ -466,7 +465,7 @@ describe("the typed client rides the socket", () => {
     const base = recorder({ ok: true, service: "ripple", stage: "test", time: 1 });
 
     const { session, db } = await run(
-      SchemaFxSession.connect({
+      TypedSession.connect({
         url: "https://peer.example.com",
         name: "movies",
         catalog: Movies,
@@ -523,7 +522,7 @@ describe("the typed client rides the socket", () => {
       body: { error: "unique conflict", tag: "TxRejected", code: "tx/unique-conflict" },
     }));
     const e = await runFail(
-      SchemaFxSession.connect({
+      TypedSession.connect({
         url: "https://peer.example.com",
         name: "movies",
         catalog: Movies,
