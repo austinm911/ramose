@@ -159,5 +159,6 @@ bun alchemy deploy              # $USER stage
 bun alchemy deploy --stage prod
 ```
 
+Contributing (tests, CI, Cloudflare e2e): [`CONTRIBUTING.md`](CONTRIBUTING.md).
 Ops: [`docs/RUNBOOK.md`](docs/RUNBOOK.md). Recorded benches:
 [`bench/RESULTS.md`](bench/RESULTS.md).

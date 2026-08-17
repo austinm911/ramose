@@ -1,0 +1,47 @@
+# Ephemeral Cloudflare e2e: deploy a unique Alchemy stage, run test/e2e, destroy.
+#
+# Credentials come from the GitHub Environment "Development":
+#   CLOUDFLARE_API_TOKEN    — environment secret
+#   CLOUDFLARE_ACCOUNT_ID   — environment variable (or secret)
+# Optional:
+#   RIPPLE_TOKEN — only if the peer is deployed with bearer auth
+#
+# Same flow as `bun run test:e2e:cf` (scripts/e2e-cloudflare.sh). See
+# CONTRIBUTING.md for credentials and token permission groups.
+name: E2E Cloudflare
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-cf-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: e2e-cloudflare
+    runs-on: ubuntu-latest
+    environment: Development
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install
+        run: bun install --frozen-lockfile
+      - name: Deploy, e2e, destroy
+        env:
+          # Account id is non-sensitive; prefer vars, fall back to secrets.
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          RIPPLE_TOKEN: ${{ secrets.RIPPLE_TOKEN }}
+          # Unique per run so concurrent/cancelled jobs never share state.
+          ALCHEMY_STAGE: e2e-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Need CLOUDFLARE_API_TOKEN (secret) and CLOUDFLARE_ACCOUNT_ID (variable or secret) on the Development environment. See CONTRIBUTING.md."
+            exit 1
+          fi
+          bun run test:e2e:cf

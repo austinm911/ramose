@@ -82,9 +82,9 @@ export type ServerWorker =
 
 /** @internal Deploy-time liveness probe of the server (live provider only). */
 export interface ServerProbe {
-  /** Total attempts before failing the deploy. @default 5 */
+  /** Total attempts before failing the deploy. @default 30 */
   readonly attempts?: number;
-  /** Delay between attempts. @default 500 */
+  /** Delay between attempts (ms). @default 2000 */
   readonly delayMs?: number;
 }
 
@@ -340,8 +340,10 @@ const healthOnce = (url: string) =>
  */
 const probeHealth = (url: string, probe: ServerProbe | false | undefined) => {
   if (probe === false) return Effect.void;
-  const attempts = Math.max(1, probe?.attempts ?? 5);
-  const delayMs = probe?.delayMs ?? 500;
+  // workers.dev routes often need tens of seconds after a first upload before
+  // they answer; 5×500 ms was empirically too short on real Cloudflare.
+  const attempts = Math.max(1, probe?.attempts ?? 30);
+  const delayMs = probe?.delayMs ?? 2_000;
   return healthOnce(url).pipe(
     Effect.retry({ times: attempts - 1, schedule: Schedule.spaced(delayMs) }),
   );

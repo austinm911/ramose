@@ -16,14 +16,15 @@ installed Bun and run `bun install`, so dependencies are ready when an agent sta
 - Tests: `bun run test` (unit/integration across `packages/*` + `examples/todos`,
   ~390 tests via `bun:test`, no services required).
 - `bun run test:e2e` runs `test/e2e` against a live peer and only executes when
-  `RIPPLE_URL` is set (otherwise the tests skip); point it at the running peer,
-  e.g. `RIPPLE_URL=http://localhost:1337 bun run test:e2e`. This suite is not part
-  of CI.
+  `RIPPLE_URL` is set (otherwise the tests skip). Point it at a local peer
+  (`RIPPLE_URL=http://localhost:1337 bun run test:e2e`) or use
+  `bun run test:e2e:cf` for a real Cloudflare deploy (below).
   - Known local caveat: against a local `alchemy dev` (miniflare) peer, the single
     e2e case "a write on another connection wakes db.live" fails consistently
     (cross-connection novelty over WebSockets does not propagate across isolates in
     miniflare local). Same-connection live queries work — the todos UI updates live
-    on write. The remaining e2e cases pass. Don't chase this against a local peer.
+    on write. The remaining e2e cases pass. Don't chase this against a local peer —
+    run it against real Cloudflare (below) to see the full suite pass.
 - There is no production "build" step for local dev; the app runs via `alchemy dev`
   (miniflare) and Vite.
 
@@ -44,3 +45,17 @@ installed Bun and run `bun install`, so dependencies are ready when an agent sta
   `POST /db/<name>/query`, `POST /db/<name>/pull`, `GET /db/<name>/info`. There is a
   top-level `GET /health`. In `tx` maps, every key must be a fully-qualified ident
   (e.g. `:todo/title`); a bare key like `done` is rejected as `tx/invalid`.
+
+## Running the e2e suite against real Cloudflare
+
+The full flow, credentials, and CI wiring live in
+[`CONTRIBUTING.md`](../CONTRIBUTING.md). From a Cloud Agent:
+
+```sh
+bun run test:e2e:cf
+```
+
+Add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the Cursor Secrets
+panel, then start a new agent so they are injected. Without them the script
+exits immediately with a clear error; local `alchemy dev` still works with
+placeholders (above). Token permission groups are listed in CONTRIBUTING.md.

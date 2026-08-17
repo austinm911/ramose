@@ -7,7 +7,7 @@
  *
  * Skipped when RIPPLE_URL is not set.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as ManagedRuntime from "effect/ManagedRuntime";
@@ -21,10 +21,14 @@ const URL_ = process.env.RIPPLE_URL;
 const token = process.env.RIPPLE_TOKEN;
 const d = URL_ ? describe : describe.skip;
 
+// Real Cloudflare (workers.dev) is slower than local miniflare, and Peer
+// retries transient platform errors — keep headroom above Bun's 5s default.
+setDefaultTimeout(60_000);
+
 const dbName = `e2e-${Date.now().toString(36)}`;
 
 d("ripple e2e", () => {
-  const client = new Peer(URL_ ?? "http://invalid", { token });
+  const client = new Peer(URL_ ?? "http://invalid", { token, retryTransient: 5 });
   const db = client.db(dbName);
   let alice = 0, bob = 0, tSchema = 0, tAge30 = 0;
 
@@ -232,7 +236,20 @@ d("ripple session socket e2e", () => {
             yield* bob.add(Session.n, 2);
           }),
         );
-        for (let i = 0; i < 60 && (seen.at(-1) ?? 0) < 2; i++) await Bun.sleep(250);
+        // Prove B's write is visible on A's HTTPS path before requiring live.
+        let count = 0;
+        for (let i = 0; i < 40 && count < 2; i++) {
+          count = (
+            await a.runPromise(
+              dbA.q((q) => q.where("?e", Session.name, "?n").find("?n")),
+            )
+          ).length;
+          if (count < 2) await Bun.sleep(250);
+        }
+        expect(count).toBeGreaterThanOrEqual(2);
+        // Cross-connection novelty over a fresh workers.dev peer can take longer
+        // than a local miniflare hop; wait up to ~45s for the standing live.
+        for (let i = 0; i < 90 && (seen.at(-1) ?? 0) < 2; i++) await Bun.sleep(500);
         await Effect.runPromise(Fiber.interrupt(fiber));
 
         expect(seen.at(-1)).toBeGreaterThanOrEqual(2);
@@ -241,6 +258,6 @@ d("ripple session socket e2e", () => {
         await b.dispose();
       }
     },
-    60_000,
+    120_000,
   );
 });
