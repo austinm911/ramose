@@ -1,0 +1,36 @@
+# Ephemeral Cloudflare e2e: deploy a unique Alchemy stage, run test/e2e, destroy.
+#
+# Repository secrets (required):
+#   CLOUDFLARE_ACCOUNT_ID
+#   CLOUDFLARE_API_TOKEN
+# Optional:
+#   RIPPLE_TOKEN — only if the peer is deployed with bearer auth
+name: E2E Cloudflare
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+concurrency:
+  group: e2e-cf-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: e2e-cloudflare
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install
+        run: bun install --frozen-lockfile
+      - name: Deploy, e2e, destroy
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          RIPPLE_TOKEN: ${{ secrets.RIPPLE_TOKEN }}
+          # Unique per run so concurrent/cancelled jobs never share state.
+          ALCHEMY_STAGE: e2e-${{ github.run_id }}
+        run: bash scripts/ci-e2e.sh
