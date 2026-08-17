@@ -20,7 +20,9 @@
  *
  * Reads: basis (root + novelty) from the nearest QueryReplica DO → Db over
  * cached segments → datalog here in the Worker. Writes: forwarded to the
- * Transactor DO. Auth: one shared bearer token (RIPPLE_TOKEN), disabled if unset.
+ * Transactor DO. Auth: a bearer token resolved to a `Principal` per request
+ * (auth.ts) — a verified JWT under `RIPPLE_POLICY`, else the legacy shared
+ * `RIPPLE_TOKEN`; the policy filters reads and checks writes.
  *
  * The request is one Effect: routing failures are `Data.TaggedError`s
  * (errors.ts) mapped back to responses with `Effect.catchTags`, and every
@@ -145,9 +147,9 @@ function pollRequest(request: Request, env: RippleEnv, db: string): Request {
 }
 
 /**
- * Stage (a): the ingress pre-check at the replica's basis, and the principal
- * the Transactor DO will trust. Best effort — anything but a denial falls
- * through to the writer, which checks authoritatively anyway.
+ * The ingress pre-check at the replica's basis, and the principal the
+ * Transactor DO will trust. Best effort — anything but a denial falls through
+ * to the writer, which checks authoritatively anyway.
  */
 async function ingress(request: Request, env: RippleEnv, db: string, principal: Principal, text: string, t0: number): Promise<{ body: string; done?: undefined } | { done: Response }> {
   let raw: { tx?: unknown };
@@ -176,9 +178,8 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
   const transactor = () => env.TRANSACTOR.get(env.TRANSACTOR.idFromName(db));
   const txUrl = (path: string) => `https://transactor${path}${path.includes("?") ? "&" : "?"}db=${encodeURIComponent(db)}`;
   const policy = authState(env).policy;
-  // one token, one database — re-asserted here, so a session frame is judged on the name it actually opened
+  // re-asserted here, so a session frame is judged on the name it actually opened
   if (!allows(principal, db)) throw new Unauthorized({ message: "token is not valid for this database" });
-  // the shared token is not a principal on a named database — only `ensure`'s no-op case gets through
   if (isTokenOnly(principal) && !(rest === "/transact" && request.method === "POST")) throw new Unauthorized({});
   const adminOnly = () => {
     if (policy !== undefined && !isAdmin(principal)) throw new Unauthorized({ status: 403, message: "admin only", code: "policy" });
@@ -284,7 +285,6 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
     const [client, server] = [pair[0], pair[1]];
     server.accept();
     const session = openSession(server as unknown as SocketLike, {
-      // the principal rides the upgrade; `{op:"auth"}` swaps it, per frame, without a reconnect
       principal,
       authenticate: (token) => principalForToken(env, token.length === 0 ? undefined : token, db),
       dispatch: async (r, init, p) => {

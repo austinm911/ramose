@@ -326,7 +326,6 @@ export class Transactor {
         const tResolve = performance.now();
         for (const p of batch) {
           try {
-            // stage (b): the policy against the exact pre-state `transact` will hand `processTx`
             const tx = await this.authorize(p);
             const rep = await this.conn.transact(tx);
             const txInstant = rep.txData[0]?.v as number; // :db/txInstant is first
@@ -402,11 +401,7 @@ export class Transactor {
     }
   }
 
-  /**
-   * The authoritative write check. Runs against `this.conn.db()` — the value
-   * `Connection.transact` is about to hand `processTx` — and returns the ops to
-   * transact (with preset injections). `processTx` itself is not wrapped.
-   */
+  /** The authoritative write check: runs against `this.conn.db()` and returns the ops to transact, preset injections included. */
   private async authorize(p: Pending): Promise<TxData> {
     const policy = this.host.policy;
     if (!policy) return p.tx;

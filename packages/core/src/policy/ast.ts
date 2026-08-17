@@ -1,12 +1,4 @@
-/**
- * The compiled policy AST: plain, versioned JSON. `@ripple/alchemy` produces
- * it from typed combinators; the peer decodes it at boot with `parsePolicy`.
- *
- * Rules attach to *attributes*. A namespace entry is a fallback for every
- * attribute under that prefix, so an attribute added after the policy was
- * compiled still inherits its namespace's rules instead of becoming
- * world-readable. Nothing matches → deny.
- */
+/** The compiled policy AST: plain, versioned JSON. Rules attach to attributes, a namespace entry is the fallback for its prefix, nothing matching = deny. */
 
 export const POLICY_VERSION = 1;
 /** Max nesting of `ref` arrows in one expression. */

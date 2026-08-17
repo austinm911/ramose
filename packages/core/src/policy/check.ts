@@ -1,8 +1,4 @@
-/**
- * Write check. Pure: the transactor calls it as a sibling step immediately
- * before `conn.transact`, against the exact pre-state db the tx will apply to.
- * `processTx` is not wrapped.
- */
+/** The write check: pure, run against the pre-state db the tx will apply to. */
 
 import { ValueTag, valueKey } from "../datom.ts";
 import type { Db } from "../db.ts";

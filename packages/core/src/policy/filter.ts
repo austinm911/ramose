@@ -1,11 +1,4 @@
-/**
- * The filtered `Db`. `datoms` / `seekMany` / `first` are the only raw-access
- * points the engine, `pull`, `entity` and `entid` reach storage through, so
- * dropping datoms there covers reads structurally.
- *
- * `estimate` stays unfiltered: it is planner metadata over node counts, never
- * materialised datoms (an accepted, bounded side channel).
- */
+/** The filtered `Db`: drops datoms at the raw-access points (`datoms` / `seekMany` / `first`); `estimate` stays unfiltered. */
 
 import type { Datom, IndexId, Prefix } from "../datom.ts";
 import { Db, type DbOptions } from "../db.ts";
