@@ -51,10 +51,11 @@ cleanup() {
   else
     # R2 empty-then-delete can 409 if list/delete races with recent puts; retry.
     echo ">> Destroying stage '$STAGE' ..." >&2
-    local ok=""
-    for _ in $(seq 1 5); do
+    ok=""
+    for attempt in $(seq 1 5); do
       if bun alchemy destroy --stage "$STAGE" --yes; then ok=1; break; fi
-      sleep 3
+      echo ">> destroy attempt ${attempt} failed; retrying..." >&2
+      sleep 5
     done
     [ -n "$ok" ] || echo "warning: destroy failed for stage '$STAGE'; check the Cloudflare dashboard." >&2
   fi

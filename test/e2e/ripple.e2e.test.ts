@@ -153,7 +153,26 @@ d("ripple e2e", () => {
   test("write throughput smoke (group commit)", async () => {
     const N = 300;
     const t0 = performance.now();
-    await Promise.all(Array.from({ length: N }, (_, i) => db.transact([{ ":user/name": `w${i}`, ":user/email": `w${i}@example.com` }])));
+    // Fresh workers.dev hosts occasionally 404/500 individual requests under a
+    // concurrent burst ("Worker not found" / error 1042). Retry those only.
+    const once = async (i: number) => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await db.transact([{ ":user/name": `w${i}`, ":user/email": `w${i}@example.com` }]);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          const status = (e as { status?: number }).status;
+          const transient =
+            status === 404 ||
+            status === 500 ||
+            status === 503 ||
+            /Worker not found|error code: 1042/i.test(msg);
+          if (!transient || attempt >= 5) throw e;
+          await Bun.sleep(100 * (attempt + 1));
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: N }, (_, i) => once(i)));
     const ms = performance.now() - t0;
     const info = await db.info();
     console.log(`e2e write smoke: ${N} tx in ${ms.toFixed(0)} ms → ${((N / ms) * 1000).toFixed(0)} tx/s; max batch ${info.transactor.stats.maxBatch}`);
