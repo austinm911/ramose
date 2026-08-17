@@ -28,7 +28,13 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250101.0",
     "@types/bun": "latest",
-    "typescript": "^5.6.0"
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.6.0",
+    "vite": "^7.0.0"
   },
   "dependencies": {
     "@ripple/alchemy": "workspace:*",
