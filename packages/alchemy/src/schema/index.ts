@@ -27,6 +27,7 @@ export {
   pick,
   reshapePullResult,
 } from "./Pull.ts";
+export * as Policy from "./Policy.ts";
 export * from "./Query.ts";
 export * from "./Tx.ts";
 export * from "./valueTypes.ts";
