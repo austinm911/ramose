@@ -155,7 +155,7 @@ describe("the peer's auth env", () => {
   });
 
   test("issuers and origins are comma-separated sets, from a list or a string", () => {
-    const env = authEnv({
+    const { [AUTH_ENV_KEYS.internalSecret]: _secret, ...env } = authEnv({
       policy: '{"v":1}',
       jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
       issuers: ["https://auth.acme.example", " https://auth.other.example "],
@@ -178,6 +178,46 @@ describe("the peer's auth env", () => {
     const bound = env[AUTH_ENV_KEYS.internalSecret];
     expect(Redacted.isRedacted(bound)).toBe(true);
     expect(Redacted.value(bound as Redacted.Redacted<string>)).toBe("sh4red");
+  });
+
+  /**
+   * The DO gate is off when `RIPPLE_INTERNAL_SECRET` is unset, so a policy that
+   * bound no secret would arm enforcement on the Worker while leaving the
+   * transactor trusting whatever principal the Worker claims.
+   */
+  test("a policy always binds an internal secret, minting one if none was pinned", () => {
+    const env = authEnv({
+      policy: '{"v":1}',
+      jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
+      issuers: "https://auth.acme.example",
+      aud: "ripple:peer:prod",
+    });
+    const bound = env[AUTH_ENV_KEYS.internalSecret];
+    expect(Redacted.isRedacted(bound)).toBe(true);
+    const minted = Redacted.value(bound as Redacted.Redacted<string>);
+    expect(minted).not.toBe("");
+    expect(minted).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("a policy with a pinned secret uses that secret, not a fresh one", () => {
+    const env = authEnv({
+      policy: '{"v":1}',
+      jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
+      issuers: "https://auth.acme.example",
+      aud: "ripple:peer:prod",
+      internalSecret: "sh4red",
+    });
+    expect(Redacted.value(env[AUTH_ENV_KEYS.internalSecret] as Redacted.Redacted<string>)).toBe(
+      "sh4red",
+    );
+  });
+
+  test("no policy and no pinned secret binds no internal secret", () => {
+    expect(authEnv({ jwksUrl: "https://auth.acme.example/.well-known/jwks.json" })).toEqual({
+      RIPPLE_JWKS_URL: "https://auth.acme.example/.well-known/jwks.json",
+    });
+    expect(authEnv({})[AUTH_ENV_KEYS.internalSecret]).toBeUndefined();
+    expect(authEnv({ policy: "" })[AUTH_ENV_KEYS.internalSecret]).toBeUndefined();
   });
 
   test("an unpinned internal secret is minted, and is not the same twice", () => {

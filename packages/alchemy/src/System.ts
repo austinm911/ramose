@@ -84,10 +84,9 @@ export interface SystemProbe {
 /**
  * What the peer Worker needs to verify JWTs and enforce a policy.
  *
- * The System does **not** push these onto the peer — a Worker's `env` is
- * snapshotted when it is declared, long before this resource reconciles. Spread
- * {@link authEnv} into the peer Worker's own `env` instead, and pass the same
- * value here for the deploy-time fail-closed check.
+ * The System does **not** push these onto the peer: spread {@link authEnv} into
+ * the peer Worker's own `env`, and pass the same value here for the deploy-time
+ * fail-closed check.
  *
  * With `policy` unset the peer runs today's mode: `RIPPLE_TOKEN` if set,
  * otherwise open.
@@ -121,10 +120,7 @@ export type SystemProps = {
    * database once a policy is configured — a JWT is the only way to be one.
    */
   token?: Redacted.Redacted<string> | string;
-  /**
-   * The peer's auth configuration, for a deploy-time consistency check only.
-   * The env itself belongs on the peer Worker: `env: { …, ...authEnv(auth) }`.
-   */
+  /** The peer's auth configuration, for a deploy-time consistency check only. */
   auth?: PeerAuth;
   /** Liveness probe on deploy; `false` skips it. */
   probe?: SystemProbe | false;
@@ -172,9 +168,9 @@ export const internalSecret = (
 };
 
 /**
- * The peer Worker's auth env, as bindings. Spread it into the Worker's own
- * `env` beside `RIPPLE_TOKEN`; unset fields emit no key, so an unconfigured
- * peer is byte-for-byte today's peer.
+ * The peer Worker's auth env, as bindings. Unset fields emit no key, so an
+ * unconfigured peer is byte-for-byte today's peer; a set `policy` also binds
+ * {@link internalSecret}, since an unset key leaves the Worker→DO gate off.
  *
  * @example
  * ```typescript
@@ -199,8 +195,14 @@ export const authEnv = (
   set(k.aud, auth.aud);
   set(k.maxTtl, auth.maxTtl === undefined ? undefined : String(auth.maxTtl));
   set(k.allowedOrigins, list(auth.allowedOrigins));
+  // A configured policy arms the Worker→DO gate, and the gate is off when the
+  // key is unset — so a policy always binds a secret, minting one if the caller
+  // pinned none. Without a policy, only an explicitly passed secret binds.
   const secret = auth.internalSecret;
-  if (secret !== undefined && secret !== "") env[k.internalSecret] = internalSecret(secret);
+  const pinned = secret !== undefined && secret !== "";
+  if (pinned || (auth.policy !== undefined && auth.policy !== "")) {
+    env[k.internalSecret] = internalSecret(secret);
+  }
   return env;
 };
 
