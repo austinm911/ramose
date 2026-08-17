@@ -29,18 +29,12 @@
 import { BetterAuth } from "@alchemy.run/better-auth";
 import { CloudflareD1 } from "@alchemy.run/better-auth/CloudflareD1";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { createAccessControl } from "better-auth/plugins/access";
 import { jwt } from "better-auth/plugins/jwt";
 import { organization } from "better-auth/plugins/organization";
-import {
-  adminAc,
-  defaultStatements,
-  memberAc,
-  ownerAc,
-} from "better-auth/plugins/organization/access";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import { ac, roles } from "./roles.ts";
 import {
   AUTH_BASE_PATH,
   DEV_API_PORT,
@@ -54,21 +48,6 @@ import {
 
 /** Better Auth's tables (user/session/org/member/invitation/jwks) live here. */
 export const AuthDb = Cloudflare.D1.Database("AuthDb");
-
-// ── roles ────────────────────────────────────────────────────────────────────
-//
-// Better Auth's built-in org roles (owner/admin/member) plus a custom `viewer`
-// with no permissions at all. The role decides the `ripple.class` claim —
-// owner/admin → admin, member → member, viewer → viewer — and the Ripple
-// policy (policy.ts) is what actually enforces it on the data.
-
-const ac = createAccessControl(defaultStatements);
-const roles = {
-  owner: ac.newRole(ownerAc.statements),
-  admin: ac.newRole(adminAc.statements),
-  member: ac.newRole(memberAc.statements),
-  viewer: ac.newRole({}),
-};
 
 const json = (body: unknown, status = 200) =>
   HttpServerResponse.json(body, { status });

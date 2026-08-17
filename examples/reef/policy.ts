@@ -17,6 +17,7 @@
  */
 
 import * as Ripple from "@ripple/alchemy";
+import { allShapes } from "./queries.ts";
 import { Comment, Issue, Reef, User } from "./schema.ts";
 import { CLASSES } from "./shared.ts";
 
@@ -68,6 +69,9 @@ export const policy = P.policy(Reef, {
   },
 });
 
-/** The wire JSON for `RIPPLE_POLICY`. */
-export const compiledPolicy = (options?: Ripple.Policy.CompileOptions): string =>
-  P.compile(policy, options);
+/**
+ * The wire JSON for `RIPPLE_POLICY`. Compiling against the app's pull shapes
+ * makes "a masked attribute pulled as required" a deploy-time error.
+ */
+export const compiledPolicy = (): string =>
+  P.compile(policy, { pulls: allShapes });
