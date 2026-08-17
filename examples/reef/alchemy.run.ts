@@ -28,9 +28,9 @@ import * as Command from "alchemy/Command";
 import * as Output from "alchemy/Output";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { Api } from "./api.ts";
-import { Server } from "./resources.ts";
-import { DEV_API_PORT, DEV_UI_ORIGIN } from "./shared.ts";
+import { Api } from "./src/infra/api.ts";
+import { Server } from "./src/infra/resources.ts";
+import { DEV_API_PORT, DEV_UI_ORIGIN } from "./src/domain/shared.ts";
 
 /**
  * The SPA's dev server, as a stack resource. `Command.Dev` is a long-lived

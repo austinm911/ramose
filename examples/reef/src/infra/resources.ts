@@ -5,7 +5,7 @@
  *
  * Auth wiring (docs/AUTH_LAYER.md §4 "Alchemy" seam):
  *
- *   RIPPLE_POLICY           policy.ts, compiled to wire JSON at deploy
+ *   RIPPLE_POLICY           domain/policy.ts, compiled to wire JSON at deploy
  *   RIPPLE_JWKS_URL         the auth Worker's Better Auth JWKS endpoint —
  *                           an `Output.interpolate` over `Api.url`, which is
  *                           the one edge between the two Workers (the auth
@@ -25,7 +25,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Output from "alchemy/Output";
 import * as Effect from "effect/Effect";
 import { Api } from "./api.ts";
-import { compiledPolicy } from "./policy.ts";
+import { compiledPolicy } from "../domain/policy.ts";
 import {
   AUTH_BASE_PATH,
   DEV_PEER_PORT,
@@ -33,7 +33,7 @@ import {
   JWT_AUDIENCE,
   JWT_ISSUER,
   JWT_TTL_SECONDS,
-} from "./shared.ts";
+} from "../domain/shared.ts";
 
 const Store = Cloudflare.R2.Bucket("Store");
 const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "TransactorDO" });

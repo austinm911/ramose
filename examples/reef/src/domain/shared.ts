@@ -1,6 +1,6 @@
 /**
- * Constants shared by the auth Worker (api.ts), the peer wiring
- * (resources.ts) and the SPA. Import-light on purpose: this module ends up in
+ * Constants shared by the auth Worker (infra/api.ts), the peer wiring
+ * (infra/resources.ts) and the SPA (app/). Import-light on purpose: this module ends up in
  * the auth Worker bundle.
  */
 

@@ -15,8 +15,8 @@ import {
   labelsQuery,
   peopleQuery,
   type BoardRow,
-} from "../../queries.ts";
-import { PRIORITIES, STATUS_LABELS, type Status } from "../../schema.ts";
+} from "../../domain/queries.ts";
+import { PRIORITIES, STATUS_LABELS, type Status } from "../../domain/schema.ts";
 import { ThemeToggle } from "../App.tsx";
 import { authClient, inviteMember, listWorkspaces, type SessionUser } from "../auth.ts";
 import { Board, COLUMN_TINTS } from "../components/Board.tsx";
@@ -24,7 +24,7 @@ import { IssueDetail } from "../components/IssueDetail.tsx";
 import { TimeTravelBar } from "../components/TimeTravel.tsx";
 import { createIssue, moveIssue, seedSampleIssues, type NewIssue } from "../mutations.ts";
 import type { Workspace } from "../ripple.ts";
-import { INVITABLE_ROLES } from "../../roles.ts";
+import { INVITABLE_ROLES } from "../../domain/roles.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
 import {
   Avatar,

@@ -17,7 +17,7 @@ import {
   type OrgSummary,
   type SessionUser,
 } from "../auth.ts";
-import { SLUG_RE, slugify } from "../../shared.ts";
+import { SLUG_RE, slugify } from "../../domain/shared.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
 import {
   Avatar,

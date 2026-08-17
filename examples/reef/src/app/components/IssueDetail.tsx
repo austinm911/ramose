@@ -17,8 +17,8 @@ import {
   type CommentRow,
   type LabelRow,
   type Person,
-} from "../../queries.ts";
-import type { RippleClass } from "../../shared.ts";
+} from "../../domain/queries.ts";
+import type { RippleClass } from "../../domain/shared.ts";
 import {
   addComment,
   deleteComment,
@@ -32,7 +32,7 @@ import {
   toggleLabel,
 } from "../mutations.ts";
 import type { Workspace } from "../ripple.ts";
-import { PRIORITIES, STATUSES, STATUS_LABELS, type Status } from "../../schema.ts";
+import { PRIORITIES, STATUSES, STATUS_LABELS, type Status } from "../../domain/schema.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
 import {
   Avatar,

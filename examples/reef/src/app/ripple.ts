@@ -12,9 +12,9 @@ import * as Ripple from "@ripple/alchemy/db";
 import * as Effect from "effect/Effect";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
-import type { RippleClass } from "../shared.ts";
-import type { ReefDb } from "../queries.ts";
-import { Reef } from "../schema.ts";
+import type { RippleClass } from "../domain/shared.ts";
+import type { ReefDb } from "../domain/queries.ts";
+import { Reef } from "../domain/schema.ts";
 
 export const RIPPLE_URL: string =
   (import.meta.env.VITE_RIPPLE_URL as string | undefined) ??

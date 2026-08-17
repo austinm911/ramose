@@ -7,9 +7,9 @@
 
 import * as Effect from "effect/Effect";
 import * as Ripple from "@ripple/alchemy/db";
-import type { ReefDb } from "../queries.ts";
-import { rankAfter } from "../rank.ts";
-import { Comment, Issue, Label, User, type Status } from "../schema.ts";
+import type { ReefDb } from "../domain/queries.ts";
+import { rankAfter } from "../domain/rank.ts";
+import { Comment, Issue, Label, User, type Status } from "../domain/schema.ts";
 
 /** The labels every new workspace starts with. */
 export const SEED_LABELS: readonly { name: string; color: string }[] = [

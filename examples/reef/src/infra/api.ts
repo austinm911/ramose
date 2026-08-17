@@ -23,7 +23,7 @@
  * this Worker's URL (JWKS), and this Worker needs nothing back.
  *
  * Module layout note: `main: import.meta.url` makes this the Worker bundle
- * entry, so `Alchemy.Stack` must live elsewhere (see examples/kv-style).
+ * entry, so `Alchemy.Stack` must live elsewhere (../../alchemy.run.ts).
  */
 
 import { BetterAuth } from "@alchemy.run/better-auth";
@@ -34,7 +34,7 @@ import { organization } from "better-auth/plugins/organization";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import { ac, roles } from "./roles.ts";
+import { ac, roles } from "../domain/roles.ts";
 import {
   AUTH_BASE_PATH,
   DEV_API_PORT,
@@ -44,7 +44,7 @@ import {
   JWT_TTL_SECONDS,
   SLUG_RE,
   classOfRole,
-} from "./shared.ts";
+} from "../domain/shared.ts";
 
 /** Better Auth's tables (user/session/org/member/invitation/jwks) live here. */
 export const AuthDb = Cloudflare.D1.Database("AuthDb");

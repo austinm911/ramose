@@ -7,9 +7,9 @@
 
 import * as stylex from "@stylexjs/stylex";
 import { useState } from "react";
-import type { BoardRow } from "../../queries.ts";
-import { rankAfter, rankBetween } from "../../rank.ts";
-import { PRIORITIES, STATUSES, STATUS_LABELS, type Status } from "../../schema.ts";
+import type { BoardRow } from "../../domain/queries.ts";
+import { rankAfter, rankBetween } from "../../domain/rank.ts";
+import { PRIORITIES, STATUSES, STATUS_LABELS, type Status } from "../../domain/schema.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
 import { Avatar, Icon, IconButton, LabelBadge, PriorityIcon } from "../ui.tsx";
 
