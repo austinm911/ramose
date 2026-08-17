@@ -145,6 +145,8 @@ describe("the `/db` barrel's public names", () => {
         "Ref",
         "Long",
         "Bytes",
+        // navigational query (issue #18)
+        "query",
         // connecting
         "layer",
         "Databases",

@@ -63,10 +63,14 @@ export const App = Cloudflare.Worker(
           yield* ada.add(User.name, "Ada");
         });
         // `dbAfter` carries the min-`t` floor, so this reads its own write
-        const names = yield* dbAfter.q((q) =>
-          q.where("?e", User.name, "?n").find("?n"),
+        const names = yield* dbAfter.q(
+          Ripple.query(User).select({ name: User.name }),
         );
-        return yield* HttpServerResponse.json({ tenant: tenantId, t, names });
+        return yield* HttpServerResponse.json({
+          tenant: tenantId,
+          t,
+          names: names.map((r) => r.name),
+        });
       });
 
     return {
@@ -96,24 +100,26 @@ export const App = Cloudflare.Worker(
         // Read your own write: `dbAfter` is the same db floored at `report.t`,
         // so a replica that has not caught up refetches its basis. No `sync`,
         // no second round trip, no public `minT`.
-        const names = yield* report.dbAfter.q((q) =>
-          q.where("?e", User.name, "?n").find("?n"),
+        const nameRows = yield* report.dbAfter.q(
+          Ripple.query(User).select({ name: User.name }),
         );
+        const names = nameRows.map((r) => r.name);
 
         // …and the same query as of a past transaction. `asOf` is pure.
-        const before = yield* db
+        const beforeRows = yield* db
           .asOf(report.t - 1)
-          .q((q) => q.where("?e", User.name, "?n").find("?n"));
+          .q(Ripple.query(User).select({ name: User.name }));
+        const before = beforeRows.map((r) => r.name);
 
-        // Entity ids come back as `Eid` data from `find("?e")`; pulling one is
+        // Entity ids come back from `select({ id: User.id })`; pulling one is
         // `db.pull` — a missing required field is `null`.
-        const rows = yield* report.dbAfter.q((q) =>
-          q.where("?e", User.name, "?n").find("?e"),
+        const rows = yield* report.dbAfter.q(
+          Ripple.query(User).select({ id: User.id }),
         );
         const ada =
           rows.length === 0
             ? null
-            : yield* report.dbAfter.pull(rows[0][0], { name: User.name });
+            : yield* report.dbAfter.pull({ id: rows[0]!.id }, { name: User.name });
 
         return yield* HttpServerResponse.json({ t: report.t, names, before, ada });
       }).pipe(

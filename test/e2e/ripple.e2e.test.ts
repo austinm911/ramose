@@ -28,7 +28,12 @@ setDefaultTimeout(60_000);
 const dbName = `e2e-${Date.now().toString(36)}`;
 
 d("ripple e2e", () => {
-  const client = new Peer(URL_ ?? "http://invalid", { token, retryTransient: 5 });
+  const client = new Peer(URL_ ?? "http://invalid", {
+    token,
+    // Parallel CI stages share an account but not Worker/DO/R2. Edge HTML
+    // 404s under dual write-bursts are transient — retry rather than serialize.
+    retryTransient: 8,
+  });
   const db = client.db(dbName);
   let alice = 0, bob = 0, tSchema = 0, tAge30 = 0;
 
@@ -207,9 +212,11 @@ d("ripple session socket e2e", () => {
 
         // read-your-writes with no second round trip
         const names = await a.runPromise(
-          report.dbAfter.q((q) => q.where("?e", Session.name, "?n").find("?n")),
+          report.dbAfter.q(
+            Ripple.query(Session).select({ name: Session.name }),
+          ),
         );
-        expect(names).toEqual([["Ada"]]);
+        expect(names).toEqual([{ name: "Ada" }]);
 
         const pulled = await a.runPromise(
           report.dbAfter.pull([":s/name", "Ada"], {
@@ -223,7 +230,9 @@ d("ripple session socket e2e", () => {
         const seen: number[] = [];
         const fiber = a.runFork(
           Stream.runForEach(
-            dbA.live((q) => q.where("?e", Session.name, "?n").find("?n")),
+            dbA.live(
+              Ripple.query(Session).select({ name: Session.name }),
+            ),
             (rows) => Effect.sync(() => seen.push(rows.length)),
           ),
         );

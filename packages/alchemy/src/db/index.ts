@@ -32,6 +32,13 @@ export { Attr, type Attribute } from "./Attribute.ts";
 export { Catalog } from "./Catalog.ts";
 export { Namespace } from "./Namespace.ts";
 export { Bytes, Instant, Long, Ref, Uuid, UuidString } from "./valueTypes.ts";
+export { query } from "./NavQuery.ts";
+export type {
+  NavQuery,
+  NavQueryBuilder,
+  Predicate,
+  Shape,
+} from "./NavQuery.ts";
 
 // ── connecting ─────────────────────────────────────────────────────────────
 export { type ClientOptions, Databases, layer } from "./Databases.ts";
@@ -41,7 +48,6 @@ export type { Db, ReadDb, TxReport } from "./Db.ts";
 export type { Eid } from "./Eid.ts";
 export type { LookupRef } from "./idents.ts";
 export type { Pull } from "./Pull.ts";
-export type { Query, QueryBuilder } from "./Query.ts";
 export type { Entity, Tx } from "./Tx.ts";
 
 // ── errors ─────────────────────────────────────────────────────────────────

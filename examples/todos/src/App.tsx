@@ -18,31 +18,28 @@ const TodoList = () => {
   const { rows, error } = useLive(todos);
   if (error !== undefined) return <p>offline…</p>;
   if (rows === undefined) return <p>loading…</p>;
-  const byAge = [...rows].sort(
-    (a, b) => a[1].createdAt.getTime() - b[1].createdAt.getTime(),
-  );
   return (
     <ul>
-      {byAge.map((row) => (
-        <TodoRowView key={row[0].id} row={row} />
+      {rows.map((row) => (
+        <TodoRowView key={row.id} row={row} />
       ))}
     </ul>
   );
 };
 
-const TodoRowView = ({ row: [eid, todo] }: { row: TodoRow }) => (
+const TodoRowView = ({ row }: { row: TodoRow }) => (
   <li>
     <label>
       <input
         type="checkbox"
-        checked={todo.done}
-        onChange={(e) => void run(setDone(db, eid, e.target.checked))}
+        checked={row.done}
+        onChange={(e) => void run(setDone(db, { id: row.id }, e.target.checked))}
       />
-      <span style={{ textDecoration: todo.done ? "line-through" : undefined }}>
-        {todo.title}
+      <span style={{ textDecoration: row.done ? "line-through" : undefined }}>
+        {row.title}
       </span>
     </label>
-    <button type="button" onClick={() => void run(deleteTodo(db, eid))}>
+    <button type="button" onClick={() => void run(deleteTodo(db, { id: row.id }))}>
       delete
     </button>
   </li>

@@ -82,7 +82,8 @@ export class Peer {
       } catch (e) {
         last = e;
         if (attempt >= retries || !isTransientCf(e)) throw e;
-        await Bun.sleep(100 * (attempt + 1));
+        // Exponential backoff: concurrent stages can miss the edge for >1s.
+        await Bun.sleep(Math.min(2000, 150 * 2 ** attempt));
       }
     }
     throw last;
@@ -111,8 +112,16 @@ export class Peer {
 function isTransientCf(e: unknown): boolean {
   if (!(e instanceof HttpError)) return false;
   if (e.status === 503) return true;
-  // Cloudflare edge HTML / platform errors — not application JSON 4xx/5xx.
-  return /Worker not found|error code: 1042|<!DOCTYPE html>/i.test(e.message);
+  // Platform errors (not application JSON). Fresh workers.dev hosts and
+  // concurrent account load can surface these mid-suite.
+  if (/Worker not found|error code: 1042/i.test(e.message)) return true;
+  if (
+    e.status === 404 &&
+    /<!DOCTYPE html>|Page not found/i.test(e.message)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 /** The read fence, as the header the peer reads it from. */

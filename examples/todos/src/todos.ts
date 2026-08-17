@@ -1,25 +1,39 @@
 /** The app's queries and writes, in one place so the test can drive them. */
 
-import type { Db, Eid, Pull, QueryBuilder } from "@ripple/alchemy/db";
+import * as Ripple from "@ripple/alchemy/db";
+import type { Db, Eid } from "@ripple/alchemy/db";
 import { Todo, type Todos } from "../schema.ts";
 
 export type TodosDb = Db<typeof Todos>;
 export type TodoEid = Eid<typeof Todos>;
 
-export const pattern = {
+export const todoShape = {
+  id: Todo.id,
   title: Todo.title,
   done: Todo.done,
   createdAt: Todo.createdAt,
+} as const;
+
+/** One row from {@link todoQuery}. */
+export type TodoRow = {
+  readonly id: number;
+  readonly title: string;
+  readonly done: boolean;
+  readonly createdAt: Date;
 };
 
-/** One row: the entity, and the pattern's result for it. */
-export type TodoRow = readonly [TodoEid, Pull<typeof Todos, typeof pattern>];
+/** Standing list query — a value, not a callback builder. */
+export const todoQuery = Ripple.query(Todo)
+  .orderBy(Todo.createdAt, "asc")
+  .select(todoShape);
 
-export const todoQuery = (q: QueryBuilder<typeof Todos>) =>
-  q.where("?e", Todo.title, "_").find("?e").pull(pattern);
-
-/** One row, straight from its eid — the same `pattern`, no query. */
-export const pullTodo = (db: TodosDb, eid: TodoEid) => db.pull(eid, pattern);
+/** One row, straight from its eid — the same shape, no query. */
+export const pullTodo = (db: TodosDb, eid: TodoEid) =>
+  db.pull(eid, {
+    title: Todo.title,
+    done: Todo.done,
+    createdAt: Todo.createdAt,
+  });
 
 export const addTodo = (db: TodosDb, title: string) =>
   db.transact(function* (tx) {
