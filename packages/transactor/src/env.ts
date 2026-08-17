@@ -9,7 +9,7 @@ export interface RippleEnv {
   ANALYTICS?: AnalyticsEngineDatasetLike;
   /** stage name (dev / prod) */
   RIPPLE_STAGE?: string;
-  /** one shared bearer token, checked for every database name; empty = auth disabled */
+  /** shared bearer token: with no policy, unset = open and a match = admin; under a policy it is not a data-plane principal */
   RIPPLE_TOKEN?: string;
   /** compiled policy JSON (`SchemaFx.Policy.compile`). Its presence arms enforcement (fail closed). */
   RIPPLE_POLICY?: string;

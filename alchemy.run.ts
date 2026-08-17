@@ -50,22 +50,7 @@ export const Store = Cloudflare.R2.Bucket("Store");
  */
 export const Analytics = Cloudflare.AnalyticsEngine.Dataset("Analytics", { dataset: "ripple_tx" });
 
-/**
- * Auth config for the peer (docs/AUTH_LAYER.md). Everything is opt-in and read
- * from the environment, so `bun alchemy dev` with nothing set deploys exactly
- * today's peer: `RIPPLE_TOKEN` if set, otherwise open.
- *
- * `RIPPLE_POLICY` is the compiled policy — the value of
- * `SchemaFx.Policy.compile(policy)` for the catalog this peer serves:
- *
- * ```typescript
- * import { policy } from "./examples/todos/policy.ts";
- * const auth = { policy: SchemaFx.Policy.compile(policy), jwksUrl: …, issuers: …, aud: … };
- * ```
- *
- * Setting it arms enforcement, which makes JWT verification mandatory — hence
- * the deploy-time check on `Sys` below.
- */
+/** Peer auth (docs/AUTH_LAYER.md), all opt-in: nothing set deploys today's peer. */
 const auth: Ripple.PeerAuth = {
   policy: process.env.RIPPLE_POLICY,
   jwksUrl: process.env.RIPPLE_JWKS_URL,
@@ -94,7 +79,6 @@ export const Worker = Cloudflare.Worker("Worker", {
     // tuning knobs (see packages/transactor/src/env.ts); only bound when set
     ...tuning("RIPPLE_MAX_BATCH", "RIPPLE_QUERY_MAX_CELLS", "RIPPLE_LOG_LEVEL", "RIPPLE_INDEX_TX_THRESHOLD", "RIPPLE_INDEX_INTERVAL_MS", "RIPPLE_LOG_KEEP_TXS", "RIPPLE_REPLICA_HINT", "RIPPLE_CACHE_BASIS", "RIPPLE_CACHE_MODE", "RIPPLE_TIMING_YIELDS"),
     // RIPPLE_TOKEN: Config.redacted("RIPPLE_TOKEN")  ← the peer's one bearer token for prod
-    // The peer declares its own auth env; the System never overwrites it.
     // RIPPLE_POLICY / _JWKS_URL / _JWT_ISS / _JWT_AUD / _JWT_MAX_TTL / _ALLOWED_ORIGINS / _INTERNAL_SECRET
     ...Ripple.authEnv(auth),
   },
