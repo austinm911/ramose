@@ -4,7 +4,7 @@
  *
  *   RIPPLE_URL=http://localhost:8787 bun run bench/write-do.bench.ts [concurrency=64] [seconds=10]
  */
-import { RippleClient, attribute } from "../packages/client/src/index.ts";
+import { attrMap, Peer } from "../test/support/rippleHttp.ts";
 import { fmt, percentile } from "./lib.ts";
 
 const url = process.env.RIPPLE_URL;
@@ -14,9 +14,9 @@ if (!url) {
 }
 const conc = Number(process.argv[2] ?? 64);
 const seconds = Number(process.argv[3] ?? 10);
-const client = new RippleClient(url, { token: process.env.RIPPLE_TOKEN });
+const client = new Peer(url, { token: process.env.RIPPLE_TOKEN });
 const db = client.db(`bench-${Date.now().toString(36)}`);
-await db.transact([attribute(":k/id", "long", { unique: "identity" }), attribute(":k/v", "string")]);
+await db.transact([attrMap(":k/id", "long", { unique: "identity" }), attrMap(":k/v", "string")]);
 
 let done = 0, errors = 0;
 const lat: number[] = [];

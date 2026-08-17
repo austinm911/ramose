@@ -8,8 +8,9 @@
  * tag):
  *   { error: <human message>, tag: "<Tag>", message: <human message>,
  *     code?: <TxError code>, retryAfterMs?: <ms> }
- * `error` keeps the human-readable message because @ripple/client surfaces it
- * as `RippleError.message`; `tag` is the stable discriminator.
+ * `error` keeps the human-readable message because the Worker surfaces it as
+ * the `message` of the tagged `DbError` it hands the client; `tag` is the
+ * stable discriminator.
  */
 
 import * as Data from "effect/Data";
