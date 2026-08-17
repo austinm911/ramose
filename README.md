@@ -165,8 +165,9 @@ bun run test:e2e:cf            # ephemeral Cloudflare deploy → e2e → destroy
 
 Unit tests run on every PR and push to `master` (`.github/workflows/ci.yml`).
 A second workflow (`.github/workflows/e2e-cloudflare.yml`) deploys an
-ephemeral Alchemy stage, runs `test/e2e`, then destroys the stage. Set these
-repository secrets (same names as Cursor Cloud secrets — see `.cursor/CLOUD.md`):
+ephemeral Alchemy stage, runs `test/e2e`, then destroys the stage. It uses the
+GitHub **Development** environment; put these secrets there (same names as
+Cursor Cloud secrets — see `.cursor/CLOUD.md`):
 
 | Secret | Required | Purpose |
 |---|---|---|

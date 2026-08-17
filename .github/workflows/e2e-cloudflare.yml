@@ -1,6 +1,6 @@
 # Ephemeral Cloudflare e2e: deploy a unique Alchemy stage, run test/e2e, destroy.
 #
-# Repository secrets (required):
+# Secrets come from the GitHub Environment "Development" (not repository secrets):
 #   CLOUDFLARE_ACCOUNT_ID
 #   CLOUDFLARE_API_TOKEN
 # Optional:
@@ -24,6 +24,7 @@ jobs:
   e2e:
     name: e2e-cloudflare
     runs-on: ubuntu-latest
+    environment: Development
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -39,7 +40,7 @@ jobs:
           ALCHEMY_STAGE: e2e-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
-            echo "::error::CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must be set as repository secrets (Settings → Secrets and variables → Actions). See .cursor/CLOUD.md."
+            echo "::error::CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must be set on the Development environment (Settings → Environments → Development). See .cursor/CLOUD.md."
             exit 1
           fi
           bun run test:e2e:cf

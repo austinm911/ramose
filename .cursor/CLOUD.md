@@ -66,9 +66,7 @@ bun run test:e2e:cf
 3. Runs `RIPPLE_URL=<url> bun run test:e2e`.
 4. Destroys the stage (set `KEEP_STAGE=1` to leave it up for debugging).
 
-### Required credentials (Cursor secrets + GitHub Actions secrets)
-
-Add these in **both** places so CI and Cloud Agents can run the suite:
+### Required credentials (Cursor secrets + GitHub Environment secrets)
 
 | Name | Required | Purpose |
 |---|---|---|
@@ -87,10 +85,11 @@ Analytics Read/Edit** if a deploy reports an AE permission error.
 - **Cursor Cloud:** Secrets panel for this environment / agent (then start a new
   agent so the secrets are injected). Without them, `bun run test:e2e:cf` exits
   immediately with a clear error; local `alchemy dev` still works with placeholders.
-- **GitHub Actions:** repository secrets under Settings → Secrets and variables →
-  Actions. The workflow `.github/workflows/e2e-cloudflare.yml` runs the same
-  `bun run test:e2e:cf` flow on every PR, every push to `master`, and
-  `workflow_dispatch`.
+- **GitHub Actions:** secrets on the **Development** environment (Settings →
+  Environments → Development). The workflow
+  `.github/workflows/e2e-cloudflare.yml` sets `environment: Development` and
+  runs the same `bun run test:e2e:cf` flow on every PR, every push to `master`,
+  and `workflow_dispatch`.
 
 ### Auth note
 The deploy is an open peer (no `RIPPLE_TOKEN`/`RIPPLE_POLICY`), so the throwaway
