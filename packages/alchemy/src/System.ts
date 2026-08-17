@@ -51,7 +51,7 @@ import { isResourceOfType, Resource } from "alchemy/Resource";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
-import { BadRequest, NetworkError } from "./DatabaseTypes.ts";
+import { InvalidRequest, NetworkError } from "./db/Errors.ts";
 import type { Providers } from "./Providers.ts";
 
 export const isSystem = (value: unknown): value is System =>
@@ -92,7 +92,7 @@ export interface SystemProbe {
  * otherwise open.
  */
 export interface PeerAuth {
-  /** Compiled policy JSON (`SchemaFx.Policy.compile(policy)`). Its presence is what arms enforcement. */
+  /** Compiled policy JSON (`Ripple.Policy.compile(policy)`). Its presence is what arms enforcement. */
   readonly policy?: string | undefined;
   /** Where the issuer's public keys live. Required once `policy` is set. */
   readonly jwksUrl?: string | undefined;
@@ -340,11 +340,11 @@ const probeHealth = (url: string, probe: SystemProbe | false | undefined) => {
 
 const attributes = Effect.fn(function* (props: SystemProps, probe: boolean) {
   const badAuth = checkAuth(props.auth);
-  if (badAuth !== undefined) return yield* Effect.fail(new BadRequest({ message: badAuth }));
+  if (badAuth !== undefined) return yield* Effect.fail(new InvalidRequest({ message: badAuth }));
   const peer = resolvePeer(props.peer);
   if (peer.url === undefined || peer.url === "") {
     return yield* Effect.fail(
-      new BadRequest({
+      new InvalidRequest({
         message:
           "ripple: the peer has no URL — pass a deployed Cloudflare.Worker (workers.dev or a custom domain) or an explicit { url }",
       }),

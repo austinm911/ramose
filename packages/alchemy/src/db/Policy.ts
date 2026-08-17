@@ -10,7 +10,7 @@ import {
   POLICY_VERSION,
   PolicyAst,
   parsePolicy,
-} from "@ripple/core";
+} from "@ripple/core/policy/ast.ts";
 import type {
   AttrRules,
   CompiledPolicy,
@@ -19,11 +19,11 @@ import type {
   PolicyOp,
   PolicyOperand,
   PolicyRules,
-} from "@ripple/core";
+} from "@ripple/core/policy/ast.ts";
 import type { AnyAttribute, ValueOf } from "./Attribute.ts";
 import { isAttrRef } from "./attrRef.ts";
 import type { AnyCatalog } from "./Catalog.ts";
-import { PolicyError } from "./Errors.ts";
+import { PolicyError } from "./SchemaErrors.ts";
 import type { CatalogIdent } from "./idents.ts";
 import { inspectPullField } from "./Pull.ts";
 

@@ -8,7 +8,6 @@
  * Skipped when RIPPLE_URL is not set.
  */
 import { describe, expect, test } from "bun:test";
-import { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";
 import { RippleClient, attribute } from "../../packages/client/src/index.ts";
 import * as AlchemyClient from "../../packages/alchemy/src/Client.ts";
@@ -167,8 +166,8 @@ d("ripple e2e", () => {
 d("ripple session socket e2e", () => {
   const url = URL_ ?? "http://invalid";
   const sessionDb = `${dbName}-session`;
-  const run = <A, E>(eff: Effect.Effect<A, E, RuntimeContext>) =>
-    Effect.runPromise(eff.pipe(Effect.provide(RuntimeContext.phantom)));
+  const run = <A, E>(eff: Effect.Effect<A, E>) =>
+    Effect.runPromise(eff);
 
   test(
     "one socket transacts, queries and pulls; a write on another socket arrives as a t frame",

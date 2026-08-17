@@ -13,7 +13,7 @@ import {
   type FindRows,
   type TypedReadDatabaseClient,
   unsafeDatabase,
-} from "../../src/schema/index.ts";
+} from "../../src/db/internal.ts";
 
 import { Movie, Movies, User } from "./fixture.ts";
 const db = unsafeDatabase(Movies);

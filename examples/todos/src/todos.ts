@@ -2,7 +2,7 @@ import type {
   Eid,
   LiveQueryBuilder,
   TypedLiveDatabaseClient,
-} from "@ripple/alchemy/schema";
+} from "@ripple/alchemy/db";
 import { Todo, type Todos } from "../schema.ts";
 
 export type TodosDb = TypedLiveDatabaseClient<typeof Todos>;

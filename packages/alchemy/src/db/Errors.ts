@@ -25,18 +25,18 @@ export class TxRejected extends Data.TaggedError("TxRejected")<{
 }> {}
 
 /** The transactor aborted and is rebuilding from durable state (503); retry after `retryAfterMs`. */
-export class TransactorDead extends Data.TaggedError("TransactorDead")<{
+export class Unavailable extends Data.TaggedError("Unavailable")<{
   readonly message: string;
   readonly retryAfterMs: number;
 }> {}
 
 /** Malformed request — bad query, unknown attribute, unbound variable, invalid db name (400). */
-export class BadRequest extends Data.TaggedError("BadRequest")<{
+export class InvalidRequest extends Data.TaggedError("InvalidRequest")<{
   readonly message: string;
 }> {}
 
 /** No such route / database (404). */
-export class NotFound extends Data.TaggedError("NotFound")<{
+export class DatabaseNotFound extends Data.TaggedError("DatabaseNotFound")<{
   readonly message: string;
 }> {}
 
@@ -68,7 +68,7 @@ export class QueryBudgetExceeded extends Data.TaggedError(
 }> {}
 
 /** Anything else the server reported (500). */
-export class Internal extends Data.TaggedError("Internal")<{
+export class InternalError extends Data.TaggedError("InternalError")<{
   readonly message: string;
 }> {}
 
@@ -78,28 +78,28 @@ export class NetworkError extends Data.TaggedError("NetworkError")<{
   readonly cause?: unknown;
 }> {}
 
-export type DatabaseError =
+export type DbError =
   | TxRejected
-  | TransactorDead
-  | BadRequest
-  | NotFound
+  | Unavailable
+  | InvalidRequest
+  | DatabaseNotFound
   | Unauthorized
   | QueryBudgetExceeded
-  | Internal
+  | InternalError
   | NetworkError;
 
 const TAGS = new Set([
   "TxRejected",
-  "TransactorDead",
-  "BadRequest",
-  "NotFound",
+  "Unavailable",
+  "InvalidRequest",
+  "DatabaseNotFound",
   "Unauthorized",
   "QueryBudgetExceeded",
-  "Internal",
+  "InternalError",
   "NetworkError",
 ]);
 
-export const isDatabaseError = (value: unknown): value is DatabaseError =>
+export const isDatabaseError = (value: unknown): value is DbError =>
   typeof value === "object" &&
   value !== null &&
   TAGS.has((value as { _tag?: string })._tag ?? "");
@@ -134,7 +134,7 @@ export const fromResponse = (
   status: number,
   body: unknown,
   headers?: HeaderLike,
-): DatabaseError => {
+): DbError => {
   const b = (typeof body === "object" && body !== null ? body : {}) as Record<
     string,
     unknown
@@ -158,7 +158,7 @@ export const fromResponse = (
         b.retryAfterMs,
         header === null || header === undefined ? 0 : Number(header) * 1000,
       );
-      return new TransactorDead({
+      return new Unavailable({
         message,
         retryAfterMs: Number.isFinite(retryAfterMs) ? retryAfterMs : 0,
       });
@@ -166,32 +166,32 @@ export const fromResponse = (
     case "QueryBudget":
       return budget();
     case "BadRequest":
-      return new BadRequest({ message });
+      return new InvalidRequest({ message });
     case "NotFound":
-      return new NotFound({ message });
+      return new DatabaseNotFound({ message });
     case "Internal":
-      return new Internal({ message });
+      return new InternalError({ message });
   }
 
   switch (status) {
     case 400:
-      return new BadRequest({ message });
+      return new InvalidRequest({ message });
     case 401:
     case 403:
       // `{ error, code: "policy", attr: ":doc/owner" }` surfaces typed
       return new Unauthorized({ message, ...opt("code", b.code), ...opt("attr", b.attr) });
     case 404:
-      return new NotFound({ message });
+      return new DatabaseNotFound({ message });
     case 409:
       return new TxRejected({ message, code: str(b.code, "tx/rejected") });
     case 413:
       return budget();
     case 503:
-      return new TransactorDead({
+      return new Unavailable({
         message,
         retryAfterMs: num(b.retryAfterMs, Number(headers?.get("retry-after") ?? 0) * 1000 || 0),
       });
     default:
-      return new Internal({ message });
+      return new InternalError({ message });
   }
 };

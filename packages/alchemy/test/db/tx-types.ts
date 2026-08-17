@@ -9,22 +9,22 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type { TxAck } from "../../src/Client.ts";
-import type { DatabaseError } from "../../src/DatabaseTypes.ts";
+import type { DbError } from "../../src/db/Errors.ts";
 import {
   Attr,
-  type EntityHandle,
+  type Entity,
   type Equal,
   type Expect,
   type Extends,
   Namespace,
-  type TxBuilder,
+  type Tx,
   type TypedReadDatabaseClient,
   type TypedReadWriteDatabaseClient,
   type TypedWriteDatabaseClient,
   unsafeDatabase,
   unsafeReadDatabase,
   unsafeWriteDatabase,
-} from "../../src/schema/index.ts";
+} from "../../src/db/internal.ts";
 
 import { Meta, Movie, Movies, User } from "./fixture.ts";
 
@@ -44,7 +44,7 @@ const crossNs = db.transact(function* (tx) {
   yield* ada.add(Movie.title, "not a movie but types allow any ns");
 });
 type _crossNsAck = Expect<Equal<Effect.Success<typeof crossNs>, TxAck>>;
-type _crossNsErr = Expect<Extends<DatabaseError, Effect.Error<typeof crossNs>>>;
+type _crossNsErr = Expect<Extends<DbError, Effect.Error<typeof crossNs>>>;
 
 // Effect-returning callback stays for composition (not the default)
 const viaEffect = db.transact((tx) =>
@@ -147,13 +147,13 @@ const withExtra = db.transact(function* (tx) {
 type _extraErr = Expect<
   Extends<ExtraLoad, Effect.Error<typeof withExtra>>
 >;
-type _stillDb = Expect<Extends<DatabaseError, Effect.Error<typeof withExtra>>>;
+type _stillDb = Expect<Extends<DbError, Effect.Error<typeof withExtra>>>;
 
 // ── builder types are catalog-generic ──────────────────────────────────────
 
 type _handle = Expect<
   Extends<
-    Effect.Success<ReturnType<TxBuilder<typeof Movies>["entity"]>>,
-    EntityHandle<typeof Movies>
+    Effect.Success<ReturnType<Tx<typeof Movies>["entity"]>>,
+    Entity<typeof Movies>
   >
 >;

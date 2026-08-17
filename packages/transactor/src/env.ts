@@ -11,7 +11,7 @@ export interface RippleEnv {
   RIPPLE_STAGE?: string;
   /** shared bearer token: with no policy, unset = open and a match = admin; under a policy it is not a data-plane principal */
   RIPPLE_TOKEN?: string;
-  /** compiled policy JSON (`SchemaFx.Policy.compile`). Its presence arms enforcement (fail closed). */
+  /** compiled policy JSON (`Ripple.Policy.compile`). Its presence arms enforcement (fail closed). */
   RIPPLE_POLICY?: string;
   /** JWKS endpoint for the issuer's public keys */
   RIPPLE_JWKS_URL?: string;

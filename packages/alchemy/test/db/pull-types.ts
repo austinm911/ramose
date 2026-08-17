@@ -14,7 +14,7 @@ import {
   Namespace,
   Eid,
   pick,
-} from "../../src/schema/index.ts";
+} from "../../src/db/internal.ts";
 
 import { Meta, Movie, Movies, User } from "./fixture.ts";
 const eid = Eid.of(Movies, 1001);

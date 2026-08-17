@@ -9,8 +9,8 @@ import type {
   Expect,
   LiveStore,
   TypedLiveDatabaseClient,
-} from "../../src/schema/index.ts";
-import { Attr, Namespace } from "../../src/schema/index.ts";
+} from "../../src/db/internal.ts";
+import { Attr, Namespace } from "../../src/db/internal.ts";
 
 import { Movies, User } from "./fixture.ts";
 

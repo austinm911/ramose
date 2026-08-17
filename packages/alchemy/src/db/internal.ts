@@ -1,4 +1,12 @@
-/** Effect-native schema catalog. Happy path: `./usage.ts`. */
+/**
+ * @internal Everything `db/` declares, flat.
+ *
+ * Not a package `exports` entry: the public surface is `./index.ts`
+ * (`@ripple/alchemy/db`). This module exists so sibling modules and the tests
+ * can reach the inferred / internal names — `AnyCatalog`, `NamespaceMap`,
+ * `queryBuilder`, `lowerWireTx`, `Expect`/`Equal` — without each of them
+ * naming a dozen files.
+ */
 
 export * from "./Attribute.ts";
 export * from "./Catalog.ts";
@@ -6,6 +14,7 @@ export * from "./Client.ts";
 export * from "./ensure.ts";
 export * from "./equal.ts";
 export * from "./Errors.ts";
+export * from "./SchemaErrors.ts";
 export * from "./idents.ts";
 export * from "./Namespace.ts";
 export * from "./Eid.ts";
@@ -16,9 +25,9 @@ export {
   type IdentPullIdents,
   type IdentPullPattern,
   type IdentPullResult,
+  type Pull,
   type PullNested,
   type PullOptional,
-  type PullResult,
   type StructPullResult,
   type ValidatePull,
   isPullNested,

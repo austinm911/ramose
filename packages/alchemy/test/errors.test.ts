@@ -6,26 +6,26 @@
 
 import { describe, expect, test } from "bun:test";
 import {
-  BadRequest,
+  InvalidRequest,
   fromResponse,
-  Internal,
+  InternalError,
   isDatabaseError,
   NetworkError,
-  NotFound,
+  DatabaseNotFound,
   QueryBudgetExceeded,
-  TransactorDead,
+  Unavailable,
   TxRejected,
   Unauthorized,
-} from "../src/DatabaseTypes.ts";
+} from "../src/db/Errors.ts";
 
 const headers = (h: Record<string, string> = {}) => ({
   get: (name: string) => h[name.toLowerCase()] ?? null,
 });
 
 describe("fromResponse — the peer's own errors (no tag)", () => {
-  test("400 → BadRequest, message from `error`", () => {
+  test("400 → InvalidRequest, message from `error`", () => {
     const e = fromResponse(400, { error: "invalid database name" });
-    expect(e._tag).toBe("BadRequest");
+    expect(e._tag).toBe("InvalidRequest");
     expect(e.message).toBe("invalid database name");
   });
 
@@ -36,8 +36,8 @@ describe("fromResponse — the peer's own errors (no tag)", () => {
     expect(fromResponse(403, {})._tag).toBe("Unauthorized");
   });
 
-  test("404 → NotFound", () => {
-    expect(fromResponse(404, { error: "not found" })._tag).toBe("NotFound");
+  test("404 → DatabaseNotFound", () => {
+    expect(fromResponse(404, { error: "not found" })._tag).toBe("DatabaseNotFound");
   });
 
   test("413 → QueryBudgetExceeded with the guard's fields", () => {
@@ -55,12 +55,12 @@ describe("fromResponse — the peer's own errors (no tag)", () => {
     expect(e.limit).toBe(1_000_000);
   });
 
-  test("500 → Internal", () => {
-    expect(fromResponse(500, { error: "boom" })._tag).toBe("Internal");
+  test("500 → InternalError", () => {
+    expect(fromResponse(500, { error: "boom" })._tag).toBe("InternalError");
   });
 
-  test("an unmapped status falls back to Internal", () => {
-    expect(fromResponse(418, { error: "teapot" })._tag).toBe("Internal");
+  test("an unmapped status falls back to InternalError", () => {
+    expect(fromResponse(418, { error: "teapot" })._tag).toBe("InternalError");
   });
 
   test("a body with no `error` keeps a useful message", () => {
@@ -82,22 +82,22 @@ describe("fromResponse — DO errors passed through (tagged)", () => {
     expect(e.message).toBe(":user/email is unique and already asserted");
   });
 
-  test("503 TransactorDead keeps retryAfterMs", () => {
+  test("503 Unavailable keeps retryAfterMs", () => {
     const e = fromResponse(
       503,
       { error: "transactor aborted: oom", tag: "TransactorDead", retryAfterMs: 250 },
       headers({ "retry-after": "1" }),
-    ) as TransactorDead;
-    expect(e._tag).toBe("TransactorDead");
+    ) as Unavailable;
+    expect(e._tag).toBe("Unavailable");
     expect(e.retryAfterMs).toBe(250);
   });
 
-  test("503 TransactorDead falls back to the retry-after header", () => {
+  test("503 Unavailable falls back to the retry-after header", () => {
     const e = fromResponse(
       503,
       { error: "transactor aborted", tag: "TransactorDead" },
       headers({ "retry-after": "2" }),
-    ) as TransactorDead;
+    ) as Unavailable;
     expect(e.retryAfterMs).toBe(2000);
   });
 
@@ -115,21 +115,21 @@ describe("fromResponse — DO errors passed through (tagged)", () => {
   });
 
   test("the tag wins over the status code", () => {
-    // A DO answered 500 but tagged the failure BadRequest: trust the tag.
+    // A DO answered 500 but tagged the failure InvalidRequest: trust the tag.
     expect(fromResponse(500, { error: "x", tag: "BadRequest" })._tag).toBe(
-      "BadRequest",
+      "InvalidRequest",
     );
     expect(fromResponse(200, { error: "x", tag: "NotFound" })._tag).toBe(
-      "NotFound",
+      "DatabaseNotFound",
     );
     expect(fromResponse(400, { error: "x", tag: "Internal" })._tag).toBe(
-      "Internal",
+      "InternalError",
     );
   });
 
   test("an unknown tag falls through to the status", () => {
     expect(fromResponse(400, { error: "x", tag: "Martian" })._tag).toBe(
-      "BadRequest",
+      "InvalidRequest",
     );
   });
 });
@@ -138,12 +138,12 @@ describe("isDatabaseError", () => {
   test("accepts every member of the union", () => {
     const all = [
       new TxRejected({ message: "", code: "" }),
-      new TransactorDead({ message: "", retryAfterMs: 0 }),
-      new BadRequest({ message: "" }),
-      new NotFound({ message: "" }),
+      new Unavailable({ message: "", retryAfterMs: 0 }),
+      new InvalidRequest({ message: "" }),
+      new DatabaseNotFound({ message: "" }),
       new Unauthorized({ message: "" }),
       new QueryBudgetExceeded({ message: "", code: "", clause: "", cells: 0, limit: 0 }),
-      new Internal({ message: "" }),
+      new InternalError({ message: "" }),
       new NetworkError({ message: "" }),
     ];
     for (const e of all) expect(isDatabaseError(e)).toBe(true);

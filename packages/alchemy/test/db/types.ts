@@ -6,7 +6,6 @@
  * breaking one assertion must fail tsc.
  */
 
-import type { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type {
@@ -15,7 +14,7 @@ import type {
   TxAck,
   WriteSystemClient,
 } from "../../src/Client.ts";
-import { BadRequest } from "../../src/DatabaseTypes.ts";
+import { InvalidRequest } from "../../src/db/Errors.ts";
 import {
   Attr,
   type CatalogIdent,
@@ -45,7 +44,7 @@ import {
   fromWrite,
   makeSystem,
   unsafeDatabase,
-} from "../../src/schema/index.ts";
+} from "../../src/db/internal.ts";
 
 import { Meta, Movie, Movies, User } from "./fixture.ts";
 
@@ -155,9 +154,9 @@ type _wrapClient = Expect<
   Equal<Effect.Success<typeof wrapCreated>, TypedReadWriteDatabaseClient<typeof Movies>>
 >;
 type _wrapErr = Expect<
-  Equal<Effect.Error<typeof wrapCreated>, BadRequest | SchemaEnsureError>
+  Equal<Effect.Error<typeof wrapCreated>, InvalidRequest | SchemaEnsureError>
 >;
-type _wrapReadErr = Expect<Equal<Effect.Error<typeof wrapRead>, BadRequest>>;
+type _wrapReadErr = Expect<Equal<Effect.Error<typeof wrapRead>, InvalidRequest>>;
 
 type CreatedClient = Effect.Success<typeof created>;
 type ConnectedClient = Effect.Success<typeof connected>;
@@ -246,12 +245,12 @@ const caught = db
   .pipe(
     Effect.catchTags({
       TxRejected: (e) => Effect.succeed(e.code),
-      TransactorDead: (e) => Effect.succeed(e.message),
-      BadRequest: (e) => Effect.succeed(e.message),
-      NotFound: (e) => Effect.succeed(e.message),
+      Unavailable: (e) => Effect.succeed(e.message),
+      InvalidRequest: (e) => Effect.succeed(e.message),
+      DatabaseNotFound: (e) => Effect.succeed(e.message),
       Unauthorized: (e) => Effect.succeed(e.message),
       QueryBudgetExceeded: (e) => Effect.succeed(e.clause),
-      Internal: (e) => Effect.succeed(e.message),
+      InternalError: (e) => Effect.succeed(e.message),
       NetworkError: (e) => Effect.succeed(e.message),
       MissingPeer: (e) => Effect.succeed(e.message),
     }),
@@ -266,15 +265,15 @@ type CreateErr = Effect.Error<typeof created>;
 type ConnectErr = Effect.Error<typeof connected>;
 type _openErr = Expect<Equal<CreateErr, OpenError>>;
 type _openHasEnsure = Expect<Extends<SchemaEnsureError, CreateErr>>;
-type _openHasBad = Expect<Extends<BadRequest, CreateErr>>;
+type _openHasBad = Expect<Extends<InvalidRequest, CreateErr>>;
 type _connectHasEnsure = Expect<Extends<SchemaEnsureError, ConnectErr>>;
 type _openIsEnsureOrBad = Expect<
-  Equal<CreateErr, BadRequest | SchemaEnsureError>
+  Equal<CreateErr, InvalidRequest | SchemaEnsureError>
 >;
 
 const opened = system.create("movies", Movies).pipe(
   Effect.catchTags({
-    BadRequest: (e) => Effect.succeed(e.message),
+    InvalidRequest: (e) => Effect.succeed(e.message),
     SchemaEnsureError: (e) => Effect.succeed(e.message),
   }),
 );
@@ -286,7 +285,5 @@ type _openedOk = Expect<
 >;
 type _openedErr = Expect<Equal<Effect.Error<typeof opened>, never>>;
 
-// create still requires RuntimeContext (ensure is a schema tx).
-type _createR = Expect<
-  Extends<RuntimeContext, Effect.Services<typeof created>>
->;
+// create requires nothing: every signature's `R` is `never`.
+type _createR = Expect<Equal<Effect.Services<typeof created>, never>>;

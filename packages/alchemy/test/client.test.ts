@@ -4,20 +4,18 @@
  * tagged errors rather than thrown `Response`s — and the system client, whose
  * `create` / `connect` scope all of that to one `/db/:name` without a request.
  *
- * `RuntimeContext.phantom` is what satisfies the `RuntimeContext` requirement
- * every client method carries (it exists so the Binding/Http layers can read
- * bound Outputs at runtime; a client built from concrete values never touches
- * it).
+ * Every client method's requirements channel is `never`: the Binding/Http
+ * layers resolve their bound Outputs when the capability binds, so nothing is
+ * left for a caller to provide.
  */
 
 import { describe, expect, test } from "bun:test";
-import { ValueTag } from "@ripple/core";
-import { RuntimeContext } from "alchemy/RuntimeContext";
+import { ValueTag } from "@ripple/core/datom.ts";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Client from "../src/Client.ts";
 import type { FetchLike } from "../src/Client.ts";
-import type { DatabaseError } from "../src/DatabaseTypes.ts";
+import type { DbError } from "../src/db/Errors.ts";
 
 interface Call {
   url: string;
@@ -48,12 +46,12 @@ const recorder = (
   return { calls, fetch };
 };
 
-const run = <A>(eff: Effect.Effect<A, DatabaseError, RuntimeContext>) =>
-  Effect.runPromise(eff.pipe(Effect.provide(RuntimeContext.phantom)));
+const run = <A>(eff: Effect.Effect<A, DbError>) =>
+  Effect.runPromise(eff);
 
-const runFail = <A>(eff: Effect.Effect<A, DatabaseError, RuntimeContext>) =>
+const runFail = <A>(eff: Effect.Effect<A, DbError>) =>
   Effect.runPromise(
-    Effect.flip(eff).pipe(Effect.provide(RuntimeContext.phantom)),
+    Effect.flip(eff),
   );
 
 describe("routes and headers", () => {
@@ -294,7 +292,7 @@ describe("failures", () => {
     expect(e.message).toBe("unique conflict");
   });
 
-  test("a dead transactor fails with TransactorDead and its retry hint", async () => {
+  test("a dead transactor fails with Unavailable and its retry hint", async () => {
     const { fetch } = recorder(() => ({
       status: 503,
       body: { error: "transactor aborted", tag: "TransactorDead", retryAfterMs: 500 },
@@ -302,8 +300,8 @@ describe("failures", () => {
     }));
     const db = Client.make({ url: "https://peer.example.com", name: "movies", fetch });
     const e = await runFail(db.transact([]));
-    expect(e._tag).toBe("TransactorDead");
-    if (e._tag === "TransactorDead") expect(e.retryAfterMs).toBe(500);
+    expect(e._tag).toBe("Unavailable");
+    if (e._tag === "Unavailable") expect(e.retryAfterMs).toBe(500);
   });
 
   test("a blown query budget fails with QueryBudgetExceeded", async () => {
@@ -342,7 +340,7 @@ describe("failures", () => {
       fetch: async () => new Response("<html>502 Bad Gateway</html>", { status: 502 }),
     });
     const e = await runFail(db.info());
-    expect(e._tag).toBe("Internal");
+    expect(e._tag).toBe("InternalError");
     expect(e.message).toBe("<html>502 Bad Gateway</html>");
   });
 });
@@ -419,7 +417,7 @@ describe("system client (create / connect)", () => {
     expect(calls[0].url).toBe("https://peer.example.com/db/a.b-c_1/info");
   });
 
-  describe("an invalid name fails the Effect with BadRequest", () => {
+  describe("an invalid name fails the Effect with InvalidRequest", () => {
     for (const [label, name] of [
       ["empty", ""],
       ["leading dash", "-bad"],
@@ -433,7 +431,7 @@ describe("system client (create / connect)", () => {
 
         for (const eff of [system.create(name), system.connect(name)]) {
           const e = await runFail(eff);
-          expect(e._tag).toBe("BadRequest");
+          expect(e._tag).toBe("InvalidRequest");
           expect(e.message).toContain(JSON.stringify(name));
         }
         // the name never reached the peer

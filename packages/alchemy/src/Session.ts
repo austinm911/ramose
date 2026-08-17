@@ -2,7 +2,7 @@
 
 import * as Redacted from "effect/Redacted";
 import { globalFetch, type FetchLike } from "./Client.ts";
-import { fromResponse, NetworkError, type DatabaseError } from "./DatabaseTypes.ts";
+import { fromResponse, NetworkError, type DbError } from "./db/Errors.ts";
 
 /**
  * The slice of `WebSocket` a session uses — so a test can hand in a fake, and
@@ -193,7 +193,7 @@ const responseOf = (frame: Record<string, unknown>): Response => {
 };
 
 /** A non-2xx reply frame, classified exactly as the HTTP path classifies it. */
-const errorOf = async (response: Response): Promise<DatabaseError> => {
+const errorOf = async (response: Response): Promise<DbError> => {
   let body: unknown = {};
   try {
     body = await response.json();

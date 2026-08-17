@@ -8,7 +8,7 @@ you're in. No provision step.
 
 ## Why it exists
 
-- **Typed catalog.** `SchemaFx` is the schema. Attributes, uniqueness,
+- **Typed catalog.** `@ripple/alchemy/db` is the schema. Attributes, uniqueness,
   cardinality — TypeScript, checked at compile time.
 - **Effect-native writes and reads.** Generator `transact`. Literate `q`.
   `eid.pull`.
@@ -65,7 +65,7 @@ verifies JWTs, ties each token to one database, and filters reads / checks
 writes against the policy in `docs/AUTH_LAYER.md`.
 
 An app Worker binds the same system (`Ripple.ReadWriteSystem` +
-`SchemaFx.fromReadWrite`) and calls `system.create(name, catalog)` per
+`Ripple.fromReadWrite`) and calls `system.create(name, catalog)` per
 request — that's db-per-tenant. See `examples/kv-style/`.
 
 Local root stack (no example UI):
@@ -81,19 +81,18 @@ the `$USER` stage; `--stage prod` for production.
 ## Catalog → session → transact → live
 
 ```ts
-import { Session } from "@ripple/alchemy/schema";
-import * as SchemaFx from "@ripple/alchemy/schema";
+import * as Ripple from "@ripple/alchemy/db";
 import * as Schema from "effect/Schema";
 
-export const Todo = SchemaFx.Namespace("todo", {
-  title: SchemaFx.Attr(Schema.String),
-  done: SchemaFx.Attr(Schema.Boolean),
-  createdAt: SchemaFx.Attr(SchemaFx.Instant),
+export const Todo = Ripple.Namespace("todo", {
+  title: Ripple.Attr(Schema.String),
+  done: Ripple.Attr(Schema.Boolean),
+  createdAt: Ripple.Attr(Ripple.Instant),
 });
-export const Todos = SchemaFx.Catalog({ todo: Todo });
+export const Todos = Ripple.Catalog({ todo: Todo });
 
 const { db } = await run(
-  Session.connect({
+  Ripple.Session.connect({
     url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:8787",
     name: "todos",
     catalog: Todos,
@@ -121,14 +120,14 @@ await run(
 );
 ```
 
-`run` is `Effect.runPromise` over Alchemy's phantom `RuntimeContext` — see
-`examples/todos/src/db.ts`. The Vite app aliases `@ripple/alchemy/schema` so
-the browser does not pull the deploy engine.
+`run` is `Effect.runPromise` — every signature's `R` is `never`; see
+`examples/todos/src/db.ts`. `@ripple/alchemy/db` is a real `exports` entry and
+nothing it reaches imports the deploy engine, so the Vite app needs no alias.
 
 From a Worker, skip the socket: `system.create("movies", Movies)`, then the
 same `transact` / `q` / `eid.pull`. `minT: ack.t` is the read-your-write
 fence. `db.asOf(t)` and `db.history()` are views. Outside Alchemy,
-`SchemaFx.makeSystem({ url, token })` is the same typed system.
+`Ripple.Session.connect({ url, name, catalog, token })` is the same typed client.
 
 ## Features
 

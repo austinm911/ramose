@@ -1,6 +1,5 @@
-/** SchemaFx.connect over the session socket. Same typed surface, different transport. */
+/** `Session.connect` over the session socket. Same typed surface, different transport. */
 
-import type { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";
 import type { FetchLike, SystemSource } from "../Client.ts";
 import { makeReadWriteSystemClient as makeUntypedReadWriteSystemClient } from "../Client.ts";
@@ -28,12 +27,12 @@ export interface TypedSessionOptions<C extends AnyCatalog> extends SessionOption
 /**
  * Open a session socket and a catalog-typed client over it. Ensures the catalog
  * (one `transact` frame) before handing the client back, same as
- * `SchemaFx.makeSystem(...).create(name, catalog)`; the socket is closed if that
+ * `makeSystem(...).create(name, catalog)`; the socket is closed if that
  * fails, so a failed `connect` leaves nothing open.
  */
 export const connect = <C extends AnyCatalog>(
   options: TypedSessionOptions<C>,
-): Effect.Effect<TypedSession<C>, OpenError, RuntimeContext> =>
+): Effect.Effect<TypedSession<C>, OpenError> =>
   Effect.gen(function* () {
     const session = openSession(options);
     const fetch: FetchLike = session.fetch;
@@ -50,8 +49,7 @@ export const connect = <C extends AnyCatalog>(
     const db = yield* system
       .create(options.name, options.catalog)
       .pipe(Effect.tapError(() => Effect.sync(() => session.close())));
-    const context = yield* Effect.context<RuntimeContext>();
-    const run: LiveRun = Effect.runPromiseWith(context);
+    const run: LiveRun = Effect.runPromise;
     const client: TypedLiveDatabaseClient<C> = {
       ...db,
       live: makeLive<C>(db, session, run),
