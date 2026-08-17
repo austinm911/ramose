@@ -1,8 +1,13 @@
 /** Session socket: Worker-accepted WS, frames dispatched into existing HTTP routes. */
+
+import type { Principal } from "@ripple/core";
+
 // ---- wire ------------------------------------------------------------------
 
 /** A frame from the client. `id` correlates the reply; ops mirror the HTTP routes. */
 export type ClientFrame =
+  /** token refresh — the only frame that is not a sub-request */
+  | { id: number; op: "auth"; token: string }
   | { id: number; op: "transact"; tx: unknown[] }
   | { id: number; op: "q"; query: string | object; inputs?: unknown[]; asOf?: number; history?: boolean; explain?: boolean; minT?: number }
   | { id: number; op: "pull"; eid: number | string | [string, unknown]; pattern: string | unknown[]; asOf?: number; history?: boolean; minT?: number }
@@ -15,6 +20,12 @@ export interface ReplyFrame {
   status: number;
   body: unknown;
   headers?: Record<string, string>;
+}
+
+/** The `auth` frame's success reply: the principal was swapped. */
+export interface AuthAck {
+  id: number;
+  ok: true;
 }
 
 /** Unsolicited: the basis this session reads from has moved to `t`. */
@@ -49,13 +60,17 @@ export interface SocketLike {
 }
 
 /** Runs one planned frame against the Worker's own routes; never rejects for a non-2xx. */
-export type SessionDispatch = (rest: string, init: { method: string; headers: Record<string, string>; body?: string }) => Promise<Response>;
+export type SessionDispatch = (rest: string, init: { method: string; headers: Record<string, string>; body?: string }, principal?: Principal) => Promise<Response>;
 
 /** `setInterval`-shaped; returns its own cancel. */
 export type Scheduler = (fn: () => void, ms: number) => () => void;
 
 export interface SessionOptions {
   dispatch: SessionDispatch;
+  /** the principal from the upgrade (`?token=` / `Authorization`) */
+  principal?: Principal;
+  /** re-verify a token for this same database; rejects when it is refused */
+  authenticate?: (token: string) => Promise<Principal>;
   /** reads the current basis `t` (isolate-local, cache-bypassing) — omit to disable polling */
   pollBasis?: () => Promise<number>;
   /** sessions sharing this key share one poller (the read path's `db|hint`) */
@@ -109,6 +124,9 @@ const minTHeader = (v: unknown): Record<string, string> =>
   typeof v === "number" && Number.isFinite(v) && v >= 0 ? { "x-ripple-min-t": String(v) } : {};
 
 const isPlanError = (p: SessionPlan | PlanError): p is PlanError => (p as PlanError).error !== undefined;
+
+/** Past `exp`: every frame is denied and the socket closes on the next tick. */
+const expired = (p: Principal): boolean => p.claims.exp !== undefined && p.claims.exp * 1000 <= Date.now();
 
 /**
  * Frame → sub-request. Pure, and the only place the wire ops map onto routes.
@@ -232,6 +250,8 @@ function subscribe(key: string, poll: () => Promise<number>, intervalMs: number,
 export function openSession(socket: SocketLike, options: SessionOptions): Session {
   let lastT = 0;
   let dead = false;
+  let principal = options.principal;
+  let expiring = false;
   let unsubscribe: (() => void) | undefined;
   let resolveClosed!: () => void;
   const closed = new Promise<void>((resolve) => {
@@ -246,7 +266,13 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     resolveClosed();
   };
 
-  const send = (frame: ReplyFrame | TickFrame) => {
+  const shutdown = () => {
+    const wasDead = dead;
+    die();
+    if (!wasDead) socket.close(1008, "unauthorized");
+  };
+
+  const send = (frame: ReplyFrame | TickFrame | AuthAck) => {
     if (dead) return;
     try {
       socket.send(JSON.stringify(frame));
@@ -261,6 +287,22 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     send({ op: "t", t });
   };
 
+  /** `{op:"auth", token}`: re-verify, then swap. A refusal keeps the old principal. */
+  const refresh = async (f: Record<string, unknown>): Promise<void> => {
+    const id = typeof f.id === "number" && Number.isFinite(f.id) ? f.id : 0;
+    if (!options.authenticate) {
+      send({ id, status: 400, body: { error: "this session cannot re-authenticate" } });
+      return;
+    }
+    try {
+      principal = await options.authenticate(typeof f.token === "string" ? f.token : "");
+      send({ id, ok: true });
+    } catch (err) {
+      const e = err as { status?: number; code?: string; message?: string };
+      send({ id, status: typeof e?.status === "number" ? e.status : 401, body: { error: e?.message || "unauthorized", ...(typeof e?.code === "string" ? { code: e.code } : {}) } });
+    }
+  };
+
   const onMessage = async (data: string | ArrayBuffer): Promise<void> => {
     if (dead) return;
     let frame: unknown;
@@ -270,14 +312,28 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
       send({ id: 0, status: 400, body: { error: "frame must be JSON" } });
       return;
     }
+    if (typeof frame === "object" && frame !== null && (frame as { op?: unknown }).op === "auth") {
+      return refresh(frame as Record<string, unknown>);
+    }
     const plan = planOf(frame);
     if (isPlanError(plan)) {
       send({ id: plan.id ?? 0, status: 400, body: { error: plan.error } });
       return;
     }
+    // the principal is bound at plan time: frames planned after an `auth` ack use
+    // the new one, in-flight ones finish under the old
+    const bound = principal;
+    if (bound !== undefined && expired(bound)) {
+      send({ id: plan.id, status: 401, body: { error: "token expired" } });
+      if (!expiring) {
+        expiring = true;
+        setTimeout(shutdown, 0);
+      }
+      return;
+    }
     let res: Response;
     try {
-      res = await options.dispatch(plan.rest, { method: plan.method, headers: plan.headers, body: plan.body });
+      res = await options.dispatch(plan.rest, { method: plan.method, headers: plan.headers, body: plan.body }, bound);
     } catch (err) {
       send({ id: plan.id, status: 500, body: { error: err instanceof Error ? err.message : String(err) } });
       return;

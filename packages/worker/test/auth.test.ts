@@ -1,0 +1,375 @@
+/**
+ * The peer's handshake and enforcement, against the in-process peer
+ * (harness.ts). Tokens are real JWTs, signed here with a throwaway ES256 key
+ * whose public JWK is handed to the peer as `RIPPLE_JWKS_JSON` — the same
+ * verifier path as a remote JWKS, without the network.
+ *
+ * The amendments this locks: `ripple.db` is an exact match, and `RIPPLE_TOKEN`
+ * is not a data-plane principal on a named database.
+ */
+
+import { beforeAll, describe, expect, test } from "bun:test";
+import { SignJWT, exportJWK, generateKeyPair } from "jose";
+import { type Peer, makePeer, post } from "./harness.ts";
+
+// ---- signing ---------------------------------------------------------------
+
+const ISS = "https://auth.acme.test";
+const AUD = "ripple:peer:test";
+let sign: (claims: Record<string, unknown>, over?: Record<string, unknown>) => Promise<string>;
+let JWKS: string;
+
+beforeAll(async () => {
+  const { privateKey, publicKey } = await generateKeyPair("ES256", { extractable: true });
+  JWKS = JSON.stringify({ keys: [{ ...(await exportJWK(publicKey)), alg: "ES256", kid: "test" }] });
+  sign = async (claims, over = {}) => {
+    let jwt = new SignJWT(claims).setProtectedHeader({ alg: "ES256", kid: "test" });
+    jwt = jwt.setIssuer((over.iss as string) ?? ISS).setAudience((over.aud as string) ?? AUD);
+    jwt = jwt.setSubject((over.sub as string) ?? "user_ada");
+    jwt = jwt.setIssuedAt((over.iat as number) ?? undefined).setExpirationTime((over.exp as string | number) ?? "5m");
+    return jwt.sign(privateKey);
+  };
+});
+
+/** A token for `db` with `class` (and optional app attrs). */
+const token = (db: string, cls: string, sub = "user_ada", attrs?: Record<string, unknown>, over?: Record<string, unknown>) =>
+  sign({ ripple: { db, class: cls, ...(attrs === undefined ? {} : { attrs }) } }, { sub, ...over });
+
+// ---- the policy ------------------------------------------------------------
+
+const allow = (expr: unknown) => [{ _tag: "allow", expr }];
+const principal = { _tag: "principal" };
+const eq = (attr: string, operand: unknown = principal) => ({ _tag: "eq", attr, operand });
+const ref = (attr: string, target: unknown) => ({ _tag: "ref", attr, target });
+/** doc → project → org → members ∋ principal */
+const inOrg = ref(":doc/project", ref(":project/org", eq(":org/members")));
+
+const POLICY = {
+  version: 1,
+  principal: ":user/sub",
+  classes: ["anonymous", "member", "admin"],
+  ns: {
+    doc: {
+      read: allow({ _tag: "or", exprs: [eq(":doc/owner"), inOrg] }),
+      create: allow(inOrg),
+      add: allow(eq(":doc/owner")),
+      retract: allow(eq(":doc/owner")),
+      retractEntity: allow(eq(":doc/owner")),
+    },
+    project: { read: allow(ref(":project/org", eq(":org/members"))) },
+    org: { read: allow(eq(":org/members")) },
+    user: { read: allow(eq(":user/sub", { _tag: "claim", path: ["sub"] })) },
+  },
+  attrs: { ":doc/audit": { read: allow({ _tag: "class", class: "admin" }) } },
+  preset: { ":doc/owner": principal },
+};
+
+const attr = (ident: string, type: string, extra: Record<string, unknown> = {}) => ({
+  ":db/ident": ident,
+  ":db/valueType": `:db.type/${type}`,
+  ":db/cardinality": ":db.cardinality/one",
+  ...extra,
+});
+
+const SCHEMA = [
+  attr(":user/sub", "string", { ":db/unique": ":db.unique/identity" }),
+  attr(":org/members", "ref", { ":db/cardinality": ":db.cardinality/many" }),
+  attr(":project/org", "ref"),
+  attr(":doc/title", "string"),
+  attr(":doc/owner", "ref"),
+  attr(":doc/project", "ref"),
+  attr(":doc/audit", "string"),
+];
+
+const policyEnv = (extra: Record<string, string | undefined> = {}) => ({
+  RIPPLE_POLICY: JSON.stringify(POLICY),
+  RIPPLE_JWKS_JSON: JWKS,
+  RIPPLE_JWT_ISS: ISS,
+  RIPPLE_JWT_AUD: AUD,
+  ...extra,
+});
+
+interface Fixture {
+  peer: Peer;
+  eids: Record<string, number>;
+}
+
+/** A policed peer serving `acme`, with schema + a doc Ada owns and Carol cannot see. */
+async function fixture(extra: Record<string, string | undefined> = {}): Promise<Fixture> {
+  const peer = makePeer("acme", { env: policyEnv(extra) });
+  await peer.seed(SCHEMA);
+  const ack = await peer.seed([
+    { ":db/id": "ada", ":user/sub": "user_ada" },
+    { ":db/id": "bob", ":user/sub": "user_bob" },
+    { ":db/id": "carol", ":user/sub": "user_carol" },
+    { ":db/id": "org", ":org/members": ["ada", "bob"] },
+    { ":db/id": "proj", ":project/org": "org" },
+    { ":db/id": "doc", ":doc/title": "Roadmap", ":doc/owner": "ada", ":doc/project": "proj", ":doc/audit": "read-by-ops" },
+    { ":db/id": "solo", ":doc/title": "Carol private", ":doc/owner": "carol" },
+  ]);
+  return { peer, eids: ack.tempids };
+}
+
+const titles = async (peer: Peer, tok?: string) => {
+  const { body } = await peer.json("/db/acme/query", post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } }, tok));
+  return (body.result as string[][]).map((r) => r[0]).sort();
+};
+
+// ---------------------------------------------------------------------------
+
+describe("no policy — today's behaviour, unchanged", () => {
+  test("no RIPPLE_TOKEN: open, and the demo console is served", async () => {
+    const peer = makePeer("demo");
+    await peer.seed(SCHEMA);
+    expect((await peer.json("/db/demo/query", post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } }))).status).toBe(200);
+    expect((await peer.fetch("/")).status).toBe(200);
+    peer.close();
+  });
+
+  test("RIPPLE_TOKEN set: shared-token mode, full access with it and 401 without", async () => {
+    const peer = makePeer("demo", { env: { RIPPLE_TOKEN: "s3cret" } });
+    await peer.seed(SCHEMA);
+    const q = post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } });
+    expect((await peer.json("/db/demo/query", { ...q, token: "s3cret" })).status).toBe(200);
+    expect((await peer.json("/db/demo/query", q)).status).toBe(401);
+    expect((await peer.json("/db/demo/query", { ...q, token: "wrong" })).status).toBe(401);
+    // the shared token is still admin here: it may write schema
+    expect((await peer.json("/db/demo/transact", post({ tx: [attr(":x/y", "string")] }, "s3cret"))).status).toBe(200);
+    peer.close();
+  });
+});
+
+describe("policy configured", () => {
+  test("/health is open, the demo console is not served", async () => {
+    const { peer } = await fixture();
+    expect((await peer.json("/health")).status).toBe(200);
+    expect((await peer.fetch("/")).status).toBe(404);
+    peer.close();
+  });
+
+  test("RIPPLE_TOKEN is not a data-plane principal on a named database", async () => {
+    const { peer } = await fixture({ RIPPLE_TOKEN: "s3cret" });
+    expect((await peer.json("/health", { token: "s3cret" })).status).toBe(200);
+    const q = post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } }, "s3cret");
+    expect((await peer.json("/db/acme/query", q)).status).toBe(401);
+    expect((await peer.json("/db/acme/info", { token: "s3cret" })).status).toBe(401);
+    expect((await peer.json("/db/acme/admin/index", { method: "POST", token: "s3cret" })).status).toBe(401);
+    // …and it is not a writer either: only an already-deployed `ensure` gets past ingress
+    expect((await peer.json("/db/acme/transact", post({ tx: [{ ":doc/title": "by the shared token" }] }, "s3cret"))).status).toBe(401);
+    expect(await titles(peer, await token("acme", "admin"))).toEqual(["Carol private", "Roadmap"]);
+    peer.close();
+  });
+
+  test("a broken verifier denies every /db/* and leaves /health alone", async () => {
+    for (const broken of [{ RIPPLE_JWKS_JSON: undefined }, { RIPPLE_JWT_ISS: undefined }, { RIPPLE_JWT_AUD: undefined }, { RIPPLE_POLICY: "{" }]) {
+      const peer = makePeer("acme", { env: policyEnv(broken as Record<string, string | undefined>) });
+      expect((await peer.json("/health")).status).toBe(200);
+      const tok = await token("acme", "admin");
+      expect((await peer.json("/db/acme/query", post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } }, tok))).status).toBe(401);
+      peer.close();
+    }
+  });
+
+  test("ripple.db is an exact match — nothing else opens another name", async () => {
+    const { peer } = await fixture();
+    const acme = await token("acme", "member");
+    const other = await token("other", "member");
+    const q = { query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } };
+    expect((await peer.json("/db/acme/query", post(q, acme))).status).toBe(200);
+    expect((await peer.json("/db/other/query", post(q, acme))).status).toBe(401);
+    expect((await peer.json("/db/acme/query", post(q, other))).status).toBe(401);
+    peer.close();
+  });
+
+  test("wrong aud / iss, an expired token, an over-long TTL and an undeclared class are all 401", async () => {
+    const { peer } = await fixture();
+    const q = post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } });
+    const bad = [
+      await token("acme", "member", "user_ada", undefined, { aud: "ripple:peer:other" }),
+      await token("acme", "member", "user_ada", undefined, { iss: "https://evil.test" }),
+      await token("acme", "member", "user_ada", undefined, { iat: Math.floor(Date.now() / 1000) - 600, exp: Math.floor(Date.now() / 1000) - 10 }),
+      await token("acme", "member", "user_ada", undefined, { iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 7200 }),
+      await token("acme", "root"),
+      "not-a-jwt",
+    ];
+    for (const t of bad) expect((await peer.json("/db/acme/query", { ...q, token: t })).status).toBe(401);
+    // and the good one still works
+    expect((await peer.json("/db/acme/query", { ...q, token: await token("acme", "member") })).status).toBe(200);
+    peer.close();
+  });
+
+  test("no token is the anonymous class (which this policy grants nothing)", async () => {
+    const { peer } = await fixture();
+    const { status, body } = await peer.json("/db/acme/query", post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } }));
+    expect(status).toBe(200);
+    expect(body.result).toEqual([]);
+    peer.close();
+  });
+
+  test("no token is 401 when the policy declares no anonymous class", async () => {
+    const closed = { ...POLICY, classes: ["member", "admin"] };
+    const peer = makePeer("acme", { env: policyEnv({ RIPPLE_POLICY: JSON.stringify(closed) }) });
+    await peer.seed(SCHEMA);
+    expect((await peer.json("/db/acme/query", post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } }))).status).toBe(401);
+    peer.close();
+  });
+});
+
+describe("reads are a filtered Db", () => {
+  test("a query only sees what the rules allow, per principal", async () => {
+    const { peer } = await fixture();
+    expect(await titles(peer, await token("acme", "member", "user_ada"))).toEqual(["Roadmap"]);
+    expect(await titles(peer, await token("acme", "member", "user_carol"))).toEqual(["Carol private"]);
+    expect(await titles(peer, await token("acme", "admin", "user_ada"))).toEqual(["Carol private", "Roadmap"]);
+    peer.close();
+  });
+
+  test("a variable attribute ([?e ?a ?v]) is filtered too — :doc/audit is admin-only", async () => {
+    const { peer, eids } = await fixture();
+    const values = async (tok: string) => {
+      const { body } = await peer.json("/db/acme/query", post({ query: { find: ["?v"], where: [[eids.doc, "?a", "?v"]] } }, tok));
+      return (body.result as unknown[][]).map((r) => r[0]);
+    };
+    const member = await values(await token("acme", "member", "user_ada"));
+    expect(member).toContain("Roadmap");
+    expect(member).not.toContain("read-by-ops");
+    expect(await values(await token("acme", "admin"))).toContain("read-by-ops");
+    peer.close();
+  });
+
+  test("pull redacts a masked attribute; entity and pull of an invisible entity come back empty", async () => {
+    const { peer, eids } = await fixture();
+    const member = await token("acme", "member", "user_ada");
+    const pulled = await peer.json("/db/acme/pull", post({ eid: eids.doc, pattern: [":doc/title", ":doc/audit"] }, member));
+    expect(pulled.body.result[":doc/title"]).toBe("Roadmap");
+    expect(pulled.body.result[":doc/audit"]).toBeUndefined();
+
+    const hidden = await peer.json("/db/acme/pull", post({ eid: eids.solo, pattern: [":doc/title"] }, member));
+    expect(hidden.body.result?.[":doc/title"]).toBeUndefined();
+    const entity = await peer.json(`/db/acme/entity/${eids.solo}`, { token: member });
+    expect(entity.body.entity?.[":doc/title"]).toBeUndefined();
+    peer.close();
+  });
+
+  test("asOf reads the data at t but the rules at the current basis", async () => {
+    const { peer, eids } = await fixture();
+    const member = await token("acme", "member", "user_ada");
+    const at = await peer.json("/db/acme/query", post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] }, asOf: 3 }, member));
+    expect(at.status).toBe(200);
+    expect(at.body.result).toEqual([["Roadmap"]]);
+    expect(eids.doc).toBeGreaterThan(0);
+    peer.close();
+  });
+});
+
+describe("writes", () => {
+  test("a denied write fails at ingress with 403 { code: policy } and no values", async () => {
+    const { peer, eids } = await fixture();
+    const carol = await token("acme", "member", "user_carol");
+    const { status, body } = await peer.json("/db/acme/transact", post({ tx: [[":db/add", eids.doc, ":doc/title", "hacked"]] }, carol));
+    expect(status).toBe(403);
+    expect(body.code).toBe("policy");
+    expect(body.attr).toBe(":doc/title");
+    expect(JSON.stringify(body)).not.toContain("hacked");
+    expect(await titles(peer, await token("acme", "member", "user_ada"))).toEqual(["Roadmap"]);
+    peer.close();
+  });
+
+  test("the owner may write, and `create` injects the preset owner", async () => {
+    const { peer, eids } = await fixture();
+    const ada = await token("acme", "member", "user_ada");
+    expect((await peer.json("/db/acme/transact", post({ tx: [[":db/add", eids.doc, ":doc/title", "Roadmap v2"]] }, ada))).status).toBe(200);
+    expect(await titles(peer, ada)).toEqual(["Roadmap v2"]);
+
+    const created = await peer.json("/db/acme/transact", post({ tx: [{ ":db/id": "new", ":doc/title": "Spec", ":doc/project": eids.proj }] }, ada));
+    expect(created.status).toBe(200);
+    const owner = await peer.json("/db/acme/pull", post({ eid: created.body.tempids.new, pattern: [":doc/title", ":doc/owner"] }, ada));
+    expect(owner.body.result[":doc/owner"]).toEqual({ ":db/id": eids.ada });
+    peer.close();
+  });
+
+  test("a client-supplied preset value that is not the peer's is denied", async () => {
+    const { peer, eids } = await fixture();
+    const ada = await token("acme", "member", "user_ada");
+    const res = await peer.json("/db/acme/transact", post({ tx: [{ ":doc/title": "Spec", ":doc/project": eids.proj, ":doc/owner": eids.bob }] }, ada));
+    expect(res.status).toBe(403);
+    expect(res.body.attr).toBe(":doc/owner");
+    peer.close();
+  });
+
+  test("`create` outside the principal's org is denied", async () => {
+    const { peer, eids } = await fixture();
+    const carol = await token("acme", "member", "user_carol");
+    expect((await peer.json("/db/acme/transact", post({ tx: [{ ":doc/title": "Spec", ":doc/project": eids.proj }] }, carol))).status).toBe(403);
+    peer.close();
+  });
+
+  test("admin bypasses the check entirely", async () => {
+    const { peer, eids } = await fixture();
+    const admin = await token("acme", "admin", "user_ops");
+    expect((await peer.json("/db/acme/transact", post({ tx: [[":db/add", eids.solo, ":doc/title", "renamed"]] }, admin))).status).toBe(200);
+    peer.close();
+  });
+});
+
+describe("ensure and privileged surfaces", () => {
+  test("a non-admin's ensure of an already-deployed subset is skipped silently; a new ident is 403", async () => {
+    const { peer } = await fixture({ RIPPLE_TOKEN: "s3cret" });
+    const member = await token("acme", "member");
+    const subset = { tx: [attr(":doc/title", "string"), attr(":user/sub", "string", { ":db/unique": ":db.unique/identity" })] };
+    for (const tok of [member, "s3cret"]) {
+      const res = await peer.json("/db/acme/transact", post(subset, tok));
+      expect(res.status).toBe(200);
+      expect(res.body.datoms).toBe(0);
+    }
+    const fresh = await peer.json("/db/acme/transact", post({ tx: [attr(":doc/secret", "string")] }, member));
+    expect(fresh.status).toBe(403);
+    expect(fresh.body.attr).toBe(":doc/secret");
+    // …and an admin actually installs it
+    expect((await peer.json("/db/acme/transact", post({ tx: [attr(":doc/secret", "string")] }, await token("acme", "admin")))).status).toBe(200);
+    peer.close();
+  });
+
+  test("explain and /admin/* are admin-only; /info reduces to { db, t }", async () => {
+    const { peer } = await fixture();
+    const member = await token("acme", "member");
+    const admin = await token("acme", "admin");
+    const q = { query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] }, explain: true };
+    expect((await peer.json("/db/acme/query", post(q, member))).status).toBe(403);
+    expect((await peer.json("/db/acme/query", post(q, admin))).status).toBe(200);
+    expect((await peer.json("/db/acme/admin/index", { method: "POST", token: member })).status).toBe(403);
+    expect((await peer.json("/db/acme/admin/index", { method: "POST", token: admin })).status).toBe(200);
+
+    const info = await peer.json("/db/acme/info", { token: member });
+    expect(Object.keys(info.body).sort()).toEqual(["db", "t"]);
+    expect((await peer.json("/db/acme/info", { token: admin })).body.transactor).toBeDefined();
+    peer.close();
+  });
+
+  test("CORS narrows to RIPPLE_ALLOWED_ORIGINS once a policy is configured", async () => {
+    const { peer } = await fixture({ RIPPLE_ALLOWED_ORIGINS: "https://app.acme.test" });
+    const ok = await peer.fetch("/health", { headers: { origin: "https://app.acme.test" } });
+    expect(ok.headers.get("access-control-allow-origin")).toBe("https://app.acme.test");
+    const nope = await peer.fetch("/health", { headers: { origin: "https://evil.test" } });
+    expect(nope.headers.get("access-control-allow-origin")).toBeNull();
+    peer.close();
+  });
+});
+
+describe("the Worker→DO internal secret", () => {
+  test("the DOs refuse a fetch that does not carry it, and the Worker's own always does", async () => {
+    const { peer } = await fixture({ RIPPLE_INTERNAL_SECRET: "deploy-minted" });
+    expect((await peer.transactorFetch("/info?db=acme")).status).toBe(401);
+    expect((await peer.replicaFetch("/basis?db=acme")).status).toBe(401);
+    expect((await peer.transactorFetch("/info?db=acme", { headers: { "x-ripple-internal": "deploy-minted" } })).status).toBe(200);
+    // the Worker reaches both on every read, so a working query proves it forwards the header
+    expect(await titles(peer, await token("acme", "member", "user_ada"))).toEqual(["Roadmap"]);
+    peer.close();
+  });
+
+  test("unset = today's behaviour", async () => {
+    const { peer } = await fixture();
+    expect((await peer.transactorFetch("/info?db=acme")).status).toBe(200);
+    peer.close();
+  });
+});

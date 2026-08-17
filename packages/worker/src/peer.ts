@@ -8,7 +8,7 @@
  */
 
 import { R2NodeStore, cacheApiTier, dbPrefix, prefixedBucket } from "@ripple/storage";
-import type { RippleEnv } from "@ripple/transactor";
+import { type RippleEnv, internalHeaders } from "@ripple/transactor";
 import type { Basis } from "@ripple/replica";
 
 const sources = new Map<string, R2NodeStore>();
@@ -23,6 +23,11 @@ export function segmentSource(env: RippleEnv, db: string): R2NodeStore {
     sources.set(db, source);
   }
   return source;
+}
+
+/** Test hook: drop every cached segment source. */
+export function clearSegmentSources(): void {
+  sources.clear();
 }
 
 /** Deterministic replica choice: hash(db, region) → one of `shards` replicas per region.
@@ -179,7 +184,7 @@ export async function fetchBasisWithStats(env: RippleEnv, db: string, request: R
   let basis: Basis;
   for (;;) {
     calls++;
-    const res = await stub.fetch(`https://replica/basis?db=${encodeURIComponent(db)}`, { headers: coloHeader(request) });
+    const res = await stub.fetch(`https://replica/basis?db=${encodeURIComponent(db)}`, { headers: { ...coloHeader(request), ...internalHeaders(env) } });
     if (!res.ok) throw new Error(`replica basis failed: ${res.status} ${await res.text()}`);
     basis = (await res.json()) as Basis;
     if (minT === undefined || basis.t >= minT || calls > MIN_T_RETRIES) break;

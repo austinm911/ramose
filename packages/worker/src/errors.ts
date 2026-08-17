@@ -9,7 +9,7 @@
  *
  *   NotFound            404  { error }
  *   BadRequest          400  { error, stack? }        stack (`trace`) only off-prod
- *   Unauthorized        401  { error: "unauthorized" }
+ *   Unauthorized    401/403  { error, code?, attr? }   403 = known caller, policy refused
  *   UpstreamError       as-is  raw body + headers of a Transactor/Replica DO response
  *   QueryBudgetExceeded 413  { error, code, clause, cells, limit }
  *   Internal            500  { error, stack? }        stack (`trace`) only off-prod
@@ -20,7 +20,13 @@ import * as Data from "effect/Data";
 
 export class NotFound extends Data.TaggedError("NotFound")<{ readonly message?: string }> {}
 export class BadRequest extends Data.TaggedError("BadRequest")<{ readonly message: string; readonly trace?: string }> {}
-export class Unauthorized extends Data.TaggedError("Unauthorized")<{ readonly message?: string }> {}
+/** 401 by default; 403 when the caller is known but the policy refused (`code`/`attr`). */
+export class Unauthorized extends Data.TaggedError("Unauthorized")<{
+  readonly message?: string;
+  readonly status?: 401 | 403;
+  readonly code?: string;
+  readonly attr?: string;
+}> {}
 /** A Transactor/Replica DO answered with a non-2xx; passed through verbatim. */
 export class UpstreamError extends Data.TaggedError("UpstreamError")<{ readonly status: number; readonly body: string; readonly headers?: Record<string, string> }> {}
 export class QueryBudgetExceeded extends Data.TaggedError("QueryBudgetExceeded")<{ readonly message: string; readonly code: string; readonly clause: string; readonly cells: number; readonly limit: number }> {}
@@ -52,6 +58,16 @@ export function fromThrown(err: unknown, opts: { readonly stacks: boolean } = { 
  *  must never reach a prod response). Hence the explicit fallback and the separate `trace` field. */
 const text = (s: string | undefined, fallback: string): string => (s !== undefined && s.length > 0 ? s : fallback);
 
+/** The machine tag out of an upstream error body, if it carried one. */
+function codeOf(body: string): string | undefined {
+  try {
+    const code = (JSON.parse(body) as { code?: unknown })?.code;
+    return typeof code === "string" ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface HttpError {
   readonly status: number;
   /** JSON body (absent for a verbatim upstream pass-through). */
@@ -69,8 +85,16 @@ export function toHttp(err: RippleError): HttpError {
     case "BadRequest":
       return { status: 400, body: { error: err.message, stack: err.trace } };
     case "Unauthorized":
-      return { status: 401, body: { error: text(err.message, "unauthorized") } };
+      return {
+        status: err.status ?? 401,
+        body: { error: text(err.message, "unauthorized"), ...(err.code === undefined ? {} : { code: err.code }), ...(err.attr === undefined ? {} : { attr: err.attr }) },
+      };
     case "UpstreamError":
+      // an upstream refusal is re-stated, never passed through: its body may name rows this caller cannot read
+      if (err.status === 401 || err.status === 403) {
+        const code = codeOf(err.body);
+        return { status: err.status, body: { error: "unauthorized", ...(code === undefined ? {} : { code }) }, headers: err.headers };
+      }
       return { status: err.status, raw: err.body, headers: err.headers };
     case "QueryBudgetExceeded":
       return { status: 413, body: { error: err.message, code: err.code, clause: err.clause, cells: err.cells, limit: err.limit } };

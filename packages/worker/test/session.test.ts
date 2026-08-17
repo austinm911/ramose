@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type { Principal } from "@ripple/core";
 import { META_HEADERS, type Scheduler, type SessionDispatch, type SocketLike, openSession, planOf, watcherKeys } from "../src/session.ts";
 
 /** A `WebSocket` stand-in: records what the session sent, replays what a client would do. */
@@ -377,5 +378,78 @@ describe("the shared basis watcher", () => {
     session(socket, { dispatch, schedule });
     expect(state.fns.length).toBe(0);
     expect(watcherKeys()).toEqual([]);
+  });
+});
+
+describe("the auth frame", () => {
+  const who = (sub: string, exp?: number): Principal => ({ kind: "user", class: "member", sub, claims: { sub, ...(exp === undefined ? {} : { exp }) }, db: "demo" });
+
+  /** Dispatch that records the principal each frame was planned under. */
+  const seen = (): { dispatch: SessionDispatch; subs: (string | undefined)[]; release: () => void } => {
+    const subs: (string | undefined)[] = [];
+    let gate: Promise<void> | undefined;
+    let open!: () => void;
+    return {
+      subs,
+      release: () => open(),
+      dispatch: async (_rest, _init, p) => {
+        subs.push(p?.sub);
+        if (gate === undefined) {
+          gate = new Promise<void>((r) => {
+            open = r;
+          });
+          await gate;
+        }
+        return json({ ok: true });
+      },
+    };
+  };
+
+  test("a swap acks and only later frames use the new principal; in-flight ones finish under the old", async () => {
+    const socket = new FakeSocket();
+    const { dispatch, subs, release } = seen();
+    const s = session(socket, { dispatch, principal: who("ada"), authenticate: async () => who("bob") });
+    const inflight = s.onMessage(JSON.stringify({ id: 1, op: "info" })); // parked in dispatch
+    await s.onMessage(JSON.stringify({ id: 2, op: "auth", token: "next" }));
+    expect(socket.replies()).toEqual([{ id: 2, ok: true }]);
+    await s.onMessage(JSON.stringify({ id: 3, op: "info" }));
+    release();
+    await inflight;
+    expect(subs).toEqual(["ada", "bob"]);
+  });
+
+  test("a refused swap keeps the old principal and answers with the refusal's status and code", async () => {
+    const socket = new FakeSocket();
+    const { dispatch, subs, release } = seen();
+    const s = session(socket, {
+      dispatch,
+      principal: who("ada"),
+      authenticate: () => Promise.reject(Object.assign(new Error("token is not valid for this database"), { status: 401, code: "policy" })),
+    });
+    await s.onMessage(JSON.stringify({ id: 1, op: "auth", token: "forged" }));
+    expect(socket.replies()).toEqual([{ id: 1, status: 401, body: { error: "token is not valid for this database", code: "policy" } }]);
+    const inflight = s.onMessage(JSON.stringify({ id: 2, op: "info" }));
+    release();
+    await inflight;
+    expect(subs).toEqual(["ada"]);
+  });
+
+  test("a session with no authenticate cannot re-authenticate", async () => {
+    const socket = new FakeSocket();
+    const { dispatch } = fakeDispatch();
+    const s = session(socket, { dispatch });
+    await s.onMessage(JSON.stringify({ id: 4, op: "auth", token: "x" }));
+    expect(socket.replies()).toEqual([{ id: 4, status: 400, body: { error: "this session cannot re-authenticate" } }]);
+  });
+
+  test("past exp every frame is denied and the socket closes", async () => {
+    const socket = new FakeSocket();
+    const { dispatch, calls } = fakeDispatch();
+    const s = session(socket, { dispatch, principal: who("ada", Math.floor(Date.now() / 1000) - 1) });
+    await s.onMessage(JSON.stringify({ id: 1, op: "info" }));
+    expect(calls).toEqual([]);
+    expect(socket.replies()).toEqual([{ id: 1, status: 401, body: { error: "token expired" } }]);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(socket.closed).toBe(true);
   });
 });

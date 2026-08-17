@@ -263,6 +263,14 @@ describe("filtered Db", () => {
     expect((await pull(viewFor(admin()), ids.d1, [":doc/audit"]))![":doc/audit"]).toBe("who");
   });
 
+  test("pull inside :find is filtered — same db, so no pull-specific code", async () => {
+    const rows = await query(viewFor(alice()), `[:find (pull ?e [:doc/title :doc/audit]) :where [?e :doc/title]]`);
+    expect(rows.map((r: unknown[]) => (r[0] as Record<string, unknown>)[":doc/title"])).toEqual(["D1"]);
+    expect((rows[0] as unknown[])[0]).toEqual({ ":doc/title": "D1" }); // :doc/audit redacted, the row is not dropped
+    const asAdmin = await query(viewFor(admin()), `[:find (pull ?e [:doc/title :doc/audit]) :where [?e :doc/title]]`);
+    expect(asAdmin.map((r: unknown[]) => (r[0] as Record<string, unknown>)[":doc/audit"]).filter(Boolean)).toEqual(["who"]);
+  });
+
   test("estimate is not filtered", async () => {
     const v = viewFor(alice());
     const a = db.attr(":doc/audit")!.id;
