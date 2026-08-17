@@ -259,6 +259,18 @@ function attrName(x: unknown, form: unknown): { attr: string; reverse: boolean }
 
 function pullSpec(x: unknown): PullAttrSpec | { kind: "wildcard" } {
   if (x === "*" || x === ":*") return { kind: "wildcard" };
+  // Already-lowered AST specs (alchemy `lowerPullPattern`) pass through.
+  if (
+    typeof x === "object" &&
+    x !== null &&
+    !Array.isArray(x) &&
+    (x as { kind?: unknown }).kind === "attr" &&
+    typeof (x as { attr?: unknown }).attr === "string"
+  ) {
+    const spec = x as PullAttrSpec;
+    if (spec.sub) spec.sub = parsePullPattern(spec.sub);
+    return spec;
+  }
   if (isKeyword(x)) return { kind: "attr", ...attrName(x, x) };
   const expr = asExpr(x);
   if (expr) {

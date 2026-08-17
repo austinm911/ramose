@@ -28,7 +28,14 @@ setDefaultTimeout(60_000);
 const dbName = `e2e-${Date.now().toString(36)}`;
 
 d("ripple e2e", () => {
-  const client = new Peer(URL_ ?? "http://invalid", { token, retryTransient: 5 });
+  const client = new Peer(URL_ ?? "http://invalid", {
+    token,
+    // A fresh workers.dev hostname is eventually consistent across the edge:
+    // a colo can serve the HTML placeholder mid-suite, minutes after /health
+    // passes. Absorb up to 30s of that per request (application errors never
+    // retry). Test timeout is 60s, so a retried request still fails loudly.
+    retryTransientMs: 30_000,
+  });
   const db = client.db(dbName);
   let alice = 0, bob = 0, tSchema = 0, tAge30 = 0;
 
@@ -207,9 +214,11 @@ d("ripple session socket e2e", () => {
 
         // read-your-writes with no second round trip
         const names = await a.runPromise(
-          report.dbAfter.q((q) => q.where("?e", Session.name, "?n").find("?n")),
+          report.dbAfter.q(
+            Ripple.query(Session).select({ name: Session.name }),
+          ),
         );
-        expect(names).toEqual([["Ada"]]);
+        expect(names).toEqual([{ name: "Ada" }]);
 
         const pulled = await a.runPromise(
           report.dbAfter.pull([":s/name", "Ada"], {
@@ -223,7 +232,9 @@ d("ripple session socket e2e", () => {
         const seen: number[] = [];
         const fiber = a.runFork(
           Stream.runForEach(
-            dbA.live((q) => q.where("?e", Session.name, "?n").find("?n")),
+            dbA.live(
+              Ripple.query(Session).select({ name: Session.name }),
+            ),
             (rows) => Effect.sync(() => seen.push(rows.length)),
           ),
         );

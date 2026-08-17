@@ -117,7 +117,7 @@ describe("pull lowering", () => {
       lowerPullPattern({
         name: User.name,
         age: User.age.optional,
-        friends: User.friends.with({ name: User.name }),
+        friends: User.friends.select({ name: User.name }),
       }),
     ).toEqual([
       { kind: "attr", attr: ":user/name", reverse: false, as: "name" },
@@ -154,12 +154,12 @@ describe("reshapePullResult", () => {
     ).toEqual({ name: "Ada", age: undefined });
   });
 
-  test("required card-one .with missing or incomplete → parent null", () => {
+  test("required card-one .select missing or incomplete → parent null", () => {
     expect(
       reshapePullResult(
         {
           name: User.name,
-          bestFriend: User.bestFriend.with({ name: User.name }),
+          bestFriend: User.bestFriend.select({ name: User.name }),
         },
         { name: "Ada" },
       ),
@@ -168,7 +168,7 @@ describe("reshapePullResult", () => {
       reshapePullResult(
         {
           name: User.name,
-          bestFriend: User.bestFriend.with({ name: User.name }),
+          bestFriend: User.bestFriend.select({ name: User.name }),
         },
         { name: "Ada", bestFriend: { ":db/id": 9 } },
       ),
@@ -177,7 +177,7 @@ describe("reshapePullResult", () => {
       reshapePullResult(
         {
           name: User.name,
-          bestFriend: User.bestFriend.optional.with({ name: User.name }),
+          bestFriend: User.bestFriend.optional.select({ name: User.name }),
         },
         { name: "Ada" },
       ),
@@ -196,7 +196,7 @@ describe("reshapePullResult", () => {
   test("nested many filters incomplete children; empty after filter is []", () => {
     expect(
       reshapePullResult(
-        { friends: User.friends.with({ name: User.name }) },
+        { friends: User.friends.select({ name: User.name }) },
         {
           friends: [
             { name: "Alonzo" },
@@ -208,7 +208,7 @@ describe("reshapePullResult", () => {
     ).toEqual({ friends: [{ name: "Alonzo" }] });
     expect(
       reshapePullResult(
-        { friends: User.friends.with({ name: User.name }) },
+        { friends: User.friends.select({ name: User.name }) },
         { friends: [{ ":db/id": 2 }] },
       ),
     ).toEqual({ friends: [] });

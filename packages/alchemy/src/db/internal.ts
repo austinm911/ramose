@@ -19,6 +19,7 @@ export * from "./SchemaErrors.ts";
 export * from "./http.ts";
 export * from "./idents.ts";
 export * from "./Namespace.ts";
+export * from "./NavQuery.ts";
 export * from "./Eid.ts";
 export {
   type AttrPull,

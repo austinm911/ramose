@@ -16,6 +16,9 @@ on:
     branches: [master]
   workflow_dispatch:
 
+# Stages already isolate Worker / DO / R2 (`ALCHEMY_STAGE` is unique per run).
+# Cancel in-flight runs only for the same PR/ref so a new push replaces an
+# older attempt without blocking other PRs or master.
 concurrency:
   group: e2e-cf-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true

@@ -40,6 +40,30 @@ describe("fromResponse — the peer's own errors (no tag)", () => {
     expect(fromResponse(404, { error: "not found" })._tag).toBe("DatabaseNotFound");
   });
 
+  test("404 HTML (workers.dev edge) → Unavailable, not DatabaseNotFound", () => {
+    const e = fromResponse(404, {
+      error: "<!DOCTYPE html><title>Page not found</title>",
+    });
+    expect(e._tag).toBe("Unavailable");
+  });
+
+  test("500 error code 1104 → Unavailable (fresh workers.dev)", () => {
+    const e = fromResponse(500, { error: "error code: 1104" });
+    expect(e._tag).toBe("Unavailable");
+  });
+
+  test("500 Worker not found → Unavailable (DO namespace not bound yet)", () => {
+    const e = fromResponse(500, { error: "Worker not found." });
+    expect(e._tag).toBe("Unavailable");
+  });
+
+  test("500 'Handler does not export a fetch()' → Unavailable (deploy not converged)", () => {
+    const e = fromResponse(500, {
+      error: "Handler does not export a fetch() function.",
+    });
+    expect(e._tag).toBe("Unavailable");
+  });
+
   test("413 → QueryBudgetExceeded with the guard's fields", () => {
     const e = fromResponse(413, {
       error: "query budget exceeded",

@@ -45,11 +45,11 @@ type MaybePull = NonNullable<Effect.Success<typeof maybe>>;
 type _optName = Expect<Equal<MaybePull["name"], string | undefined>>;
 type _optAge = Expect<Equal<MaybePull["age"], number | undefined>>;
 
-// ── .with nest: many → array, one → object ─────────────────────────────────
+// ── .select nest: many → array, one → object ───────────────────────────────
 
 const withFriends = db.pull(eid, {
   name: User.name,
-  friends: User.friends.with({
+  friends: User.friends.select({
     name: User.name,
     age: User.age.optional,
   }),
@@ -64,8 +64,8 @@ type _friends = Expect<
 type _selfName = Expect<Equal<FriendsPull["name"], string>>;
 
 const withBest = db.pull(eid, {
-  bestFriend: User.bestFriend.with({ name: User.name }),
-  maybeBest: User.bestFriend.optional.with({ name: User.name }),
+  bestFriend: User.bestFriend.select({ name: User.name }),
+  maybeBest: User.bestFriend.optional.select({ name: User.name }),
 });
 type BestPull = NonNullable<Effect.Success<typeof withBest>>;
 type _best = Expect<
@@ -75,11 +75,11 @@ type _maybeBest = Expect<
   Equal<BestPull["maybeBest"], { readonly name: string } | undefined>
 >;
 
-// two levels — same syntax inside .with
+// two levels — same syntax inside .select
 const deep = db.pull(eid, {
-  friends: User.friends.with({
+  friends: User.friends.select({
     name: User.name,
-    friends: User.friends.with({ name: User.name }),
+    friends: User.friends.select({ name: User.name }),
   }),
 });
 type DeepPull = NonNullable<Effect.Success<typeof deep>>;
@@ -99,11 +99,11 @@ const happy = db.pull(eid, {
   name: User.name,
   age: User.age.optional,
   source: Meta.source,
-  bestFriend: User.bestFriend.optional.with({
+  bestFriend: User.bestFriend.optional.select({
     name: User.name,
     age: User.age.optional,
   }),
-  friends: User.friends.with({
+  friends: User.friends.select({
     name: User.name,
     age: User.age.optional,
   }),
@@ -165,12 +165,12 @@ db.pull(eid, [":user/nope"]);
 
 db.pull(eid, {
   // @ts-expect-error cannot nest a non-ref attr
-  friends: User.name.with({ name: User.name }),
+  friends: User.name.select({ name: User.name }),
 });
 
 db.pull(eid, {
   // @ts-expect-error unknown attr inside the nested pattern
-  friends: User.friends.with({ nope: User.nope }),
+  friends: User.friends.select({ nope: User.nope }),
 });
 
 const Other = Namespace("tag", { label: Attr(Schema.String) });

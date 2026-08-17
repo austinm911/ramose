@@ -10,8 +10,8 @@ Catalog)` and you're in. No provision step.
 
 - **Typed catalog.** `@ripple/alchemy/db` is the schema. Attributes, uniqueness,
   cardinality — TypeScript, checked at compile time.
-- **Effect-native writes and reads.** Generator `transact`. Literate `q`.
-  `db.pull`.
+- **Effect-native writes and reads.** Generator `transact`. Navigational
+  `Ripple.query` → `db.q` / `db.live`. `db.pull`.
 - **Live queries.** `db.live` is a `Stream` on the session socket. Write a
   row, it re-runs. No refetch. No invalidation call at the write site.
 - **Db-per-tenant is a function call.** One Alchemy resource, one
@@ -105,14 +105,16 @@ const runtime = ManagedRuntime.make(
 const run = runtime.runPromise;
 const db = runtime.runSync(Ripple.Databases).db("todos", Todos);
 
-const todos = db.live((q) =>
-  q.where("?e", Todo.title, "_").find("?e").pull({
+const todoQuery = Ripple.query(Todo)
+  .orderBy(Todo.createdAt, "asc")
+  .select({
+    id: Todo.id,
     title: Todo.title,
     done: Todo.done,
     createdAt: Todo.createdAt,
-  }),
-);
-// Stream<readonly [Ripple.Eid<typeof Todos>, { title, done, createdAt }][]>
+  });
+const todos = db.live(todoQuery);
+// Stream<readonly { id, title, done, createdAt }[]>
 // hoist it, then drain it with Stream.runForEach on its own fiber
 
 await run(
@@ -139,8 +141,9 @@ views.
 ## Features
 
 - Immutable EAVT graph. Time travel is a view, not a dump.
-- Seek-driven datalog at the edge. `q` and `live` are two terminals over one
-  builder; `live` is a `Stream` on the session socket.
+- Seek-driven datalog at the edge. `Ripple.query` builds a typed value;
+  `db.q` and `db.live` run it — once or as a `Stream` on the session socket.
+  See [`docs/QUERY.md`](docs/QUERY.md).
 - One writer per name, dense `t`, persist-before-ack.
 - QueryReplicas hold novelty; workers read through them.
 - Privilege is the capability you bind: `Ripple.ReadWriteDatabases` or

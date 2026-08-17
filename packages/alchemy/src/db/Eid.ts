@@ -4,7 +4,7 @@
  * `Eid<C>` is `{ readonly id: number }` and nothing else: no methods, no I/O,
  * no catalog object hanging off it. The catalog only exists in the type, as a
  * phantom, so two catalogs' eids do not silently mix and a row can be handed
- * straight to React as a key. Reading an entity is `db.pull(eid, pattern)`.
+ * straight to React as a key. Reading an entity is `db.pull(eid, shape)`.
  */
 
 import type { AnyCatalog } from "./Catalog.ts";

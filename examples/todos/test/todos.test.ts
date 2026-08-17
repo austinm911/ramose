@@ -28,6 +28,14 @@ import {
 
 const settle = () => Bun.sleep(30);
 
+/** Wait until the live harness has a first emission (or error), not a fixed sleep. */
+const awaitLive = async (
+  todos: { rows: unknown; error: unknown },
+  pred: () => boolean = () => todos.rows !== undefined || todos.error !== undefined,
+) => {
+  for (let i = 0; i < 100 && !pred(); i++) await Bun.sleep(20);
+};
+
 /** One database, one `Connection`, both wires. */
 const inProcessPeer = async () => {
   const conn = await Connection.create();
@@ -140,7 +148,7 @@ const live = (stream: Stream.Stream<readonly TodoRow[], Ripple.DbError>) => {
 };
 
 const titles = (rows: readonly TodoRow[] | undefined) =>
-  (rows ?? []).map((r) => r[1].title);
+  (rows ?? []).map((r) => r.title);
 
 describe("the app's writes move the app's live stream", () => {
   test("add / toggle / delete, with no refetch and no invalidation call", async () => {
@@ -148,34 +156,34 @@ describe("the app's writes move the app's live stream", () => {
     const todos = live(peer.db.live(todoQuery));
 
     expect(todos.rows).toBeUndefined();
-    await settle();
+    await awaitLive(todos);
     expect(todos.rows).toEqual([]);
 
     await Effect.runPromise(addTodo(peer.db, "write the spec"));
-    await settle();
+    await awaitLive(todos, () => (todos.rows?.length ?? 0) === 1);
     const added = todos.rows!;
     expect(titles(added)).toEqual(["write the spec"]);
-    expect(added[0][1].done).toBe(false);
-    expect(added[0][1].createdAt).toBeInstanceOf(Date);
+    expect(added[0]!.done).toBe(false);
+    expect(added[0]!.createdAt).toBeInstanceOf(Date);
     expect(todos.changes).toBeGreaterThan(1);
     expect(todos.error).toBeUndefined();
 
-    const first = added[0][0];
+    const first = { id: added[0]!.id };
     await Effect.runPromise(setDone(peer.db, first, true));
-    await settle();
-    expect(todos.rows!.map((r) => r[1].done)).toEqual([true]);
+    await awaitLive(todos, () => todos.rows?.[0]?.done === true);
+    expect(todos.rows!.map((r) => r.done)).toEqual([true]);
     expect(titles(todos.rows)).toEqual(["write the spec"]);
 
     await Effect.runPromise(setDone(peer.db, first, false));
-    await settle();
-    expect(todos.rows!.map((r) => r[1].done)).toEqual([false]);
+    await awaitLive(todos, () => todos.rows?.[0]?.done === false);
+    expect(todos.rows!.map((r) => r.done)).toEqual([false]);
 
     await Effect.runPromise(addTodo(peer.db, "ship it"));
-    await settle();
-    expect(titles(todos.rows).sort()).toEqual(["ship it", "write the spec"]);
+    await awaitLive(todos, () => (todos.rows?.length ?? 0) === 2);
+    expect(titles(todos.rows)).toEqual(["write the spec", "ship it"]);
 
     await Effect.runPromise(deleteTodo(peer.db, first));
-    await settle();
+    await awaitLive(todos, () => (todos.rows?.length ?? 0) === 1);
     expect(titles(todos.rows)).toEqual(["ship it"]);
 
     await todos.stop();
@@ -185,7 +193,7 @@ describe("the app's writes move the app's live stream", () => {
   test("a write by someone else arrives as a t frame and re-runs the query", async () => {
     const peer = await inProcessPeer();
     const todos = live(peer.db.live(todoQuery));
-    await settle();
+    await awaitLive(todos);
     expect(todos.rows).toEqual([]);
 
     // straight at the peer, then the tick the Worker's basis poller would send
@@ -195,22 +203,24 @@ describe("the app's writes move the app's live stream", () => {
       [":db/add", "tmp", ":todo/createdAt", new Date()],
     ]);
     peer.tick();
-    await settle();
+    await awaitLive(todos, () => (todos.rows?.length ?? 0) === 1);
 
     expect(titles(todos.rows)).toEqual(["from another tab"]);
     await todos.stop();
     await peer.dispose();
   });
 
-  test("one row without a query: db.pull(eid, pattern)", async () => {
+  test("one row without a query: db.pull(eid, shape)", async () => {
     const peer = await inProcessPeer();
     const report = await Effect.runPromise(addTodo(peer.db, "pull me"));
 
     // `dbAfter` is floored at the write, so this reads its own write
-    const [[eid]] = await Effect.runPromise(
-      report.dbAfter.q((q) => q.where("?e", Todo.title, "_").find("?e")),
+    const rows = await Effect.runPromise(
+      report.dbAfter.q(
+        Ripple.query(Todo).where(Todo.title.eq("pull me")).select({ id: Todo.id }),
+      ),
     );
-    const row = await Effect.runPromise(pullTodo(peer.db, eid));
+    const row = await Effect.runPromise(pullTodo(peer.db, { id: rows[0]!.id }));
     expect(row).toMatchObject({ title: "pull me", done: false });
     expect(row?.createdAt).toBeInstanceOf(Date);
 
@@ -220,7 +230,7 @@ describe("the app's writes move the app's live stream", () => {
   test("interrupting the fiber is the whole teardown", async () => {
     const peer = await inProcessPeer();
     const todos = live(peer.db.live(todoQuery));
-    await settle();
+    await awaitLive(todos);
     const seen = todos.changes;
 
     await todos.stop();

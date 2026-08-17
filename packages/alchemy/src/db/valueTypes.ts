@@ -1,5 +1,6 @@
 /** The eight `:db.type/*` idents and Effect Schema helpers that lower onto them. */
 
+import type * as SchemaNS from "effect/Schema";
 import * as Schema from "effect/Schema";
 
 export type DbValueType =
@@ -13,6 +14,8 @@ export type DbValueType =
   | ":db.type/bytes";
 
 declare const RippleVt: unique symbol;
+declare const RefTarget: unique symbol;
+declare const SelfRef: unique symbol;
 
 /** Type-level brand so `Attr(Long)` stamps `valueType` without an option. */
 export type RippleVt<VT extends DbValueType> = {
@@ -63,12 +66,85 @@ export const UuidString = asVt(
 );
 export type UuidString = Schema.Schema.Type<typeof UuidString>;
 
-/** Entity reference (eid). Lowers to `:db.type/ref`. */
-export const Ref = asVt(
+/** Untargeted entity reference (eid). Prefer {@link Ref} with a target. */
+const RefUntargeted = asVt(
   Schema.Number.annotate({ identifier: "ripple/ref" }),
   ":db.type/ref",
 );
-export type Ref = Schema.Schema.Type<typeof Ref>;
+
+export type SelfMarker = { readonly [SelfRef]: true };
+
+/** Targeted ref schema — carries the target namespace's attribute map. */
+export type TargetedRef<TargetAttrs extends object = object> =
+  typeof RefUntargeted & {
+    readonly [RefTarget]?: TargetAttrs;
+    readonly _resolve?: () => { readonly attributes: TargetAttrs };
+    readonly _self?: boolean;
+  };
+
+type RefFn = {
+  /** Untargeted ref (legacy). Prefer `Ref(() => User)` / `Ref.self`. */
+  (schema?: undefined): typeof RefUntargeted;
+  /** Targeted ref: `Attr(Ref(() => User))`. */
+  <const N extends { readonly attributes: object }>(
+    target: () => N,
+  ): TargetedRef<N["attributes"]>;
+  /** Self-ref; `Namespace` substitutes the enclosing attr map. */
+  readonly self: TargetedRef<SelfMarker>;
+} & typeof RefUntargeted &
+  RippleVt<":db.type/ref">;
+
+/**
+ * Entity reference. Use `Ref(() => User)` or `Ref.self` so navigational
+ * paths (`Todo.owner.name`) have a target. Bare `Ref` remains an untargeted
+ * branded schema for back-compat.
+ */
+export const Ref: RefFn = Object.assign(
+  <const N extends { readonly attributes: object }>(
+    target?: () => N,
+  ): TargetedRef<N["attributes"]> | typeof RefUntargeted => {
+    if (target === undefined) return RefUntargeted;
+    const schema = asVt(
+      Schema.Number.annotate({ identifier: "ripple/ref" }),
+      ":db.type/ref",
+    );
+    return Object.assign(schema, {
+      _resolve: target,
+    }) as TargetedRef<N["attributes"]>;
+  },
+  RefUntargeted,
+  {
+    self: Object.assign(
+      asVt(
+        Schema.Number.annotate({ identifier: "ripple/ref-self" }),
+        ":db.type/ref",
+      ),
+      { _self: true as const },
+    ) as TargetedRef<SelfMarker>,
+  },
+) as RefFn;
+
+// `Attr(Ref)` passes the callable; WeakMap brands must key the function too.
+known.set(Ref, ":db.type/ref");
+known.set(Ref.self, ":db.type/ref");
+
+export type Ref = Schema.Schema.Type<typeof RefUntargeted>;
+
+export const isSelfRefSchema = (schema: unknown): boolean =>
+  (typeof schema === "object" || typeof schema === "function") &&
+  schema !== null &&
+  (schema as { _self?: boolean })._self === true;
+
+export const refTargetOf = (
+  schema: unknown,
+): (() => { readonly attributes: object }) | undefined => {
+  // Effect Schemas are often functions (`typeof` !== "object").
+  if ((typeof schema !== "object" && typeof schema !== "function") || schema === null) {
+    return undefined;
+  }
+  return (schema as { _resolve?: () => { readonly attributes: object } })
+    ._resolve;
+};
 
 /** Integer long. Lowers to `:db.type/long` (plain `Schema.Number` is double). */
 export const Long = asVt(
@@ -92,7 +168,7 @@ export const Bytes = asVt(
 export type Bytes = Schema.Schema.Type<typeof Bytes>;
 
 export const tryInferDbValueType = (
-  schema: Schema.Top,
+  schema: SchemaNS.Top,
   override?: DbValueType,
 ): DbValueType | undefined => {
   if (override !== undefined) return override;
@@ -116,7 +192,7 @@ export const tryInferDbValueType = (
  * the AST tag of the common primitives. Anything else must set `valueType`.
  */
 export const inferDbValueType = (
-  schema: Schema.Top,
+  schema: SchemaNS.Top,
   override?: DbValueType,
 ): DbValueType => {
   const vt = tryInferDbValueType(schema, override);
