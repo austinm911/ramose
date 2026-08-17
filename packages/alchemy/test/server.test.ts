@@ -1,90 +1,100 @@
 /**
- * The resource itself: identity, the name rule its clients enforce, peer
- * resolution, and the env keys the Binding/Http layers agree on.
+ * The resources themselves: identity, the name rule their clients enforce,
+ * Worker resolution, and the env keys the two transports agree on.
  *
- * Instantiating a resource (`Ripple.System("Sys", …)`) needs a running
+ * Instantiating a resource (`Ripple.Server("Ripple", …)`) needs a running
  * engine — that lives in `stack.test.ts`. What is checkable in isolation is
- * everything the provider decides *about* a system, plus the shape of the
+ * everything the provider decides *about* a server, plus the shape of the
  * props and attributes, which the compiler checks.
  */
 
 import { describe, expect, test } from "bun:test";
 import * as Redacted from "effect/Redacted";
-import { ReadSystem } from "../src/ReadSystem.ts";
-import { ReadWriteSystem } from "../src/ReadWriteSystem.ts";
+import { DATABASE_NAME_RE } from "../src/DatabaseName.ts";
+import { Database, isDatabase } from "../src/Database.ts";
+import { ReadDatabases } from "../src/ReadDatabases.ts";
+import { ReadWriteDatabases } from "../src/ReadWriteDatabases.ts";
 import {
   AUTH_ENV_KEYS,
   authEnv,
-  DATABASE_NAME_RE,
   DEFAULT_JWT_MAX_TTL,
   internalSecret,
-  isSystem,
-  resolvePeer,
-  System,
-  type SystemProps,
-} from "../src/System.ts";
-import { SERVICE_ORIGIN } from "../src/SystemBinding.ts";
-import { envKeys } from "../src/SystemRuntime.ts";
-import { WriteSystem } from "../src/WriteSystem.ts";
+  isServer,
+  resolveWorker,
+  Server,
+  type ServerProps,
+} from "../src/Server.ts";
+import { SERVICE_ORIGIN } from "../src/ServerBinding.ts";
+import { envKeys } from "../src/ServerRuntime.ts";
 
 describe("identity", () => {
-  test("the resource class carries its type", () => {
-    expect(System.Type).toBe("Ripple.System");
+  test("the resource classes carry their types", () => {
+    expect(Server.Type).toBe("Ripple.Server");
+    expect(Database.Type).toBe("Ripple.Database");
   });
 
-  test("isSystem recognises a system and nothing else", () => {
-    expect(isSystem({ Type: "Ripple.System", FQN: "app/Sys" })).toBe(true);
+  test("isServer recognises a server and nothing else", () => {
+    expect(isServer({ Type: "Ripple.Server", FQN: "app/Ripple" })).toBe(true);
     // Refs resolve to callable proxies, hence the `function` case.
-    const ref = Object.assign(() => {}, { Type: "Ripple.System" });
-    expect(isSystem(ref)).toBe(true);
-    expect(isSystem({ Type: "Cloudflare.KV.Namespace", FQN: "app/KV" })).toBe(false);
-    // the resource this replaced is not this resource
-    expect(isSystem({ Type: "Ripple.Database", FQN: "app/Movies" })).toBe(false);
-    expect(isSystem(undefined)).toBe(false);
-    expect(isSystem("Ripple.System")).toBe(false);
+    const ref = Object.assign(() => {}, { Type: "Ripple.Server" });
+    expect(isServer(ref)).toBe(true);
+    expect(isServer({ Type: "Cloudflare.KV.Namespace", FQN: "app/KV" })).toBe(false);
+    // the other resource in this package is not this resource
+    expect(isServer({ Type: "Ripple.Database", FQN: "app/Movies" })).toBe(false);
+    expect(isDatabase({ Type: "Ripple.Database", FQN: "app/Movies" })).toBe(true);
+    expect(isDatabase({ Type: "Ripple.Server", FQN: "app/Ripple" })).toBe(false);
+    expect(isServer(undefined)).toBe(false);
+    expect(isServer("Ripple.Server")).toBe(false);
   });
 
   test("the capabilities are keyed under stable ids", () => {
-    expect(ReadSystem.key).toBe("Ripple.ReadSystem");
-    expect(WriteSystem.key).toBe("Ripple.WriteSystem");
-    expect(ReadWriteSystem.key).toBe("Ripple.ReadWriteSystem");
+    expect(ReadWriteDatabases.key).toBe("Ripple.ReadWriteDatabases");
+    expect(ReadDatabases.key).toBe("Ripple.ReadDatabases");
   });
 });
 
 /**
- * A system pins no database name — that is the whole point of the resource.
+ * A server pins no database name — that is the whole point of the resource.
  * Both halves of that are compile-time facts, so the assertions below are
  * type-level; the `expect`s only keep the test runner honest about having run
  * the file.
  */
-describe("a system has no database name", () => {
+describe("a server has no database name", () => {
   test("`name` is not a prop", () => {
-    // @ts-expect-error a database name is chosen at runtime, by `create(name)`
-    const props: SystemProps = { peer: "https://peer.example.com", name: "movies" };
-    expect(props.peer).toBe("https://peer.example.com");
+    // @ts-expect-error a database name is chosen per call, by `ripple.db(name, …)`
+    const props: ServerProps = { worker: "https://peer.example.com", name: "movies" };
+    expect(props.worker).toBe("https://peer.example.com");
 
-    type NameIsAProp = "name" extends keyof SystemProps ? true : false;
+    type NameIsAProp = "name" extends keyof ServerProps ? true : false;
     const nameIsAProp: NameIsAProp = false;
     expect(nameIsAProp).toBe(false);
   });
 
-  test("the attributes are url / peerName / token — no name, no databaseUrl", () => {
-    const attributes: System["Attributes"] = {
+  test("the attributes are url / workerName / token — no name, no databaseUrl", () => {
+    const attributes: Server["Attributes"] = {
       url: "https://peer.example.com",
-      peerName: "ripple-peer",
+      workerName: "ripple-peer",
       token: undefined,
     };
-    expect(Object.keys(attributes).sort()).toEqual(["peerName", "token", "url"]);
+    expect(Object.keys(attributes).sort()).toEqual(["token", "url", "workerName"]);
 
-    type Attr = keyof System["Attributes"];
+    type Attr = keyof Server["Attributes"];
     const hasName: "name" extends Attr ? true : false = false;
     const hasDatabaseUrl: "databaseUrl" extends Attr ? true : false = false;
     expect([hasName, hasDatabaseUrl]).toEqual([false, false]);
   });
+
+  test("a Database, by contrast, is exactly a name plus its catalog", () => {
+    type Props = keyof Database["Props"];
+    const hasName: "name" extends Props ? true : false = true;
+    const hasCatalog: "catalog" extends Props ? true : false = true;
+    const hasServer: "server" extends Props ? true : false = true;
+    expect([hasName, hasCatalog, hasServer]).toEqual([true, true, true]);
+  });
 });
 
 describe("database names", () => {
-  test("the regex is the peer Worker's `validDbName`", () => {
+  test("the regex is the server Worker's `validDbName`", () => {
     for (const ok of ["a", "movies", "A0", "a.b-c_d", "x".repeat(64)]) {
       expect(DATABASE_NAME_RE.test(ok)).toBe(true);
     }
@@ -94,35 +104,35 @@ describe("database names", () => {
   });
 });
 
-describe("peer resolution", () => {
-  test("a Worker-shaped peer yields its url and script name", () => {
-    expect(resolvePeer({ url: "https://peer.example.com", workerName: "ripple-peer" })).toEqual({
+describe("worker resolution", () => {
+  test("a Worker-shaped value yields its url and script name", () => {
+    expect(resolveWorker({ url: "https://peer.example.com", workerName: "ripple-peer" })).toEqual({
       url: "https://peer.example.com",
       workerName: "ripple-peer",
     });
   });
 
   test("a bare URL has no script name — no service binding is possible", () => {
-    expect(resolvePeer("https://peer.example.com")).toEqual({
+    expect(resolveWorker("https://peer.example.com")).toEqual({
       url: "https://peer.example.com",
       workerName: "",
     });
   });
 
   test("an undeployed Worker has no url yet", () => {
-    expect(resolvePeer({ url: undefined }).url).toBeUndefined();
+    expect(resolveWorker({ url: undefined }).url).toBeUndefined();
   });
 });
 
 describe("env keys", () => {
   test("the env keys are derived from the logical id — and there is no _DB key", () => {
-    const keys = envKeys({ LogicalId: "Sys" });
+    const keys = envKeys({ LogicalId: "Ripple" });
     expect(keys).toEqual({
-      service: "Sys",
-      url: "Sys_URL",
-      token: "Sys_TOKEN",
+      service: "Ripple",
+      url: "Ripple_URL",
+      token: "Ripple_TOKEN",
     });
-    expect(Object.values(keys)).not.toContain("Sys_DB");
+    expect(Object.values(keys)).not.toContain("Ripple_DB");
   });
 
   test("service-binding dispatch uses a synthetic origin", () => {
@@ -131,11 +141,11 @@ describe("env keys", () => {
 });
 
 /**
- * The peer declares its own auth env; `authEnv` only names the keys it reads.
- * The peer Worker must agree on these exact strings.
+ * The server Worker declares its own auth env; `authEnv` only names the keys
+ * it reads. The Worker must agree on these exact strings.
  */
-describe("the peer's auth env", () => {
-  test("the key names are the ones the peer Worker reads", () => {
+describe("the server's auth env", () => {
+  test("the key names are the ones the server Worker reads", () => {
     expect(AUTH_ENV_KEYS).toEqual({
       policy: "RIPPLE_POLICY",
       jwksUrl: "RIPPLE_JWKS_URL",
@@ -148,7 +158,7 @@ describe("the peer's auth env", () => {
     expect(DEFAULT_JWT_MAX_TTL).toBe(900);
   });
 
-  test("nothing configured binds nothing — today's peer, byte for byte", () => {
+  test("nothing configured binds nothing — today's server, byte for byte", () => {
     expect(authEnv(undefined)).toEqual({});
     expect(authEnv({})).toEqual({});
     expect(authEnv({ policy: "" })).toEqual({});
@@ -229,11 +239,15 @@ describe("the peer's auth env", () => {
     expect(Redacted.value(internalSecret(Redacted.make("pinned")))).toBe("pinned");
   });
 
-  test("`auth` is a prop, but the system's attributes are unchanged", () => {
-    const props: SystemProps = { peer: "https://peer.example.com", auth: { policy: "{}" } };
+  test("`auth` is a prop of the server, and the attributes are unchanged", () => {
+    const props: ServerProps = { worker: "https://peer.example.com", auth: { policy: "{}" } };
     expect(props.auth?.policy).toBe("{}");
-    type HasAuth = "auth" extends keyof System["Attributes"] ? true : false;
+    type HasAuth = "auth" extends keyof Server["Attributes"] ? true : false;
     const hasAuth: HasAuth = false;
     expect(hasAuth).toBe(false);
+    // auth lives on the server (the peer), never on a database
+    type DatabaseHasAuth = "auth" extends keyof Database["Props"] ? true : false;
+    const databaseHasAuth: DatabaseHasAuth = false;
+    expect(databaseHasAuth).toBe(false);
   });
 });

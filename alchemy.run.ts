@@ -50,7 +50,7 @@ export const Store = Cloudflare.R2.Bucket("Store");
  */
 export const Analytics = Cloudflare.AnalyticsEngine.Dataset("Analytics", { dataset: "ripple_tx" });
 
-/** Peer auth (docs/AUTH_LAYER.md), all opt-in: nothing set deploys today's peer. */
+/** Server auth (docs/AUTH_LAYER.md), all opt-in: nothing set deploys today's peer. */
 const auth: Ripple.PeerAuth = {
   policy: process.env.RIPPLE_POLICY,
   jwksUrl: process.env.RIPPLE_JWKS_URL,
@@ -88,29 +88,30 @@ export const Worker = Cloudflare.Worker("Worker", {
 export type WorkerEnv = Cloudflare.InferEnv<typeof Worker>;
 
 /**
- * The Ripple system on this peer (`@ripple/alchemy`).
+ * The Ripple server on this peer Worker (`@ripple/alchemy`).
  *
  * Nothing is provisioned and no database name is pinned here: a Ripple
  * database is a *name*, the Transactor DO is `idFromName(name)` and the
  * log/segments live under `db/<name>/…` in the bucket, so the first
  * transaction materializes it. What the resource buys is the deployment —
- * the peer's resolved `url`, the shared bearer `token`, and a deploy-time
- * proof that the peer is actually serving (`GET /health`) before anything
- * binds to it.
+ * the resolved `url`, the shared bearer `token`, and a deploy-time proof
+ * that the server is actually serving (`GET /health`) before anything
+ * binds to it. Installing a catalog on one of its names is
+ * `Ripple.Database("name", { server: Server, catalog })`.
  *
- * Consumers get an Effect-native client — `yield* Ripple.ReadWriteSystem(Sys)`,
- * then `yield* system.create("movies")` for a database client — over a Worker
- * service binding to this peer, plain HTTPS, or an Action.
+ * Consumers get an Effect-native client — `yield* Ripple.ReadWriteDatabases(Server)`,
+ * then `ripple.db("movies", Movies)` (pure) — over a Worker service binding
+ * (`Ripple.ServerBinding`) or plain HTTPS (`Ripple.ServerHttp`).
  * See examples/kv-style/ (resources.ts + app.ts + alchemy.run.ts).
  *
  * Note the same async-env limitation as `Analytics` above: a custom resource
  * cannot be declared in a Worker's `env: {}` (the classifier chain in
  * alchemy/src/Cloudflare/Workers/WorkerAsyncBindings.ts is closed over
  * Cloudflare's own resource types). Attribute Outputs still work —
- * `env: { RIPPLE_URL: Sys.url }` lowers to a `plain_text` binding — and the
- * `Ripple.*System*` capabilities bind themselves.
+ * `env: { RIPPLE_URL: Server.url }` lowers to a `plain_text` binding — and the
+ * `Ripple.*Databases` capabilities bind themselves.
  */
-export const Sys = Ripple.System("Sys", { peer: Worker, auth });
+export const Server = Ripple.Server("Ripple", { worker: Worker, auth });
 
 export default Alchemy.Stack(
   "ripple",
@@ -122,7 +123,7 @@ export default Alchemy.Stack(
   },
   Effect.gen(function* () {
     const worker = yield* Worker;
-    const sys = yield* Sys;
-    return { url: worker.url, peerUrl: sys.url };
+    const server = yield* Server;
+    return { url: worker.url, peerUrl: server.url };
   }),
 );

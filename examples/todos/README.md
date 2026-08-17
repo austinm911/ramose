@@ -1,6 +1,6 @@
 # Todos
 
-React + `Session.connect` + `db.live`. From the repo root:
+React + `Ripple.layer` + `db.live`. From the repo root:
 
 ```sh
 bun alchemy dev examples/todos/alchemy.run.ts

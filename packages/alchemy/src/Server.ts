@@ -1,46 +1,51 @@
 /**
- * `Ripple.System` — a Ripple peer, and every database it serves.
+ * `Ripple.Server` — a Ripple peer Worker, and every database it serves.
  *
  * A Ripple database is not a cloud object you create with an API call: it is
- * a *name*. The peer Worker routes `/db/:name/*` to a Transactor Durable
+ * a *name*. The server Worker routes `/db/:name/*` to a Transactor Durable
  * Object (`idFromName(name)`) and to region-local QueryReplicas, and the log
  * and segments live under `db/<name>/…` in R2. The first transaction
  * materializes it. There is no create-database endpoint, and no list.
  *
- * So the resource is not a database — it is the peer that serves them all. It
- * creates nothing: it resolves the peer's URL and, on a live deploy, proves
- * the peer is actually up before anything downstream binds to it. Naming a
- * database is a runtime act (`system.create(name)`), which is why one deploy
- * can serve a database per tenant without a resource per tenant.
+ * So the resource is not a database — it is the server that serves them all.
+ * It creates nothing: it resolves the Worker's URL and, on a live deploy,
+ * proves the Worker is actually up before anything downstream binds to it.
+ * Naming a database is a function call (`ripple.db(name, catalog)`), which is
+ * why one deploy can serve a database per tenant without a resource per
+ * tenant. Installing a catalog on one of those names is
+ * {@link import("./Database.ts").Database}.
  *
  * @resource
  * @product Ripple
  * @category Storage & Databases
- * @section Creating a System
- * @example Declaring the system on the peer Worker
+ * @section Creating a Server
+ * @example Declaring the server on its Worker
  * ```typescript
  * import * as Cloudflare from "alchemy/Cloudflare";
  * import * as Ripple from "@ripple/alchemy";
  *
- * export const Peer = Cloudflare.Worker("Worker", { main: "./src/index.ts" });
- * export const Sys = Ripple.System("Sys", { peer: Peer });
+ * const RippleWorker = Cloudflare.Worker("RippleWorker", { main: "./src/index.ts" });
+ * export const Server = Ripple.Server("Ripple", { worker: RippleWorker });
+ * export const TodosDb = Ripple.Database("todos", { server: Server, catalog: Todos });
  * ```
  *
  * @section Using it from a Worker
  * @example Open a database, then transact and query
  * ```typescript
- * const system = yield* Ripple.ReadWriteSystem(Sys);
- * const movies = yield* system.create("movies");
- * const ack = yield* movies.transact([{ ":user/name": "Ada" }]);
- * const rows = yield* movies.q({ find: ["?n"], where: [["?e", ":user/name", "?n"]] });
+ * const ripple = yield* Ripple.ReadWriteDatabases(Server);
+ * const movies = ripple.db("movies", Movies);
+ * const { dbAfter } = yield* movies.transact(function* (tx) {
+ *   const ada = yield* tx.entity();
+ *   yield* ada.add(User.name, "Ada");
+ * });
+ * const rows = yield* dbAfter.q((q) => q.where("?e", User.name, "?n").find("?n"));
  * ```
  *
- * Provide `Ripple.ReadWriteSystemBinding` (a Worker service binding to the
- * peer) or `Ripple.ReadWriteSystemHttp` (plain HTTPS) in the Worker's runtime
- * layer, and `Ripple.ReadWriteSystemLocal` inside an `Alchemy.Action`. Use
- * `Ripple.ReadSystem` / `Ripple.WriteSystem` for least-privilege read- or
- * write-only access — the privilege follows through `create` onto the
- * database client it hands back.
+ * Provide `Ripple.ServerBinding` (a Worker service binding to the server) or
+ * `Ripple.ServerHttp` (plain HTTPS — also what an `Alchemy.Action` and
+ * `alchemy dev` use) in the Worker's runtime layer. `Ripple.ReadDatabases` is
+ * the least-privilege half of `ReadWriteDatabases`: the `db()` it hands back
+ * has no `transact` and no `install`.
  */
 
 import type { Worker } from "alchemy/Cloudflare/Workers";
@@ -54,18 +59,20 @@ import * as Schedule from "effect/Schedule";
 import { InvalidRequest, NetworkError } from "./db/Errors.ts";
 import type { Providers } from "./Providers.ts";
 
-export const isSystem = (value: unknown): value is System =>
-  isResourceOfType(value, "Ripple.System");
+/** @internal */
+export const isServer = (value: unknown): value is Server =>
+  isResourceOfType(value, "Ripple.Server");
 
 /**
- * The peer that serves this system: a `Cloudflare.Worker` (the resource, or
- * the Effect that declares it), an explicit `{ url }`, or a bare base URL.
+ * @internal The Worker that serves this server: a `Cloudflare.Worker` (the
+ * resource, or the Effect that declares it), an explicit `{ url }`, or a bare
+ * base URL.
  *
- * `workerName` is only needed by the `*SystemBinding` layers, which lower a
- * `service` binding onto the host Worker; the `*Http` / `*Local` layers work
- * from `url` alone.
+ * `workerName` is only needed by {@link import("./ServerBinding.ts")}, which
+ * lowers a `service` binding onto the host Worker; `ServerHttp` works from
+ * `url` alone.
  */
-export type SystemPeer =
+export type ServerWorker =
   | Worker
   | {
       readonly url: string | undefined;
@@ -73,8 +80,8 @@ export type SystemPeer =
     }
   | string;
 
-/** Deploy-time liveness probe of the peer (live provider only). */
-export interface SystemProbe {
+/** @internal Deploy-time liveness probe of the server (live provider only). */
+export interface ServerProbe {
   /** Total attempts before failing the deploy. @default 5 */
   readonly attempts?: number;
   /** Delay between attempts. @default 500 */
@@ -82,13 +89,13 @@ export interface SystemProbe {
 }
 
 /**
- * What the peer Worker needs to verify JWTs and enforce a policy.
+ * What the server Worker needs to verify JWTs and enforce a policy.
  *
- * The System does **not** push these onto the peer: spread {@link authEnv} into
- * the peer Worker's own `env`, and pass the same value here for the deploy-time
- * fail-closed check.
+ * The Server does **not** push these onto the Worker: spread {@link authEnv}
+ * into the Worker's own `env`, and pass the same value here for the
+ * deploy-time fail-closed check.
  *
- * With `policy` unset the peer runs today's mode: `RIPPLE_TOKEN` if set,
+ * With `policy` unset the server runs today's mode: `RIPPLE_TOKEN` if set,
  * otherwise open.
  */
 export interface PeerAuth {
@@ -102,31 +109,34 @@ export interface PeerAuth {
   readonly aud?: string | undefined;
   /** Cap on `exp - iat`, in seconds. @default 900 */
   readonly maxTtl?: number | undefined;
-  /** Origins the peer answers CORS for once a policy narrows it. */
+  /** Origins the server answers CORS for once a policy narrows it. */
   readonly allowedOrigins?: readonly string[] | string | undefined;
   /** Worker→DO shared secret; every internal fetch carries it. See {@link internalSecret}. */
   readonly internalSecret?: Redacted.Redacted<string> | string | undefined;
 }
 
-export type SystemProps = {
-  /** The peer Worker (or a URL) that serves `/db/:name/*`. */
-  peer: SystemPeer;
+/** @internal The public spelling is the argument of {@link Server}. */
+export type ServerProps = {
+  /** The Worker that serves `/db/:name/*` (or a URL, when it is not ours to deploy). */
+  worker: ServerWorker;
+  /** Override the URL resolved from `worker` — a custom domain, say. */
+  url?: string;
   /**
-   * Bearer token for this peer, when it is deployed with `RIPPLE_TOKEN`.
+   * Bearer token for this server, when it is deployed with `RIPPLE_TOKEN`.
    * Stored as a `Redacted` attribute and lowered onto consumers as a
-   * `secret_text` binding. This is the peer's one token: it covers every
-   * database name the peer serves, and is ignored when the peer has
+   * `secret_text` binding. This is the server's one token: it covers every
+   * database name it serves, and is ignored when the Worker has
    * `RIPPLE_TOKEN` unset. It is *not* a data-plane principal on a named
    * database once a policy is configured — a JWT is the only way to be one.
    */
   token?: Redacted.Redacted<string> | string;
-  /** The peer's auth configuration, for a deploy-time consistency check only. */
+  /** The server's auth configuration, for a deploy-time consistency check only. */
   auth?: PeerAuth;
   /** Liveness probe on deploy; `false` skips it. */
-  probe?: SystemProbe | false;
+  probe?: ServerProbe | false;
 };
 
-/** The env keys the peer Worker reads its auth configuration from. */
+/** The env keys the server Worker reads its auth configuration from. */
 export const AUTH_ENV_KEYS = {
   policy: "RIPPLE_POLICY",
   jwksUrl: "RIPPLE_JWKS_URL",
@@ -168,13 +178,14 @@ export const internalSecret = (
 };
 
 /**
- * The peer Worker's auth env, as bindings. Unset fields emit no key, so an
- * unconfigured peer is byte-for-byte today's peer; a set `policy` also binds
- * {@link internalSecret}, since an unset key leaves the Worker→DO gate off.
+ * The server Worker's auth env, as bindings. Unset fields emit no key, so an
+ * unconfigured server is byte-for-byte today's server; a set `policy` also
+ * binds {@link internalSecret}, since an unset key leaves the Worker→DO gate
+ * off.
  *
  * @example
  * ```typescript
- * export const Worker = Cloudflare.Worker("Worker", {
+ * export const RippleWorker = Cloudflare.Worker("RippleWorker", {
  *   main: "./packages/worker/src/index.ts",
  *   env: { STORE: Store, ...Ripple.authEnv({ policy, jwksUrl, issuers, aud }) },
  * });
@@ -225,14 +236,14 @@ const checkAuth = (auth: PeerAuth | undefined): string | undefined => {
   return undefined;
 };
 
-export type System = Resource<
-  "Ripple.System",
-  SystemProps,
+export type Server = Resource<
+  "Ripple.Server",
+  ServerProps,
   {
-    /** Peer base URL, no trailing slash. */
+    /** Base URL, no trailing slash. */
     url: string;
-    /** The peer Worker's script name, or `""` when the peer was given as a URL. */
-    peerName: string;
+    /** The server Worker's script name, or `""` when it was given as a URL. */
+    workerName: string;
     /** The bearer token, when one was configured. */
     token: Redacted.Redacted<string> | undefined;
   },
@@ -240,50 +251,48 @@ export type System = Resource<
   Providers
 >;
 
-const SystemResource = Resource<System>("Ripple.System");
+const ServerResource = Resource<Server>("Ripple.Server");
 
 /**
- * Declare a Ripple system.
+ * Declare a Ripple server.
  *
- * The peer may be given as a `Cloudflare.Worker` *declaration* — the value
+ * The Worker may be given as a `Cloudflare.Worker` *declaration* — the value
  * `Cloudflare.Worker("Worker", …)` returns, which is a yieldable Effect, not
  * a resource instance. Resolving it is the declaration's job: `yield*`ing it
- * here registers (or reuses) the peer in the stack and hands back the
+ * here registers (or reuses) the Worker in the stack and hands back the
  * resource proxy whose attributes are `Output`s, which is what makes the
- * engine (a) order this system after the peer and (b) substitute the peer's
- * real URL at reconcile. Passing the unyielded declaration straight into
- * `Props` would track no dependency and read `url` off a function
- * (`undefined`). Same move as `Cloudflare.DurableObject.from` /
- * `startContainer` make with a Worker/Container declaration.
+ * engine (a) order this server after its Worker and (b) substitute the real
+ * URL at reconcile. Passing the unyielded declaration straight into `Props`
+ * would track no dependency and read `url` off a function (`undefined`). Same
+ * move as `Cloudflare.DurableObject.from` / `startContainer` make with a
+ * Worker/Container declaration.
  */
-export const System = Object.assign(
-  (id: string, props: InputProps<SystemProps>) =>
-    SystemResource(
+export const Server = Object.assign(
+  (id: string, props: InputProps<ServerProps>) =>
+    ServerResource(
       id,
       Effect.gen(function* () {
-        const peer = props.peer as
-          | SystemPeer
-          | Effect.Effect<SystemPeer, unknown, never>;
+        const worker = props.worker as
+          | ServerWorker
+          | Effect.Effect<ServerWorker, unknown, never>;
         return {
           ...props,
-          peer: Effect.isEffect(peer) ? yield* peer : peer,
+          worker: Effect.isEffect(worker) ? yield* worker : worker,
         };
-      }) as unknown as Effect.Effect<InputProps<SystemProps>, never, never>,
+      }) as unknown as Effect.Effect<InputProps<ServerProps>, never, never>,
     ),
-  SystemResource,
-) as typeof SystemResource;
+  ServerResource,
+) as typeof ServerResource;
 
-export { DATABASE_NAME_RE } from "./DatabaseName.ts";
-
-/** `{ url, workerName }` out of whichever peer form was given. */
-export const resolvePeer = (
-  peer: SystemPeer,
+/** @internal `{ url, workerName }` out of whichever Worker form was given. */
+export const resolveWorker = (
+  worker: ServerWorker,
 ): { url: string | undefined; workerName: string } => {
-  if (typeof peer === "string") return { url: peer, workerName: "" };
+  if (typeof worker === "string") return { url: worker, workerName: "" };
   // At reconcile the engine has replaced the Worker's attribute Outputs with
   // their values, which the `Worker` arm of the union still types as Outputs
   // (same cast Neon's Branch makes for `project.projectId`).
-  const resolved = peer as unknown as {
+  const resolved = worker as unknown as {
     url?: string | undefined;
     workerName?: string | undefined;
   };
@@ -307,7 +316,7 @@ const healthOnce = (url: string) =>
     try: () => fetch(`${trimSlashes(url)}/health`, { method: "GET" }),
     catch: (cause) =>
       new NetworkError({
-        message: `ripple: peer at ${url} is unreachable: ${
+        message: `ripple: server at ${url} is unreachable: ${
           cause instanceof Error ? cause.message : String(cause)
         }`,
         cause,
@@ -318,18 +327,18 @@ const healthOnce = (url: string) =>
         ? Effect.void
         : Effect.fail(
             new NetworkError({
-              message: `ripple: peer at ${url} answered /health with ${response.status}`,
+              message: `ripple: server at ${url} answered /health with ${response.status}`,
             }),
           ),
     ),
   );
 
 /**
- * Probe the peer, with retries: a `System` is usually reconciled seconds
+ * Probe the server, with retries: a `Server` is usually reconciled seconds
  * after the Worker that serves it was uploaded, and workers.dev routes take a
  * moment to propagate.
  */
-const probeHealth = (url: string, probe: SystemProbe | false | undefined) => {
+const probeHealth = (url: string, probe: ServerProbe | false | undefined) => {
   if (probe === false) return Effect.void;
   const attempts = Math.max(1, probe?.attempts ?? 5);
   const delayMs = probe?.delayMs ?? 500;
@@ -338,36 +347,37 @@ const probeHealth = (url: string, probe: SystemProbe | false | undefined) => {
   );
 };
 
-const attributes = Effect.fn(function* (props: SystemProps, probe: boolean) {
+const attributes = Effect.fn(function* (props: ServerProps, probe: boolean) {
   const badAuth = checkAuth(props.auth);
   if (badAuth !== undefined) return yield* Effect.fail(new InvalidRequest({ message: badAuth }));
-  const peer = resolvePeer(props.peer);
-  if (peer.url === undefined || peer.url === "") {
+  const worker = resolveWorker(props.worker);
+  const chosen = props.url ?? worker.url;
+  if (chosen === undefined || chosen === "") {
     return yield* Effect.fail(
       new InvalidRequest({
         message:
-          "ripple: the peer has no URL — pass a deployed Cloudflare.Worker (workers.dev or a custom domain) or an explicit { url }",
+          "ripple: the server has no URL — pass a deployed Cloudflare.Worker (workers.dev or a custom domain) or an explicit `url`",
       }),
     );
   }
-  const url = trimSlashes(peer.url);
+  const url = trimSlashes(chosen);
   if (probe) yield* probeHealth(url, props.probe);
   return {
     url,
-    peerName: peer.workerName,
+    workerName: worker.workerName,
     token: redact(props.token),
   };
 });
 
 /**
- * Live provider. `reconcile` is idempotent — there is nothing to create, so
- * it resolves the peer URL and proves the peer answers `/health`.
+ * @internal Live provider. `reconcile` is idempotent — there is nothing to
+ * create, so it resolves the URL and proves the server answers `/health`.
  *
- * No `stables` and no `diff`: a system pins no name, so nothing about it can
- * force a replacement. Repointing it at another peer is an ordinary update.
+ * No `stables` and no `diff`: a server pins no name, so nothing about it can
+ * force a replacement. Repointing it at another Worker is an ordinary update.
  */
-export const ProviderLive = () =>
-  Provider.succeed(System, {
+const ProviderLive = () =>
+  Provider.succeed(Server, {
     reconcile: Effect.fn(function* ({ news }) {
       return yield* attributes(news, true);
     }),
@@ -377,15 +387,15 @@ export const ProviderLive = () =>
     }),
     delete: Effect.fn(function* () {
       // Ripple databases are append-only and immutable; destroying the
-      // resource forgets the *peer*, it does not erase any log, the segments
+      // resource forgets the *server*, it does not erase any log, the segments
       // in R2, or the Durable Objects. Deleting the data is a separate,
       // deliberate act (empty the bucket, delete the DO namespaces).
     }),
   });
 
-/** Local provider (`alchemy dev`): same attributes, no liveness probe. */
-export const ProviderLocal = () =>
-  Provider.succeed(System, {
+/** @internal Local provider (`alchemy dev`): same attributes, no liveness probe. */
+const ProviderLocal = () =>
+  Provider.succeed(Server, {
     reconcile: Effect.fn(function* ({ news }) {
       return yield* attributes(news, false);
     }),
@@ -395,8 +405,9 @@ export const ProviderLocal = () =>
     delete: Effect.fn(function* () {}),
   });
 
-export const SystemProvider = () =>
-  ProviderLayer.dual(System, {
+/** @internal Registered by `providers()`. */
+export const ServerProvider = () =>
+  ProviderLayer.dual(Server, {
     local: () => ProviderLocal(),
     live: () => ProviderLive(),
   });

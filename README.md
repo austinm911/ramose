@@ -32,8 +32,8 @@ bun alchemy dev examples/todos/alchemy.run.ts
 VITE_RIPPLE_URL=http://localhost:8787 bunx vite examples/todos
 ```
 
-That stack is a peer Worker (R2 + Transactor DO + QueryReplica DO) and a
-`Ripple.System`. The UI is Vite. Copy
+That stack is a peer Worker (R2 + Transactor DO + QueryReplica DO), a
+`Ripple.Server` and a `Ripple.Database`. The UI is Vite. Copy
 `examples/todos/{resources,alchemy.run,schema}.ts` and you have the same
 shape.
 
@@ -49,24 +49,28 @@ const Replica = Cloudflare.DurableObject("QueryReplicaDO", {
   className: "QueryReplicaDO",
 });
 
-export const Peer = Cloudflare.Worker("Peer", {
+export const RippleWorker = Cloudflare.Worker("Peer", {
   main: "./packages/worker/src/index.ts",
   compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
   env: { STORE: Store, TRANSACTOR: Transactor, REPLICA: Replica },
 });
 
-export const Sys = Ripple.System("Sys", { peer: Peer });
+export const Server = Ripple.Server("Ripple", { worker: RippleWorker });
+export const TodosDb = Ripple.Database("todos", { server: Server, catalog: Todos });
 ```
 
-A deploy-time Action calls `ripple.db("todos", Todos).install()` so the
-catalog is on the peer before the UI connects. `RIPPLE_TOKEN` is the peer's
+`Ripple.Database` is not a cloud object — a database is a name — it is
+"install this catalog on that name", so the catalog is on the peer before the
+UI connects. Per-tenant names call `db.install()` at tenant-creation instead. `RIPPLE_TOKEN` is the peer's
 one bearer token; leave it unset and the peer is open. Set `RIPPLE_POLICY` and
 the peer verifies JWTs, ties each token to one database, and filters reads /
 checks writes against the policy in `docs/AUTH_LAYER.md`.
 
-An app Worker binds the same system (`yield* Ripple.ReadWriteSystem(Sys)`) and
-calls `ripple.db(name, catalog)` per request — pure, zero network, so that is
-db-per-tenant. See `examples/kv-style/`.
+An app Worker binds the same server (`yield* Ripple.ReadWriteDatabases(Server)`,
+under `Ripple.ServerBinding` or `Ripple.ServerHttp`) and calls
+`ripple.db(name, catalog)` per request — pure, zero network, so that is
+db-per-tenant. `Ripple.ReadDatabases` is the same client with the writes
+removed. See `examples/kv-style/`.
 
 Local root stack (no example UI):
 

@@ -96,7 +96,7 @@ distributed transactions across partitions.
 `principalOf()` (`packages/worker/src/auth.ts`) resolves the caller per request from
 `Authorization: Bearer <token>` (or `?token=`, since a browser cannot set headers on a
 WebSocket upgrade). With no `RIPPLE_POLICY` that is today's shared-token mode —
-`RIPPLE_TOKEN` unset is open, set is one service principal — and a `Ripple.System`
+`RIPPLE_TOKEN` unset is open, set is one service principal — and a `Ripple.Server`
 resource's `token` is that same peer token for every name it opens. With `RIPPLE_POLICY`
 set, a JWT is the only data-plane principal: it is bound to exactly one database by
 `ripple.db`, and `RIPPLE_TOKEN` reaches `/health` and an already-deployed `ensure` only.
