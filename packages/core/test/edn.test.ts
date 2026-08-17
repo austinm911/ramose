@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { EdnConst, EdnList, printEdn, readEdn } from "../src/query/edn.ts";
 import { parseQuery, parsePullPattern } from "../src/query/parse.ts";
+import { type PullPattern } from "../src/query/ast.ts";
 import { ValueTag } from "../src/datom.ts";
 
 describe("edn reader", () => {
@@ -61,5 +62,13 @@ describe("query parser", () => {
     expect(p[6]).toMatchObject({ attr: ":a/g", reverse: true });
     expect(p[7]).toMatchObject({ attr: ":a/h", limit: null });
     expect(p[8]).toMatchObject({ attr: ":a/i", default: 0 });
+  });
+
+  test("already-lowered pull specs pass through without mutating the caller's", () => {
+    const spec = { kind: "attr" as const, attr: ":a/b", reverse: false, sub: [":a/c"] as unknown as PullPattern };
+    const [out] = parsePullPattern([spec]);
+    expect(out).not.toBe(spec);
+    expect(out).toMatchObject({ attr: ":a/b", sub: [{ kind: "attr", attr: ":a/c", reverse: false }] });
+    expect(spec.sub).toEqual([":a/c"] as unknown as PullPattern);
   });
 });

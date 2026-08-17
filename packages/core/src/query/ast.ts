@@ -77,12 +77,32 @@ export type FindSpec =
 
 export type InputSpec = { kind: "src"; name: string } | Binding;
 
+/**
+ * One sort key. Ordering is by a *bound variable* — a variable the :where
+ * clauses bind, not necessarily one in :find — so multi-hop sorts lower to
+ * ordinary joins (`[?e :todo/owner ?o] [?o :user/name ?n]`, order by `?n`).
+ *
+ * `empty` places rows whose value is null/undefined and defaults to "last"
+ * in *both* directions; it is not flipped by `dir`.
+ */
+export interface OrderSpec {
+  var: string;
+  dir: "asc" | "desc";
+  empty?: "first" | "last";
+}
+
 export interface Query {
   find: FindSpec;
   keys?: string[];
   with: string[];
   in: InputSpec[];
   where: Clause[];
+  /** sort keys, applied before :offset/:limit and before pulls are resolved */
+  order?: OrderSpec[];
+  /** rows to drop from the front of the (ordered) result */
+  offset?: number;
+  /** maximum rows to return, after :offset */
+  limit?: number;
 }
 
 // --- pull -------------------------------------------------------------------
