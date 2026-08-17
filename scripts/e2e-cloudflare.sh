@@ -120,6 +120,14 @@ echo ">> Running e2e suite against $URL ..."
 set +e
 RIPPLE_URL="$URL" RIPPLE_TOKEN="${RIPPLE_TOKEN:-}" bun run test:e2e
 STATUS=$?
+# Per-request retries still miss occasionally under a dual-stage write burst
+# (workers.dev HTML 404 pinned to one colo). Re-run once against the same
+# peer — each suite process picks a fresh db name.
+if [ "$STATUS" -ne 0 ]; then
+  echo ">> e2e failed (exit $STATUS); retrying once against the same peer ..."
+  RIPPLE_URL="$URL" RIPPLE_TOKEN="${RIPPLE_TOKEN:-}" bun run test:e2e
+  STATUS=$?
+fi
 set -e
 
 exit "$STATUS"

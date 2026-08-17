@@ -103,7 +103,7 @@ const isTransientPlatform = (e: DbError): boolean => {
   if (e._tag === "Unavailable") return true;
   if (e._tag === "NetworkError") return true;
   if (e._tag === "InternalError") {
-    return /Worker not found|error code: 1042/i.test(e.message);
+    return /Worker not found|error code:\s*1\d{3}/i.test(e.message);
   }
   return false;
 };

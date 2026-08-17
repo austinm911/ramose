@@ -69,6 +69,8 @@ same names in the Cursor secrets panel — see [`.cursor/CLOUD.md`](.cursor/CLOU
 
 Each run deploys its own Alchemy stage (`ALCHEMY_STAGE=e2e-<run_id>-<attempt>`),
 so Worker / Durable Object / R2 names do not collide across parallel jobs.
-Transient workers.dev HTML 404s under concurrent write bursts are retried by
-the e2e `Peer` harness and the alchemy HTTPS client — CI does **not** serialize
-the whole account.
+Transient workers.dev HTML 404s / 1042 / 1104 under concurrent write bursts are
+retried by the e2e `Peer` harness (jittered backoff, no keep-alive on retry)
+and the alchemy HTTPS client. If the suite still fails, `scripts/e2e-cloudflare.sh`
+re-runs it once against the same peer. CI does **not** serialize the whole
+account.

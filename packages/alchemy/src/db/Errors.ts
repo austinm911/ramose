@@ -184,7 +184,7 @@ export const fromResponse = (
       // Application misses are JSON `{ error }`. Cloudflare's workers.dev
       // miss is an HTML "Page not found" — treat as Unavailable so callers
       // (and {@link send}'s retries) can wait it out under parallel CI.
-      if (/<!DOCTYPE html>|Page not found/i.test(message)) {
+      if (isCloudflarePlatform(message)) {
         return new Unavailable({
           message: "ripple: workers.dev edge returned HTML 404 (transient)",
           retryAfterMs: 200,
@@ -201,6 +201,19 @@ export const fromResponse = (
         retryAfterMs: num(b.retryAfterMs, Number(headers?.get("retry-after") ?? 0) * 1000 || 0),
       });
     default:
+      // 1042 / 1104 / "Worker not found" from a fresh workers.dev host or a
+      // Durable Object namespace that has not finished binding yet.
+      if (isCloudflarePlatform(message) || /Worker not found/i.test(message)) {
+        return new Unavailable({
+          message: "ripple: Cloudflare edge returned a transient platform error",
+          retryAfterMs: 200,
+        });
+      }
       return new InternalError({ message });
   }
 };
+
+const isCloudflarePlatform = (message: string): boolean =>
+  /<!DOCTYPE html>|Page not found|There is nothing here yet|error code:\s*1\d{3}/i.test(
+    message,
+  );

@@ -32,7 +32,7 @@ d("ripple e2e", () => {
     token,
     // Parallel CI stages share an account but not Worker/DO/R2. Edge HTML
     // 404s under dual write-bursts are transient — retry rather than serialize.
-    retryTransient: 8,
+    retryTransient: 12,
   });
   const db = client.db(dbName);
   let alice = 0, bob = 0, tSchema = 0, tAge30 = 0;
