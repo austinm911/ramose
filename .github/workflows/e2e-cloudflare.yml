@@ -1,8 +1,8 @@
 # Ephemeral Cloudflare e2e: deploy a unique Alchemy stage, run test/e2e, destroy.
 #
-# Secrets come from the GitHub Environment "Development" (not repository secrets):
-#   CLOUDFLARE_ACCOUNT_ID
-#   CLOUDFLARE_API_TOKEN
+# Credentials come from the GitHub Environment "Development":
+#   CLOUDFLARE_API_TOKEN    — environment secret
+#   CLOUDFLARE_ACCOUNT_ID   — environment variable (or secret)
 # Optional:
 #   RIPPLE_TOKEN — only if the peer is deployed with bearer auth
 #
@@ -33,14 +33,15 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Deploy, e2e, destroy
         env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Account id is non-sensitive; prefer vars, fall back to secrets.
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           RIPPLE_TOKEN: ${{ secrets.RIPPLE_TOKEN }}
           # Unique per run so concurrent/cancelled jobs never share state.
           ALCHEMY_STAGE: e2e-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
-            echo "::error::CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must be set on the Development environment (Settings → Environments → Development). See .cursor/CLOUD.md."
+            echo "::error::Need CLOUDFLARE_API_TOKEN (secret) and CLOUDFLARE_ACCOUNT_ID (variable or secret) on the Development environment. See .cursor/CLOUD.md."
             exit 1
           fi
           bun run test:e2e:cf

@@ -70,8 +70,8 @@ bun run test:e2e:cf
 
 | Name | Required | Purpose |
 |---|---|---|
-| `CLOUDFLARE_API_TOKEN` | yes | Deploy Workers / DOs / R2 / Analytics Engine |
-| `CLOUDFLARE_ACCOUNT_ID` | yes | Account to deploy into |
+| `CLOUDFLARE_API_TOKEN` | yes (secret) | Deploy Workers / DOs / R2 / Analytics Engine |
+| `CLOUDFLARE_ACCOUNT_ID` | yes (variable or secret) | Account to deploy into |
 | `RIPPLE_TOKEN` | no | Only if the peer is deployed with bearer auth |
 
 Token permission groups (scoped to the account), at minimum:
@@ -85,8 +85,9 @@ Analytics Read/Edit** if a deploy reports an AE permission error.
 - **Cursor Cloud:** Secrets panel for this environment / agent (then start a new
   agent so the secrets are injected). Without them, `bun run test:e2e:cf` exits
   immediately with a clear error; local `alchemy dev` still works with placeholders.
-- **GitHub Actions:** secrets on the **Development** environment (Settings →
-  Environments → Development). The workflow
+- **GitHub Actions:** on the **Development** environment (Settings →
+  Environments → Development): `CLOUDFLARE_API_TOKEN` as a secret,
+  `CLOUDFLARE_ACCOUNT_ID` as a variable (or secret). The workflow
   `.github/workflows/e2e-cloudflare.yml` sets `environment: Development` and
   runs the same `bun run test:e2e:cf` flow on every PR, every push to `master`,
   and `workflow_dispatch`.

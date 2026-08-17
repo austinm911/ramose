@@ -169,11 +169,11 @@ ephemeral Alchemy stage, runs `test/e2e`, then destroys the stage. It uses the
 GitHub **Development** environment; put these secrets there (same names as
 Cursor Cloud secrets — see `.cursor/CLOUD.md`):
 
-| Secret | Required | Purpose |
-|---|---|---|
-| `CLOUDFLARE_ACCOUNT_ID` | yes | Cloudflare account for Alchemy |
-| `CLOUDFLARE_API_TOKEN` | yes | Token with Workers / DOs / R2 / state-store access |
-| `RIPPLE_TOKEN` | no | Only if the peer is deployed with bearer auth |
+| Name | Kind | Required | Purpose |
+|---|---|---|---|
+| `CLOUDFLARE_ACCOUNT_ID` | variable (or secret) | yes | Cloudflare account for Alchemy |
+| `CLOUDFLARE_API_TOKEN` | secret | yes | Token with Workers / DOs / R2 / state-store access |
+| `RIPPLE_TOKEN` | secret | no | Only if the peer is deployed with bearer auth |
 
 Ops: [`docs/RUNBOOK.md`](docs/RUNBOOK.md). Recorded benches:
 [`bench/RESULTS.md`](bench/RESULTS.md).
