@@ -5,7 +5,8 @@
   "description": "Ripple — an immutable, Datomic-inspired database for Cloudflare (Workers + Durable Objects + R2).",
   "type": "module",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "website"
   ],
   "scripts": {
     "test": "bun test packages/core packages/storage packages/transactor packages/replica packages/worker packages/alchemy examples/todos",
