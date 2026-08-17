@@ -45,11 +45,18 @@ export const App = Cloudflare.Worker(
     // request. The token is shared across every name: it is the peer's one
     // `RIPPLE_TOKEN`, checked for every tenant database and ignored when the
     // peer has it unset (docs/RUNBOOK.md).
+
+    /** `PUT /t/:tenant` — the one place a tenant's catalog lands. One tx. */
+    const createTenant = (tenantId: string) =>
+      Effect.gen(function* () {
+        const report = yield* ripple.db(tenantId, Movies).install();
+        return yield* HttpServerResponse.json({ tenant: tenantId, t: report.t });
+      });
+
+    /** Every other tenant request: pure `ripple.db`, zero network to open. */
     const tenantRoute = (tenantId: string) =>
       Effect.gen(function* () {
         const tenant = ripple.db(tenantId, Movies);
-        // a tenant's first request is also its install: idempotent, one tx
-        yield* tenant.install();
 
         const { t, dbAfter } = yield* tenant.transact(function* (tx) {
           const ada = yield* tx.entity();
@@ -70,7 +77,12 @@ export const App = Cloudflare.Worker(
         // `/t/bad%2Fname`) simply fails the name check → `InvalidRequest` → 400.
         const request = yield* HttpServerRequest.HttpServerRequest;
         const path = request.url.split("?")[0] ?? "/";
-        if (path.startsWith("/t/")) return yield* tenantRoute(path.slice("/t/".length));
+        if (path.startsWith("/t/")) {
+          const tenantId = path.slice("/t/".length);
+          return yield* request.method === "PUT"
+            ? createTenant(tenantId)
+            : tenantRoute(tenantId);
+        }
 
         // The default database. `Ripple.Database("movies", …)` in
         // alchemy.run.ts installed Movies on this name at deploy time.

@@ -54,8 +54,20 @@ export type WriteAtIdent<C extends AnyCatalog, I extends string> =
 export type ReadAtIdent<C extends AnyCatalog, I extends string> =
   WriteAtIdent<C, I>;
 
+/**
+ * `[attr, value]` on a unique attribute — the other way to name an entity.
+ *
+ * Both spellings of the head are the same lookup: the attr ref you already
+ * have (`[User.name, "Ada"]`) or its ident (`[":user/name", "Ada"]`). The
+ * wire form is the ident either way (`lowerSubject` in `Db.ts`,
+ * `resolveEntity` in `Tx.ts`).
+ */
 export type LookupRef<C extends AnyCatalog> = {
-  [I in CatalogIdent<C>]: readonly [I, ValueAtIdent<C, I>];
+  [I in CatalogIdent<C>]: AttrAtIdent<C, I>["unique"] extends undefined
+    ? never
+    :
+        | readonly [I, ValueAtIdent<C, I>]
+        | readonly [{ readonly ident: I }, ValueAtIdent<C, I>];
 }[CatalogIdent<C>];
 
 /** eid | tempid/ident string | typed lookup ref. */

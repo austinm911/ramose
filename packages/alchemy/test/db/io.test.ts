@@ -190,8 +190,8 @@ describe("install → transact → q → pull", () => {
         const alonzo = yield* tx.entity();
         yield* alonzo.add(User.name, "Alonzo");
         yield* alonzo.add(User.age, 40);
-        yield* ada.add(User.friends, alonzo.id as never);
-        yield* ada.add(User.bestFriend, alonzo.id as never);
+        yield* ada.add(User.friends, alonzo.eid as never);
+        yield* ada.add(User.bestFriend, alonzo.eid as never);
 
         const arrival = yield* tx.entity();
         yield* arrival.add(Movie.title, "Arrival");
@@ -432,10 +432,10 @@ describe("failures", () => {
         yield* ada.add(User.name, "Ada");
         const alonzo = yield* tx.entity();
         yield* alonzo.add(User.name, "Alonzo");
-        yield* ada.add(User.friends, alonzo.id as never);
+        yield* ada.add(User.friends, alonzo.eid as never);
         const ghost = yield* tx.entity();
         yield* ghost.add(User.age, 1);
-        yield* ada.add(User.friends, ghost.id as never);
+        yield* ada.add(User.friends, ghost.eid as never);
       }),
     );
     const rows = await run(

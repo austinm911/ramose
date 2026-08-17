@@ -71,7 +71,8 @@ export interface TxSpec {
  */
 export interface Entity<C extends AnyCatalog = AnyCatalog> {
   readonly _tag: "Entity";
-  readonly id: EntityRef<C>;
+  /** What this handle names: a fresh tempid, an eid, or a lookup ref. */
+  readonly eid: EntityRef<C>;
 
   add<const A extends TxAttr<C>>(
     attr: A,
@@ -163,7 +164,7 @@ const isHandle = (e: unknown): e is Entity =>
   (e as { _tag?: unknown })._tag === "Entity";
 
 const resolveEntity = (e: unknown): unknown => {
-  if (isHandle(e)) return e.id;
+  if (isHandle(e)) return e.eid;
   if (Array.isArray(e) && e.length === 2 && isAttrRef(e[0])) {
     return [e[0].ident, e[1]];
   }
@@ -171,26 +172,26 @@ const resolveEntity = (e: unknown): unknown => {
 };
 
 const makeHandle = <C extends AnyCatalog>(
-  id: EntityRef<C>,
+  eid: EntityRef<C>,
   ops: TxOp[],
 ): Entity<C> => ({
   _tag: "Entity",
-  id,
+  eid,
   add: (attr: unknown, value: unknown) =>
     Effect.sync(() => {
-      ops.push([":db/add", id, lowerAttr(attr), value]);
+      ops.push([":db/add", eid, lowerAttr(attr), value]);
     }),
   retract: (attr: unknown, value?: unknown) =>
     Effect.sync(() => {
       if (value === undefined) {
-        ops.push([":db/retract", id, lowerAttr(attr)]);
+        ops.push([":db/retract", eid, lowerAttr(attr)]);
       } else {
-        ops.push([":db/retract", id, lowerAttr(attr), value]);
+        ops.push([":db/retract", eid, lowerAttr(attr), value]);
       }
     }),
   retractEntity: () =>
     Effect.sync(() => {
-      ops.push([":db/retractEntity", id]);
+      ops.push([":db/retractEntity", eid]);
     }),
 });
 
