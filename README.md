@@ -15,7 +15,8 @@ you're in. No provision step.
 - **Live queries.** `db.live` on the session socket. Write a row, the store
   moves. No refetch. No invalidation call at the write site.
 - **Db-per-tenant is a function call.** One Alchemy resource, one
-  `RIPPLE_TOKEN` (unset = open). Every name shares the peer.
+  `RIPPLE_TOKEN` (unset = open; a proper auth story is on the roadmap).
+  Every name shares the peer.
 - **The invariants are the product.** Single writer. Dense `t`.
   Persist-before-ack. QueryReplicas are first-class — workers never read
   novelty from the transactor.
@@ -58,7 +59,8 @@ export const Sys = Ripple.System("Sys", { peer: Peer });
 
 A deploy-time Action calls `system.create("todos", Todos)` so the catalog is
 on the peer before the UI connects. `RIPPLE_TOKEN` is the peer's one bearer
-token; leave it unset and the peer is open.
+token; leave it unset and the peer is open. A proper auth story is on the
+roadmap.
 
 An app Worker binds the same system (`Ripple.ReadWriteSystem` +
 `SchemaFx.fromReadWrite`) and calls `system.create(name, catalog)` per
