@@ -12,9 +12,9 @@ import * as Ripple from "@ripple/alchemy/db";
 import * as Effect from "effect/Effect";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
-import type { RippleClass } from "../shared.ts";
-import type { ReefDb } from "../queries.ts";
-import { Reef } from "../schema.ts";
+import type { RippleClass } from "../domain/shared.ts";
+import type { ReefDb } from "../domain/queries.ts";
+import { Reef } from "../domain/schema.ts";
 
 export const RIPPLE_URL: string =
   (import.meta.env.VITE_RIPPLE_URL as string | undefined) ??
@@ -81,7 +81,14 @@ export const openWorkspace = async (slug: string): Promise<Workspace> => {
         { headers: { authorization: `Bearer ${token}` } },
       );
       if (!res.ok) throw new Error(`info failed (${res.status})`);
-      return res.json() as Promise<{ db: string; t: number }>;
+      // Non-admins get `{ db, t }`; admins get the peer's full report where
+      // the basis lives under `transactor.t`. Normalise to one shape.
+      const body = (await res.json()) as {
+        db: string;
+        t?: number;
+        transactor?: { t: number };
+      };
+      return { db: body.db, t: body.t ?? body.transactor?.t ?? 0 };
     },
     dispose: () => runtime.dispose(),
   };

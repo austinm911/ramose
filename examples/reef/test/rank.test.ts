@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { RANK_GAP, rankAfter, rankAt, rankBetween } from "../rank.ts";
-import { SLUG_RE, slugify } from "../shared.ts";
+import { RANK_GAP, rankAfter, rankAt, rankBetween } from "../src/domain/rank.ts";
+import { SLUG_RE, slugify } from "../src/domain/shared.ts";
 
 describe("fractional ranks", () => {
   test("appending walks forward in fixed gaps", () => {

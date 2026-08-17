@@ -16,7 +16,10 @@ export const useLive = <A, E>(stream: Stream.Stream<A, E>) => {
     const fiber = Effect.runFork(
       Stream.runForEach(stream, (rows) => Effect.sync(() => set({ rows }))).pipe(
         Effect.catchCause((error) =>
-          Effect.sync(() => set((p) => ({ ...p, error }))),
+          Effect.sync(() => {
+            console.error("[reef] live stream failed", error);
+            set((p) => ({ ...p, error }));
+          }),
         ),
       ),
     );

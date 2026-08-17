@@ -7,27 +7,18 @@
 
 import * as stylex from "@stylexjs/stylex";
 import { useState } from "react";
-import type { BoardRow } from "../../queries.ts";
-import { rankAfter, rankBetween } from "../../rank.ts";
-import { STATUSES, STATUS_LABELS, type Status } from "../../schema.ts";
+import type { BoardRow } from "../../domain/queries.ts";
+import { rankAfter, rankBetween } from "../../domain/rank.ts";
+import { PRIORITIES, STATUSES, STATUS_LABELS, type Status } from "../../domain/schema.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
-import { Avatar, LabelBadge } from "../ui.tsx";
+import { Avatar, Icon, IconButton, LabelBadge, PriorityIcon } from "../ui.tsx";
 
-const COLUMN_TINTS: Record<Status, string> = {
+export const COLUMN_TINTS: Record<Status, string> = {
   backlog: "#8b93a3",
   todo: "#5b8cff",
   doing: "#f5a524",
   done: "#3fb970",
 };
-
-export const PRIORITY_GLYPHS = ["—", "▁", "▂", "▄", "█"] as const;
-export const PRIORITY_TINTS = [
-  "#5e6879",
-  "#8b93a3",
-  "#5b8cff",
-  "#f5a524",
-  "#ef5f6b",
-] as const;
 
 const styles = stylex.create({
   board: {
@@ -35,104 +26,152 @@ const styles = stylex.create({
     gap: space.md,
     alignItems: "stretch",
     flexGrow: 1,
+    minHeight: 0,
     overflowX: "auto",
     padding: space.lg,
   },
   column: {
     display: "flex",
     flexDirection: "column",
-    width: "290px",
-    minWidth: "250px",
+    flexBasis: 0,
+    flexGrow: 1,
     flexShrink: 0,
+    minWidth: "236px",
+    maxWidth: "380px",
+    minHeight: 0,
     backgroundColor: colors.bgRaised,
     borderWidth: 1,
     borderStyle: "solid",
     borderColor: colors.border,
     borderRadius: radii.lg,
+    transition: "border-color 120ms ease, background-color 120ms ease",
   },
   columnOver: {
     borderColor: colors.accent,
-    backgroundColor: colors.surface,
+    backgroundColor: colors.accentSoft,
   },
   columnHead: {
     display: "flex",
     alignItems: "center",
     gap: space.sm,
-    paddingBlock: space.md,
-    paddingInline: space.lg,
+    paddingBlock: "10px",
+    paddingInline: space.md,
+    paddingRight: space.sm,
   },
-  columnDot: { width: "8px", height: "8px", borderRadius: radii.full },
+  columnDot: {
+    width: "8px",
+    height: "8px",
+    borderRadius: radii.full,
+    flexShrink: 0,
+    boxShadow: "0 0 0 3px color-mix(in srgb, currentColor 18%, transparent)",
+  },
   columnTitle: {
     fontSize: type.sm,
     fontWeight: 700,
     color: colors.text,
-    flexGrow: 1,
+    letterSpacing: "0.01em",
   },
   columnCount: {
     fontSize: type.xs,
-    color: colors.textFaint,
+    fontWeight: 600,
+    color: colors.textMuted,
     fontFamily: type.mono,
+    backgroundColor: colors.surfaceActive,
+    borderRadius: radii.full,
+    paddingInline: "7px",
+    paddingBlock: "1px",
+    lineHeight: 1.6,
+    minWidth: "22px",
+    textAlign: "center",
   },
-  addButton: {
-    background: "none",
-    borderWidth: 0,
-    color: { default: colors.textFaint, ":hover": colors.text },
-    cursor: "pointer",
-    fontSize: type.lg,
-    lineHeight: 1,
-    padding: 0,
-  },
+  spacer: { flexGrow: 1 },
   cards: {
     display: "flex",
     flexDirection: "column",
     gap: space.sm,
     paddingBlock: space.xs,
     paddingInline: space.sm,
+    paddingBottom: space.sm,
     overflowY: "auto",
     flexGrow: 1,
-    minHeight: "60px",
+    minHeight: "80px",
   },
   card: {
+    position: "relative",
     backgroundColor: { default: colors.surface, ":hover": colors.surfaceHover },
     borderWidth: 1,
     borderStyle: "solid",
-    borderColor: colors.border,
+    borderColor: { default: colors.border, ":hover": colors.borderStrong },
     borderRadius: radii.md,
-    padding: space.md,
+    paddingBlock: "10px",
+    paddingInline: space.md,
     cursor: "pointer",
     display: "flex",
     flexDirection: "column",
-    gap: space.sm,
+    gap: "8px",
     boxShadow: colors.shadowSm,
+    transition: "border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease, transform 120ms ease",
+    outline: "none",
   },
-  cardSelected: { borderColor: colors.accent },
-  cardDragging: { opacity: 0.4 },
-  cardTitleRow: { display: "flex", gap: space.sm, alignItems: "flex-start" },
-  priority: {
-    fontSize: type.xs,
+  cardSelected: {
+    borderColor: { default: colors.accent, ":hover": colors.accent },
+    boxShadow: `0 0 0 3px ${colors.ring}`,
+  },
+  cardDragging: { opacity: 0.35, transform: "scale(0.98)" },
+  cardTop: {
+    display: "flex",
+    alignItems: "center",
+    gap: space.sm,
+    minHeight: "22px",
+  },
+  cardId: {
     fontFamily: type.mono,
-    lineHeight: 1.6,
-    flexShrink: 0,
+    fontSize: type.xs,
+    color: colors.textFaint,
+    letterSpacing: "0.01em",
   },
   cardTitle: {
-    fontSize: type.sm,
-    fontWeight: 600,
+    fontSize: type.md,
+    fontWeight: 500,
     color: colors.text,
     lineHeight: 1.4,
     overflowWrap: "anywhere",
+    margin: 0,
   },
   cardMeta: {
     display: "flex",
     alignItems: "center",
-    gap: space.xs,
+    gap: "5px",
     flexWrap: "wrap",
+    minHeight: "22px",
   },
-  spacer: { flexGrow: 1 },
+  emptyColumn: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    marginInline: space.xs,
+    marginTop: space.xs,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderColor: colors.border,
+    color: colors.textFaint,
+    fontSize: type.sm,
+    height: "64px",
+    transition: "border-color 120ms ease, color 120ms ease, background-color 120ms ease",
+  },
+  emptyColumnOver: {
+    borderColor: colors.accent,
+    color: colors.accent,
+    backgroundColor: colors.surface,
+  },
+  emptyColumnHint: { display: "inline-flex", alignItems: "center", gap: space.xs },
 });
 
 export const Board = ({
   rows,
   readOnly,
+  canCreate,
   selectedId,
   onSelect,
   onNew,
@@ -141,6 +180,11 @@ export const Board = ({
   rows: readonly BoardRow[];
   /** Time travel: the past is not editable (and drags would be lies). */
   readOnly: boolean;
+  /**
+   * Viewers get a polite UI (no "+" buttons) but drags stay enabled on
+   * purpose: the proof of enforcement is the peer's `Unauthorized` toast.
+   */
+  canCreate: boolean;
   selectedId: number | null;
   onSelect: (id: number) => void;
   onNew: (status: Status) => void;
@@ -164,17 +208,18 @@ export const Board = ({
     setOverColumn(null);
   };
 
+  const dragging = dragId !== null;
+
   return (
     <div {...stylex.props(styles.board)}>
       {STATUSES.map((status) => {
         const column = rows.filter((r) => r.status === status);
+        const over = overColumn === status && dragging;
         return (
           <section
             key={status}
-            {...stylex.props(
-              styles.column,
-              overColumn === status && dragId !== null && styles.columnOver,
-            )}
+            aria-label={STATUS_LABELS[status]}
+            {...stylex.props(styles.column, over && styles.columnOver)}
             onDragOver={(e) => {
               e.preventDefault();
               setOverColumn(status);
@@ -190,26 +235,44 @@ export const Board = ({
             <header {...stylex.props(styles.columnHead)}>
               <span
                 {...stylex.props(styles.columnDot)}
-                style={{ backgroundColor: COLUMN_TINTS[status] }}
+                style={{ backgroundColor: COLUMN_TINTS[status], color: COLUMN_TINTS[status] }}
               />
               <span {...stylex.props(styles.columnTitle)}>
                 {STATUS_LABELS[status]}
               </span>
               <span {...stylex.props(styles.columnCount)}>{column.length}</span>
-              {!readOnly && (
-                <button
-                  {...stylex.props(styles.addButton)}
-                  title={`New issue in ${STATUS_LABELS[status]}`}
+              <span {...stylex.props(styles.spacer)} />
+              {!readOnly && canCreate && (
+                <IconButton
+                  icon="plus"
+                  size="sm"
+                  label={`New issue in ${STATUS_LABELS[status]}`}
                   onClick={() => onNew(status)}
-                >
-                  +
-                </button>
+                />
               )}
             </header>
             <div {...stylex.props(styles.cards)}>
+              {column.length === 0 && (
+                <div
+                  {...stylex.props(styles.emptyColumn, over && styles.emptyColumnOver)}
+                >
+                  <span {...stylex.props(styles.emptyColumnHint)}>
+                    {dragging ? (
+                      <>
+                        <Icon name="plus" size={13} /> Drop here
+                      </>
+                    ) : readOnly ? (
+                      "Nothing here at this point in time"
+                    ) : (
+                      "No issues"
+                    )}
+                  </span>
+                </div>
+              )}
               {column.map((row) => (
                 <article
                   key={row.id}
+                  tabIndex={0}
                   draggable={!readOnly}
                   {...stylex.props(
                     styles.card,
@@ -217,6 +280,12 @@ export const Board = ({
                     row.id === dragId && styles.cardDragging,
                   )}
                   onClick={() => onSelect(row.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onSelect(row.id);
+                    }
+                  }}
                   onDragStart={(e) => {
                     e.dataTransfer.effectAllowed = "move";
                     setDragId(row.id);
@@ -231,25 +300,24 @@ export const Board = ({
                     drop(status, row);
                   }}
                 >
-                  <div {...stylex.props(styles.cardTitleRow)}>
-                    <span
-                      {...stylex.props(styles.priority)}
-                      title={`priority ${row.priority}`}
-                      style={{ color: PRIORITY_TINTS[row.priority] ?? PRIORITY_TINTS[0] }}
-                    >
-                      {PRIORITY_GLYPHS[row.priority] ?? "—"}
-                    </span>
-                    <span {...stylex.props(styles.cardTitle)}>{row.title}</span>
+                  <div {...stylex.props(styles.cardTop)}>
+                    <PriorityIcon
+                      level={row.priority}
+                      size={14}
+                      title={PRIORITIES[row.priority] ?? PRIORITIES[0]}
+                    />
+                    <span {...stylex.props(styles.cardId)}>#{row.id}</span>
+                    <span {...stylex.props(styles.spacer)} />
+                    {row.assignee !== undefined && (
+                      <Avatar name={row.assignee.name} title={`Assigned to ${row.assignee.name}`} />
+                    )}
                   </div>
-                  {(row.labels.length > 0 || row.assignee !== undefined) && (
+                  <p {...stylex.props(styles.cardTitle)}>{row.title}</p>
+                  {row.labels.length > 0 && (
                     <div {...stylex.props(styles.cardMeta)}>
                       {row.labels.map((label) => (
                         <LabelBadge key={label.id} name={label.name} color={label.color} />
                       ))}
-                      <span {...stylex.props(styles.spacer)} />
-                      {row.assignee !== undefined && (
-                        <Avatar name={row.assignee.name} />
-                      )}
                     </div>
                   )}
                 </article>

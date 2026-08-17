@@ -5,8 +5,8 @@
 
 import { organizationClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
-import { AUTH_BASE_PATH } from "../shared.ts";
-import { ac, roles } from "../roles.ts";
+import { AUTH_BASE_PATH } from "../domain/shared.ts";
+import { ac, roles } from "../domain/roles.ts";
 
 export const authClient = createAuthClient({
   baseURL: `${window.location.origin}${AUTH_BASE_PATH}`,

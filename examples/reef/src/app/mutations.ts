@@ -7,9 +7,9 @@
 
 import * as Effect from "effect/Effect";
 import * as Ripple from "@ripple/alchemy/db";
-import type { ReefDb } from "../queries.ts";
-import { rankAfter } from "../rank.ts";
-import { Comment, Issue, Label, User, type Status } from "../schema.ts";
+import type { ReefDb } from "../domain/queries.ts";
+import { rankAfter } from "../domain/rank.ts";
+import { Comment, Issue, Label, User, type Status } from "../domain/schema.ts";
 
 /** The labels every new workspace starts with. */
 export const SEED_LABELS: readonly { name: string; color: string }[] = [
@@ -193,4 +193,111 @@ export const addComment = (
 export const deleteComment = (db: ReefDb, commentId: number) =>
   db.transact(function* (tx) {
     yield* tx.retractEntity(commentId);
+  });
+
+// ── sample data ──────────────────────────────────────────────────────────────
+
+/** A realistic starter board, for the empty state. Label names map to ids. */
+const SAMPLE_ISSUES: readonly {
+  title: string;
+  status: Status;
+  priority: number;
+  labels: readonly string[];
+  description?: string;
+  assign?: boolean;
+}[] = [
+  {
+    title: "Live board flickers when two tabs move the same card",
+    status: "doing",
+    priority: 4,
+    labels: ["bug"],
+    assign: true,
+    description:
+      "Repro: open the board twice, drag one card in each tab within a second.",
+  },
+  {
+    title: "Add keyboard shortcuts for moving issues between columns",
+    status: "todo",
+    priority: 2,
+    labels: ["feature"],
+  },
+  {
+    title: "Design pass on the issue detail panel",
+    status: "doing",
+    priority: 3,
+    labels: ["design"],
+    assign: true,
+  },
+  {
+    title: "Rotate the JWKS signing key on a schedule",
+    status: "backlog",
+    priority: 3,
+    labels: ["infra"],
+  },
+  {
+    title: "Empty-state illustration for new workspaces",
+    status: "backlog",
+    priority: 1,
+    labels: ["design", "feature"],
+  },
+  {
+    title: "Time-travel slider should snap to transaction boundaries",
+    status: "todo",
+    priority: 2,
+    labels: ["feature", "bug"],
+    assign: true,
+  },
+  {
+    title: "Show who is online in the workspace header",
+    status: "backlog",
+    priority: 0,
+    labels: ["feature"],
+  },
+  {
+    title: "Ship the peer to three regions",
+    status: "done",
+    priority: 3,
+    labels: ["infra"],
+    assign: true,
+  },
+  {
+    title: "Per-datom policy for issue.privateNote",
+    status: "done",
+    priority: 2,
+    labels: ["infra", "feature"],
+  },
+];
+
+/**
+ * Seed the sample board in one transaction. Ranks are spaced by column so
+ * later drags have room in between; issues are created by (and, when marked,
+ * assigned to) the caller.
+ */
+export const seedSampleIssues = (
+  db: ReefDb,
+  myEid: number,
+  labels: readonly { id: number; name: string }[],
+) =>
+  db.transact(function* (tx) {
+    const labelIds = new Map(labels.map((l) => [l.name, l.id] as const));
+    const nextRank: Partial<Record<Status, number>> = {};
+    for (const sample of SAMPLE_ISSUES) {
+      const rank = rankAfter(nextRank[sample.status]);
+      nextRank[sample.status] = rank;
+      const issue = yield* tx.entity();
+      yield* issue.add(Issue.title, sample.title);
+      if (sample.description !== undefined) {
+        yield* issue.add(Issue.description, sample.description);
+      }
+      yield* issue.add(Issue.status, sample.status);
+      yield* issue.add(Issue.priority, sample.priority);
+      yield* issue.add(Issue.rank, rank);
+      yield* issue.add(Issue.createdAt, new Date());
+      yield* issue.add(Issue.creator, myEid);
+      if (sample.assign) yield* issue.add(Issue.assignee, myEid);
+      for (const name of sample.labels) {
+        const id = labelIds.get(name);
+        if (id !== undefined) yield* issue.add(Issue.labels, id);
+      }
+    }
   });

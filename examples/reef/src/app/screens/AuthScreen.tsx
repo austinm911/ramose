@@ -2,48 +2,78 @@
 
 import * as stylex from "@stylexjs/stylex";
 import { useState } from "react";
+import { ThemeToggle } from "../App.tsx";
 import { authClient } from "../auth.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
-import { Button, Field, Input, Spinner, useToast } from "../ui.tsx";
+import {
+  Button,
+  Field,
+  Icon,
+  Input,
+  Logo,
+  Spinner,
+  useToast,
+  type IconName,
+} from "../ui.tsx";
 
 const styles = stylex.create({
   page: {
+    position: "relative",
     flexGrow: 1,
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     padding: space.xl,
+    overflow: "hidden",
   },
+  // Two soft radial glows behind the card; purely decorative. Gradients
+  // rather than `filter: blur` — Chrome clips blurred layers to a hard rect.
+  glow: {
+    position: "absolute",
+    pointerEvents: "none",
+  },
+  glowA: {
+    width: "820px",
+    height: "820px",
+    top: "-300px",
+    left: "calc(50% - 640px)",
+    backgroundImage: `radial-gradient(closest-side, ${colors.glowA}, transparent)`,
+  },
+  glowB: {
+    width: "720px",
+    height: "720px",
+    bottom: "-300px",
+    right: "calc(50% - 600px)",
+    backgroundImage: `radial-gradient(closest-side, ${colors.glowB}, transparent)`,
+  },
+  themeCorner: { position: "absolute", top: space.lg, right: space.lg },
   card: {
-    width: "min(400px, 100%)",
+    position: "relative",
+    width: "min(420px, 100%)",
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderStyle: "solid",
     borderColor: colors.border,
-    borderRadius: radii.lg,
-    boxShadow: colors.shadowSm,
+    borderRadius: radii.xl,
+    boxShadow: colors.shadow,
     padding: space.xxl,
   },
-  brand: {
-    display: "flex",
-    alignItems: "baseline",
-    gap: space.sm,
-    marginBottom: space.xs,
-  },
-  logo: {
-    fontSize: type.xxl,
-    fontWeight: 800,
-    letterSpacing: "-0.02em",
-    color: colors.text,
+  brand: { marginBottom: space.lg },
+  heading: {
     margin: 0,
+    marginTop: space.lg,
+    fontSize: type.xl,
+    fontWeight: 700,
+    letterSpacing: "-0.01em",
+    color: colors.text,
   },
-  wave: { fontSize: type.xl },
   tagline: {
     margin: 0,
+    marginTop: space.xs,
     marginBottom: space.xl,
     color: colors.textMuted,
     fontSize: type.sm,
-    lineHeight: 1.5,
+    lineHeight: 1.55,
   },
   switchRow: {
     marginTop: space.lg,
@@ -54,17 +84,54 @@ const styles = stylex.create({
     justifyContent: "center",
   },
   link: {
-    background: "none",
+    backgroundColor: "transparent",
+    backgroundImage: "none",
     borderWidth: 0,
     padding: 0,
-    color: colors.accent,
+    color: { default: colors.accent, ":hover": colors.accentHover },
     cursor: "pointer",
     fontSize: type.sm,
     fontWeight: 600,
+    textDecorationLine: { default: "none", ":hover": "underline" },
+    outline: "none",
+    borderRadius: radii.xs,
+    boxShadow: { default: "none", ":focus-visible": `0 0 0 3px ${colors.ring}` },
   },
   // grid stretches its one child to the full card width
   submitRow: { display: "grid", marginTop: space.xl },
+  features: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr 1fr",
+    gap: space.sm,
+    marginTop: space.xl,
+    paddingTop: space.lg,
+    borderTopWidth: 1,
+    borderTopStyle: "solid",
+    borderTopColor: colors.border,
+  },
+  feature: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "3px",
+    fontSize: type.xs,
+    color: colors.textFaint,
+    lineHeight: 1.4,
+  },
+  featureHead: {
+    display: "flex",
+    alignItems: "center",
+    gap: "5px",
+    color: colors.textMuted,
+    fontWeight: 600,
+    fontSize: type.xs,
+  },
 });
+
+const FEATURES: readonly { icon: IconName; title: string; body: string }[] = [
+  { icon: "bolt", title: "Live", body: "db.live streams every board." },
+  { icon: "database", title: "Multi-tenant", body: "One database per workspace." },
+  { icon: "history", title: "Time travel", body: "db.asOf(t) — nothing copied." },
+];
 
 export const AuthScreen = () => {
   const [mode, setMode] = useState<"in" | "up">("up");
@@ -91,6 +158,11 @@ export const AuthScreen = () => {
 
   return (
     <div {...stylex.props(styles.page)}>
+      <div {...stylex.props(styles.glow, styles.glowA)} />
+      <div {...stylex.props(styles.glow, styles.glowB)} />
+      <div {...stylex.props(styles.themeCorner)}>
+        <ThemeToggle />
+      </div>
       <form
         {...stylex.props(styles.card)}
         onSubmit={(e) => {
@@ -99,13 +171,14 @@ export const AuthScreen = () => {
         }}
       >
         <div {...stylex.props(styles.brand)}>
-          <h1 {...stylex.props(styles.logo)}>Reef</h1>
-          <span {...stylex.props(styles.wave)}>🌊</span>
+          <Logo size={34} />
         </div>
+        <h1 {...stylex.props(styles.heading)}>
+          {mode === "up" ? "Create your account" : "Welcome back"}
+        </h1>
         <p {...stylex.props(styles.tagline)}>
           A live, multi-tenant issue tracker where every workspace is its own
-          Ripple database — reactive queries, per-datom auth, and time travel
-          included.
+          Ripple database.
         </p>
         {mode === "up" && (
           <Field label="Name">
@@ -114,6 +187,7 @@ export const AuthScreen = () => {
               onChange={(e) => setName(e.target.value)}
               placeholder="Ada Lovelace"
               autoComplete="name"
+              autoFocus
               required
             />
           </Field>
@@ -141,7 +215,14 @@ export const AuthScreen = () => {
         </Field>
         <div {...stylex.props(styles.submitRow)}>
           <Button variant="primary" type="submit" disabled={busy}>
-            {busy ? <Spinner /> : mode === "up" ? "Create account" : "Sign in"}
+            {busy ? (
+              <Spinner onAccent />
+            ) : (
+              <>
+                {mode === "up" ? "Create account" : "Sign in"}
+                <Icon name="arrowRight" size={14} />
+              </>
+            )}
           </Button>
         </div>
         <div {...stylex.props(styles.switchRow)}>
@@ -153,6 +234,17 @@ export const AuthScreen = () => {
           >
             {mode === "up" ? "Sign in" : "Create one"}
           </button>
+        </div>
+        <div {...stylex.props(styles.features)}>
+          {FEATURES.map((f) => (
+            <div key={f.title} {...stylex.props(styles.feature)}>
+              <span {...stylex.props(styles.featureHead)}>
+                <Icon name={f.icon} size={12} />
+                {f.title}
+              </span>
+              {f.body}
+            </div>
+          ))}
         </div>
       </form>
     </div>

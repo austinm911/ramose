@@ -9,15 +9,27 @@ StyleX design system with dark/light themes.
 
 ## Run it
 
-From the repo root:
+From the repo root, one command:
+
+```sh
+bun run dev:reef
+```
+
+That brings up the peer (`:1337`), the auth Worker (`:1338`) and the Vite dev
+server (`:5173`) — the SPA is a `Command.Dev` resource in the same stack, so
+it starts once both Workers are serving and is torn down with them. It is
+shorthand for
 
 ```sh
 CI=1 ALCHEMY_STATE=local \
   CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef \
   CLOUDFLARE_API_TOKEN=x \
-  bun alchemy dev examples/reef/alchemy.run.ts   # peer :1337, auth Worker :1338
-bunx vite examples/reef                          # UI on :5173
+  bun alchemy dev examples/reef/alchemy.run.ts
 ```
+
+with each variable only defaulted when you have not set it yourself (see
+`.cursor/CLOUD.md` for why miniflare wants them). Then open
+http://localhost:5173.
 
 Sign up (accounts are auto-verified — the demo ships no mailer), create a
 workspace, and you are on the board. Open a second browser window on the same
@@ -52,16 +64,30 @@ a name.
 
 ## The shape
 
+Everything lives under `src/`, split by the runtime it executes in — the
+browser, a Cloudflare Worker, or the Alchemy stack on your machine:
+
+```
+examples/reef/
+  alchemy.run.ts        the one stack: peer + auth Worker + dev-only Vite (`Ui`)
+  index.html            Vite root → src/app/main.tsx
+  src/
+    domain/             shared by every runtime: catalog, policy, queries, ranking, roles, constants
+    infra/              deploy-time + Worker code: the peer resources and the auth Worker entry
+    app/                the browser SPA (React 19 + StyleX)
+  test/                 unit tests over src/domain — part of `bun run test`
+```
+
 | file | what it is |
 |---|---|
-| `schema.ts` | the catalog: `user`, `issue`, `comment`, `label` namespaces |
-| `policy.ts` | `Ripple.Policy.policy` — classes `admin`/`member`/`viewer`, `preset` ownership (creator/author pinned to the caller), `issue.privateNote` masked to admin |
-| `queries.ts` | every navigational query and pull shape; compiled against the policy in tests |
-| `rank.ts` | fractional ranking — a drag writes one `:issue/rank` double |
-| `roles.ts` / `shared.ts` | Better Auth access-control roles and the constants both Workers and the SPA share |
-| `api.ts` | the auth Worker: BetterAuth (organization + jwt plugins) on D1, `POST /api/ripple-token`, and the built SPA as Worker assets |
-| `resources.ts` / `alchemy.run.ts` | the peer (R2 + DOs + compiled policy via `Ripple.authEnv`) and the one stack wiring both Workers |
-| `src/` | the SPA: auth screens, workspace picker, live kanban board, issue detail, time travel |
+| `src/domain/schema.ts` | the catalog: `user`, `issue`, `comment`, `label` namespaces |
+| `src/domain/policy.ts` | `Ripple.Policy.policy` — classes `admin`/`member`/`viewer`, `preset` ownership (creator/author pinned to the caller), `issue.privateNote` masked to admin |
+| `src/domain/queries.ts` | every navigational query and pull shape; compiled against the policy in tests |
+| `src/domain/rank.ts` | fractional ranking — a drag writes one `:issue/rank` double |
+| `src/domain/roles.ts` / `shared.ts` | Better Auth access-control roles and the constants both Workers and the SPA share |
+| `src/infra/api.ts` | the auth Worker: BetterAuth (organization + jwt plugins) on D1, `POST /api/ripple-token`, and the built SPA as Worker assets |
+| `src/infra/resources.ts` / `alchemy.run.ts` | the peer (R2 + DOs + compiled policy via `Ripple.authEnv`) and the one stack wiring both Workers plus the dev-only `Ui` (`Command.Dev` running Vite) |
+| `src/app/` | the SPA: `ui.tsx` primitives (icons, buttons, dialog, toasts, priority glyph), auth screen, workspace picker, live kanban board, issue detail, time travel |
 | `test/` | policy compilation + masked-pull checks, role→class mapping, ranking — part of `bun run test` |
 
 ## What each screen demonstrates
@@ -73,18 +99,23 @@ a name.
   transact, so 15-minute tokens refresh themselves.
 - **Board** — reactivity. Columns render one `db.live(boardQuery)` stream;
   a drag writes two datoms (status + rank) and the board re-renders when the
-  peer's basis ticks. There is no refetch code anywhere in the app.
+  peer's basis ticks — the `live` pill in the header pulses on every tick.
+  There is no refetch code anywhere in the app. An empty board offers **Add
+  sample issues**: nine issues, labels and assignees in one `db.transact`.
 - **Issue detail** — policy in the small. The admin-only note is
   `Issue.privateNote.optional` in pull shapes (required pulls of a masked
   attribute fail *at compile time* — see `test/policy.test.ts`), and comments
   carry `preset` authorship.
 - **Invite → viewer** — enforcement is server-side. A viewer's UI is polite
-  (no + buttons, a `viewer` badge), but the proof is that a forced write comes
-  back from the peer as `Unauthorized` and surfaces as a toast:
-  "server denied op: issue:status".
+  (no + buttons, a `viewer` badge, the admin note tagged *masked*), but the
+  proof is that a forced write — drag a card — comes back from the peer as
+  `Unauthorized` and surfaces as a toast: "retract denied on :issue/status".
 - **Time travel** — immutability. The slider re-renders the whole board via
   `db.asOf(t)` — same queries, one extra argument — and deleted issues are
   recovered from `db.history`.
+- **Themes** — dark and light are one StyleX `createTheme` over the token
+  vars (`src/app/theme/`); the class goes on `<html>` so portaled dialogs and
+  toasts inherit it, and the choice persists (first visit follows the OS).
 
 ## Deploying to real Cloudflare
 
