@@ -89,6 +89,33 @@ describe("Ripple.System", () => {
     }),
   );
 
+  test.provider("a policy with no verifier configured fails the deploy, not the first read", (stack) =>
+    Effect.gen(function* () {
+      const result = yield* Effect.result(
+        stack.deploy(
+          System("Sys", { peer: peerUrl, probe: false, auth: { policy: '{"v":1}' } }),
+        ),
+      );
+      expect(result._tag).toBe("Failure");
+
+      // the same policy with a complete verifier deploys
+      const sys = yield* stack.deploy(
+        System("Sys", {
+          peer: peerUrl,
+          probe: false,
+          auth: {
+            policy: '{"v":1}',
+            jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
+            issuers: "https://auth.acme.example",
+            aud: "ripple:peer:test",
+          },
+        }),
+      );
+      expect(sys.url).toBe(peerUrl);
+      yield* stack.destroy();
+    }),
+  );
+
   test.provider("a peer that is down fails the deploy", (stack) =>
     Effect.gen(function* () {
       const result = yield* Effect.result(

@@ -2,11 +2,8 @@
 
 import type { RuntimeContext } from "alchemy/RuntimeContext";
 import * as Effect from "effect/Effect";
-import type { FetchLike } from "../Client.ts";
-import {
-  makeReadWriteSystemClient as makeUntypedReadWriteSystemClient,
-  systemSource,
-} from "../Client.ts";
+import type { FetchLike, SystemSource } from "../Client.ts";
+import { makeReadWriteSystemClient as makeUntypedReadWriteSystemClient } from "../Client.ts";
 import { openSession, type Session, type SessionOptions } from "../Session.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import { fromReadWrite, type OpenError } from "./Client.ts";
@@ -18,7 +15,7 @@ import {
 
 /** The socket, and the one database it is bound to. */
 export interface TypedSession<C extends AnyCatalog = AnyCatalog> {
-  /** The transport: `t`, `onT`, `close`. */
+  /** The transport: `t`, `onT`, `setToken`, `close`. */
   readonly session: Session;
   /** The catalog-typed client speaking it — `db.live` included. */
   readonly db: TypedLiveDatabaseClient<C>;
@@ -40,16 +37,16 @@ export const connect = <C extends AnyCatalog>(
   Effect.gen(function* () {
     const session = openSession(options);
     const fetch: FetchLike = session.fetch;
-    const system = fromReadWrite(
-      makeUntypedReadWriteSystemClient(
-        systemSource({
-          url: options.url,
-          token: options.token,
-          headers: options.headers,
-          fetch,
-        }),
-      ),
-    );
+    // resolved per call: routes that fall through to HTTP follow `setToken`
+    const source: SystemSource = {
+      fetch,
+      endpoint: Effect.sync(() => ({
+        url: options.url.replace(/\/+$/, ""),
+        token: session.token,
+        headers: options.headers,
+      })),
+    };
+    const system = fromReadWrite(makeUntypedReadWriteSystemClient(source));
     const db = yield* system
       .create(options.name, options.catalog)
       .pipe(Effect.tapError(() => Effect.sync(() => session.close())));

@@ -9,10 +9,15 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import * as Redacted from "effect/Redacted";
 import { ReadSystem } from "../src/ReadSystem.ts";
 import { ReadWriteSystem } from "../src/ReadWriteSystem.ts";
 import {
+  AUTH_ENV_KEYS,
+  authEnv,
   DATABASE_NAME_RE,
+  DEFAULT_JWT_MAX_TTL,
+  internalSecret,
   isSystem,
   resolvePeer,
   System,
@@ -122,5 +127,73 @@ describe("env keys", () => {
 
   test("service-binding dispatch uses a synthetic origin", () => {
     expect(SERVICE_ORIGIN).toBe("https://ripple.internal");
+  });
+});
+
+/**
+ * The peer declares its own auth env; `authEnv` only names the keys it reads.
+ * The peer Worker must agree on these exact strings.
+ */
+describe("the peer's auth env", () => {
+  test("the key names are the ones the peer Worker reads", () => {
+    expect(AUTH_ENV_KEYS).toEqual({
+      policy: "RIPPLE_POLICY",
+      jwksUrl: "RIPPLE_JWKS_URL",
+      issuers: "RIPPLE_JWT_ISS",
+      aud: "RIPPLE_JWT_AUD",
+      maxTtl: "RIPPLE_JWT_MAX_TTL",
+      allowedOrigins: "RIPPLE_ALLOWED_ORIGINS",
+      internalSecret: "RIPPLE_INTERNAL_SECRET",
+    });
+    expect(DEFAULT_JWT_MAX_TTL).toBe(900);
+  });
+
+  test("nothing configured binds nothing — today's peer, byte for byte", () => {
+    expect(authEnv(undefined)).toEqual({});
+    expect(authEnv({})).toEqual({});
+    expect(authEnv({ policy: "" })).toEqual({});
+  });
+
+  test("issuers and origins are comma-separated sets, from a list or a string", () => {
+    const env = authEnv({
+      policy: '{"v":1}',
+      jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
+      issuers: ["https://auth.acme.example", " https://auth.other.example "],
+      aud: "ripple:peer:prod",
+      maxTtl: 300,
+      allowedOrigins: "https://app.acme.example, ",
+    });
+    expect(env).toEqual({
+      RIPPLE_POLICY: '{"v":1}',
+      RIPPLE_JWKS_URL: "https://auth.acme.example/.well-known/jwks.json",
+      RIPPLE_JWT_ISS: "https://auth.acme.example,https://auth.other.example",
+      RIPPLE_JWT_AUD: "ripple:peer:prod",
+      RIPPLE_JWT_MAX_TTL: "300",
+      RIPPLE_ALLOWED_ORIGINS: "https://app.acme.example",
+    });
+  });
+
+  test("the Worker→DO secret stays Redacted, so it lands as a secret binding", () => {
+    const env = authEnv({ internalSecret: "sh4red" });
+    const bound = env[AUTH_ENV_KEYS.internalSecret];
+    expect(Redacted.isRedacted(bound)).toBe(true);
+    expect(Redacted.value(bound as Redacted.Redacted<string>)).toBe("sh4red");
+  });
+
+  test("an unpinned internal secret is minted, and is not the same twice", () => {
+    const a = Redacted.value(internalSecret());
+    expect(a).toMatch(/^[0-9a-f]{64}$/);
+    expect(a).not.toBe(Redacted.value(internalSecret()));
+    // a pinned one is passed through, whichever wrapper it arrives in
+    expect(Redacted.value(internalSecret("pinned"))).toBe("pinned");
+    expect(Redacted.value(internalSecret(Redacted.make("pinned")))).toBe("pinned");
+  });
+
+  test("`auth` is a prop, but the system's attributes are unchanged", () => {
+    const props: SystemProps = { peer: "https://peer.example.com", auth: { policy: "{}" } };
+    expect(props.auth?.policy).toBe("{}");
+    type HasAuth = "auth" extends keyof System["Attributes"] ? true : false;
+    const hasAuth: HasAuth = false;
+    expect(hasAuth).toBe(false);
   });
 });
