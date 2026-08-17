@@ -40,9 +40,16 @@ export class NotFound extends Data.TaggedError("NotFound")<{
   readonly message: string;
 }> {}
 
-/** Missing or wrong bearer token (401). */
+/**
+ * Missing, expired or wrong credential, or a policy denial (401 / 403).
+ *
+ * A policy denial carries `code` (e.g. `"policy"`) and the attribute ident it
+ * tripped on (`attr: ":doc/owner"`) — never the value.
+ */
 export class Unauthorized extends Data.TaggedError("Unauthorized")<{
   readonly message: string;
+  readonly code?: string;
+  readonly attr?: string;
 }> {}
 
 /**
@@ -108,6 +115,13 @@ const str = (value: unknown, fallback: string): string =>
 const num = (value: unknown, fallback: number): number =>
   typeof value === "number" && Number.isFinite(value) ? value : fallback;
 
+/** An optional string field: absent stays absent, never `""`. */
+const opt = (
+  key: string,
+  value: unknown,
+): Record<string, string> =>
+  typeof value === "string" && value.length > 0 ? { [key]: value } : {};
+
 /**
  * Classify a non-2xx response into a tagged failure.
  *
@@ -164,7 +178,8 @@ export const fromResponse = (
       return new BadRequest({ message });
     case 401:
     case 403:
-      return new Unauthorized({ message });
+      // `{ error, code: "policy", attr: ":doc/owner" }` surfaces typed
+      return new Unauthorized({ message, ...opt("code", b.code), ...opt("attr", b.attr) });
     case 404:
       return new NotFound({ message });
     case 409:

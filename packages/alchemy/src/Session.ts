@@ -2,6 +2,7 @@
 
 import * as Redacted from "effect/Redacted";
 import { globalFetch, type FetchLike } from "./Client.ts";
+import { fromResponse, NetworkError, type DatabaseError } from "./DatabaseTypes.ts";
 
 /**
  * The slice of `WebSocket` a session uses — so a test can hand in a fake, and
@@ -26,6 +27,8 @@ export interface SessionOptions {
   /**
    * The peer's bearer token. A browser cannot set headers on a WebSocket
    * handshake, so it rides the handshake as `?token=…` (the peer accepts both).
+   * Only the *initial* token rides the upgrade; refresh with
+   * {@link Session.setToken}.
    */
   readonly token?: Redacted.Redacted<string> | string | undefined;
   /** Extra headers for whatever still goes over {@link SessionOptions.fetch}. */
@@ -41,6 +44,18 @@ export interface Session {
   readonly fetch: FetchLike;
   /** Highest transaction `t` this socket has seen — from acks, reads, and `t` frames. */
   readonly t: number;
+  /** The token this socket is authenticated as, after any {@link Session.setToken}. */
+  readonly token: Redacted.Redacted<string> | undefined;
+  /**
+   * Swap the principal on this open socket — a token refresh, not a reconnect.
+   *
+   * Sends `{ op: "auth", id, token }` and resolves when the peer acks
+   * (`{ id, ok: true }`); rejects with the same tagged failures the HTTP path
+   * yields (`Unauthorized` on 401/403). Frames sent after it resolves are
+   * planned under the new principal. Nothing standing is torn down: `db.live`
+   * stores, `onT` subscribers and in-flight requests all survive.
+   */
+  setToken(token: Redacted.Redacted<string> | string): Promise<void>;
   /** Subscribe to basis movement. Returns the unsubscribe. */
   onT(cb: (t: number) => void): () => void;
   /** Run `cb` once when this socket dies — closed by us, or by the peer. */
@@ -177,6 +192,17 @@ const responseOf = (frame: Record<string, unknown>): Response => {
   );
 };
 
+/** A non-2xx reply frame, classified exactly as the HTTP path classifies it. */
+const errorOf = async (response: Response): Promise<DatabaseError> => {
+  let body: unknown = {};
+  try {
+    body = await response.json();
+  } catch {
+    // a bodyless refusal is still a refusal
+  }
+  return fromResponse(response.status, body, response.headers);
+};
+
 /**
  * Open one session socket for one database.
  *
@@ -202,6 +228,7 @@ export const openSession = (options: SessionOptions): Session => {
   const closeListeners = new Set<() => void>();
   let nextId = 1;
   let basisT = 0;
+  let current = tokenValue(options.token);
   let open = socket.readyState === undefined || socket.readyState === OPEN;
   let dead: Error | undefined;
 
@@ -252,9 +279,8 @@ export const openSession = (options: SessionOptions): Session => {
     if (frame.op === "t") bump(frame.t);
   });
 
-  const fetch: FetchLike = (url, init) => {
-    const frame = frameOf(options.name, url, init);
-    if (frame === undefined) return fallback(url, init);
+  /** One correlated frame out, its reply frame back as a `Response`. */
+  const request = (frame: Record<string, unknown>): Promise<Response> => {
     if (dead !== undefined) return Promise.reject(dead);
     const id = nextId++;
     return new Promise<Response>((resolve, reject) => {
@@ -273,10 +299,37 @@ export const openSession = (options: SessionOptions): Session => {
     });
   };
 
+  const fetch: FetchLike = (url, init) => {
+    const frame = frameOf(options.name, url, init);
+    if (frame === undefined) return fallback(url, init);
+    return request(frame);
+  };
+
+  const setToken = async (
+    token: Redacted.Redacted<string> | string,
+  ): Promise<void> => {
+    const next = tokenValue(token);
+    let response: Response;
+    try {
+      response = await request({ op: "auth", token: next ?? "" });
+    } catch (cause) {
+      throw new NetworkError({
+        message: cause instanceof Error ? cause.message : String(cause),
+        cause,
+      });
+    }
+    if (!response.ok) throw await errorOf(response);
+    current = next;
+  };
+
   return {
     fetch,
+    setToken,
     get t() {
       return basisT;
+    },
+    get token() {
+      return current === undefined ? undefined : Redacted.make(current);
     },
     onT: (cb) => {
       listeners.add(cb);

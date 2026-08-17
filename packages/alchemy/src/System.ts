@@ -81,6 +81,34 @@ export interface SystemProbe {
   readonly delayMs?: number;
 }
 
+/**
+ * What the peer Worker needs to verify JWTs and enforce a policy.
+ *
+ * The System does **not** push these onto the peer — a Worker's `env` is
+ * snapshotted when it is declared, long before this resource reconciles. Spread
+ * {@link authEnv} into the peer Worker's own `env` instead, and pass the same
+ * value here for the deploy-time fail-closed check.
+ *
+ * With `policy` unset the peer runs today's mode: `RIPPLE_TOKEN` if set,
+ * otherwise open.
+ */
+export interface PeerAuth {
+  /** Compiled policy JSON (`SchemaFx.Policy.compile(policy)`). Its presence is what arms enforcement. */
+  readonly policy?: string | undefined;
+  /** Where the issuer's public keys live. Required once `policy` is set. */
+  readonly jwksUrl?: string | undefined;
+  /** Accepted `iss` values — one, or a comma-separated set. Required once `policy` is set. */
+  readonly issuers?: readonly string[] | string | undefined;
+  /** The `aud` every token must carry. Required once `policy` is set. */
+  readonly aud?: string | undefined;
+  /** Cap on `exp - iat`, in seconds. @default 900 */
+  readonly maxTtl?: number | undefined;
+  /** Origins the peer answers CORS for once a policy narrows it. */
+  readonly allowedOrigins?: readonly string[] | string | undefined;
+  /** Worker→DO shared secret; every internal fetch carries it. See {@link internalSecret}. */
+  readonly internalSecret?: Redacted.Redacted<string> | string | undefined;
+}
+
 export type SystemProps = {
   /** The peer Worker (or a URL) that serves `/db/:name/*`. */
   peer: SystemPeer;
@@ -89,11 +117,110 @@ export type SystemProps = {
    * Stored as a `Redacted` attribute and lowered onto consumers as a
    * `secret_text` binding. This is the peer's one token: it covers every
    * database name the peer serves, and is ignored when the peer has
-   * `RIPPLE_TOKEN` unset.
+   * `RIPPLE_TOKEN` unset. It is *not* a data-plane principal on a named
+   * database once a policy is configured — a JWT is the only way to be one.
    */
   token?: Redacted.Redacted<string> | string;
+  /**
+   * The peer's auth configuration, for a deploy-time consistency check only.
+   * The env itself belongs on the peer Worker: `env: { …, ...authEnv(auth) }`.
+   */
+  auth?: PeerAuth;
   /** Liveness probe on deploy; `false` skips it. */
   probe?: SystemProbe | false;
+};
+
+/** The env keys the peer Worker reads its auth configuration from. */
+export const AUTH_ENV_KEYS = {
+  policy: "RIPPLE_POLICY",
+  jwksUrl: "RIPPLE_JWKS_URL",
+  issuers: "RIPPLE_JWT_ISS",
+  aud: "RIPPLE_JWT_AUD",
+  maxTtl: "RIPPLE_JWT_MAX_TTL",
+  allowedOrigins: "RIPPLE_ALLOWED_ORIGINS",
+  internalSecret: "RIPPLE_INTERNAL_SECRET",
+} as const satisfies Record<keyof PeerAuth, string>;
+
+/** Cap on a token's lifetime when `RIPPLE_JWT_MAX_TTL` is unset, in seconds. */
+export const DEFAULT_JWT_MAX_TTL = 900;
+
+const list = (value: readonly string[] | string | undefined): string | undefined => {
+  const items = (typeof value === "string" ? value.split(",") : (value ?? []))
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return items.length === 0 ? undefined : items.join(",");
+};
+
+/**
+ * Mint (or pass through) the Worker→DO secret.
+ *
+ * The Worker and both Durable Object classes are one script, so one env key
+ * covers all three and they rotate together. Pin it by passing a value or
+ * setting `RIPPLE_INTERNAL_SECRET`; otherwise every deploy gets a fresh one.
+ */
+export const internalSecret = (
+  value?: Redacted.Redacted<string> | string | undefined,
+): Redacted.Redacted<string> => {
+  if (value !== undefined && value !== "") {
+    return typeof value === "string" ? Redacted.make(value) : value;
+  }
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Redacted.make(
+    Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(""),
+  );
+};
+
+/**
+ * The peer Worker's auth env, as bindings. Spread it into the Worker's own
+ * `env` beside `RIPPLE_TOKEN`; unset fields emit no key, so an unconfigured
+ * peer is byte-for-byte today's peer.
+ *
+ * @example
+ * ```typescript
+ * export const Worker = Cloudflare.Worker("Worker", {
+ *   main: "./packages/worker/src/index.ts",
+ *   env: { STORE: Store, ...Ripple.authEnv({ policy, jwksUrl, issuers, aud }) },
+ * });
+ * ```
+ */
+export const authEnv = (
+  auth: PeerAuth | undefined,
+): Record<string, string | Redacted.Redacted<string>> => {
+  if (auth === undefined) return {};
+  const k = AUTH_ENV_KEYS;
+  const env: Record<string, string | Redacted.Redacted<string>> = {};
+  const set = (key: string, value: string | Redacted.Redacted<string> | undefined) => {
+    if (value !== undefined && value !== "") env[key] = value;
+  };
+  set(k.policy, auth.policy);
+  set(k.jwksUrl, auth.jwksUrl);
+  set(k.issuers, list(auth.issuers));
+  set(k.aud, auth.aud);
+  set(k.maxTtl, auth.maxTtl === undefined ? undefined : String(auth.maxTtl));
+  set(k.allowedOrigins, list(auth.allowedOrigins));
+  const secret = auth.internalSecret;
+  if (secret !== undefined && secret !== "") env[k.internalSecret] = internalSecret(secret);
+  return env;
+};
+
+/**
+ * Fail closed at deploy: a policy with no verifier configured would deny every
+ * `/db/*` at runtime, so it fails here instead.
+ */
+const checkAuth = (auth: PeerAuth | undefined): string | undefined => {
+  if (auth === undefined || auth.policy === undefined || auth.policy === "") return undefined;
+  const missing: string[] = [];
+  if (auth.jwksUrl === undefined || auth.jwksUrl === "") missing.push(AUTH_ENV_KEYS.jwksUrl);
+  if (list(auth.issuers) === undefined) missing.push(AUTH_ENV_KEYS.issuers);
+  if (auth.aud === undefined || auth.aud === "") missing.push(AUTH_ENV_KEYS.aud);
+  if (missing.length > 0) {
+    return `ripple: auth.policy is set but ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not — a configured policy makes JWT verification mandatory, and an incomplete verifier denies every /db/*`;
+  }
+  if (auth.maxTtl !== undefined && (!Number.isFinite(auth.maxTtl) || auth.maxTtl <= 0)) {
+    return `ripple: auth.maxTtl must be a positive number of seconds (default ${DEFAULT_JWT_MAX_TTL})`;
+  }
+  return undefined;
 };
 
 export type System = Resource<
@@ -210,6 +337,8 @@ const probeHealth = (url: string, probe: SystemProbe | false | undefined) => {
 };
 
 const attributes = Effect.fn(function* (props: SystemProps, probe: boolean) {
+  const badAuth = checkAuth(props.auth);
+  if (badAuth !== undefined) return yield* Effect.fail(new BadRequest({ message: badAuth }));
   const peer = resolvePeer(props.peer);
   if (peer.url === undefined || peer.url === "") {
     return yield* Effect.fail(
