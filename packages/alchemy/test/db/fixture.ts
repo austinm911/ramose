@@ -1,7 +1,14 @@
 /** Shared fixture catalog for the schema tests / compile-time fixtures. */
 
 import * as Schema from "effect/Schema";
-import { Attr, Catalog, Long, Namespace, Ref } from "../../src/db/internal.ts";
+import {
+  Attr,
+  Catalog,
+  Instant,
+  Long,
+  Namespace,
+  Ref,
+} from "../../src/db/internal.ts";
 
 export const User = Namespace("user", {
   name: Attr(Schema.String, { unique: "identity" }),
@@ -13,6 +20,7 @@ export const User = Namespace("user", {
 export const Movie = Namespace("movie", {
   title: Attr(Schema.String, { index: true }),
   year: Attr(Long),
+  released: Attr(Instant),
 });
 
 export const Meta = Namespace("meta", {

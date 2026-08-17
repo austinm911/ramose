@@ -352,8 +352,8 @@ export const lowerPullPattern = (pattern: unknown): unknown[] => {
  *
  * A bare attr is required: missing / null / undefined drops the entity
  * (`null` at the top level). `.optional` may be missing (`undefined`).
- * Required `.with` drops the parent when the ref is missing or the nested
- * object fails *its* required fields. Cardinality-many `.with` filters the
+ * Required `.select` drops the parent when the ref is missing or the nested
+ * object fails *its* required fields. Cardinality-many `.select` filters the
  * array (empty `[]` is still a valid many). Ident-keyed arrays are left as
  * the peer returned them (all optional in the type).
  */

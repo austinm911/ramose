@@ -15,6 +15,7 @@ import * as Fiber from "effect/Fiber";
 import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import { fromResponse } from "../src/db/Errors.ts";
+import { query } from "../src/db/internal.ts";
 import { client, fakePeer, settle } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
@@ -23,7 +24,7 @@ const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
 const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
   Effect.runPromise(Effect.flip(eff));
 
-const names = (q: any) => q.where("?e", User.name, "?n").find("?n");
+const names = query(User).select({ name: User.name });
 
 describe("the credential on the wire", () => {
   test("the socket takes ?token=, the HTTPS write takes Authorization", async () => {
@@ -90,7 +91,7 @@ describe("the credential on the wire", () => {
 
 describe("a token swap is not a reconnect", () => {
   test("db.live keeps its stream, its socket and its rows across the swap", async () => {
-    const state = { t: 2, rows: [["Ada"]] as unknown[][] };
+    const state = { t: 2, rows: [[{ name: "Ada" }]] as unknown[][] };
     let issued = 0;
     let refuse = false;
     const peer = fakePeer({
@@ -116,17 +117,17 @@ describe("a token swap is not a reconnect", () => {
       ).pipe(Effect.catchCause((cause) => Effect.sync(() => Cause.squash(cause)))),
     );
     await settle();
-    expect(seen).toEqual([[["Ada"]]]);
+    expect(seen).toEqual([[{ name: "Ada" }]]);
 
     // the peer expires the principal mid-flight; the next pass re-reads and swaps
     refuse = true;
     state.t = 5;
-    state.rows = [["Ada"], ["Bob"]];
+    state.rows = [[{ name: "Ada" }], [{ name: "Bob" }]];
     peer.push({ op: "t", t: 5 });
     await settle();
 
     expect(seen).toHaveLength(2);
-    expect(seen[1]).toEqual([["Ada"], ["Bob"]]);
+    expect(seen[1]).toEqual([{ name: "Ada" }, { name: "Bob" }]);
     // one socket throughout: the swap is a frame, not a reconnect
     expect(peer.sockets).toHaveLength(1);
     expect(peer.frames.map((f) => f.op)).toEqual(["q", "q", "auth", "q"]);

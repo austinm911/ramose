@@ -252,7 +252,7 @@ d("ripple session socket e2e", () => {
         for (let i = 0; i < 40 && count < 2; i++) {
           count = (
             await a.runPromise(
-              dbA.q((q) => q.where("?e", Session.name, "?n").find("?n")),
+              dbA.q(Ripple.query(Session).select({ name: Session.name })),
             )
           ).length;
           if (count < 2) await Bun.sleep(250);

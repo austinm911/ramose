@@ -9,7 +9,6 @@ import {
   Attr,
   Catalog,
   Namespace,
-  queryBuilder,
   schemaTx,
   txBuilder,
   lowerPullPattern,
@@ -63,21 +62,6 @@ describe("schemaTx", () => {
         ":db/cardinality": ":db.cardinality/one",
       },
     ]);
-  });
-});
-
-describe("query builder", () => {
-  test("where lowers attr refs to idents and keeps vars / blanks", () => {
-    const q = queryBuilder(Movies)
-      .where("?e", User.name, "?n")
-      .where("?e", "_", "?v")
-      .where("?e", "?a", 1);
-    expect(q.spec.where).toEqual([
-      ["?e", ":user/name", "?n"],
-      ["?e", "_", "?v"],
-      ["?e", "?a", 1],
-    ]);
-    expect(q.catalog).toBe(Movies);
   });
 });
 
@@ -215,29 +199,3 @@ describe("reshapePullResult", () => {
   });
 });
 
-describe("query terminals", () => {
-  test("find and explain both build a Query; `.pull` hangs off a one-eid find", () => {
-    const built = queryBuilder(Movies)
-      .where("?e", User.name, "?n")
-      .find("?e", "?n");
-    expect(built.vars).toEqual(["?e", "?n"]);
-    expect(built.spec.eidVars).toEqual(["?e"]);
-    expect(built.spec.explain).toBeUndefined();
-    expect(built.spec.pull).toBeUndefined();
-
-    const explained = queryBuilder(Movies)
-      .where("?e", User.name, "?n")
-      .explain("?n");
-    expect(explained.spec.explain).toBe(true);
-    expect(explained.vars).toEqual(["?n"]);
-
-    const pattern = { name: User.name };
-    const pulled = queryBuilder(Movies)
-      .where("?e", User.name, "_")
-      .find("?e")
-      .pull(pattern);
-    expect(pulled.spec.pull).toBe(pattern);
-    // the find it came from is untouched — a query is a value
-    expect(built.spec.pull).toBeUndefined();
-  });
-});

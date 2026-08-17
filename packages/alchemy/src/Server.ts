@@ -38,7 +38,7 @@
  *   const ada = yield* tx.entity();
  *   yield* ada.add(User.name, "Ada");
  * });
- * const rows = yield* dbAfter.q((q) => q.where("?e", User.name, "?n").find("?n"));
+ * const rows = yield* dbAfter.q(Ripple.query(User).select({ name: User.name }));
  * ```
  *
  * Provide `Ripple.ServerBinding` (a Worker service binding to the server) or

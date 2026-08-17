@@ -1,5 +1,5 @@
 /**
- * Navigational query values — the primary surface from docs/QUERY.md.
+ * Navigational query values — the read surface from docs/QUERY.md.
  *
  * `Ripple.query(Todo).where(...).select(...).orderBy(...).limit(n)` builds a
  * {@link NavQuery} value. `db.q` / `db.live` run it. Datalog is the IR: we
@@ -12,6 +12,7 @@
 
 import { lowerAttr } from "./attrRef.ts";
 import type { AnyAttribute } from "./Attribute.ts";
+import { type Eid, makeEid } from "./Eid.ts";
 import type { AnyNamespace } from "./Namespace.ts";
 import {
   inspectPullField,
@@ -113,14 +114,21 @@ const pred = (
   value,
 });
 
+/** The value an attr compares against: its Schema's type, `unknown` if untyped. */
+export type AttrValue<A> = A extends {
+  readonly schema: { readonly Type: infer T };
+}
+  ? T
+  : unknown;
+
 /** Predicate / shape methods attached to every stamped attr. */
 export type AttrNav<A extends PathCarrier> = A & {
-  readonly eq: (value: unknown) => Predicate;
-  readonly ne: (value: unknown) => Predicate;
-  readonly lt: (value: unknown) => Predicate;
-  readonly lte: (value: unknown) => Predicate;
-  readonly gt: (value: unknown) => Predicate;
-  readonly gte: (value: unknown) => Predicate;
+  readonly eq: (value: AttrValue<A>) => Predicate;
+  readonly ne: (value: AttrValue<A>) => Predicate;
+  readonly lt: (value: AttrValue<A>) => Predicate;
+  readonly lte: (value: AttrValue<A>) => Predicate;
+  readonly gt: (value: AttrValue<A>) => Predicate;
+  readonly gte: (value: AttrValue<A>) => Predicate;
   readonly startsWith: (prefix: string) => Predicate;
   readonly includes: (needle: string) => Predicate;
   readonly exists: () => Predicate;
@@ -312,7 +320,11 @@ type SelectFieldResult<F> = F extends {
           ? number
           : never;
 
-export interface NavQueryBuilder<N extends AnyNamespace, R = unknown> {
+/** `R` defaults to the matched entity ids — what a query with no `.select` yields. */
+export interface NavQueryBuilder<
+  N extends AnyNamespace,
+  R = readonly Eid[],
+> {
   readonly ns: N;
   readonly spec: NavQuerySpec;
 
@@ -503,7 +515,7 @@ const lowerPredicate = (root: string, p: Predicate): unknown[] => {
 
 /**
  * Apply interim client-side order/limit/offset and reshape pull rows.
- * Returns `readonly R[]` (pull maps) or `readonly number[]` (bare eids).
+ * Returns `readonly R[]` (pull maps) or `readonly Eid[]` (no `.select`).
  */
 export const finalizeNavResult = (
   q: NavQuery,
@@ -522,7 +534,10 @@ export const finalizeNavResult = (
       })
       .filter((x) => x !== null);
   } else {
-    rows = rows.map((row) => (Array.isArray(row) ? row[0] : row));
+    rows = rows.map((row) => {
+      const cell = Array.isArray(row) ? row[0] : row;
+      return typeof cell === "number" ? makeEid(cell) : cell;
+    });
   }
 
   if (q.spec.orderBy.length > 0 && pullMap !== undefined) {
