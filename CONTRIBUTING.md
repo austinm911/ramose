@@ -66,3 +66,7 @@ The e2e job uses the GitHub **Development** environment
 (`environment: Development`). Put `CLOUDFLARE_API_TOKEN` there as a secret and
 `CLOUDFLARE_ACCOUNT_ID` as a variable (or secret). Cursor Cloud Agents need the
 same names in the Cursor secrets panel — see [`.cursor/CLOUD.md`](.cursor/CLOUD.md).
+
+Cloudflare e2e runs are **serialized** (`concurrency.group: e2e-cloudflare`) so
+two stages never hammer the same account in parallel — concurrent write-burst
+tests have produced transient workers.dev HTML 404s mid-suite.

@@ -207,9 +207,11 @@ d("ripple session socket e2e", () => {
 
         // read-your-writes with no second round trip
         const names = await a.runPromise(
-          report.dbAfter.q((q) => q.where("?e", Session.name, "?n").find("?n")),
+          report.dbAfter.q(
+            Ripple.query(Session).select({ name: Session.name }),
+          ),
         );
-        expect(names).toEqual([["Ada"]]);
+        expect(names).toEqual([{ name: "Ada" }]);
 
         const pulled = await a.runPromise(
           report.dbAfter.pull([":s/name", "Ada"], {
@@ -223,7 +225,9 @@ d("ripple session socket e2e", () => {
         const seen: number[] = [];
         const fiber = a.runFork(
           Stream.runForEach(
-            dbA.live((q) => q.where("?e", Session.name, "?n").find("?n")),
+            dbA.live(
+              Ripple.query(Session).select({ name: Session.name }),
+            ),
             (rows) => Effect.sync(() => seen.push(rows.length)),
           ),
         );
