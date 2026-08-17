@@ -36,6 +36,11 @@ bun alchemy destroy website/alchemy.run.ts              # tear a stage down
 Requires `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (see
 `CONTRIBUTING.md`).
 
+PRs that touch `website/` get an automatic preview deployment (stage
+`pr-<number>`) with the URL commented on the PR; the preview is destroyed when
+the PR closes. See `.github/workflows/docs-preview.yml` and the "Docs
+previews" section of `CONTRIBUTING.md`.
+
 ## Layout
 
 | path | contents |
