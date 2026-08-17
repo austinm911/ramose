@@ -1,11 +1,13 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Histogram, RateMeter, type TelemetryEvent, componentLogger, logEvent, setTelemetryClock, setTelemetryLevel, setTelemetrySink } from "../src/telemetry.ts";
 
-afterEach(() => {
+const resetTelemetry = () => {
   setTelemetrySink(undefined);
   setTelemetryLevel("info");
   setTelemetryClock(() => Date.now());
-});
+};
+beforeEach(resetTelemetry);
+afterEach(resetTelemetry);
 
 describe("telemetry", () => {
   test("events are structured, level-filtered, and never throw", () => {
