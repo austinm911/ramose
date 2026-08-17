@@ -1,0 +1,14 @@
+# Ripple
+
+An immutable, Datomic-inspired graph database for Cloudflare (Workers + Durable
+Objects + R2), built on the Effect runtime. It is a Bun monorepo with one product
+(the engine + peer Worker in `packages/*`) and two consumer demos in `examples/*`.
+
+See `README.md` for the product overview and `docs/` (`API.md`, `AUTH_LAYER.md`,
+`RUNBOOK.md`) for details.
+
+## Cursor Cloud specific instructions
+
+Cursor Cloud Agent environment and runtime caveats live in
+[`.cursor/CLOUD.md`](.cursor/CLOUD.md) to keep this file harness-agnostic. Read
+that file when working as a Cursor Cloud Agent.
