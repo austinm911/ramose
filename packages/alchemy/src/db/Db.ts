@@ -21,6 +21,14 @@ import type { DbError, InvalidRequest } from "./Errors.ts";
 import { compact, record } from "./http.ts";
 import type { LookupRef } from "./idents.ts";
 import {
+  asNavQuery,
+  finalizeNavResult,
+  lowerNavQuery,
+  type NavQuery,
+  type NavQueryBuilder,
+} from "./NavQuery.ts";
+import type { AnyNamespace } from "./Namespace.ts";
+import {
   type IdentPullPattern,
   lowerPullPattern,
   type Pull,
@@ -40,6 +48,12 @@ import {
   type YieldContext,
   type YieldError,
 } from "./Tx.ts";
+
+/** Callback builder (legacy) or navigational query value / builder. */
+export type QueryInput<C extends AnyCatalog, R> =
+  | ((q: QueryBuilder<C, {}>) => Query<C, R>)
+  | NavQuery<R>
+  | NavQueryBuilder<AnyNamespace, R>;
 
 // ── the transport seam ─────────────────────────────────────────────────────
 
@@ -84,18 +98,16 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
   readonly name: string;
   readonly catalog: C;
 
-  /** Run the built query once. */
-  q<R>(build: (q: QueryBuilder<C, {}>) => Query<C, R>): Effect.Effect<R, DbError>;
+  /** Run a query once — callback builder or navigational {@link NavQuery}. */
+  q<R>(input: QueryInput<C, R>): Effect.Effect<R, DbError>;
 
   /**
-   * Stand the built query up: re-run on every basis tick this session sees,
+   * Stand a query up: re-run on every basis tick this session sees,
    * and after a local `transact`. Requirements are `never` — teardown is fiber
    * interruption — and a pinned view (`asOf` / `history`) emits once and
-   * completes.
+   * completes. Accepts a callback builder or navigational {@link NavQuery}.
    */
-  live<R>(
-    build: (q: QueryBuilder<C, {}>) => Query<C, R>,
-  ): Stream.Stream<R, DbError>;
+  live<R>(input: QueryInput<C, R>): Stream.Stream<R, DbError>;
 
   /** Project one entity. `null` when a required field is missing. */
   pull<const P>(
@@ -231,12 +243,7 @@ const makeRead = <C extends AnyCatalog>(
         Effect.map((body) => reshapePullResult(pattern, record(body).result)),
       );
 
-  /**
-   * One pass of a built query: the relation, then the pull round if there is
-   * one. `t` is the basis it was served at — the floor a standing query waits
-   * to move past.
-   */
-  const runQuery = (
+  const runLegacyQuery = (
     query: Query<C, unknown>,
     minT: number | undefined,
   ): Effect.Effect<{ readonly rows: unknown; readonly t: number }, DbError> =>
@@ -265,8 +272,6 @@ const makeRead = <C extends AnyCatalog>(
 
       if (query.spec.pull !== undefined) {
         const eids = (rows as unknown[][]).map((row) => row[0] as Eid<C>);
-        // the query's own `t` is the floor: rows may straddle bases, and the
-        // next tick reconciles
         const pulled = yield* Effect.forEach(
           eids,
           (eid) => pullOne(eid, query.spec.pull, t),
@@ -288,10 +293,45 @@ const makeRead = <C extends AnyCatalog>(
       };
     });
 
-  const build = <R>(
-    builder: (q: QueryBuilder<C, {}>) => Query<C, R>,
-  ): Query<C, unknown> =>
-    builder(queryBuilder(catalog)) as unknown as Query<C, unknown>;
+  const runNavQuery = (
+    nav: NavQuery,
+    minT: number | undefined,
+  ): Effect.Effect<{ readonly rows: unknown; readonly t: number }, DbError> =>
+    Effect.gen(function* () {
+      const fence = minT ?? view.minT;
+      const lowered = lowerNavQuery(nav);
+      const body = record(
+        yield* wire.read(
+          name,
+          "q",
+          compact({
+            query: lowered.query,
+            inputs: [],
+            asOf: view.asOf,
+            history: view.history === true ? true : undefined,
+          }),
+          fence,
+        ),
+      );
+      const t = typeof body.t === "number" ? body.t : 0;
+      return {
+        rows: finalizeNavResult(nav, body.result, lowered.pullMap),
+        t,
+      };
+    });
+
+  const runInput = <R>(
+    input: QueryInput<C, R>,
+    minT: number | undefined,
+  ): Effect.Effect<{ readonly rows: unknown; readonly t: number }, DbError> => {
+    if (typeof input === "function") {
+      return runLegacyQuery(
+        input(queryBuilder(catalog)) as unknown as Query<C, unknown>,
+        minT,
+      );
+    }
+    return runNavQuery(asNavQuery(input as NavQuery | NavQueryBuilder<AnyNamespace>), minT);
+  };
 
   /** Retry the transient half of `DbError` with the live backoff. */
   const withBackoff = <A>(
@@ -312,26 +352,21 @@ const makeRead = <C extends AnyCatalog>(
     name,
     catalog,
 
-    q: (<R>(builder: (q: QueryBuilder<C, {}>) => Query<C, R>) =>
+    q: (<R>(input: QueryInput<C, R>) =>
       fenced(
         Effect.suspend(() =>
-          runQuery(build(builder), undefined).pipe(Effect.map((r) => r.rows)),
+          runInput(input, undefined).pipe(Effect.map((r) => r.rows as R)),
         ),
       )) as ReadDb<C>["q"],
 
-    live: (<R>(builder: (q: QueryBuilder<C, {}>) => Query<C, R>) =>
+    live: (<R>(input: QueryInput<C, R>) =>
       Stream.callback<R, DbError>((queue) =>
         Effect.gen(function* () {
           if (bad !== undefined) return yield* Queue.fail(queue, bad);
-          const query = build(builder);
           const session = wire.session(name);
-          // a pinned view has no news: run it once and complete
           const pinned = view.asOf !== undefined || view.history === true;
 
           if (!pinned && session === undefined) {
-            // a defect, not a DbError: having no socket is a provisioning
-            // mistake. It goes through the queue because the stream's producer
-            // is forked — a dying fiber would just hang the consumer.
             return yield* Queue.failCause(
               queue,
               Cause.die(
@@ -343,16 +378,10 @@ const makeRead = <C extends AnyCatalog>(
           }
 
           for (;;) {
-            // the fence this pass asks for is whatever basis the session has
-            // already seen — a tick, or the `t` of a local write
             const seen = session?.t ?? 0;
-            const pass = yield* withBackoff(runQuery(query, seen || undefined));
+            const pass = yield* withBackoff(runInput(input, seen || undefined));
             yield* Queue.offer(queue, pass.rows as R);
             if (pinned || session === undefined) break;
-            // wait for news *past* what this pass served: a tick that landed
-            // mid-pass is already ahead of it, so it re-runs at once. The
-            // generation is read after the pass, because the pass is what
-            // opened (or reopened) the socket.
             yield* awaitWake(
               session,
               Math.max(seen, pass.t),
