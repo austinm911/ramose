@@ -1,11 +1,8 @@
-/** One screen: input, list, checkbox, delete. The only `useState` is the input. */
-
 import { useState } from "react";
 import { db, run } from "./db.ts";
 import { addTodo, deleteTodo, setDone, todoQuery } from "./todos.ts";
 import { useLive } from "./useLive.ts";
 
-/** The tab's store. This session's `ack.t` wakes it; nothing else does. */
 const todos = db.live(todoQuery);
 
 type Row = NonNullable<ReturnType<typeof todos.get>>[number];

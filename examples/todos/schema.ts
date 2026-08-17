@@ -1,5 +1,3 @@
-/** The catalog, shared by the browser and the stack. */
-
 import * as SchemaFx from "@ripple/alchemy/schema";
 import * as Schema from "effect/Schema";
 
