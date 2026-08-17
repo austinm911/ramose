@@ -108,7 +108,12 @@ export const WorkspacesScreen = ({
   const slug = slugify(name);
 
   const refresh = async () => {
-    const [os, is] = await Promise.all([listWorkspaces(), listMyInvitations()]);
+    // Invitations are best-effort: some Better Auth configurations gate the
+    // route (e.g. unverified email → 403) and that must not block the picker.
+    const [os, is] = await Promise.all([
+      listWorkspaces(),
+      listMyInvitations().catch(() => [] as readonly Invitation[]),
+    ]);
     setOrgs(os);
     setInvites(is.filter((i) => i.status === "pending"));
   };

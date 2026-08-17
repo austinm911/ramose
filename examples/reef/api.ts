@@ -79,6 +79,17 @@ export const Api = Cloudflare.Worker(
       // The Vite dev server proxies /api here, so browser-visible origins are
       // the Vite origin (dev) and the Worker's own origin (deployed assets).
       trustedOrigins: [DEV_UI_ORIGIN],
+      // The demo ships no mailer, so accounts are auto-verified at creation —
+      // otherwise the organization plugin's listUserInvitations 403s every
+      // fresh account (EMAIL_VERIFICATION_REQUIRED_FOR_INVITATION, an
+      // unconditional check in Better Auth 1.6).
+      databaseHooks: {
+        user: {
+          create: {
+            before: async (user) => ({ data: { ...user, emailVerified: true } }),
+          },
+        },
+      },
       plugins: [
         organization({
           ac,
