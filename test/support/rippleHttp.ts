@@ -1,32 +1,36 @@
 /**
- * Ripple client SDK (thin). Works in browsers, Bun, Node, Workers.
+ * The ops HTTP harness — **not** a client SDK and not a package.
  *
- *   const ripple = new RippleClient("https://ripple.example.workers.dev", { token });
- *   const db = ripple.db("app");
- *   await db.transact([{ ":user/name": "Ada" }]);
- *   await db.q(`[:find ?n :where [?e :user/name ?n]]`);
- *   await db.asOf(42).q(...);   await db.history().q(...);
- *   await db.pull(eid, "[*]");
+ * `docs/API.md` deletes `@ripple/client`: the typed surface is
+ * `@ripple/alchemy/db` (`Ripple.layer` + `Databases` + `Db<C>`), and HTTP is
+ * Worker internals. What is left here is the *ops* half that no public API
+ * names — raw datalog strings, the metrics response headers, and the admin
+ * routes `docs/RUNBOOK.md` documents (`/info`, `/admin/index`, `/admin/gc`,
+ * `/admin/replica/reconnect`).
+ *
+ * Its only consumers are `test/e2e` and `bench/`, both of which run against a
+ * real deployment and assert on exactly those internals. Nothing in
+ * `packages/**` imports it.
  */
 
 import { fromJson, toJson } from "@ripple/core";
 import type { TxData } from "@ripple/core";
 
-export interface ClientOptions {
+export interface PeerOptions {
   token?: string;
   fetch?: typeof fetch;
   /** Extra request headers, e.g. `x-ripple-replica-hint: enam`, `x-ripple-cache-basis: 1`, `x-ripple-cache-mode: peer` (read-path knobs). */
   headers?: Record<string, string>;
 }
 
-export interface TxAck {
+export interface Ack {
   t: number;
   txEid: number;
   tempids: Record<string, number>;
   datoms: number;
 }
 
-export interface QueryResponse<T = unknown> {
+export interface QueryReply<T = unknown> {
   t: number;
   root: number;
   result: T;
@@ -34,7 +38,7 @@ export interface QueryResponse<T = unknown> {
   meta: { ms: number | null; r2Gets: number | null; cacheHits: number | null; colo?: string; replicaHint?: string; basisT?: number | null; basisHit?: boolean; basisReason?: string; basisBehind?: boolean };
 }
 
-export class RippleError extends Error {
+export class HttpError extends Error {
   constructor(msg: string, readonly status: number, readonly code?: string) {
     super(msg);
   }
@@ -47,16 +51,16 @@ function compact<T extends Record<string, unknown>>(o: T): Partial<T> {
   return out as Partial<T>;
 }
 
-export class RippleClient {
+export class Peer {
   readonly base: string;
   private readonly f: typeof fetch;
-  constructor(base: string, readonly opts: ClientOptions = {}) {
+  constructor(base: string, readonly opts: PeerOptions = {}) {
     this.base = base.replace(/\/+$/, "");
     this.f = opts.fetch ?? fetch.bind(globalThis);
   }
 
-  db(name: string): RippleDb {
-    return new RippleDb(this, name);
+  db(name: string): PeerDb {
+    return new PeerDb(this, name);
   }
 
   async health(): Promise<{ ok: boolean; stage: string }> {
@@ -74,7 +78,7 @@ export class RippleClient {
     } catch {
       parsed = { error: text };
     }
-    if (!res.ok) throw new RippleError(parsed?.error ?? `HTTP ${res.status}`, res.status, parsed?.code);
+    if (!res.ok) throw new HttpError(parsed?.error ?? `HTTP ${res.status}`, res.status, parsed?.code);
     const out = fromJson(parsed) as any;
     if (out && typeof out === "object" && !Array.isArray(out)) {
       out.meta = { ms: num(res.headers.get("x-ripple-ms")), r2Gets: num(res.headers.get("x-ripple-r2-gets")), cacheHits: num(res.headers.get("x-ripple-cache-hits")), colo: res.headers.get("x-ripple-colo") ?? undefined, replicaHint: res.headers.get("x-ripple-replica-hint") ?? undefined, basisT: num(res.headers.get("x-ripple-basis-t")), basisHit: res.headers.get("x-ripple-basis-hit") === "1", basisReason: res.headers.get("x-ripple-basis-reason") ?? undefined, basisBehind: res.headers.get("x-ripple-basis-behind") === "1" };
@@ -92,9 +96,9 @@ function num(s: string | null): number | null {
   return s === null ? null : Number(s);
 }
 
-export class RippleDb {
+export class PeerDb {
   constructor(
-    readonly client: RippleClient,
+    readonly client: Peer,
     readonly name: string,
     private readonly asOfT?: number,
     private readonly hist = false,
@@ -105,16 +109,16 @@ export class RippleDb {
   }
 
   /** Read-only view as of transaction `t`. */
-  asOf(t: number): RippleDb {
-    return new RippleDb(this.client, this.name, t, this.hist);
+  asOf(t: number): PeerDb {
+    return new PeerDb(this.client, this.name, t, this.hist);
   }
   /** History view (asserts and retracts, with tx and op). */
-  history(): RippleDb {
-    return new RippleDb(this.client, this.name, this.asOfT, true);
+  history(): PeerDb {
+    return new PeerDb(this.client, this.name, this.asOfT, true);
   }
 
-  transact(tx: TxData): Promise<TxAck> {
-    return this.client.request<TxAck>("POST", this.path("/transact"), { tx });
+  transact(tx: TxData): Promise<Ack> {
+    return this.client.request<Ack>("POST", this.path("/transact"), { tx });
   }
 
   /** `minT`: read fence — the server refetches its basis if its cached one is older than `t` (e.g. the t of your last transact). */
@@ -123,8 +127,8 @@ export class RippleDb {
     return r.result;
   }
 
-  query<T = any>(query: string | object, inputs: unknown[] = [], opts: { explain?: boolean; minT?: number } = {}): Promise<QueryResponse<T>> {
-    return this.client.request<QueryResponse<T>>("POST", this.path("/query"), compact({ query, inputs, asOf: this.asOfT, history: this.hist || undefined, explain: opts.explain }), minTHeader(opts));
+  query<T = any>(query: string | object, inputs: unknown[] = [], opts: { explain?: boolean; minT?: number } = {}): Promise<QueryReply<T>> {
+    return this.client.request<QueryReply<T>>("POST", this.path("/query"), compact({ query, inputs, asOf: this.asOfT, history: this.hist || undefined, explain: opts.explain }), minTHeader(opts));
   }
 
   /** `minT`: read fence, same as `q` / `query`. */
@@ -156,8 +160,8 @@ export class RippleDb {
   }
 }
 
-/** Convenience for schema installs. */
-export function attribute(ident: string, valueType: string, opts: { cardinality?: "one" | "many"; unique?: "identity" | "value"; index?: boolean; isComponent?: boolean; doc?: string } = {}) {
+/** Convenience for raw schema installs (the untyped twin of `db.install()`). */
+export function attrMap(ident: string, valueType: string, opts: { cardinality?: "one" | "many"; unique?: "identity" | "value"; index?: boolean; isComponent?: boolean; doc?: string } = {}) {
   const m: Record<string, unknown> = {
     ":db/ident": ident,
     ":db/valueType": valueType.startsWith(":") ? valueType : `:db.type/${valueType}`,

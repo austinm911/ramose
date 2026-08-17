@@ -8,12 +8,12 @@
  *   RIPPLE_URL=… RIPPLE_CACHE_BASIS=1 RIPPLE_CACHE_MODE=peer [RIPPLE_MIN_T=1] [RIPPLE_REPLICA_HINT=…] \
  *     bun run bench/freshness.bench.ts [rounds=10] [readers=16]
  *
- * Each reader uses its own RippleClient over a fresh fetch (no keep-alive reuse
+ * Each reader uses its own `Peer` over a fresh fetch (no keep-alive reuse
  * across readers) so requests are more likely to land on different isolates.
  * The Worker's x-ripple-basis-hit / x-ripple-basis-reason headers tell us
  * whether each read was served from an isolate cache.
  */
-import { RippleClient, attribute } from "../packages/client/src/index.ts";
+import { attrMap, Peer } from "../test/support/rippleHttp.ts";
 import { fmt, percentile } from "./lib.ts";
 
 const url = process.env.RIPPLE_URL;
@@ -31,14 +31,14 @@ const fence = process.env.RIPPLE_MIN_T === "1";
 console.log(`variant: hint=${process.env.RIPPLE_REPLICA_HINT ?? "(default)"} cacheBasis=${process.env.RIPPLE_CACHE_BASIS ?? "(default)"} cacheMode=${process.env.RIPPLE_CACHE_MODE ?? "(default)"} minT=${fence ? "on" : "off"} rounds=${rounds} readers=${readers}`);
 
 const name = `fresh-${Date.now().toString(36)}`;
-const writer = new RippleClient(url, { token: process.env.RIPPLE_TOKEN, headers }).db(name);
-await writer.transact([attribute(":k/name", "string", { unique: "identity" }), attribute(":k/v", "long")]);
+const writer = new Peer(url, { token: process.env.RIPPLE_TOKEN, headers }).db(name);
+await writer.transact([attrMap(":k/name", "string", { unique: "identity" }), attrMap(":k/v", "long")]);
 const { tempids } = await writer.transact([{ ":db/id": "c", ":k/name": "counter", ":k/v": 0 }]);
 const eid = tempids.c;
 
 // each reader: own client, own fetch wrapper (a new fetch per call, but Bun pools connections per
 // origin anyway; we rely on many concurrent requests to spread across isolates)
-const readerClients = Array.from({ length: readers }, () => new RippleClient(url, { token: process.env.RIPPLE_TOKEN, headers, fetch: ((i: any, init: any) => fetch(i, { ...init, keepalive: false })) as any }).db(name));
+const readerClients = Array.from({ length: readers }, () => new Peer(url, { token: process.env.RIPPLE_TOKEN, headers, fetch: ((i: any, init: any) => fetch(i, { ...init, keepalive: false })) as any }).db(name));
 // warm every reader's cache (so a stale entry actually exists in whichever isolate they hit)
 await Promise.all(readerClients.map((r) => r.q(`[:find ?v . :in $ ?e :where [?e :k/v ?v]]`, [eid])));
 

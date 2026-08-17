@@ -1,8 +1,8 @@
 /**
  * Request-boundary error mapping (Effect tagged errors → HTTP).
  *
- * The wire contract is what @ripple/client parses: `error` (human message),
- * `code`, and the `retry-after` header on 503. `tag` is added on top as a
+ * The wire contract is what the Worker parses on the client's behalf: `error`
+ * (human message), `code`, and the `retry-after` header on 503. `tag` is on top as a
  * stable discriminator; statuses are unchanged from the pre-Effect handler.
  */
 import { describe, expect, test } from "bun:test";

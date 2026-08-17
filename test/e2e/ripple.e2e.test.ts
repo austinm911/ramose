@@ -15,7 +15,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Ripple from "../../packages/alchemy/src/db/index.ts";
-import { RippleClient, attribute } from "../../packages/client/src/index.ts";
+import { attrMap, Peer } from "../support/rippleHttp.ts";
 
 const URL_ = process.env.RIPPLE_URL;
 const token = process.env.RIPPLE_TOKEN;
@@ -24,7 +24,7 @@ const d = URL_ ? describe : describe.skip;
 const dbName = `e2e-${Date.now().toString(36)}`;
 
 d("ripple e2e", () => {
-  const client = new RippleClient(URL_ ?? "http://invalid", { token });
+  const client = new Peer(URL_ ?? "http://invalid", { token });
   const db = client.db(dbName);
   let alice = 0, bob = 0, tSchema = 0, tAge30 = 0;
 
@@ -35,11 +35,11 @@ d("ripple e2e", () => {
 
   test("schema install → transact → query", async () => {
     const s = await db.transact([
-      attribute(":user/name", "string", { index: true }),
-      attribute(":user/email", "string", { unique: "identity" }),
-      attribute(":user/age", "long"),
-      attribute(":user/friends", "ref", { cardinality: "many" }),
-      attribute(":user/joined", "instant"),
+      attrMap(":user/name", "string", { index: true }),
+      attrMap(":user/email", "string", { unique: "identity" }),
+      attrMap(":user/age", "long"),
+      attrMap(":user/friends", "ref", { cardinality: "many" }),
+      attrMap(":user/joined", "instant"),
     ]);
     tSchema = s.t;
     expect(s.t).toBeGreaterThanOrEqual(2);

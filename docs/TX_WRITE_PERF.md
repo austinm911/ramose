@@ -45,7 +45,7 @@ default config (`RIPPLE_MAX_BATCH=0`, index every 500 txs / 5 s).
 
 | step | where | on the ack path? |
 |---|---|---|
-| 1. Client `db.transact(tx)` → `POST /db/:name/transact {tx}` (JSON, `toJson`) | `packages/client/src/index.ts:111`, `:66-83` | yes (WAN RTT) |
+| 1. Client `db.transact(tx)` → `POST /db/:name/transact {tx}` (JSON, `toJson`) | `packages/alchemy/src/db/http.ts` | yes (WAN RTT) |
 | 2. Worker: auth, `request.text()`, **one DO `fetch` per POST** to `TRANSACTOR.idFromName(db)`; response body streamed back; `invalidateBasis(db)` | `packages/worker/src/index.ts:99-113` | yes (Worker→DO hop, ~one intra-CF RTT) |
 | 3. DO shell: `assign(db)`, `await core.init()`, route to `Transactor.handleRequest` | `packages/transactor/src/transactor-do.ts:98-122` | yes |
 | 4. `handleRequest`: `fromJson(await request.json())`, `this.transact(body.tx)` | `packages/transactor/src/transactor.ts:443-447` | yes |

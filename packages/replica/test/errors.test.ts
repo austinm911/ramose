@@ -1,7 +1,8 @@
 /**
  * Replica request-boundary error mapping. The 413 body is a documented part of
- * the read contract (@ripple/client + test/e2e assert on it): the query budget
- * guard must keep answering { error, code, clause, cells, limit }.
+ * the read contract (the client's `QueryBudgetExceeded` and test/e2e assert on
+ * it): the query budget guard must keep answering
+ * { error, code, clause, cells, limit }.
  */
 import { describe, expect, test } from "bun:test";
 import { QueryBudgetError } from "@ripple/core";

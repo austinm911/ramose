@@ -32,13 +32,6 @@
         "effect": ">=4.0.0-beta.105",
       },
     },
-    "packages/client": {
-      "name": "@ripple/client",
-      "version": "0.1.0",
-      "dependencies": {
-        "@ripple/core": "workspace:*",
-      },
-    },
     "packages/core": {
       "name": "@ripple/core",
       "version": "0.1.0",
@@ -448,8 +441,6 @@
     "@redis/time-series": ["@redis/time-series@6.2.1", "", { "peerDependencies": { "@redis/client": "^6.2.1" } }, "sha512-kiYniph04dJOole+L359B6C9E+jYS2uDP7hca6Onj0xF38ZIpyxARO0Iq0W4ZRn1e8Q6vqW00QFZVSMRA/2Ijw=="],
 
     "@ripple/alchemy": ["@ripple/alchemy@workspace:packages/alchemy"],
-
-    "@ripple/client": ["@ripple/client@workspace:packages/client"],
 
     "@ripple/core": ["@ripple/core@workspace:packages/core"],
 

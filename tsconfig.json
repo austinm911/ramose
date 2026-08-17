@@ -21,7 +21,6 @@
     "paths": {
       "@ripple/core": ["packages/core/src/index.ts"],
       "@ripple/core/*": ["packages/core/src/*"],
-      "@ripple/client": ["packages/client/src/index.ts"],
       "@ripple/alchemy": ["packages/alchemy/src/index.ts"],
       "@ripple/alchemy/db": ["packages/alchemy/src/db/index.ts"]
     }

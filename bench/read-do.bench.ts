@@ -8,7 +8,7 @@
  * `x-ripple-ms` p50 (query execution only). Multi-colo scaling cannot be
  * measured against a local emulator; see bench/RESULTS.md.
  */
-import { RippleClient, attribute } from "../packages/client/src/index.ts";
+import { attrMap, Peer } from "../test/support/rippleHttp.ts";
 import { fmt, percentile } from "./lib.ts";
 
 const url = process.env.RIPPLE_URL;
@@ -25,15 +25,15 @@ if (process.env.RIPPLE_CACHE_BASIS) headers["x-ripple-cache-basis"] = process.en
 if (process.env.RIPPLE_CACHE_MODE) headers["x-ripple-cache-mode"] = process.env.RIPPLE_CACHE_MODE;
 // RIPPLE_MIN_T=1: every read carries x-ripple-min-t = t of the last write this bench made (read fence)
 const fence = process.env.RIPPLE_MIN_T === "1";
-const client = new RippleClient(url, { token: process.env.RIPPLE_TOKEN, headers });
+const client = new Peer(url, { token: process.env.RIPPLE_TOKEN, headers });
 console.log(`variant: hint=${process.env.RIPPLE_REPLICA_HINT ?? "(default)"} cacheBasis=${process.env.RIPPLE_CACHE_BASIS ?? "(default)"} cacheMode=${process.env.RIPPLE_CACHE_MODE ?? "(default)"} minT=${fence ? "on" : "off"}`);
 const db = client.db(`readbench-${Date.now().toString(36)}`);
 
 await db.transact([
-  attribute(":person/name", "string", { index: true }),
-  attribute(":person/city", "string", { index: true }),
-  attribute(":person/age", "long"),
-  attribute(":person/friends", "ref", { cardinality: "many" }),
+  attrMap(":person/name", "string", { index: true }),
+  attrMap(":person/city", "string", { index: true }),
+  attrMap(":person/age", "long"),
+  attrMap(":person/friends", "ref", { cardinality: "many" }),
 ]);
 // seed in batches of 200 entities per tx
 for (let i = 0; i < people; i += 200) {
