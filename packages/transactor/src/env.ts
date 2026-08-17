@@ -11,6 +11,22 @@ export interface RippleEnv {
   RIPPLE_STAGE?: string;
   /** one shared bearer token, checked for every database name; empty = auth disabled */
   RIPPLE_TOKEN?: string;
+  /** compiled policy JSON (`SchemaFx.Policy.compile`). Its presence arms enforcement (fail closed). */
+  RIPPLE_POLICY?: string;
+  /** JWKS endpoint for the issuer's public keys */
+  RIPPLE_JWKS_URL?: string;
+  /** test/offline seam: a literal JWK Set, used when RIPPLE_JWKS_URL is unset */
+  RIPPLE_JWKS_JSON?: string;
+  /** accepted `iss` values, comma-separated */
+  RIPPLE_JWT_ISS?: string;
+  /** the `aud` every token must carry */
+  RIPPLE_JWT_AUD?: string;
+  /** cap on `exp - iat` in seconds (default 900) */
+  RIPPLE_JWT_MAX_TTL?: string;
+  /** origins CORS is narrowed to once a policy is configured, comma-separated */
+  RIPPLE_ALLOWED_ORIGINS?: string;
+  /** Worker→DO shared secret; every internal fetch must carry it. Unset = no gate. */
+  RIPPLE_INTERNAL_SECRET?: string;
   /** indexer tuning */
   RIPPLE_INDEX_INTERVAL_MS?: string;
   RIPPLE_INDEX_TX_THRESHOLD?: string;

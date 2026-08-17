@@ -9,16 +9,20 @@ import { Database } from "bun:sqlite";
 import { type R2Like, dbPrefix, prefixedBucket } from "@ripple/storage";
 import { MemoryBucket } from "@ripple/storage/memory.ts";
 export { MemoryBucket };
-import { type TelemetryEvent, setTelemetryLevel, setTelemetrySink } from "@ripple/core";
+import { type CompiledPolicy, type TelemetryEvent, setTelemetryLevel, setTelemetrySink } from "@ripple/core";
 import { type AnalyticsEngineDatasetLike, DEFAULT_CONFIG, type SocketLike, type SqlLike, type TransactorConfig, type TransactorHost, Transactor } from "../src/index.ts";
 
 /** Captured structured events (all levels) instead of console noise. */
 export const events: TelemetryEvent[] = [];
-setTelemetrySink((e) => {
-  events.push(e);
-  if (events.length > 50_000) events.splice(0, 25_000);
-});
-setTelemetryLevel("debug");
+/** Re-armed per Harness: telemetry is process-wide, and another test file may have reset it. */
+export function captureTelemetry(): void {
+  setTelemetrySink((e) => {
+    events.push(e);
+    if (events.length > 50_000) events.splice(0, 25_000);
+  });
+  setTelemetryLevel("debug");
+}
+captureTelemetry();
 export const eventsOf = (event: string) => events.filter((e) => e.event === event);
 
 /** Fake subscriber socket collecting frames. */
@@ -63,6 +67,8 @@ export interface HarnessOptions {
   now?: () => number;
   /** fake Analytics Engine dataset (see FakeAnalytics) */
   analytics?: AnalyticsEngineDatasetLike;
+  /** deployed policy: the commit loop then checks every non-admin tx */
+  policy?: CompiledPolicy;
 }
 
 /** Collects Analytics Engine data points; `fail` makes writeDataPoint throw. */
@@ -88,6 +94,7 @@ export class Harness implements TransactorHost {
   readonly bucket: R2Like;
   readonly config: TransactorConfig;
   readonly analytics: AnalyticsEngineDatasetLike | undefined;
+  readonly policy: CompiledPolicy | undefined;
   readonly subscribers = new Set<FakeSocket>();
   alarm: number | null = null;
   aborted: string | undefined;
@@ -97,6 +104,7 @@ export class Harness implements TransactorHost {
   transactor: Transactor;
 
   constructor(opts: HarnessOptions = {}, bucket?: MemoryBucket) {
+    captureTelemetry();
     this.dbName = opts.dbName ?? "test";
     this.db = new Database(opts.file ?? ":memory:");
     // file-backed: WAL + fsync on every commit (so group commit pays for real durability)
@@ -106,6 +114,7 @@ export class Harness implements TransactorHost {
     this.bucket = prefixedBucket(this.raw, dbPrefix(this.dbName));
     this.config = { ...DEFAULT_CONFIG, ...opts.config };
     this.analytics = opts.analytics;
+    this.policy = opts.policy;
     this.failAt = opts.failWriteAt;
     this.clock = opts.now ?? (() => Date.now());
     this.transactor = new Transactor(this);

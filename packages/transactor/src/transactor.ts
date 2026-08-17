@@ -43,13 +43,18 @@ import {
   FIRST_USER_EID,
   Histogram,
   type Logger,
+  type Principal,
   RateMeter,
+  TxError,
+  checkTx,
   componentLogger,
+  isAdmin,
 } from "@ripple/core";
 import { R2NodeStore, readCurrentRoot, recordToRoots, rootsToRecord } from "@ripple/storage";
 import * as Effect from "effect/Effect";
-import { BadRequest, NotFound, TransactorDeadError, errorResponse, toHttpError } from "./errors.ts";
+import { BadRequest, NotFound, TransactorDeadError, TxRejected, errorResponse, toHttpError } from "./errors.ts";
 import { type SocketLike, type TransactorHost } from "./host.ts";
+import { asPrincipal } from "./policy.ts";
 import { Indexer } from "./indexer.ts";
 import { TxMetrics } from "./observability.ts";
 
@@ -85,6 +90,8 @@ export interface TransactorStats {
 
 interface Pending {
   tx: TxData;
+  /** verified by the Worker; trusted metadata (the DO is only reachable behind the internal secret) */
+  principal?: Principal;
   resolve: (r: TxAck) => void;
   reject: (e: unknown) => void;
 }
@@ -270,10 +277,10 @@ export class Transactor {
   // ---------------------------------------------------------------------------
 
   /** Submit a transaction. Resolves once it is durably committed. */
-  transact(tx: TxData): Promise<TxAck> {
+  transact(tx: TxData, principal?: Principal): Promise<TxAck> {
     if (this.dead !== undefined) return Promise.reject(new TransactorDeadError(this.dead));
     return new Promise<TxAck>((resolve, reject) => {
-      this.queue.push({ tx, resolve, reject });
+      this.queue.push({ tx, principal, resolve, reject });
       if (!this.committing) {
         this.committing = true;
         void this.commitLoop();
@@ -319,14 +326,17 @@ export class Transactor {
         const tResolve = performance.now();
         for (const p of batch) {
           try {
-            const rep = await this.conn.transact(p.tx);
+            // stage (b): the policy against the exact pre-state `transact` will hand `processTx`
+            const tx = await this.authorize(p);
+            const rep = await this.conn.transact(tx);
             const txInstant = rep.txData[0]?.v as number; // :db/txInstant is first
             entries.push({ t: rep.t, txInstant, datoms: rep.txData });
             acks.push({ p, ack: { t: rep.t, txEid: rep.txEid, tempids: rep.tempids, datoms: rep.txData.length } });
           } catch (err) {
+            const e = this.scrub(err, p);
             this.stats.rejected++;
-            this.log.warn("tx.rejected", { code: (err as any)?.code, error: err instanceof Error ? err.message : String(err) });
-            p.reject(err);
+            this.log.warn("tx.rejected", { code: (e as any)?.code, error: e instanceof Error ? e.message : String(e) });
+            p.reject(e);
           }
         }
         // fence after the resolve section so the clock advances past it (diagnostics only)
@@ -390,6 +400,35 @@ export class Transactor {
         void this.commitLoop();
       }
     }
+  }
+
+  /**
+   * The authoritative write check. Runs against `this.conn.db()` — the value
+   * `Connection.transact` is about to hand `processTx` — and returns the ops to
+   * transact (with preset injections). `processTx` itself is not wrapped.
+   */
+  private async authorize(p: Pending): Promise<TxData> {
+    const policy = this.host.policy;
+    if (!policy) return p.tx;
+    if (!p.principal) throw new TxRejected({ message: "no principal", code: "policy" });
+    if (isAdmin(p.principal)) return p.tx;
+    const db = this.conn.db();
+    // the Worker usually resolved it already; when its pre-check was skipped, do it here
+    let who = p.principal;
+    if (who.eid === undefined && who.sub !== undefined) {
+      const eid = await db.entid([policy.principal, who.sub] as never);
+      if (eid !== undefined) who = { ...who, eid };
+    }
+    const res = await checkTx(p.tx, db, policy, who);
+    if (!res.ok) throw new TxRejected({ message: `${res.op} denied on ${res.attr}`, code: res.code, attr: res.attr });
+    return res.ops as TxData;
+  }
+
+  /** A unique conflict names the entity and value it collided with — a read leak under a policy. */
+  private scrub(err: unknown, p: Pending): unknown {
+    if (!this.host.policy || !p.principal || isAdmin(p.principal)) return err;
+    if (err instanceof TxError && err.code === "tx/unique-conflict") return new TxRejected({ message: "unique conflict", code: err.code });
+    return err;
   }
 
   private die(reason: string, cause: unknown, inflight: Pending[]): void {
@@ -530,9 +569,9 @@ export class Transactor {
   private async route(request: Request, url: URL): Promise<Response> {
     const path = url.pathname;
     if (path === "/transact" && request.method === "POST") {
-      const body = fromJson(await request.json()) as { tx?: TxData };
+      const body = fromJson(await request.json()) as { tx?: TxData; principal?: unknown };
       if (!body || !Array.isArray(body.tx)) throw new BadRequest({ message: "body must be { tx: [...] }" });
-      const ack = await this.transact(body.tx);
+      const ack = await this.transact(body.tx, asPrincipal(body.principal));
       return json(ack);
     }
     if (path === "/info") return json(this.info());
