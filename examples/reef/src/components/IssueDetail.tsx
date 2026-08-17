@@ -34,8 +34,19 @@ import {
 import type { Workspace } from "../ripple.ts";
 import { PRIORITIES, STATUSES, STATUS_LABELS, type Status } from "../../schema.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
-import { Avatar, Button, LabelBadge, Select, TextArea } from "../ui.tsx";
+import {
+  Avatar,
+  Button,
+  Code,
+  Icon,
+  IconButton,
+  LabelToggle,
+  Select,
+  Tag,
+  TextArea,
+} from "../ui.tsx";
 import { useLive } from "../useLive.ts";
+import { COLUMN_TINTS } from "./Board.tsx";
 
 type Extra = {
   readonly title: string;
@@ -43,9 +54,14 @@ type Extra = {
   readonly privateNote?: string | undefined;
 };
 
+const slideIn = stylex.keyframes({
+  from: { opacity: 0, transform: "translateX(12px)" },
+  to: { opacity: 1, transform: "translateX(0)" },
+});
+
 const styles = stylex.create({
   panel: {
-    width: "min(400px, 90vw)",
+    width: "min(420px, 90vw)",
     flexShrink: 0,
     borderLeftWidth: 1,
     borderLeftStyle: "solid",
@@ -54,86 +70,151 @@ const styles = stylex.create({
     display: "flex",
     flexDirection: "column",
     overflowY: "auto",
+    animationName: slideIn,
+    animationDuration: "160ms",
+    animationTimingFunction: "cubic-bezier(0.2, 0.8, 0.2, 1)",
   },
   head: {
     display: "flex",
     alignItems: "center",
     gap: space.sm,
-    padding: space.lg,
+    paddingBlock: "10px",
+    paddingInline: space.lg,
     borderBottomWidth: 1,
     borderBottomStyle: "solid",
     borderBottomColor: colors.border,
+    position: "sticky",
+    top: 0,
+    backgroundColor: colors.bgRaised,
+    zIndex: 1,
   },
   headId: {
     fontFamily: type.mono,
-    fontSize: type.xs,
-    color: colors.textFaint,
-    flexGrow: 1,
+    fontSize: type.sm,
+    color: colors.textMuted,
+    fontWeight: 500,
   },
-  body: { padding: space.lg, display: "flex", flexDirection: "column", gap: space.lg },
+  statusDot: { width: "8px", height: "8px", borderRadius: radii.full, display: "inline-block" },
+  spacer: { flexGrow: 1 },
+  body: { padding: space.lg, display: "flex", flexDirection: "column", gap: space.xl },
   titleInput: {
     width: "100%",
-    background: "none",
-    borderWidth: 0,
-    fontSize: type.lg,
+    backgroundColor: { default: "transparent", ":hover": colors.surfaceHover, ":focus": colors.surface },
+    backgroundImage: "none",
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: { default: "transparent", ":focus": colors.accent },
+    borderRadius: radii.sm,
+    fontSize: type.xl,
     fontWeight: 700,
+    letterSpacing: "-0.01em",
+    lineHeight: 1.3,
     color: colors.text,
     outline: "none",
-    padding: 0,
+    paddingBlock: "6px",
+    paddingInline: "8px",
+    marginInline: "-8px",
+    boxShadow: { default: "none", ":focus": `0 0 0 3px ${colors.ring}` },
+    transition: "background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease",
+    fontFamily: type.family,
   },
+  titleBlock: { display: "flex", flexDirection: "column", gap: space.sm },
   sectionLabel: {
+    display: "flex",
+    alignItems: "center",
+    gap: "6px",
     fontSize: type.xs,
     fontWeight: 700,
     textTransform: "uppercase",
-    letterSpacing: "0.06em",
+    letterSpacing: "0.07em",
     color: colors.textMuted,
-    marginBottom: space.xs,
+    marginBottom: "6px",
   },
   metaGrid: {
     display: "grid",
     gridTemplateColumns: "1fr 1fr",
     gap: space.md,
   },
-  chips: { display: "flex", flexWrap: "wrap", gap: space.xs },
-  chipButton: {
-    background: "none",
-    borderWidth: 0,
-    padding: 0,
-    cursor: "pointer",
-    opacity: { default: 1, ":hover": 0.8 },
-  },
-  chipOff: { opacity: 0.35 },
+  fullRow: { gridColumn: "1 / -1" },
+  chips: { display: "flex", flexWrap: "wrap", gap: "6px" },
   noteHint: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: "6px",
     fontSize: type.xs,
     color: colors.textFaint,
-    marginTop: space.xs,
+    marginTop: "6px",
+    lineHeight: 1.45,
   },
+  comments: { display: "flex", flexDirection: "column", gap: space.md },
   comment: {
     display: "flex",
     gap: space.sm,
     alignItems: "flex-start",
-    paddingBlock: space.sm,
-    borderBottomWidth: 1,
-    borderBottomStyle: "solid",
-    borderBottomColor: colors.border,
   },
-  commentBody: { flexGrow: 1, minWidth: 0 },
+  commentBody: {
+    flexGrow: 1,
+    minWidth: 0,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    borderTopLeftRadius: radii.xs,
+    paddingBlock: space.sm,
+    paddingInline: space.md,
+  },
   commentMeta: {
     display: "flex",
     gap: space.sm,
     alignItems: "baseline",
-    marginBottom: space.xxs,
+    marginBottom: "3px",
   },
   commentAuthor: { fontSize: type.sm, fontWeight: 700, color: colors.text },
-  commentAt: { fontSize: type.xs, color: colors.textFaint },
+  commentAt: { fontSize: type.xs, color: colors.textFaint, flexGrow: 1 },
   commentText: {
     margin: 0,
     fontSize: type.sm,
     color: colors.text,
-    lineHeight: 1.5,
+    lineHeight: 1.55,
     overflowWrap: "anywhere",
+    whiteSpace: "pre-wrap",
   },
-  commentForm: { display: "flex", gap: space.sm, marginTop: space.sm, alignItems: "flex-end" },
+  commentDelete: {
+    opacity: { default: 0.5, ":hover": 1 },
+  },
+  commentEmpty: {
+    fontSize: type.sm,
+    color: colors.textFaint,
+    margin: 0,
+  },
+  composer: {
+    display: "flex",
+    flexDirection: "column",
+    gap: space.sm,
+    marginTop: space.xs,
+  },
+  composerRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: space.sm,
+  },
+  composerHint: {
+    fontSize: type.xs,
+    color: colors.textFaint,
+    flexGrow: 1,
+  },
+  kbd: {
+    fontFamily: type.mono,
+    fontSize: "10px",
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: colors.border,
+    borderRadius: radii.xs,
+    paddingInline: "4px",
+    color: colors.textMuted,
+    backgroundColor: colors.surface,
+  },
   creatorLine: {
     display: "flex",
     alignItems: "center",
@@ -141,7 +222,11 @@ const styles = stylex.create({
     fontSize: type.sm,
     color: colors.textMuted,
   },
+  creatorName: { color: colors.text, fontWeight: 600 },
 });
+
+const isMac =
+  typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
 export const IssueDetail = ({
   workspace,
@@ -198,36 +283,63 @@ export const IssueDetail = ({
   );
   const comments = useLive(commentStream);
 
+  const submitComment = () => {
+    const body = commentDraft.trim();
+    if (body === "" || myEid === undefined) return;
+    setCommentDraft("");
+    attempt(addComment(db, myEid, issueId, body));
+  };
+
+  const status = row.status as Status;
+
   return (
-    <aside {...stylex.props(styles.panel)}>
+    <aside {...stylex.props(styles.panel)} aria-label={`Issue #${issueId}`}>
       <div {...stylex.props(styles.head)}>
-        <span {...stylex.props(styles.headId)}>issue #{issueId}</span>
-        <Button
-          size="sm"
-          variant="danger"
+        <span {...stylex.props(styles.headId)}>#{issueId}</span>
+        <Tag>
+          <span
+            {...stylex.props(styles.statusDot)}
+            style={{ backgroundColor: COLUMN_TINTS[status] ?? colors.textFaint }}
+          />
+          {STATUS_LABELS[status] ?? row.status}
+        </Tag>
+        <span {...stylex.props(styles.spacer)} />
+        <IconButton
+          icon="trash"
+          label="Delete issue"
+          tone="danger"
           onClick={() => attempt(deleteIssue(db, issueId))}
-        >
-          Delete
-        </Button>
-        <Button size="sm" variant="subtle" onClick={onClose}>
-          ✕
-        </Button>
+        />
+        <IconButton icon="x" label="Close panel" onClick={onClose} />
       </div>
       <div {...stylex.props(styles.body)}>
-        <input
-          {...stylex.props(styles.titleInput)}
-          value={extra === null ? row.title : title}
-          onChange={(e) => setTitleDraft(e.target.value)}
-          onBlur={() => {
-            if (title.trim() !== "" && title !== row.title) {
-              attempt(setTitle(db, issueId, title.trim()));
-            }
-          }}
-        />
-
-        <div {...stylex.props(styles.creatorLine)}>
-          <Avatar name={row.creator.name} />
-          opened by {row.creator.name} · {row.createdAt.toLocaleDateString()}
+        <div {...stylex.props(styles.titleBlock)}>
+          <input
+            {...stylex.props(styles.titleInput)}
+            aria-label="Title"
+            value={extra === null ? row.title : title}
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+            }}
+            onBlur={() => {
+              if (title.trim() !== "" && title !== row.title) {
+                attempt(setTitle(db, issueId, title.trim()));
+              }
+            }}
+          />
+          <div {...stylex.props(styles.creatorLine)}>
+            <Avatar name={row.creator.name} />
+            <span>
+              opened by <span {...stylex.props(styles.creatorName)}>{row.creator.name}</span>
+              {" · "}
+              {row.createdAt.toLocaleDateString(undefined, {
+                month: "short",
+                day: "numeric",
+                year: "numeric",
+              })}
+            </span>
+          </div>
         </div>
 
         <div {...stylex.props(styles.metaGrid)}>
@@ -261,7 +373,7 @@ export const IssueDetail = ({
               ))}
             </Select>
           </div>
-          <div>
+          <div {...stylex.props(styles.fullRow)}>
             <div {...stylex.props(styles.sectionLabel)}>Assignee</div>
             <Select
               value={row.assignee?.id ?? ""}
@@ -283,21 +395,19 @@ export const IssueDetail = ({
               ))}
             </Select>
           </div>
-          <div>
+          <div {...stylex.props(styles.fullRow)}>
             <div {...stylex.props(styles.sectionLabel)}>Labels</div>
             <div {...stylex.props(styles.chips)}>
               {labels.map((label) => {
                 const on = row.labels.some((l) => l.id === label.id);
                 return (
-                  <button
+                  <LabelToggle
                     key={label.id}
-                    type="button"
-                    {...stylex.props(styles.chipButton, !on && styles.chipOff)}
-                    title={on ? `remove ${label.name}` : `add ${label.name}`}
-                    onClick={() => attempt(toggleLabel(db, issueId, label.id, !on))}
-                  >
-                    <LabelBadge name={label.name} color={label.color} />
-                  </button>
+                    name={label.name}
+                    color={label.color}
+                    on={on}
+                    onToggle={() => attempt(toggleLabel(db, issueId, label.id, !on))}
+                  />
                 );
               })}
             </div>
@@ -308,7 +418,7 @@ export const IssueDetail = ({
           <div {...stylex.props(styles.sectionLabel)}>Description</div>
           <TextArea
             value={description}
-            placeholder="add a description…"
+            placeholder="Add a description…"
             onChange={(e) => setDescriptionDraft(e.target.value)}
             onBlur={() => {
               if (extra !== null && description !== (extra.description ?? "")) {
@@ -320,14 +430,16 @@ export const IssueDetail = ({
 
         <div>
           <div {...stylex.props(styles.sectionLabel)}>
-            🔒 Admin note{cls !== "admin" && " (admin-only)"}
+            <Icon name="lock" size={12} />
+            Admin note
+            {cls !== "admin" && <Tag tone="warn">masked for {cls}</Tag>}
           </div>
           <TextArea
             value={note}
             placeholder={
               cls === "admin"
-                ? "visible to admins only…"
-                : "read-masked for your class — writes will be denied by the peer"
+                ? "Visible to admins only…"
+                : "Read-masked for your class — a write here is denied by the peer"
             }
             onChange={(e) => setNoteDraft(e.target.value)}
             onBlur={() => {
@@ -337,61 +449,92 @@ export const IssueDetail = ({
             }}
           />
           <div {...stylex.props(styles.noteHint)}>
-            issue.privateNote has a narrowed read rule — the peer redacts the
-            datom itself for non-admins.
+            <Icon name="info" size={12} />
+            <span>
+              <Code>issue.privateNote</Code> has a narrowed read rule — the peer
+              redacts the datom itself for non-admins.
+            </span>
           </div>
         </div>
 
         <div>
           <div {...stylex.props(styles.sectionLabel)}>
-            Comments {comments.rows === undefined ? "" : `(${comments.rows.length})`}
+            <Icon name="message" size={12} />
+            Comments
+            {comments.rows !== undefined && comments.rows.length > 0 && (
+              <Tag>{comments.rows.length}</Tag>
+            )}
           </div>
-          {(comments.rows ?? []).map((comment: CommentRow) => (
-            <div key={comment.id} {...stylex.props(styles.comment)}>
-              <Avatar name={comment.author.name} />
-              <div {...stylex.props(styles.commentBody)}>
-                <div {...stylex.props(styles.commentMeta)}>
-                  <span {...stylex.props(styles.commentAuthor)}>
-                    {comment.author.name}
-                  </span>
-                  <span {...stylex.props(styles.commentAt)}>
-                    {comment.at.toLocaleTimeString()}
-                  </span>
+          <div {...stylex.props(styles.comments)}>
+            {comments.rows !== undefined && comments.rows.length === 0 && (
+              <p {...stylex.props(styles.commentEmpty)}>No comments yet.</p>
+            )}
+            {(comments.rows ?? []).map((comment: CommentRow) => (
+              <div key={comment.id} {...stylex.props(styles.comment)}>
+                <Avatar name={comment.author.name} />
+                <div {...stylex.props(styles.commentBody)}>
+                  <div {...stylex.props(styles.commentMeta)}>
+                    <span {...stylex.props(styles.commentAuthor)}>
+                      {comment.author.name}
+                    </span>
+                    <span {...stylex.props(styles.commentAt)}>
+                      {comment.at.toLocaleTimeString(undefined, {
+                        hour: "numeric",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                    <span {...stylex.props(styles.commentDelete)}>
+                      <IconButton
+                        icon="x"
+                        size="sm"
+                        label="Delete comment"
+                        tone="danger"
+                        onClick={() => attempt(deleteComment(db, comment.id))}
+                      />
+                    </span>
+                  </div>
+                  <p {...stylex.props(styles.commentText)}>{comment.body}</p>
                 </div>
-                <p {...stylex.props(styles.commentText)}>{comment.body}</p>
               </div>
-              <Button
-                size="sm"
-                variant="subtle"
-                title="delete comment"
-                onClick={() => attempt(deleteComment(db, comment.id))}
-              >
-                ✕
-              </Button>
-            </div>
-          ))}
-          <form
-            {...stylex.props(styles.commentForm)}
-            onSubmit={(e) => {
-              e.preventDefault();
-              const body = commentDraft.trim();
-              if (body === "" || myEid === undefined) return;
-              setCommentDraft("");
-              attempt(addComment(db, myEid, issueId, body));
-            }}
-          >
-            <TextArea
-              value={commentDraft}
-              placeholder={
-                myEid === undefined ? "viewers cannot comment" : "leave a comment…"
-              }
-              onChange={(e) => setCommentDraft(e.target.value)}
-              rows={2}
-            />
-            <Button variant="primary" type="submit" size="sm">
-              Send
-            </Button>
-          </form>
+            ))}
+            <form
+              {...stylex.props(styles.composer)}
+              onSubmit={(e) => {
+                e.preventDefault();
+                submitComment();
+              }}
+            >
+              <TextArea
+                value={commentDraft}
+                placeholder={
+                  myEid === undefined ? "Viewers cannot comment" : "Leave a comment…"
+                }
+                disabled={myEid === undefined}
+                onChange={(e) => setCommentDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    submitComment();
+                  }
+                }}
+                rows={2}
+              />
+              <div {...stylex.props(styles.composerRow)}>
+                <span {...stylex.props(styles.composerHint)}>
+                  <span {...stylex.props(styles.kbd)}>{isMac ? "⌘" : "Ctrl"}</span>{" "}
+                  + <span {...stylex.props(styles.kbd)}>↵</span> to send
+                </span>
+                <Button
+                  variant="primary"
+                  type="submit"
+                  size="sm"
+                  disabled={myEid === undefined || commentDraft.trim() === ""}
+                >
+                  <Icon name="send" size={12} /> Comment
+                </Button>
+              </div>
+            </form>
+          </div>
         </div>
       </div>
     </aside>

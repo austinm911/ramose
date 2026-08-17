@@ -8,7 +8,7 @@
 
 import * as stylex from "@stylexjs/stylex";
 import * as Effect from "effect/Effect";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   boardQuery,
   everyIssueEverQuery,
@@ -16,79 +16,202 @@ import {
   peopleQuery,
   type BoardRow,
 } from "../../queries.ts";
-import { STATUS_LABELS, type Status } from "../../schema.ts";
-import type { Theme } from "../App.tsx";
+import { PRIORITIES, STATUS_LABELS, type Status } from "../../schema.ts";
+import { ThemeToggle } from "../App.tsx";
 import { authClient, inviteMember, listWorkspaces, type SessionUser } from "../auth.ts";
-import { Board } from "../components/Board.tsx";
+import { Board, COLUMN_TINTS } from "../components/Board.tsx";
 import { IssueDetail } from "../components/IssueDetail.tsx";
 import { TimeTravelBar } from "../components/TimeTravel.tsx";
-import { createIssue, moveIssue, type NewIssue } from "../mutations.ts";
+import { createIssue, moveIssue, seedSampleIssues, type NewIssue } from "../mutations.ts";
 import type { Workspace } from "../ripple.ts";
 import { INVITABLE_ROLES } from "../../roles.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
 import {
+  Avatar,
   Button,
+  Code,
   Dialog,
+  DialogFooter,
+  Empty,
   Field,
+  Icon,
+  IconButton,
   Input,
   Loading,
+  LogoMark,
+  PriorityIcon,
   Select,
+  Tag,
   TextArea,
   useEscape,
   useToast,
 } from "../ui.tsx";
 import { useLive } from "../useLive.ts";
 
+const pulse = stylex.keyframes({
+  "0%": { boxShadow: "0 0 0 0 rgba(63, 185, 112, 0.6)" },
+  "100%": { boxShadow: "0 0 0 8px rgba(63, 185, 112, 0)" },
+});
+
 const styles = stylex.create({
-  screen: { display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, height: "100vh" },
+  screen: {
+    display: "flex",
+    flexDirection: "column",
+    flexGrow: 1,
+    minHeight: 0,
+    height: "100vh",
+  },
   header: {
     display: "flex",
     alignItems: "center",
-    gap: space.md,
-    paddingBlock: space.sm,
-    paddingInline: space.lg,
+    gap: space.sm,
+    height: "52px",
+    paddingInline: space.md,
     borderBottomWidth: 1,
     borderBottomStyle: "solid",
     borderBottomColor: colors.border,
     backgroundColor: colors.bgRaised,
+    flexShrink: 0,
+    overflowX: "auto",
+    scrollbarWidth: "none",
   },
-  wsName: { fontWeight: 700, fontSize: type.md },
-  wsSlug: { fontFamily: type.mono, fontSize: type.xs, color: colors.textFaint },
-  classBadge: {
+  // Secondary header chrome that can go on narrow screens.
+  wide: {
+    display: { default: "inline-flex", "@media (max-width: 760px)": "none" },
+  },
+  crumbSep: { color: colors.textFaint, display: "inline-flex", marginInline: "2px" },
+  wsName: { fontWeight: 700, fontSize: type.md, color: colors.text },
+  wsSlug: {
+    fontFamily: type.mono,
     fontSize: type.xs,
-    fontWeight: 700,
-    textTransform: "uppercase",
-    letterSpacing: "0.05em",
-    borderRadius: radii.full,
-    paddingBlock: "2px",
-    paddingInline: space.sm,
-    backgroundColor: colors.accentSoft,
-    color: colors.accent,
+    color: colors.textFaint,
+    marginLeft: space.xs,
   },
   spacer: { flexGrow: 1 },
-  main: { display: "flex", flexGrow: 1, minHeight: 0 },
-  boardWrap: { display: "flex", flexDirection: "column", flexGrow: 1, minWidth: 0 },
+  live: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    fontSize: type.xs,
+    fontWeight: 600,
+    color: colors.textMuted,
+    paddingInline: space.sm,
+    paddingBlock: "3px",
+    borderRadius: radii.full,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    fontVariantNumeric: "tabular-nums",
+    marginRight: space.xs,
+  },
+  liveDot: {
+    width: "7px",
+    height: "7px",
+    borderRadius: radii.full,
+    backgroundColor: colors.ok,
+  },
+  liveDotPaused: { backgroundColor: colors.warn },
+  liveDotPulse: {
+    animationName: pulse,
+    animationDuration: "700ms",
+    animationTimingFunction: "ease-out",
+  },
+  liveMono: { fontFamily: type.mono, color: colors.textFaint, fontWeight: 500 },
+  divider: {
+    width: "1px",
+    height: "20px",
+    backgroundColor: colors.border,
+    marginInline: space.xs,
+  },
+  main: { display: "flex", flexGrow: 1, minHeight: 0, position: "relative" },
+  boardWrap: {
+    display: "flex",
+    flexDirection: "column",
+    flexGrow: 1,
+    minWidth: 0,
+    minHeight: 0,
+    position: "relative",
+  },
+  emptyOverlay: {
+    position: "absolute",
+    inset: 0,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    pointerEvents: "none",
+    paddingTop: "48px",
+  },
+  emptyCard: {
+    pointerEvents: "auto",
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: colors.borderStrong,
+    borderRadius: radii.lg,
+    boxShadow: colors.shadow,
+    width: "min(420px, calc(100% - 32px))",
+    paddingBlock: space.md,
+  },
   pastNotice: {
+    display: "flex",
+    alignItems: "center",
+    gap: space.sm,
     marginInline: space.lg,
     marginTop: space.sm,
     fontSize: type.xs,
     color: colors.textMuted,
   },
+  segmented: {
+    display: "flex",
+    gap: "4px",
+    padding: "3px",
+    backgroundColor: colors.bgRaised,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: colors.border,
+    borderRadius: radii.sm,
+  },
+  segment: {
+    flexGrow: 1,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "6px",
+    paddingBlock: "5px",
+    paddingInline: "6px",
+    borderRadius: radii.xs,
+    borderWidth: 0,
+    backgroundColor: { default: "transparent", ":hover": colors.surfaceHover },
+    backgroundImage: "none",
+    color: colors.textMuted,
+    fontSize: type.xs,
+    fontWeight: 600,
+    cursor: "pointer",
+    outline: "none",
+    boxShadow: { default: "none", ":focus-visible": `0 0 0 3px ${colors.ring}` },
+    transition: "background-color 120ms ease, color 120ms ease",
+    whiteSpace: "nowrap",
+  },
+  segmentOn: {
+    backgroundColor: { default: colors.surfaceActive, ":hover": colors.surfaceActive },
+    color: colors.text,
+    boxShadow: colors.shadowSm,
+  },
+  statusDot: { width: "8px", height: "8px", borderRadius: radii.full, display: "inline-block" },
 });
 
 export const BoardScreen = ({
   workspace,
+  name,
   myEid,
   user,
-  theme,
-  setTheme,
   onLeave,
 }: {
   workspace: Workspace;
+  name: string;
   myEid: number | undefined;
   user: SessionUser;
-  theme: Theme;
-  setTheme: (t: Theme) => void;
   onLeave: () => void;
 }) => {
   const { db, cls, slug } = workspace;
@@ -115,6 +238,19 @@ export const BoardScreen = ({
     rows: readonly BoardRow[];
     deleted: readonly { id: number; title: string }[];
   } | null>(null);
+
+  // A tick counter for the "live" pill: every emission of the board stream
+  // is a basis change the peer pushed — the pulse makes reactivity visible.
+  const [ticks, setTicks] = useState(0);
+  const firstEmission = useRef(true);
+  useEffect(() => {
+    if (board.rows === undefined) return;
+    if (firstEmission.current) {
+      firstEmission.current = false;
+      return;
+    }
+    setTicks((n) => n + 1);
+  }, [board.rows]);
 
   /** Run a write; a policy denial (or any DbError) becomes a toast. */
   const attempt = useCallback(
@@ -181,47 +317,63 @@ export const BoardScreen = ({
   }
   if (board.rows === undefined) return <Loading text={`opening ${slug}…`} />;
 
-  const rows = past?.rows ?? (board.rows as readonly BoardRow[]);
+  const liveRows = board.rows as readonly BoardRow[];
+  const rows = past?.rows ?? liveRows;
   const timeTraveling = past !== null;
   // Derived from the live rows, so a deleted issue closes its own panel.
   const selectedRow =
-    selected === null
-      ? undefined
-      : (board.rows as readonly BoardRow[]).find((r) => r.id === selected);
+    selected === null ? undefined : liveRows.find((r) => r.id === selected);
+  const canWrite = myEid !== undefined;
 
   return (
     <div {...stylex.props(styles.screen)}>
       <header {...stylex.props(styles.header)}>
-        <Button size="sm" variant="subtle" onClick={onLeave} title="switch workspace">
-          ‹ Workspaces
-        </Button>
-        <span {...stylex.props(styles.wsName)}>{slug}</span>
-        <span {...stylex.props(styles.wsSlug)}>db/{slug}</span>
-        <span {...stylex.props(styles.classBadge)} title="your ripple.class in this workspace">
+        <IconButton icon="chevronLeft" label="Back to workspaces" onClick={onLeave} />
+        <LogoMark size={22} />
+        <span {...stylex.props(styles.wsName)}>{name}</span>
+        <span {...stylex.props(styles.wsSlug, styles.wide)}>db/{slug}</span>
+        <Tag
+          tone={cls === "admin" ? "accent" : cls === "member" ? "ok" : "neutral"}
+          title="your ripple.class in this workspace"
+        >
           {cls}
-        </span>
+        </Tag>
         <span {...stylex.props(styles.spacer)} />
+        <span
+          {...stylex.props(styles.live, styles.wide)}
+          title="Every board update is a basis tick pushed by the peer over db.live"
+        >
+          <span
+            key={ticks}
+            {...stylex.props(
+              styles.liveDot,
+              timeTraveling && styles.liveDotPaused,
+              ticks > 0 && !timeTraveling && styles.liveDotPulse,
+            )}
+          />
+          {timeTraveling ? "paused" : "live"}
+          {ticks > 0 && (
+            <span {...stylex.props(styles.liveMono)}>
+              {ticks} {ticks === 1 ? "tick" : "ticks"}
+            </span>
+          )}
+        </span>
         {!timeTraveling && (
           <Button size="sm" onClick={enterTimeTravel}>
-            ⏪ Time travel
+            <Icon name="history" size={13} /> Time travel
           </Button>
         )}
         {cls === "admin" && (
           <Button size="sm" onClick={() => setInvite(true)}>
-            Invite
+            <Icon name="userPlus" size={13} /> Invite
           </Button>
         )}
-        <Button
-          size="sm"
-          variant="subtle"
-          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-          title="toggle theme"
-        >
-          {theme === "dark" ? "☀️" : "🌙"}
-        </Button>
-        <Button size="sm" variant="subtle" onClick={() => void authClient.signOut()}>
-          Sign out
-        </Button>
+        <span {...stylex.props(styles.divider, styles.wide)} />
+        <ThemeToggle />
+        <span {...stylex.props(styles.wide)}>
+          <Avatar name={user.name} size="md" title={`${user.name} · ${user.email}`} />
+        </span>
+        <IconButton icon="logout" label="Sign out" onClick={() => void authClient.signOut()} />
       </header>
 
       {timeTraveling && (
@@ -234,6 +386,7 @@ export const BoardScreen = ({
             onExit={() => setPast(null)}
           />
           <div {...stylex.props(styles.pastNotice)}>
+            <Icon name="eye" size={12} />
             Read-only view as of transaction {past.t}. Same queries, pinned
             basis — nothing was copied.
           </div>
@@ -245,11 +398,49 @@ export const BoardScreen = ({
           <Board
             rows={rows}
             readOnly={timeTraveling}
+            canCreate={canWrite}
             selectedId={selected}
             onSelect={(id) => setSelected(id)}
             onNew={(status) => setDraftStatus(status)}
             onMove={(id, status, rank) => attempt(moveIssue(db, id, status, rank))}
           />
+          {!timeTraveling && liveRows.length === 0 && (
+            <div {...stylex.props(styles.emptyOverlay)}>
+              <div {...stylex.props(styles.emptyCard)}>
+                <Empty
+                  icon="sparkles"
+                  title="This board is empty"
+                  hint={
+                    canWrite ? (
+                      <>
+                        Add your first issue, or start from a sample board —
+                        nine issues in one <Code>db.transact</Code>.
+                      </>
+                    ) : (
+                      "You are a viewer here — issues will appear as members add them."
+                    )
+                  }
+                  actions={
+                    canWrite ? (
+                      <>
+                        <Button
+                          variant="primary"
+                          onClick={() =>
+                            attempt(seedSampleIssues(db, myEid, labels.rows ?? []))
+                          }
+                        >
+                          <Icon name="sparkles" size={14} /> Add sample issues
+                        </Button>
+                        <Button onClick={() => setDraftStatus("todo")}>
+                          <Icon name="plus" size={14} /> New issue
+                        </Button>
+                      </>
+                    ) : undefined
+                  }
+                />
+              </div>
+            </div>
+          )}
         </div>
         {selectedRow !== undefined && !timeTraveling && (
           <IssueDetail
@@ -275,9 +466,7 @@ export const BoardScreen = ({
               toast("error", "viewers cannot create issues");
               return;
             }
-            const column = (board.rows as readonly BoardRow[]).filter(
-              (r) => r.status === draft.status,
-            );
+            const column = liveRows.filter((r) => r.status === draft.status);
             attempt(createIssue(db, myEid, column[column.length - 1]?.rank, draft));
             setDraftStatus(null);
           }}
@@ -309,7 +498,21 @@ const NewIssueDialog = ({
   const [priority, setPriority] = useState(0);
   const [assignee, setAssignee] = useState("");
   return (
-    <Dialog title={`New issue — ${STATUS_LABELS[status]}`} onClose={onClose}>
+    <Dialog
+      title={
+        <>
+          New issue
+          <Tag>
+            <span
+              {...stylex.props(styles.statusDot)}
+              style={{ backgroundColor: COLUMN_TINTS[status] }}
+            />
+            {STATUS_LABELS[status]}
+          </Tag>
+        </>
+      }
+      onClose={onClose}
+    >
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -324,7 +527,13 @@ const NewIssueDialog = ({
         }}
       >
         <Field label="Title">
-          <Input value={title} onChange={(e) => setTitle(e.target.value)} autoFocus required />
+          <Input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="What needs doing?"
+            autoFocus
+            required
+          />
         </Field>
         <Field label="Description">
           <TextArea
@@ -334,13 +543,22 @@ const NewIssueDialog = ({
           />
         </Field>
         <Field label="Priority">
-          <Select value={priority} onChange={(e) => setPriority(Number(e.target.value))}>
-            {["No priority", "Low", "Medium", "High", "Urgent"].map((p, i) => (
-              <option key={p} value={i}>
-                {p}
-              </option>
+          <div {...stylex.props(styles.segmented)} role="radiogroup" aria-label="Priority">
+            {PRIORITIES.map((p, i) => (
+              <button
+                key={p}
+                type="button"
+                role="radio"
+                aria-checked={priority === i}
+                title={p}
+                {...stylex.props(styles.segment, priority === i && styles.segmentOn)}
+                onClick={() => setPriority(i)}
+              >
+                <PriorityIcon level={i} size={14} />
+                {i === 0 ? "None" : p}
+              </button>
             ))}
-          </Select>
+          </div>
         </Field>
         <Field label="Assignee">
           <Select value={assignee} onChange={(e) => setAssignee(e.target.value)}>
@@ -352,9 +570,14 @@ const NewIssueDialog = ({
             ))}
           </Select>
         </Field>
-        <Button variant="primary" type="submit">
-          Create issue
-        </Button>
+        <DialogFooter>
+          <Button variant="subtle" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit">
+            Create issue
+          </Button>
+        </DialogFooter>
       </form>
     </Dialog>
   );
@@ -383,7 +606,7 @@ const InviteDialog = ({
       const org = orgs.find((o) => o.slug === slug);
       if (org === undefined) throw new Error(`no organization for ${slug}`);
       await inviteMember(org.id, email.trim(), role);
-      toast("info", `invited ${email.trim()} as ${role} — they accept from their workspace screen`);
+      toast("success", `Invited ${email.trim()} as ${role} — they accept from their workspace screen`);
       onClose();
     } catch (err) {
       toast("error", err instanceof Error ? err.message : String(err));
@@ -414,14 +637,23 @@ const InviteDialog = ({
           <Select value={role} onChange={(e) => setRole(e.target.value)}>
             {INVITABLE_ROLES.map((r) => (
               <option key={r} value={r}>
-                {r} {r === "viewer" ? "— read-only by policy" : ""}
+                {r === "viewer"
+                  ? "viewer — read-only by policy"
+                  : r === "member"
+                    ? "member — can edit issues"
+                    : r}
               </option>
             ))}
           </Select>
         </Field>
-        <Button variant="primary" type="submit" disabled={busy}>
-          Send invite
-        </Button>
+        <DialogFooter>
+          <Button variant="subtle" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" disabled={busy}>
+            <Icon name="send" size={13} /> Send invite
+          </Button>
+        </DialogFooter>
       </form>
     </Dialog>
   );

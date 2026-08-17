@@ -81,7 +81,14 @@ export const openWorkspace = async (slug: string): Promise<Workspace> => {
         { headers: { authorization: `Bearer ${token}` } },
       );
       if (!res.ok) throw new Error(`info failed (${res.status})`);
-      return res.json() as Promise<{ db: string; t: number }>;
+      // Non-admins get `{ db, t }`; admins get the peer's full report where
+      // the basis lives under `transactor.t`. Normalise to one shape.
+      const body = (await res.json()) as {
+        db: string;
+        t?: number;
+        transactor?: { t: number };
+      };
+      return { db: body.db, t: body.t ?? body.transactor?.t ?? 0 };
     },
     dispose: () => runtime.dispose(),
   };

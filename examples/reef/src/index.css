@@ -26,3 +26,9 @@ select {
   font: inherit;
   color: inherit;
 }
+
+/* Thin, theme-neutral scrollbars (color derives from the current text color). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, currentColor 22%, transparent) transparent;
+}
