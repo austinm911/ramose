@@ -10,6 +10,7 @@
     "@ripple/storage": "workspace:*",
     "@ripple/transactor": "workspace:*",
     "@ripple/replica": "workspace:*",
-    "effect": ">=4.0.0-beta.105"
+    "effect": ">=4.0.0-beta.105",
+    "jose": "^6.0.0"
   }
 }
