@@ -157,7 +157,22 @@ bun run typecheck
 bun alchemy dev                 # root stack (miniflare)
 bun alchemy deploy              # $USER stage
 bun alchemy deploy --stage prod
+RIPPLE_URL=… bun run test:e2e  # against a live peer (skipped if unset)
+bun run test:e2e:cf            # ephemeral Cloudflare deploy → e2e → destroy
 ```
+
+### CI (Cloudflare e2e)
+
+Unit tests run on every PR and push to `master` (`.github/workflows/ci.yml`).
+A second workflow (`.github/workflows/e2e-cloudflare.yml`) deploys an
+ephemeral Alchemy stage, runs `test/e2e`, then destroys the stage. Set these
+repository secrets (same names as Cursor Cloud secrets — see `.cursor/CLOUD.md`):
+
+| Secret | Required | Purpose |
+|---|---|---|
+| `CLOUDFLARE_ACCOUNT_ID` | yes | Cloudflare account for Alchemy |
+| `CLOUDFLARE_API_TOKEN` | yes | Token with Workers / DOs / R2 / state-store access |
+| `RIPPLE_TOKEN` | no | Only if the peer is deployed with bearer auth |
 
 Ops: [`docs/RUNBOOK.md`](docs/RUNBOOK.md). Recorded benches:
 [`bench/RESULTS.md`](bench/RESULTS.md).

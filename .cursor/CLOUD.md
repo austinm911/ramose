@@ -16,14 +16,15 @@ installed Bun and run `bun install`, so dependencies are ready when an agent sta
 - Tests: `bun run test` (unit/integration across `packages/*` + `examples/todos`,
   ~390 tests via `bun:test`, no services required).
 - `bun run test:e2e` runs `test/e2e` against a live peer and only executes when
-  `RIPPLE_URL` is set (otherwise the tests skip); point it at the running peer,
-  e.g. `RIPPLE_URL=http://localhost:1337 bun run test:e2e`. This suite is not part
-  of CI.
+  `RIPPLE_URL` is set (otherwise the tests skip). Point it at a local peer
+  (`RIPPLE_URL=http://localhost:1337 bun run test:e2e`) or use
+  `bun run test:e2e:cf` for a real Cloudflare deploy (below).
   - Known local caveat: against a local `alchemy dev` (miniflare) peer, the single
     e2e case "a write on another connection wakes db.live" fails consistently
     (cross-connection novelty over WebSockets does not propagate across isolates in
     miniflare local). Same-connection live queries work — the todos UI updates live
-    on write. The remaining e2e cases pass. Don't chase this against a local peer.
+    on write. The remaining e2e cases pass. Don't chase this against a local peer —
+    run it against real Cloudflare (below) to see the full suite pass.
 - There is no production "build" step for local dev; the app runs via `alchemy dev`
   (miniflare) and Vite.
 
@@ -44,3 +45,55 @@ installed Bun and run `bun install`, so dependencies are ready when an agent sta
   `POST /db/<name>/query`, `POST /db/<name>/pull`, `GET /db/<name>/info`. There is a
   top-level `GET /health`. In `tx` maps, every key must be a fully-qualified ident
   (e.g. `:todo/title`); a bare key like `done` is rejected as `tx/invalid`.
+
+## Running the e2e suite against real Cloudflare
+
+The `test/e2e` suite is self-contained — it creates its own `e2e-<ts>` database
+and installs the schema — so it can run against any live peer. To run it against a
+real Cloudflare deployment (the only place the cross-isolate live-query case can
+pass), use the helper, which deploys a throwaway stage, runs the suite, and
+destroys the stage afterwards (even on failure):
+
+```sh
+bun run test:e2e:cf
+```
+
+`bun run test:e2e:cf` wraps `scripts/e2e-cloudflare.sh`, which:
+1. Deploys a uniquely-named stage (`e2e-<epoch>-<rand>`, or `ALCHEMY_STAGE` if set)
+   with `ALCHEMY_STATE=local` and `CI=1` (env-var creds, non-interactive) — an
+   **open** peer, no auth.
+2. Parses the Worker URL from the deploy output and polls `/health`.
+3. Runs `RIPPLE_URL=<url> bun run test:e2e`.
+4. Destroys the stage (set `KEEP_STAGE=1` to leave it up for debugging).
+
+### Required credentials (Cursor secrets + GitHub Actions secrets)
+
+Add these in **both** places so CI and Cloud Agents can run the suite:
+
+| Name | Required | Purpose |
+|---|---|---|
+| `CLOUDFLARE_API_TOKEN` | yes | Deploy Workers / DOs / R2 / Analytics Engine |
+| `CLOUDFLARE_ACCOUNT_ID` | yes | Account to deploy into |
+| `RIPPLE_TOKEN` | no | Only if the peer is deployed with bearer auth |
+
+Token permission groups (scoped to the account), at minimum:
+- **Workers Scripts Write** (covers Durable Objects)
+- **Workers R2 Storage Write**
+- **Account Settings Read**
+
+This stack also declares a Workers Analytics Engine dataset; grant **Account
+Analytics Read/Edit** if a deploy reports an AE permission error.
+
+- **Cursor Cloud:** Secrets panel for this environment / agent (then start a new
+  agent so the secrets are injected). Without them, `bun run test:e2e:cf` exits
+  immediately with a clear error; local `alchemy dev` still works with placeholders.
+- **GitHub Actions:** repository secrets under Settings → Secrets and variables →
+  Actions. The workflow `.github/workflows/e2e-cloudflare.yml` runs the same
+  `bun run test:e2e:cf` flow on every PR, every push to `master`, and
+  `workflow_dispatch`.
+
+### Auth note
+The deploy is an open peer (no `RIPPLE_TOKEN`/`RIPPLE_POLICY`), so the throwaway
+`workers.dev` URL is briefly writable by anyone who knows it. The stage name is
+unguessable and torn down at the end of the run; if you need an authenticated peer,
+set `RIPPLE_TOKEN` (and it is passed through to the test client).
