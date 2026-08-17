@@ -56,7 +56,11 @@ export const Api = Cloudflare.Worker(
   "Api",
   {
     main: import.meta.url,
-    compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
+    // Date must be >= 2026-02-19: below it, @cloudflare/unenv-preset swaps
+    // the native workerd `process` for a hybrid whose `stdin` is not an
+    // EventEmitter, and the Effect Worker runtime's Terminal layer (built for
+    // every Effect-form Worker) crashes on `stdin.once` at isolate init.
+    compatibility: { date: "2026-03-17", flags: ["nodejs_compat"] },
     dev: { port: DEV_API_PORT },
     // The built SPA. Assets are served first for everything that is not
     // /api/*; unknown paths fall back to index.html (SPA routing). The

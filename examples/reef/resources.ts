@@ -41,7 +41,7 @@ const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryRe
 
 export const RippleWorker = Cloudflare.Worker("Peer", {
   main: "./packages/worker/src/index.ts",
-  compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
+  compatibility: { date: "2026-03-17", flags: ["nodejs_compat"] },
   dev: { port: DEV_PEER_PORT },
   env: {
     STORE: Store,
