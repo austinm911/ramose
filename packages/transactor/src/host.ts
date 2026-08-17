@@ -10,6 +10,7 @@
  * exercised (with fault injection) without Cloudflare.
  */
 
+import type { CompiledPolicy } from "@ripple/core";
 import type { R2Like } from "@ripple/storage";
 import type { AnalyticsEngineDatasetLike } from "./observability.ts";
 
@@ -88,4 +89,9 @@ export interface TransactorHost {
    * per commit batch / indexer run). Absent = metrics disabled (no-op sink).
    */
   readonly analytics?: AnalyticsEngineDatasetLike;
+  /**
+   * The deployed policy (`RIPPLE_POLICY`). Present = the commit loop checks
+   * every non-admin tx against the db it is about to apply to.
+   */
+  readonly policy?: CompiledPolicy;
 }

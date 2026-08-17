@@ -33,7 +33,7 @@ import {
   toJson,
 } from "@ripple/core";
 import { type R2Like, R2NodeStore, dbPrefix, prefixedBucket, readCurrentRoot, readLogSince, type ByteTier } from "@ripple/storage";
-import { type RippleEnv, envInt } from "@ripple/transactor";
+import { type RippleEnv, envInt, internalGate, internalHeaders } from "@ripple/transactor";
 import * as Effect from "effect/Effect";
 import { type Basis, dbFromBasis, makeBasis } from "./basis.ts";
 import { replicaErrorResponse, toReplicaError } from "./errors.ts";
@@ -179,7 +179,7 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
   private async fillGap(from: number, to: number): Promise<void> {
     if (!this.dbName) return;
     const stub = this.env.TRANSACTOR.get(this.env.TRANSACTOR.idFromName(this.dbName));
-    const res = await stub.fetch(`https://transactor/log?from=${from}&to=${to}&db=${encodeURIComponent(this.dbName)}`);
+    const res = await stub.fetch(`https://transactor/log?from=${from}&to=${to}&db=${encodeURIComponent(this.dbName)}`, { headers: internalHeaders(this.env) });
     if (res.ok) {
       const body = (await res.json()) as { earliestLogT: number; entries: any[] };
       if (body.earliestLogT !== 0 && body.earliestLogT <= from + 1) {
@@ -218,7 +218,7 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
       if (rec) this.adoptRoot(rec);
     }
     const stub = this.env.TRANSACTOR.get(this.env.TRANSACTOR.idFromName(this.dbName));
-    const res = await stub.fetch(`https://transactor/subscribe?from=${this.basisT}&db=${encodeURIComponent(this.dbName)}`, { headers: { Upgrade: "websocket" } });
+    const res = await stub.fetch(`https://transactor/subscribe?from=${this.basisT}&db=${encodeURIComponent(this.dbName)}`, { headers: { Upgrade: "websocket", ...internalHeaders(this.env) } });
     const ws = res.webSocket;
     if (!ws) throw new Error(`transactor did not upgrade (status ${res.status})`);
     ws.accept();
@@ -267,6 +267,9 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
   // ---------------------------------------------------------------------------
 
   override async fetch(request: Request): Promise<Response> {
+    // reachable only from the peer Worker
+    const gate = internalGate(this.env, request);
+    if (gate) return gate;
     await this.init();
     const url = new URL(request.url);
     const dbParam = url.searchParams.get("db");

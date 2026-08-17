@@ -15,6 +15,8 @@ import { toJson } from "@ripple/core";
 import { dbPrefix, prefixedBucket } from "@ripple/storage";
 import { type RippleEnv, envInt } from "./env.ts";
 import { DEFAULT_CONFIG, type SocketLike, type TransactorConfig, type TransactorHost } from "./host.ts";
+import { internalGate } from "./internal.ts";
+import { enforcedPolicy } from "./policy.ts";
 import { Transactor, type TxAck } from "./transactor.ts";
 
 export type { TxAck };
@@ -61,6 +63,8 @@ export class TransactorDO extends DurableObject<RippleEnv> {
       config: configFromEnv(env),
       // bound in alchemy.run.ts as ANALYTICS; undefined = metrics disabled
       analytics: env.ANALYTICS,
+      // parsed once per isolate; present = the commit loop enforces it
+      policy: enforcedPolicy(env),
     };
     this.core = new Transactor(host);
   }
@@ -99,6 +103,9 @@ export class TransactorDO extends DurableObject<RippleEnv> {
   }
 
   override async fetch(request: Request): Promise<Response> {
+    // reachable only from the peer Worker (and the replicas), /subscribe included
+    const gate = internalGate(this.env, request);
+    if (gate) return gate;
     const url = new URL(request.url);
     const db = url.searchParams.get("db");
     if (db) {

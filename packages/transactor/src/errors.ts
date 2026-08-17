@@ -23,7 +23,7 @@ export class TransactorDeadError extends Error {
 }
 
 /** A transaction was rejected by validation / tempid / unique resolution → 409. */
-export class TxRejected extends Data.TaggedError("TxRejected")<{ message: string; code: string }> {}
+export class TxRejected extends Data.TaggedError("TxRejected")<{ message: string; code: string; attr?: string }> {}
 /** This instance is dead and is being rebuilt from durable state → 503. */
 export class TransactorDead extends Data.TaggedError("TransactorDead")<{ message: string; retryAfterMs: number }> {}
 /** Malformed request → 400. */
@@ -51,7 +51,10 @@ export const statusOf = (e: TransactorHttpError): number => TAGS[e._tag];
 export function errorResponse(e: TransactorHttpError): Response {
   const body: Record<string, unknown> = { error: e.message, tag: e._tag, message: e.message };
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (e._tag === "TxRejected") body.code = e.code;
+  if (e._tag === "TxRejected") {
+    body.code = e.code;
+    if (e.attr !== undefined) body.attr = e.attr;
+  }
   if (e._tag === "TransactorDead") {
     body.retryAfterMs = e.retryAfterMs;
     headers["retry-after"] = String(Math.ceil(e.retryAfterMs / 1000));
