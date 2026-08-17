@@ -14,6 +14,7 @@
     "allowImportingTsExtensions": true,
     "noEmit": true,
     "resolveJsonModule": true,
+    "jsx": "react-jsx",
     "isolatedModules": true,
     "types": ["bun", "@cloudflare/workers-types"],
     "baseUrl": ".",
@@ -21,7 +22,8 @@
       "@ripple/core": ["packages/core/src/index.ts"],
       "@ripple/core/*": ["packages/core/src/*"],
       "@ripple/client": ["packages/client/src/index.ts"],
-      "@ripple/alchemy": ["packages/alchemy/src/index.ts"]
+      "@ripple/alchemy": ["packages/alchemy/src/index.ts"],
+      "@ripple/alchemy/schema": ["packages/alchemy/src/schema/index.ts"]
     }
   },
   "include": [
@@ -30,7 +32,8 @@
     "packages/*/test/**/*.ts",
     "bench/**/*.ts",
     "test/**/*.ts",
-    "examples/**/*.ts"
+    "examples/**/*.ts",
+    "examples/**/*.tsx"
   ],
   "exclude": ["node_modules", ".alchemy", "dist"]
 }
