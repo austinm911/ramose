@@ -1,0 +1,11 @@
+---
+/**
+ * Dark-only theme, per the brand guide: warm white on void black.
+ * Overrides Starlight's ThemeProvider so no OS/localStorage preference
+ * can flip the site to a light palette.
+ */
+---
+
+<script is:inline>
+  document.documentElement.dataset.theme = "dark";
+</script>

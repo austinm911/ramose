@@ -27,6 +27,7 @@
   },
   "include": [
     "alchemy.run.ts",
+    "website/alchemy.run.ts",
     "packages/*/src/**/*.ts",
     "packages/*/test/**/*.ts",
     "bench/**/*.ts",

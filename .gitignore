@@ -1,5 +1,6 @@
 node_modules/
 .alchemy/
+.astro/
 dist/
 *.log
 .env

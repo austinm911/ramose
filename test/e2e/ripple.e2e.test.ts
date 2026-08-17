@@ -30,9 +30,11 @@ const dbName = `e2e-${Date.now().toString(36)}`;
 d("ripple e2e", () => {
   const client = new Peer(URL_ ?? "http://invalid", {
     token,
-    // Parallel CI stages share an account but not Worker/DO/R2. Edge HTML
-    // 404s under dual write-bursts are transient — retry rather than serialize.
-    retryTransient: 8,
+    // A fresh workers.dev hostname is eventually consistent across the edge:
+    // a colo can serve the HTML placeholder mid-suite, minutes after /health
+    // passes. Absorb up to 30s of that per request (application errors never
+    // retry). Test timeout is 60s, so a retried request still fails loudly.
+    retryTransientMs: 30_000,
   });
   const db = client.db(dbName);
   let alice = 0, bob = 0, tSchema = 0, tAge30 = 0;

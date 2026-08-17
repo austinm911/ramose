@@ -1,0 +1,199 @@
+---
+title: The graph that reacts
+description: Ripple — an immutable, reactive graph database for Cloudflare. Changes ripple. Agents respond. State stays coherent.
+template: splash
+---
+
+<div class="rg-hero">
+  <svg class="rg-contours" viewBox="0 0 1200 480" fill="none" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <path d="M-60 430 C 260 350, 560 500, 900 420 S 1260 370, 1360 405" stroke="#F3F1EA" stroke-opacity="0.06" stroke-width="1.5"/>
+    <path d="M-60 470 C 280 400, 580 545, 920 465 S 1270 420, 1370 450" stroke="#F3F1EA" stroke-opacity="0.04" stroke-width="1.5"/>
+    <path d="M250 449 C 320 432, 390 442, 445 434" stroke="#879B45" stroke-opacity="0.5" stroke-width="2" stroke-linecap="round"/>
+  </svg>
+
+  <svg class="rg-hero-mark" viewBox="0 0 216 94" fill="none" aria-hidden="true">
+    <path d="M90.8 61.2 C74.2 82.5 60 88 41.8 85.7 C16.5 82.5 3.9 63.6 5.5 42.2 C7.1 19.3 23.6 5.1 45.7 6.7 C67.9 7.5 80.5 25.7 95.5 41.4 C111.3 57.2 128.7 71.4 148.4 80.1 C170.5 89.6 188.7 84.1 199.7 69.1 C212.4 51.7 207.6 28 191.8 17 C174.5 4.3 150 5.1 131 17.8 C126.3 20.9 122.3 24.1 119.2 27.2" stroke="currentColor" stroke-width="7.9" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M135 37.5 C148.4 28 169.7 26.4 182.4 39.9" stroke="currentColor" stroke-width="7.9" stroke-linecap="round"/>
+  </svg>
+
+  <h1>The graph that reacts.</h1>
+
+  <p class="rg-tagline">
+    Ripple is an immutable, reactive graph database for Cloudflare.
+    One Durable Object writes. Segment trees live in R2. Datalog runs at the
+    edge, next to your app. Built on Effect, typed end to end.
+  </p>
+
+  <div class="rg-actions">
+    <a class="rg-button primary" href="/getting-started/quickstart/">Get started</a>
+    <a class="rg-button secondary" href="https://github.com/tvanhens/ripple">GitHub</a>
+  </div>
+
+  <div class="rg-install"><span class="rg-prompt">›</span> ripple.db("acme", Catalog) <span class="rg-prompt">// a database is a name — no provision step</span></div>
+</div>
+
+<div class="rg-section">
+  <h2>State the change.</h2>
+  <p class="rg-lede">
+    A change enters the system, travels through the field, and produces a
+    coherent response. Write a row and every standing live query re-runs — no
+    refetch, no invalidation call at the write site.
+  </p>
+
+  <div class="rg-split">
+    <div>
+      <h3>The catalog is the schema</h3>
+      <p>
+        Attributes, uniqueness, cardinality — plain TypeScript, checked at
+        compile time. One catalog is shared by the deploy stack, the Worker,
+        and the browser. No codegen.
+      </p>
+    </div>
+    <div>
+
+```ts
+import * as Ripple from "@ripple/alchemy/db";
+import * as Schema from "effect/Schema";
+
+export const Todo = Ripple.Namespace("todo", {
+  title: Ripple.Attr(Schema.String),
+  done: Ripple.Attr(Schema.Boolean),
+  createdAt: Ripple.Attr(Ripple.Instant),
+});
+
+export const Todos = Ripple.Catalog({ todo: Todo });
+```
+
+    </div>
+  </div>
+</div>
+
+<div class="rg-section">
+  <div class="rg-split">
+    <div>
+      <h3>Observe. Propagate. Resolve.</h3>
+      <p>
+        <code>transact</code> is a generator. <code>live</code> is a
+        <code>Stream</code> on the session socket. A write advances the whole
+        connection, so every standing query re-runs against the new basis.
+      </p>
+    </div>
+    <div>
+
+```ts
+const todoQuery = Ripple.query(Todo)
+  .orderBy(Todo.createdAt, "asc")
+  .select({ id: Todo.id, title: Todo.title, done: Todo.done });
+
+const todos = db.live(todoQuery);
+
+await run(
+  db.transact(function* (tx) {
+    const t = yield* tx.entity();
+    yield* t.add(Todo.title, "ship it");
+    yield* t.add(Todo.done, false);
+  }),
+);
+```
+
+    </div>
+  </div>
+</div>
+
+<div class="rg-section">
+  <div class="rg-split">
+    <div>
+      <h3>Deploy is one resource</h3>
+      <p>
+        A peer Worker, a <code>Ripple.Server</code>, a
+        <code>Ripple.Database</code>. Alchemy provisions the Worker, the
+        Durable Objects, and the R2 bucket; the catalog is installed before
+        the UI connects.
+      </p>
+    </div>
+    <div>
+
+```ts
+import * as Ripple from "@ripple/alchemy";
+import * as Cloudflare from "alchemy/Cloudflare";
+
+const Worker = Cloudflare.Worker("Peer", {
+  main: "./packages/worker/src/index.ts",
+});
+
+export const Server = Ripple.Server("Ripple", { worker: Worker });
+export const TodosDb = Ripple.Database("todos", {
+  server: Server,
+  catalog: Todos,
+});
+```
+
+    </div>
+  </div>
+</div>
+
+<div class="rg-section">
+  <h2>Why Ripple.</h2>
+  <p class="rg-lede">Reactive graph infrastructure for agentic systems — one exact sentence per claim.</p>
+
+  <div class="rg-grid">
+    <div class="rg-cell">
+      <h3>Typed catalog</h3>
+      <p>The schema is TypeScript. Attributes, uniqueness, and cardinality are checked at compile time, and <code>Pull</code> results type themselves from the pattern.</p>
+    </div>
+    <div class="rg-cell">
+      <h3>Effect-native</h3>
+      <p>Generator <code>transact</code>, navigational <code>Ripple.query</code>, <code>db.pull</code>. Every signature's requirements channel is <code>never</code> — one runtime runs everything.</p>
+    </div>
+    <div class="rg-cell">
+      <h3>Live queries</h3>
+      <p><code>db.live</code> is a <code>Stream</code> on the session socket. It survives dropped sockets and retries with backoff; teardown is fiber interruption.</p>
+    </div>
+    <div class="rg-cell">
+      <h3>Db-per-tenant</h3>
+      <p><code>ripple.db(name, catalog)</code> is pure — zero network per request. A database is a name; the first transaction materializes it.</p>
+    </div>
+    <div class="rg-cell">
+      <h3>Time travel</h3>
+      <p><code>db.asOf(t)</code> and <code>db.history</code> are views, not dumps. Queries compose over them unchanged, and you cannot transact into the past.</p>
+    </div>
+    <div class="rg-cell">
+      <h3>Invariants as product</h3>
+      <p>Single writer per database. Dense <code>t</code>. Persist-before-ack. Replicas are first-class — workers never read novelty from the transactor.</p>
+    </div>
+  </div>
+</div>
+
+<div class="rg-section">
+  <h2>The shape of a deployment.</h2>
+  <p class="rg-lede">
+    One peer Worker, one Transactor Durable Object per logical database, N
+    QueryReplica Durable Objects, one R2 bucket. Nothing else to run.
+  </p>
+
+  <div class="rg-invariants">
+    <div>
+      <h3>Single writer</h3>
+      <p>Each database has exactly one Transactor. It serializes transactions and assigns <code>t</code> — total order, no coordination.</p>
+    </div>
+    <div>
+      <h3>Dense t</h3>
+      <p><code>t</code> is only ever read. No API mints, skips, or supplies one; the log is gap-free by construction.</p>
+    </div>
+    <div>
+      <h3>Persist-before-ack</h3>
+      <p><code>transact</code> resolves only with a <code>TxReport</code>, and its <code>dbAfter</code> is the read-your-writes fence.</p>
+    </div>
+    <div>
+      <h3>Replicas first-class</h3>
+      <p>Reads take their basis from the replica path. Immutable segments in R2 make every replica equally right.</p>
+    </div>
+  </div>
+</div>
+
+<div class="rg-closing">
+  <p class="rg-big">Changes ripple. Agents respond. State stays coherent.</p>
+  <div class="rg-actions">
+    <a class="rg-button primary" href="/getting-started/introduction/">Read the introduction</a>
+  </div>
+</div>
