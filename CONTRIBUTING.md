@@ -67,6 +67,8 @@ The e2e job uses the GitHub **Development** environment
 `CLOUDFLARE_ACCOUNT_ID` as a variable (or secret). Cursor Cloud Agents need the
 same names in the Cursor secrets panel — see [`.cursor/CLOUD.md`](.cursor/CLOUD.md).
 
-Cloudflare e2e runs are **serialized** (`concurrency.group: e2e-cloudflare`) so
-two stages never hammer the same account in parallel — concurrent write-burst
-tests have produced transient workers.dev HTML 404s mid-suite.
+Each run deploys its own Alchemy stage (`ALCHEMY_STAGE=e2e-<run_id>-<attempt>`),
+so Worker / Durable Object / R2 names do not collide across parallel jobs.
+Transient workers.dev HTML 404s under concurrent write bursts are retried by
+the e2e `Peer` harness and the alchemy HTTPS client — CI does **not** serialize
+the whole account.

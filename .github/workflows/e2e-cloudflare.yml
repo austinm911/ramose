@@ -16,13 +16,12 @@ on:
     branches: [master]
   workflow_dispatch:
 
-# One Cloudflare e2e at a time for the account. Parallel stages still race the
-# API / workers.dev edge under write bursts (HTML 404 "Page not found") and
-# flake mid-suite. cancel-in-progress is false so a new PR does not kill an
-# in-flight master or peer run.
+# Stages already isolate Worker / DO / R2 (`ALCHEMY_STAGE` is unique per run).
+# Cancel in-flight runs only for the same PR/ref so a new push replaces an
+# older attempt without blocking other PRs or master.
 concurrency:
-  group: e2e-cloudflare
-  cancel-in-progress: false
+  group: e2e-cf-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   e2e:

@@ -85,6 +85,31 @@ export interface SendOptions {
 /** One request, classified. The only place the client touches `fetch`. */
 export const send = (
   options: SendOptions,
+  attempt = 0,
+): Effect.Effect<RawResult, DbError> =>
+  sendOnce(options).pipe(
+    Effect.catch((e: DbError) => {
+      if (attempt + 1 >= 6 || !isTransientPlatform(e)) {
+        return Effect.fail(e);
+      }
+      const ms = Math.min(2000, 150 * 2 ** attempt);
+      return Effect.sleep(`${ms} millis`).pipe(
+        Effect.andThen(() => send(options, attempt + 1)),
+      );
+    }),
+  );
+
+const isTransientPlatform = (e: DbError): boolean => {
+  if (e._tag === "Unavailable") return true;
+  if (e._tag === "NetworkError") return true;
+  if (e._tag === "InternalError") {
+    return /Worker not found|error code: 1042/i.test(e.message);
+  }
+  return false;
+};
+
+const sendOnce = (
+  options: SendOptions,
 ): Effect.Effect<RawResult, DbError> =>
   Effect.gen(function* () {
     const headers: Record<string, string> = {
