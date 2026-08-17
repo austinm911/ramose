@@ -144,9 +144,10 @@ function httpErrorMessage(
 export function isTransientCf(e: unknown): boolean {
   if (!(e instanceof HttpError)) return false;
   if (e.status === 503 || e.status === 429) return true;
-  // Platform errors, as normalized by httpErrorMessage (plus the JSON
-  // "Worker not found." a not-yet-bound DO namespace answers with).
-  return /Worker not found|Cloudflare error 1\d{3}|workers\.dev edge/i.test(
+  // Platform errors, as normalized by httpErrorMessage, plus the JSON errors
+  // a not-yet-converged deploy answers with ("Worker not found." and
+  // "Handler does not export a fetch() function." both clear within seconds).
+  return /Worker not found|Handler does not export a fetch|Cloudflare error 1\d{3}|workers\.dev edge/i.test(
     e.message,
   );
 }

@@ -201,9 +201,13 @@ export const fromResponse = (
         retryAfterMs: num(b.retryAfterMs, Number(headers?.get("retry-after") ?? 0) * 1000 || 0),
       });
     default:
-      // 1042 / 1104 / "Worker not found" from a fresh workers.dev host or a
-      // Durable Object namespace that has not finished binding yet.
-      if (isCloudflarePlatform(message) || /Worker not found/i.test(message)) {
+      // 1042 / 1104 / "Worker not found" / "Handler does not export a fetch()
+      // function." from a fresh workers.dev host or a Durable Object
+      // namespace that has not finished converging on the new deploy yet.
+      if (
+        isCloudflarePlatform(message) ||
+        /Worker not found|Handler does not export a fetch/i.test(message)
+      ) {
         return new Unavailable({
           message: "ripple: Cloudflare edge returned a transient platform error",
           retryAfterMs: 200,

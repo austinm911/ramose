@@ -57,6 +57,13 @@ describe("fromResponse — the peer's own errors (no tag)", () => {
     expect(e._tag).toBe("Unavailable");
   });
 
+  test("500 'Handler does not export a fetch()' → Unavailable (deploy not converged)", () => {
+    const e = fromResponse(500, {
+      error: "Handler does not export a fetch() function.",
+    });
+    expect(e._tag).toBe("Unavailable");
+  });
+
   test("413 → QueryBudgetExceeded with the guard's fields", () => {
     const e = fromResponse(413, {
       error: "query budget exceeded",

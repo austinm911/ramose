@@ -68,6 +68,22 @@ describe("Peer — Cloudflare platform retries", () => {
     expect(n).toBe(2);
   });
 
+  test("retries 'Handler does not export a fetch()' 500 then succeeds", async () => {
+    let n = 0;
+    const peer = new Peer("https://example.workers.dev", {
+      retryTransientMs: 10_000,
+      fetch: (async () => {
+        n++;
+        if (n === 1) {
+          return json(500, { error: "Handler does not export a fetch() function." });
+        }
+        return json(200, { ok: true, stage: "e2e" });
+      }) as unknown as typeof fetch,
+    });
+    expect((await peer.health()).ok).toBe(true);
+    expect(n).toBe(2);
+  });
+
   test("gives up when the budget is exhausted", async () => {
     let n = 0;
     const peer = new Peer("https://example.workers.dev", {
