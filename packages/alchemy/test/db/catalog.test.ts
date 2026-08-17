@@ -13,7 +13,6 @@ import {
   schemaTx,
   txBuilder,
   lowerPullPattern,
-  lowerWireTx,
   reshapePullResult,
   Long,
   Ref,
@@ -72,14 +71,12 @@ describe("query builder", () => {
     const q = queryBuilder(Movies)
       .where("?e", User.name, "?n")
       .where("?e", "_", "?v")
-      .where("?e", "?a", 1)
-      .options({ minT: 3 });
+      .where("?e", "?a", 1);
     expect(q.spec.where).toEqual([
       ["?e", ":user/name", "?n"],
       ["?e", "_", "?v"],
       ["?e", "?a", 1],
     ]);
-    expect(q.spec.options).toEqual({ minT: 3 });
     expect(q.catalog).toBe(Movies);
   });
 });
@@ -218,22 +215,29 @@ describe("reshapePullResult", () => {
   });
 });
 
-describe("lowerWireTx", () => {
-  test("copies catalog maps and list ops; rejects unknown idents", () => {
-    const ok = Effect.runSync(
-      lowerWireTx(Movies, [
-        { ":user/name": "Ada", ":user/age": 36 },
-        [":db/add", "tmp-1", ":meta/source", "import"],
-        [":db/retractEntity", 1001],
-      ]),
-    );
-    expect(ok).toEqual([
-      { ":user/name": "Ada", ":user/age": 36 },
-      [":db/add", "tmp-1", ":meta/source", "import"],
-      [":db/retractEntity", 1001],
-    ]);
-    const bad = Effect.runSync(Effect.flip(lowerWireTx(Movies, [{ ":user/nope": "x" }])));
-    expect(bad._tag).toBe("InvalidRequest");
-    expect(bad.message).toContain(":user/nope");
+describe("query terminals", () => {
+  test("find and explain both build a Query; `.pull` hangs off a one-eid find", () => {
+    const built = queryBuilder(Movies)
+      .where("?e", User.name, "?n")
+      .find("?e", "?n");
+    expect(built.vars).toEqual(["?e", "?n"]);
+    expect(built.spec.eidVars).toEqual(["?e"]);
+    expect(built.spec.explain).toBeUndefined();
+    expect(built.spec.pull).toBeUndefined();
+
+    const explained = queryBuilder(Movies)
+      .where("?e", User.name, "?n")
+      .explain("?n");
+    expect(explained.spec.explain).toBe(true);
+    expect(explained.vars).toEqual(["?n"]);
+
+    const pattern = { name: User.name };
+    const pulled = queryBuilder(Movies)
+      .where("?e", User.name, "_")
+      .find("?e")
+      .pull(pattern);
+    expect(pulled.spec.pull).toBe(pattern);
+    // the find it came from is untouched — a query is a value
+    expect(built.spec.pull).toBeUndefined();
   });
 });

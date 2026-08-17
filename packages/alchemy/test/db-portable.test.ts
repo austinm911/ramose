@@ -131,29 +131,32 @@ describe("@ripple/alchemy/db is portable", () => {
 });
 
 describe("the `/db` barrel's public names", () => {
-  test("schema, addressing, and the eight errors are all there", async () => {
+  test("schema, connecting, and the eight errors — and nothing else", async () => {
     const db = await import("../src/db/index.ts");
     expect(Object.keys(db).sort()).toEqual(
       [
+        // schema
         "Attr",
-        "Bytes",
-        "Catalog",
-        "DatabaseNotFound",
-        "Eid",
-        "Instant",
-        "InternalError",
-        "InvalidRequest",
-        "Long",
         "Namespace",
-        "NetworkError",
-        "QueryBudgetExceeded",
-        "Ref",
-        "Session",
-        "TxRejected",
-        "Unauthorized",
-        "Unavailable",
+        "Catalog",
+        "Instant",
         "Uuid",
         "UuidString",
+        "Ref",
+        "Long",
+        "Bytes",
+        // connecting
+        "layer",
+        "Databases",
+        // errors
+        "TxRejected",
+        "Unavailable",
+        "InvalidRequest",
+        "DatabaseNotFound",
+        "Unauthorized",
+        "QueryBudgetExceeded",
+        "InternalError",
+        "NetworkError",
       ].sort(),
     );
   });

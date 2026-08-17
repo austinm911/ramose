@@ -1,19 +1,22 @@
-import type {
-  Eid,
-  LiveQueryBuilder,
-  TypedLiveDatabaseClient,
-} from "@ripple/alchemy/db";
+/** The app's queries and writes, in one place so the test can drive them. */
+
+import type { Db, Eid, Pull, QueryBuilder } from "@ripple/alchemy/db";
 import { Todo, type Todos } from "../schema.ts";
 
-export type TodosDb = TypedLiveDatabaseClient<typeof Todos>;
+export type TodosDb = Db<typeof Todos>;
 export type TodoEid = Eid<typeof Todos>;
 
-export const todoQuery = (q: LiveQueryBuilder<typeof Todos>) =>
-  q.where("?e", Todo.title, "_").find("?e").pull({
-    title: Todo.title,
-    done: Todo.done,
-    createdAt: Todo.createdAt,
-  });
+export const pattern = {
+  title: Todo.title,
+  done: Todo.done,
+  createdAt: Todo.createdAt,
+};
+
+/** One row: the entity, and the pattern's result for it. */
+export type TodoRow = readonly [TodoEid, Pull<typeof Todos, typeof pattern>];
+
+export const todoQuery = (q: QueryBuilder<typeof Todos>) =>
+  q.where("?e", Todo.title, "_").find("?e").pull(pattern);
 
 export const addTodo = (db: TodosDb, title: string) =>
   db.transact(function* (tx) {

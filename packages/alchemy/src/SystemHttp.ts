@@ -13,7 +13,8 @@
  */
 
 import * as Effect from "effect/Effect";
-import { globalFetch, type SystemSource } from "./Client.ts";
+import { globalFetch } from "./db/internal.ts";
+import type { SystemSource } from "./Source.ts";
 import type { System } from "./System.ts";
 import { bindOutput, bindToken, envKeys, required } from "./SystemRuntime.ts";
 

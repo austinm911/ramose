@@ -7,43 +7,32 @@
  */
 
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import type {
-  ReadSystemClient,
-  ReadWriteSystemClient,
-  TxAck,
-  WriteSystemClient,
-} from "../../src/Client.ts";
-import { InvalidRequest } from "../../src/db/Errors.ts";
 import {
   Attr,
-  type CatalogIdent,
+  Bytes,
   Catalog,
+  type CatalogIdent,
+  type ClientOptions,
+  type Databases,
+  type DatabasesShape,
+  type Db,
+  type DbError,
+  type Eid,
   type Equal,
   type Expect,
   type Extends,
-  Namespace,
-  type OpenError,
-  SchemaEnsureError,
-  type TypedReadDatabaseClient,
-  type TypedReadSystemClient,
-  type TypedReadWriteDatabaseClient,
-  type TypedReadWriteSystemClient,
-  type TypedWriteSystemClient,
-  type ValueAtIdent,
-  type WireEntity,
+  Instant,
   Long,
+  Namespace,
+  type ReadDb,
   Ref,
+  type TxReport,
   Uuid,
   UuidString,
-  Instant,
-  Bytes,
-  Eid,
-  fromRead,
-  fromReadWrite,
-  fromWrite,
-  makeSystem,
-  unsafeDatabase,
+  type ValueAtIdent,
+  layer,
 } from "../../src/db/internal.ts";
 
 import { Meta, Movie, Movies, User } from "./fixture.ts";
@@ -132,59 +121,44 @@ Typed.s.with({ s: Typed.s });
 // @ts-expect-error Schema.Number / non-ref .with is never
 Typed.n.with({ s: Typed.s });
 
-// ── create / connect return a client generic on that catalog ───────────────
+// ── layer / Databases / db(name, catalog) ──────────────────────────────────
 
-const system = makeSystem({ url: "https://peer.example" });
-const created = system.create("movies", Movies);
-const connected = system.connect("movies", Movies);
+declare const options: ClientOptions;
+const built = layer(options);
+/** Getting a `Databases` cannot fail, and needs nothing else provided. */
+type _layer = Expect<Equal<typeof built, Layer.Layer<Databases, never, never>>>;
 
-// Alchemy bindings return the untyped system; wrap to get create(name, catalog).
-declare const untypedRead: ReadSystemClient;
-declare const untypedWrite: WriteSystemClient;
-declare const untypedRW: ReadWriteSystemClient;
-const typedR = fromRead(untypedRead);
-const typedW = fromWrite(untypedWrite);
-const typedRW = fromReadWrite(untypedRW);
-type _fromR = Expect<Equal<typeof typedR, TypedReadSystemClient>>;
-type _fromW = Expect<Equal<typeof typedW, TypedWriteSystemClient>>;
-type _fromRW = Expect<Equal<typeof typedRW, TypedReadWriteSystemClient>>;
-const wrapCreated = typedRW.create("movies", Movies);
-const wrapRead = typedR.create("movies", Movies);
-type _wrapClient = Expect<
-  Equal<Effect.Success<typeof wrapCreated>, TypedReadWriteDatabaseClient<typeof Movies>>
->;
-type _wrapErr = Expect<
-  Equal<Effect.Error<typeof wrapCreated>, InvalidRequest | SchemaEnsureError>
->;
-type _wrapReadErr = Expect<Equal<Effect.Error<typeof wrapRead>, InvalidRequest>>;
+declare const ripple: DatabasesShape;
+const movies = ripple.db("movies", Movies);
+type _dbIsDb = Expect<Equal<typeof movies, Db<typeof Movies>>>;
+type _dbCatalog = Expect<Equal<(typeof movies)["catalog"], typeof Movies>>;
+type _dbName = Expect<Equal<(typeof movies)["name"], string>>;
 
-type CreatedClient = Effect.Success<typeof created>;
-type ConnectedClient = Effect.Success<typeof connected>;
-
-type _createClient = Expect<
-  Equal<CreatedClient, TypedReadWriteDatabaseClient<typeof Movies>>
->;
-type _connectClient = Expect<
-  Equal<ConnectedClient, TypedReadWriteDatabaseClient<typeof Movies>>
->;
-type _createCatalog = Expect<
-  Equal<CreatedClient["catalog"], typeof Movies>
->;
-
-// A different catalog is a different client type.
+// a different catalog is a different db type
 const Other = Catalog({
   tag: Namespace("tag", { label: Attr(Schema.String) }),
 });
-type OtherClient = Effect.Success<ReturnType<typeof system.create<typeof Other>>>;
-type _notSame = Expect<
-  Equal<Equal<CreatedClient, OtherClient>, false>
+const other = ripple.db("other", Other);
+type _notSame = Expect<Equal<Equal<typeof movies, typeof other>, false>>;
+
+// ── asOf / history preserve the catalog and drop the write half ────────────
+
+const asOf = movies.asOf(3);
+const hist = movies.history;
+type _asOf = Expect<Equal<typeof asOf, ReadDb<typeof Movies>>>;
+type _hist = Expect<Equal<typeof hist, ReadDb<typeof Movies>>>;
+type _asOfCatalog = Expect<Equal<(typeof asOf)["catalog"], typeof Movies>>;
+type _asOfNoWrite = Expect<
+  Equal<"transact" extends keyof typeof asOf ? true : false, false>
+>;
+/** `history` is a property, not a method — a view is a value. */
+type _histIsProperty = Expect<
+  Equal<typeof hist extends (...args: never) => unknown ? true : false, false>
 >;
 
-// ── transact builder is the typed write path ───────────────────────────────
+// ── the transaction is the generator, and reports a TxReport ───────────────
 
-const db = unsafeDatabase(Movies);
-
-const _validTx = db.transact(function* (tx) {
+const written = movies.transact(function* (tx) {
   const ada = yield* tx.entity();
   yield* ada.add(User.name, "Ada");
   yield* ada.add(User.age, 36);
@@ -195,49 +169,28 @@ const _validTx = db.transact(function* (tx) {
   yield* tx.retract(1001, User.age, 36);
   yield* tx.retractEntity(1001);
 });
-void _validTx;
-
-const _validWire: WireEntity<typeof Movies> = {
-  ":db/id": "ada",
-  ":user/name": "Ada",
-  ":user/friends": [1001, 1002],
-  ":meta/source": "import",
-};
-
-void db.transactWire([_validWire]);
-void db.transactUntyped([{ ":user/name": "Ada" }]);
-
-// ── wire form still rejects unknown / wrong types ───────────────────────────
-
-// @ts-expect-error unknown wire ident
-db.transactWire([{ ":user/nope": "x" }]);
-
-// @ts-expect-error wire name is string, not number
-db.transactWire([{ ":user/name": 42 }]);
-
-// ── eid wrapper / pull infer attr value types ──────────────────────────────
-
-const eid = Eid.of(Movies, 1001);
-type _eidWrap = Expect<Equal<typeof eid, Eid<typeof Movies>>>;
-
-// literate pull is the happy path — see pull-types.ts for the full matrix.
-
-// ── asOf / history preserve the catalog parameter ──────────────────────────
-
-const asOf = db.asOf(3);
-const hist = db.history();
-type _asOf = Expect<Equal<typeof asOf, TypedReadDatabaseClient<typeof Movies>>>;
-type _hist = Expect<Equal<typeof hist, TypedReadDatabaseClient<typeof Movies>>>;
-type _asOfCatalog = Expect<Equal<(typeof asOf)["catalog"], typeof Movies>>;
-type _asOfNoWrite = Expect<
-  Equal<"transact" extends keyof typeof asOf ? true : false, false>
+type _writtenOk = Expect<
+  Equal<Effect.Success<typeof written>, TxReport<typeof Movies>>
 >;
+type _writtenErr = Expect<Equal<Effect.Error<typeof written>, DbError>>;
+/** Every signature's `R` is `never`. */
+type _writtenR = Expect<Equal<Effect.Services<typeof written>, never>>;
 
-// Read vs Write vs ReadWrite key separation — see tx-types.ts.
+// `dbAfter` is the same `Db`, so it composes without a cast
+declare const report: TxReport<typeof Movies>;
+type _dbAfter = Expect<Equal<typeof report.dbAfter, Db<typeof Movies>>>;
+type _txEid = Expect<Equal<typeof report.txEid, Eid<typeof Movies>>>;
+
+// ── eids are data ──────────────────────────────────────────────────────────
+
+declare const eid: Eid<typeof Movies>;
+type _eidId = Expect<Equal<typeof eid.id, number>>;
+// no methods and no I/O: `Eid` is `{ id }`
+type _eidNoPull = Expect<Equal<"pull" extends keyof typeof eid ? true : false, false>>;
 
 // ── tagged errors remain on the Effect (catchTags still typechecks) ────────
 
-const caught = db
+const caught = movies
   .transact(function* (tx) {
     const e = yield* tx.entity();
     yield* e.add(User.name, "Ada");
@@ -252,38 +205,9 @@ const caught = db
       QueryBudgetExceeded: (e) => Effect.succeed(e.clause),
       InternalError: (e) => Effect.succeed(e.message),
       NetworkError: (e) => Effect.succeed(e.message),
-      MissingPeer: (e) => Effect.succeed(e.message),
     }),
   );
-type CaughtSuccess = Effect.Success<typeof caught>;
-type _caught = Expect<Equal<CaughtSuccess, TxAck | string>>;
+type _caught = Expect<
+  Equal<Effect.Success<typeof caught>, TxReport<typeof Movies> | string>
+>;
 type _caughtErr = Expect<Equal<Effect.Error<typeof caught>, never>>;
-
-// ── ensure-schema failure is on create / connect's error channel ───────────
-
-type CreateErr = Effect.Error<typeof created>;
-type ConnectErr = Effect.Error<typeof connected>;
-type _openErr = Expect<Equal<CreateErr, OpenError>>;
-type _openHasEnsure = Expect<Extends<SchemaEnsureError, CreateErr>>;
-type _openHasBad = Expect<Extends<InvalidRequest, CreateErr>>;
-type _connectHasEnsure = Expect<Extends<SchemaEnsureError, ConnectErr>>;
-type _openIsEnsureOrBad = Expect<
-  Equal<CreateErr, InvalidRequest | SchemaEnsureError>
->;
-
-const opened = system.create("movies", Movies).pipe(
-  Effect.catchTags({
-    InvalidRequest: (e) => Effect.succeed(e.message),
-    SchemaEnsureError: (e) => Effect.succeed(e.message),
-  }),
-);
-type _openedOk = Expect<
-  Equal<
-    Effect.Success<typeof opened>,
-    TypedReadWriteDatabaseClient<typeof Movies> | string
-  >
->;
-type _openedErr = Expect<Equal<Effect.Error<typeof opened>, never>>;
-
-// create requires nothing: every signature's `R` is `never`.
-type _createR = Expect<Equal<Effect.Services<typeof created>, never>>;

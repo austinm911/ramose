@@ -29,35 +29,37 @@ export const App = Cloudflare.Worker(
   "App",
   { main: import.meta.url },
   Effect.gen(function* () {
-    // Bindings still yield the untyped system (`create(name)`). Wrap it so
-    // `create(name, Movies)` is catalog-typed and ensures the schema.
-    const system = Ripple.fromReadWrite(yield* Ripple.ReadWriteSystem(Sys));
+    // The binding *is* the client. One `Databases`, bound once at init.
+    const ripple = yield* Ripple.ReadWriteSystem(Sys);
 
     // ── databases are names ──────────────────────────────────────────────────
     //
-    // `system.create(name, Movies)` validates the name and ensures the catalog
-    // (a schema tx — `:db/ident` is unique/identity, so re-asserting upserts).
-    // The untyped `create(name)` is still a zero-network upsert; the typed
-    // wrap's create transacts the schema. An invalid name fails with
-    // `InvalidRequest`; ensure failure is `SchemaEnsureError` (both mapped to 400).
+    // `ripple.db(name, Movies)` is pure: it validates nothing over the wire,
+    // opens no socket and issues no request. Db-per-tenant is therefore a
+    // function call — one per request, no resource, no deploy, no provisioning
+    // per tenant. An illegal name fails the first operation with
+    // `InvalidRequest`, so it never reaches the peer.
     //
-    // Db-per-tenant falls out of that: one `create` per request, no resource,
-    // no deploy and no provisioning per tenant. The token is shared across
-    // every name: it is the peer's one `RIPPLE_TOKEN`, checked for every
-    // tenant database and ignored when the peer has it unset
-    // (docs/RUNBOOK.md).
+    // The catalog is installed once, at deploy (`InstallSchema` in
+    // alchemy.run.ts) or at tenant creation with `db.install()` — never per
+    // request. The token is shared across every name: it is the peer's one
+    // `RIPPLE_TOKEN`, checked for every tenant database and ignored when the
+    // peer has it unset (docs/RUNBOOK.md).
     const tenantRoute = (tenantId: string) =>
       Effect.gen(function* () {
-        const tenant = yield* system.create(tenantId, Movies);
+        const tenant = ripple.db(tenantId, Movies);
+        // a tenant's first request is also its install: idempotent, one tx
+        yield* tenant.install();
 
-        const ack = yield* tenant.transact(function* (tx) {
+        const { t, dbAfter } = yield* tenant.transact(function* (tx) {
           const ada = yield* tx.entity();
           yield* ada.add(User.name, "Ada");
         });
-        const names = yield* tenant.q((q) =>
-          q.where("?e", User.name, "?n").options({ minT: ack.t }).find("?n"),
+        // `dbAfter` carries the min-`t` floor, so this reads its own write
+        const names = yield* dbAfter.q((q) =>
+          q.where("?e", User.name, "?n").find("?n"),
         );
-        return yield* HttpServerResponse.json({ tenant: tenantId, t: ack.t, names });
+        return yield* HttpServerResponse.json({ tenant: tenantId, t, names });
       });
 
     return {
@@ -71,35 +73,37 @@ export const App = Cloudflare.Worker(
         if (path.startsWith("/t/")) return yield* tenantRoute(path.slice("/t/".length));
 
         // The default database. `InstallSchema` (alchemy.run.ts) already
-        // created this name at deploy time and ensured Movies; connecting
-        // again is the same upsert + ensure.
-        const db = yield* system.create("movies", Movies);
+        // installed Movies on this name at deploy time.
+        const db = ripple.db("movies", Movies);
 
-        const ack = yield* db.transact(function* (tx) {
+        const report = yield* db.transact(function* (tx) {
           const ada = yield* tx.entity();
           yield* ada.add(User.name, "Ada");
         });
 
-        // Read your own write: `minT` fences the read against the `t` we just
-        // got back, so a replica that has not caught up refetches its basis.
-        const names = yield* db.q((q) =>
-          q.where("?e", User.name, "?n").options({ minT: ack.t }).find("?n"),
-        );
-
-        // ...and the same query as of a past transaction.
-        const before = yield* db.asOf(ack.t - 1).q((q) =>
+        // Read your own write: `dbAfter` is the same db floored at `report.t`,
+        // so a replica that has not caught up refetches its basis. No `sync`,
+        // no second round trip, no public `minT`.
+        const names = yield* report.dbAfter.q((q) =>
           q.where("?e", User.name, "?n").find("?n"),
         );
 
-        // Entity ids come back as Eid wrappers from `find("?e")`. Pull
-        // through the wrapper — a missing required field is `null`.
-        const rows = yield* db.q((q) =>
-          q.where("?e", User.name, "?n").options({ minT: ack.t }).find("?e"),
+        // …and the same query as of a past transaction. `asOf` is pure.
+        const before = yield* db
+          .asOf(report.t - 1)
+          .q((q) => q.where("?e", User.name, "?n").find("?n"));
+
+        // Entity ids come back as `Eid` data from `find("?e")`; pulling one is
+        // `db.pull` — a missing required field is `null`.
+        const rows = yield* report.dbAfter.q((q) =>
+          q.where("?e", User.name, "?n").find("?e"),
         );
         const ada =
-          rows.length === 0 ? null : yield* rows[0][0].pull({ name: User.name });
+          rows.length === 0
+            ? null
+            : yield* report.dbAfter.pull(rows[0][0], { name: User.name });
 
-        return yield* HttpServerResponse.json({ t: ack.t, names, before, ada });
+        return yield* HttpServerResponse.json({ t: report.t, names, before, ada });
       }).pipe(
         // The client's failures are tagged, so the HTTP mapping is a total
         // match rather than status-code sniffing.
@@ -114,13 +118,10 @@ export const App = Cloudflare.Worker(
           QueryBudgetExceeded: (e) =>
             HttpServerResponse.json({ error: e.message, clause: e.clause }, { status: 413 }),
           InvalidRequest: (e) => HttpServerResponse.json({ error: e.message }, { status: 400 }),
-          SchemaEnsureError: (e) =>
-            HttpServerResponse.json({ error: e.message }, { status: 400 }),
           Unauthorized: (e) => HttpServerResponse.json({ error: e.message }, { status: 401 }),
           DatabaseNotFound: (e) => HttpServerResponse.json({ error: e.message }, { status: 404 }),
           InternalError: (e) => HttpServerResponse.json({ error: e.message }, { status: 500 }),
           NetworkError: (e) => HttpServerResponse.json({ error: e.message }, { status: 502 }),
-          MissingPeer: (e) => HttpServerResponse.json({ error: e.message }, { status: 502 }),
         }),
       ),
     };

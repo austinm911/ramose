@@ -3,17 +3,17 @@
 A modern Effect-native graph database on Cloudflare.
 
 One Durable Object writes. Immutable segment trees live in R2. Datalog runs
-at the edge, next to your app. A database is a name — `create("acme")` and
-you're in. No provision step.
+at the edge, next to your app. A database is a name — `ripple.db("acme",
+Catalog)` and you're in. No provision step.
 
 ## Why it exists
 
 - **Typed catalog.** `@ripple/alchemy/db` is the schema. Attributes, uniqueness,
   cardinality — TypeScript, checked at compile time.
 - **Effect-native writes and reads.** Generator `transact`. Literate `q`.
-  `eid.pull`.
-- **Live queries.** `db.live` on the session socket. Write a row, the store
-  moves. No refetch. No invalidation call at the write site.
+  `db.pull`.
+- **Live queries.** `db.live` is a `Stream` on the session socket. Write a
+  row, it re-runs. No refetch. No invalidation call at the write site.
 - **Db-per-tenant is a function call.** One Alchemy resource, one
   `RIPPLE_TOKEN` (unset = open), or a `RIPPLE_POLICY` that turns JWT
   claims into a per-request filtered `Db` (see `docs/AUTH_LAYER.md`).
@@ -24,7 +24,7 @@ you're in. No provision step.
 
 ## Get running with Alchemy
 
-The shortest path is the todos app — React, `Session.connect`, `db.live`:
+The shortest path is the todos app — React, `Ripple.layer`, `db.live`:
 
 ```sh
 bun install
@@ -58,15 +58,15 @@ export const Peer = Cloudflare.Worker("Peer", {
 export const Sys = Ripple.System("Sys", { peer: Peer });
 ```
 
-A deploy-time Action calls `system.create("todos", Todos)` so the catalog is
-on the peer before the UI connects. `RIPPLE_TOKEN` is the peer's one bearer
-token; leave it unset and the peer is open. Set `RIPPLE_POLICY` and the peer
-verifies JWTs, ties each token to one database, and filters reads / checks
-writes against the policy in `docs/AUTH_LAYER.md`.
+A deploy-time Action calls `ripple.db("todos", Todos).install()` so the
+catalog is on the peer before the UI connects. `RIPPLE_TOKEN` is the peer's
+one bearer token; leave it unset and the peer is open. Set `RIPPLE_POLICY` and
+the peer verifies JWTs, ties each token to one database, and filters reads /
+checks writes against the policy in `docs/AUTH_LAYER.md`.
 
-An app Worker binds the same system (`Ripple.ReadWriteSystem` +
-`Ripple.fromReadWrite`) and calls `system.create(name, catalog)` per
-request — that's db-per-tenant. See `examples/kv-style/`.
+An app Worker binds the same system (`yield* Ripple.ReadWriteSystem(Sys)`) and
+calls `ripple.db(name, catalog)` per request — pure, zero network, so that is
+db-per-tenant. See `examples/kv-style/`.
 
 Local root stack (no example UI):
 
@@ -78,7 +78,7 @@ ALCHEMY_STATE=local CLOUDFLARE_ACCOUNT_ID=<32 hex> CLOUDFLARE_API_TOKEN=x \
 Any placeholder account id works for miniflare. `bun alchemy deploy` ships
 the `$USER` stage; `--stage prod` for production.
 
-## Catalog → session → transact → live
+## Catalog → db → transact → live
 
 ```ts
 import * as Ripple from "@ripple/alchemy/db";
@@ -91,14 +91,15 @@ export const Todo = Ripple.Namespace("todo", {
 });
 export const Todos = Ripple.Catalog({ todo: Todo });
 
-const { db } = await run(
-  Ripple.Session.connect({
+// one runtime, disposed with the page; the session socket is its finalizer
+const runtime = ManagedRuntime.make(
+  Ripple.layer({
     url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:8787",
-    name: "todos",
-    catalog: Todos,
-    token: import.meta.env.VITE_RIPPLE_TOKEN,
+    token: Effect.succeed(Redacted.make(import.meta.env.VITE_RIPPLE_TOKEN)),
   }),
 );
+const run = runtime.runPromise;
+const db = runtime.runSync(Ripple.Databases).db("todos", Todos);
 
 const todos = db.live((q) =>
   q.where("?e", Todo.title, "_").find("?e").pull({
@@ -107,8 +108,8 @@ const todos = db.live((q) =>
     createdAt: Todo.createdAt,
   }),
 );
-// todos.get() → { title, done, createdAt, eid }[] | undefined
-// useSyncExternalStore(todos.subscribe, todos.get)
+// Stream<readonly [Ripple.Eid<typeof Todos>, { title, done, createdAt }][]>
+// hoist it, then drain it with Stream.runForEach on its own fiber
 
 await run(
   db.transact(function* (tx) {
@@ -120,19 +121,22 @@ await run(
 );
 ```
 
-`run` is `Effect.runPromise` — every signature's `R` is `never`; see
-`examples/todos/src/db.ts`. `@ripple/alchemy/db` is a real `exports` entry and
-nothing it reaches imports the deploy engine, so the Vite app needs no alias.
+Every signature's `R` is `never`, so `runtime.runPromise` is the whole
+runtime; see `examples/todos/src/db.ts` and its twelve-line `useLive`.
+`@ripple/alchemy/db` is a real `exports` entry and nothing it reaches imports
+the deploy engine, so the Vite app needs no alias.
 
-From a Worker, skip the socket: `system.create("movies", Movies)`, then the
-same `transact` / `q` / `eid.pull`. `minT: ack.t` is the read-your-write
-fence. `db.asOf(t)` and `db.history()` are views. Outside Alchemy,
-`Ripple.Session.connect({ url, name, catalog, token })` is the same typed client.
+From a Worker the code is identical: `ripple.db("movies", Movies)`, then the
+same `transact` / `q` / `pull`. `transact` returns a `TxReport`, and its
+`dbAfter` is the same db floored at `report.t` — that is the read-your-write
+fence, with no second round trip. `db.asOf(t)` and `db.history` are pure
+views.
 
 ## Features
 
 - Immutable EAVT graph. Time travel is a view, not a dump.
-- Seek-driven datalog at the edge. Pull is `eid.pull` on a find result.
+- Seek-driven datalog at the edge. `q` and `live` are two terminals over one
+  builder; `live` is a `Stream` on the session socket.
 - One writer per name, dense `t`, persist-before-ack.
 - QueryReplicas hold novelty; workers read through them.
 - Privilege follows the system: `Read` / `Write` / `ReadWrite`.

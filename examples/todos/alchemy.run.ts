@@ -13,9 +13,9 @@ import { Todos } from "./schema.ts";
 export const InstallSchema = Alchemy.Action(
   "InstallSchema",
   Effect.gen(function* () {
-    const system = Ripple.fromWrite(yield* Ripple.WriteSystem(Sys));
+    const ripple = yield* Ripple.WriteSystem(Sys);
     return Effect.fn(function* () {
-      yield* system.create("todos", Todos);
+      yield* ripple.db("todos", Todos).install();
     });
   }).pipe(Effect.provide(Ripple.WriteSystemLocal)),
 );

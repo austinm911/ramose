@@ -24,7 +24,7 @@ import type * as runtime from "@cloudflare/workers-types";
 import * as Binding from "alchemy/Binding";
 import { isWorker, WorkerEnvironment } from "alchemy/Cloudflare/Workers";
 import * as Effect from "effect/Effect";
-import type { SystemSource } from "./Client.ts";
+import type { SystemSource } from "./Source.ts";
 import type { System } from "./System.ts";
 import { bindToken, envKeys } from "./SystemRuntime.ts";
 

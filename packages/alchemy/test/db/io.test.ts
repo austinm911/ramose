@@ -1,6 +1,12 @@
 /**
- * Typed schema surface against a fake `fetch` (request shapes) and an
- * in-process Connection peer (real create → ensure → transact → q → pull).
+ * The typed surface against a real `@ripple/core` `Connection`.
+ *
+ * The fake peer here is the whole peer: `POST /db/:name/transact|query|pull`
+ * over `fetch`, and the same reads as session frames over a fake socket. That
+ * is enough to run install → transact → q → pull → asOf → history end to end
+ * without a Worker, and to pin the two contracts a unit test cannot fake — the
+ * read fence (`minT`) actually moving a stale basis, and an uninstalled
+ * attribute failing `InvalidRequest` rather than coming back as a subset.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -11,386 +17,170 @@ import {
   QueryParseError,
   TxError,
   fromJson,
+  normalizePullPattern,
   pull,
   query,
   toJson,
 } from "@ripple/core";
-import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
-import type { FetchLike } from "../../src/Client.ts";
-import { makeSystem as makeUntypedSystem, systemSource } from "../../src/Client.ts";
-import {
-  Eid,
-  MissingPeer,
-  SchemaEnsureError,
-  fromReadWrite,
-  fromWrite,
-  isEid,
-  makeReadSystemClient,
-  makeSystem,
-  makeWriteSystemClient,
-  schemaTx,
-  unsafeDatabase,
-} from "../../src/db/internal.ts";
+import * as ManagedRuntime from "effect/ManagedRuntime";
+import { Databases, layer } from "../../src/db/internal.ts";
 
 import { Meta, Movie, Movies, User } from "./fixture.ts";
 
-const run = <A, E>(eff: Effect.Effect<A, E>) =>
-  Effect.runPromise(eff);
-
+const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
 const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
-  Effect.runPromise(
-    Effect.flip(eff),
-  );
+  Effect.runPromise(Effect.flip(eff));
 
-interface Call {
-  url: string;
-  method: string;
-  headers: Record<string, string>;
+interface Reply {
+  status: number;
   body: unknown;
 }
 
-const recorder = (
-  reply: (call: Call) => {
-    status?: number;
-    body: unknown;
-    headers?: Record<string, string>;
-  },
-) => {
-  const calls: Call[] = [];
-  const fetch: FetchLike = async (url, init) => {
-    const call: Call = {
-      url,
-      method: init.method,
-      headers: init.headers,
-      body: init.body === undefined ? undefined : JSON.parse(init.body),
-    };
-    calls.push(call);
-    const r = reply(call);
-    return new Response(JSON.stringify(r.body), {
-      status: r.status ?? 200,
-      headers: { "content-type": "application/json", ...(r.headers ?? {}) },
-    });
-  };
-  return { calls, fetch };
-};
+/**
+ * One database, one `Connection`, both wires.
+ *
+ * `staleT` pins reads to a past basis unless the request carries an
+ * `x-ripple-min-t` / `minT` past it — which is exactly what
+ * `fetchBasisWithStats` in `packages/worker/src/peer.ts` does with the fence.
+ */
+const inProcessPeer = async (options: { staleT?: number } = {}) => {
+  const conn = await Connection.create();
+  const frames: Record<string, unknown>[] = [];
+  const calls: { url: string; body: any; headers: Record<string, string> }[] = [];
+  let sockets = 0;
 
-const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
-  new Response(JSON.stringify(toJson(body)), {
-    status,
-    headers: { "content-type": "application/json", ...headers },
-  });
-
-/** In-process peer: Connection per db name, same routes the untyped client speaks. */
-const inProcessPeer = () => {
-  const conns = new Map<string, Connection>();
-  const connOf = async (name: string) => {
-    let c = conns.get(name);
-    if (!c) {
-      c = await Connection.create();
-      conns.set(name, c);
-    }
-    return c;
+  const viewOf = (b: { asOf?: number; history?: boolean }, fence: number) => {
+    let db = conn.db();
+    const stale = options.staleT;
+    if (typeof b.asOf === "number") db = db.asOf(b.asOf);
+    else if (stale !== undefined && fence <= stale) db = db.asOf(stale);
+    if (b.history) db = db.history();
+    return db;
   };
-  const fetch: FetchLike = async (url, init) => {
-    const u = new URL(url);
-    if (u.pathname === "/health") {
-      return json({ ok: true, service: "ripple", stage: "test", time: Date.now() });
-    }
-    const m = /^\/db\/([^/]+)(\/.*)$/.exec(u.pathname);
-    if (!m) return json({ error: "not found" }, 404);
-    const name = decodeURIComponent(m[1]);
-    const rest = m[2];
-    const conn = await connOf(name);
-    const body =
-      init.body === undefined ? undefined : fromJson(JSON.parse(init.body));
+
+  const answer = async (
+    op: string,
+    body: any,
+    fence: number,
+  ): Promise<Reply> => {
     try {
-      if (rest === "/transact" && init.method === "POST") {
-        const tx = (body as { tx: unknown[] }).tx;
-        const rep = await conn.transact(tx);
-        return json({
-          t: rep.t,
-          txEid: rep.txEid,
-          tempids: rep.tempids,
-          datoms: rep.txData.length,
-        });
-      }
-      if (rest === "/query" && init.method === "POST") {
-        const b = body as {
-          query: unknown;
-          inputs?: unknown[];
-          asOf?: number;
-          history?: boolean;
+      if (op === "transact") {
+        const rep = await conn.transact(body.tx);
+        return {
+          status: 200,
+          body: { t: rep.t, txEid: rep.txEid, tempids: rep.tempids, datoms: rep.txData.length },
         };
-        let db = conn.db();
-        if (typeof b.asOf === "number") db = db.asOf(b.asOf);
-        if (b.history) db = db.history();
-        const result = await query(db, b.query as object, b.inputs ?? []);
-        return json(
-          { t: db.effectiveT, root: db.effectiveT, result },
-          200,
-          { "x-ripple-basis-t": String(db.effectiveT) },
-        );
       }
-      if (rest === "/pull" && init.method === "POST") {
-        const b = body as {
-          eid: number | string | [string, unknown];
-          pattern: unknown;
-          asOf?: number;
-          history?: boolean;
-        };
-        let db = conn.db();
-        if (typeof b.asOf === "number") db = db.asOf(b.asOf);
-        if (b.history) db = db.history();
-        const eid =
-          typeof b.eid === "number" ? b.eid : await db.entid(b.eid as never);
-        if (eid === undefined) return json({ t: db.effectiveT, result: null });
-        return json({ t: db.effectiveT, result: await pull(db, eid, b.pattern as never) });
+      if (op === "q") {
+        const db = viewOf(body, fence);
+        const result = await query(db, body.query, body.inputs ?? []);
+        return { status: 200, body: { t: db.effectiveT, root: db.effectiveT, result } };
       }
-      if (rest === "/info" && init.method === "GET") {
-        return json({ db: name, transactor: { t: conn.t } });
+      if (op === "pull") {
+        const db = viewOf(body, fence);
+        // the peer's own rule: an attribute this database never installed is a
+        // bad request, not a silently missing key (packages/worker/src/index.ts)
+        const pattern = normalizePullPattern(body.pattern);
+        const unknown = pattern
+          .filter((s: any) => s.kind === "attr" && s.attr !== ":db/id")
+          .filter((s: any) => db.attr(s.attr) === undefined)
+          .map((s: any) => s.attr);
+        if (unknown.length > 0) {
+          return { status: 400, body: { error: `unknown attribute in pull pattern: ${unknown.join(", ")}` } };
+        }
+        const eid = typeof body.eid === "number" ? body.eid : await db.entid(body.eid);
+        if (eid === undefined) return { status: 200, body: { t: db.effectiveT, result: null } };
+        return { status: 200, body: { t: db.effectiveT, result: await pull(db, eid, pattern) } };
       }
-      return json({ error: "not found" }, 404);
+      return { status: 404, body: { error: `no such op ${op}` } };
     } catch (err) {
       if (err instanceof TxError) {
-        return json({ error: err.message, tag: "TxRejected", code: err.code }, 409);
+        return { status: 409, body: { error: err.message, tag: "TxRejected", code: err.code } };
       }
       if (err instanceof QueryBudgetError) {
-        return json(
-          {
-            error: err.message,
-            code: err.code,
-            clause: err.clause,
-            cells: err.cells,
-            limit: err.limit,
-          },
-          413,
-        );
+        return {
+          status: 413,
+          body: { error: err.message, code: err.code, clause: err.clause, cells: err.cells, limit: err.limit },
+        };
       }
       if (err instanceof QueryParseError || err instanceof QueryError) {
-        return json({ error: err.message }, 400);
+        return { status: 400, body: { error: err.message } };
       }
-      return json({ error: err instanceof Error ? err.message : String(err) }, 500);
+      return { status: 500, body: { error: err instanceof Error ? err.message : String(err) } };
     }
   };
-  return { fetch, conns };
-};
 
-/**
- * The same peer, with reads served from a basis pinned at `staleT` unless the
- * request's `x-ripple-min-t` asks for a newer one — which is what the real peer
- * does with the fence (`fetchBasisWithStats` in packages/worker/src/peer.ts).
- */
-const fencedPeer = (staleT: number) => {
-  const { fetch: inner, conns } = inProcessPeer();
-  const fetch: FetchLike = (url, init) => {
-    const fence = Number(init.headers["x-ripple-min-t"] ?? 0);
-    const read = /\/(query|pull)$/.test(new URL(url).pathname);
-    if (!read || init.body === undefined || fence > staleT) return inner(url, init);
-    const body = { ...(JSON.parse(init.body) as object), asOf: staleT };
-    return inner(url, { ...init, body: JSON.stringify(body) });
+  const fetchImpl = (async (url: string, init: RequestInit) => {
+    const path = new URL(String(url)).pathname;
+    const headers = (init.headers ?? {}) as Record<string, string>;
+    const body = init.body === undefined ? {} : fromJson(JSON.parse(String(init.body)));
+    calls.push({ url: String(url), body, headers });
+    const op = path.endsWith("/transact") ? "transact" : path.endsWith("/query") ? "q" : "pull";
+    const reply = await answer(op, body, Number(headers["x-ripple-min-t"] ?? 0));
+    return new Response(JSON.stringify(toJson(reply.body)), {
+      status: reply.status,
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+
+  function WebSocketImpl(this: unknown, _url: string) {
+    sockets += 1;
+    const listeners = new Map<string, ((ev: any) => void)[]>();
+    const emit = (type: string, ev: unknown) => {
+      for (const cb of listeners.get(type) ?? []) cb(ev);
+    };
+    const socket = {
+      readyState: 0,
+      addEventListener: (type: string, cb: (ev: any) => void) => {
+        listeners.set(type, [...(listeners.get(type) ?? []), cb]);
+      },
+      send: (data: string) => {
+        const frame = fromJson(JSON.parse(data)) as any;
+        frames.push(frame);
+        void answer(frame.op, frame, Number(frame.minT ?? 0)).then((reply) =>
+          emit("message", {
+            data: JSON.stringify({ id: frame.id, status: reply.status, body: toJson(reply.body) }),
+          }),
+        );
+      },
+      close: () => emit("close", {}),
+      push: (frame: unknown) => emit("message", { data: JSON.stringify(frame) }),
+    };
+    queueMicrotask(() => emit("open", {}));
+    return socket;
+  }
+
+  const runtime = ManagedRuntime.make(
+    layer({
+      url: "https://peer.local",
+      fetch: fetchImpl,
+      webSocket: WebSocketImpl as unknown as typeof WebSocket,
+    }),
+  );
+
+  return {
+    conn,
+    frames,
+    calls,
+    get sockets() {
+      return sockets;
+    },
+    ripple: runtime.runSync(Databases),
+    dispose: () => runtime.dispose(),
   };
-  return { fetch, conns };
 };
 
-describe("request shapes (fake fetch)", () => {
-  test("create validates the name before any request", async () => {
-    const { calls, fetch } = recorder(() => ({ body: {} }));
-    const system = makeSystem({ url: "https://peer.example.com", fetch });
-    const e = await runFail(system.create("BAD NAME", Movies));
-    expect(e._tag).toBe("InvalidRequest");
-    expect(calls).toHaveLength(0);
-  });
+describe("install → transact → q → pull", () => {
+  test("the whole happy path, on one Connection", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ripple.db("movies", Movies);
 
-  test("create posts schemaTx as its own transact, then transact/q/pull hit the peer", async () => {
-    const { calls, fetch } = recorder((call) => {
-      if (call.url.endsWith("/transact")) {
-        return { body: { t: 2, txEid: 1, tempids: { "tmp-1": 1001 }, datoms: 4 } };
-      }
-      if (call.url.endsWith("/query")) {
-        return { body: { t: 2, root: 2, result: [[1001, "Ada"]] } };
-      }
-      if (call.url.endsWith("/pull")) {
-        return { body: { t: 2, result: { name: "Ada", age: 36, friends: [] } } };
-      }
-      if (call.url.endsWith("/info")) {
-        return { body: { db: "movies" } };
-      }
-      if (call.url.endsWith("/health")) {
-        return { body: { ok: true, service: "ripple", stage: "dev", time: 1 } };
-      }
-      return { body: {} };
-    });
-    const system = makeSystem({ url: "https://peer.example.com", fetch });
-    const db = await run(system.create("movies", Movies));
+    const installed = await run(db.install());
+    expect(installed.t).toBeGreaterThan(0);
+    expect(peer.calls[0].url).toBe("https://peer.local/db/movies/transact");
 
-    expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe("https://peer.example.com/db/movies/transact");
-    expect(calls[0].body).toEqual({ tx: schemaTx(Movies) });
-
-    const ack = await run(
-      db.transact(function* (tx) {
-        const ada = yield* tx.entity();
-        yield* ada.add(User.name, "Ada");
-        yield* ada.add(User.age, 36);
-        yield* ada.add(Meta.source, "import");
-      }),
-    );
-    expect(ack.t).toBe(2);
-    expect(ack.tempids["tmp-1"]).toBe(1001);
-    expect(calls[1].body).toEqual({
-      tx: [
-        [":db/add", "tmp-1", ":user/name", "Ada"],
-        [":db/add", "tmp-1", ":user/age", 36],
-        [":db/add", "tmp-1", ":meta/source", "import"],
-      ],
-    });
-
-    const rows = await run(
-      db.q((q) => q.where("?e", User.name, "?n").find("?e", "?n")),
-    );
-    expect(isEid(rows[0][0])).toBe(true);
-    expect(rows[0][0].id).toBe(1001);
-    expect(rows[0][1]).toBe("Ada");
-    expect(calls[2].url).toBe("https://peer.example.com/db/movies/query");
-    expect(calls[2].body).toEqual({
-      query: { find: ["?e", "?n"], where: [["?e", ":user/name", "?n"]] },
-      inputs: [],
-    });
-
-    const pulled = await run(
-      rows[0][0].pull({
-        name: User.name,
-        age: User.age.optional,
-        friends: User.friends.with({ name: User.name }),
-      }),
-    );
-    expect(pulled).toEqual({ name: "Ada", age: 36, friends: [] });
-    expect(calls[3].url).toBe("https://peer.example.com/db/movies/pull");
-    expect(calls[3].body).toEqual({
-      eid: 1001,
-      pattern: [
-        { kind: "attr", attr: ":user/name", reverse: false, as: "name" },
-        { kind: "attr", attr: ":user/age", reverse: false, as: "age" },
-        {
-          kind: "attr",
-          attr: ":user/friends",
-          reverse: false,
-          as: "friends",
-          sub: [{ kind: "attr", attr: ":user/name", reverse: false, as: "name" }],
-        },
-      ],
-    });
-
-    expect(await run(db.info())).toEqual({ db: "movies" });
-    expect((await run(db.health())).ok).toBe(true);
-    expect((await run(system.health())).ok).toBe(true);
-  });
-
-  test("eid.pull carries the read fence to the pull request's headers", async () => {
-    const { calls, fetch } = recorder((call) =>
-      call.url.endsWith("/query")
-        ? { body: { t: 2, root: 2, result: [[1001]] } }
-        : { body: { t: 2, txEid: 1, tempids: {}, datoms: 4, result: { name: "Ada" } } },
-    );
-    const system = makeSystem({ url: "https://peer.example.com", fetch });
-    const db = await run(system.create("movies", Movies));
-    const rows = await run(db.q((q) => q.where("?e", User.name, "?n").find("?e")));
-    calls.length = 0;
-
-    await run(rows[0][0].pull({ name: User.name }, { minT: 42 }));
-    await run(rows[0][0].pull({ name: User.name }));
-
-    expect(calls[0].url).toBe("https://peer.example.com/db/movies/pull");
-    expect(calls[0].headers["x-ripple-min-t"]).toBe("42");
-    expect(calls[1].headers["x-ripple-min-t"]).toBeUndefined();
-  });
-
-  test("ensure failure is SchemaEnsureError, not the raw DbError", async () => {
-    const { fetch } = recorder(() => ({
-      status: 409,
-      body: { error: "unique conflict", tag: "TxRejected", code: "tx/unique-conflict" },
-    }));
-    const system = makeSystem({ url: "https://peer.example.com", fetch });
-    const e = await runFail(system.create("movies", Movies));
-    expect(e._tag).toBe("SchemaEnsureError");
-    expect(e).toBeInstanceOf(SchemaEnsureError);
-    expect(e.message).toBe("unique conflict");
-  });
-
-  test("asOf / history pin the query body; transactWire / untyped submit as-is", async () => {
-    const { calls, fetch } = recorder(() => ({
-      body: { t: 3, txEid: 1, tempids: {}, datoms: 1, root: 3, result: [] },
-    }));
-    const system = makeSystem({ url: "https://peer.example.com", fetch });
-    const db = await run(system.create("movies", Movies));
-    calls.length = 0;
-
-    await run(db.asOf(2).q((q) => q.where("?e", User.name, "?n").find("?n")));
-    await run(db.history().q((q) => q.where("?e", User.name, "?n").find("?n")));
-    expect(calls[0].body).toEqual({
-      query: { find: ["?n"], where: [["?e", ":user/name", "?n"]] },
-      inputs: [],
-      asOf: 2,
-    });
-    expect(calls[1].body).toEqual({
-      query: { find: ["?n"], where: [["?e", ":user/name", "?n"]] },
-      inputs: [],
-      history: true,
-    });
-
-    await run(db.transactWire([{ ":user/name": "Ada" }]));
-    await run(db.transactUntyped([{ ":user/name": "Bob" }]));
-    expect(calls[2].body).toEqual({ tx: [{ ":user/name": "Ada" }] });
-    expect(calls[3].body).toEqual({ tx: [{ ":user/name": "Bob" }] });
-  });
-
-  test("privilege: read has q and skips ensure; write has transact", async () => {
-    const { calls, fetch } = recorder(() => ({
-      body: { t: 1, txEid: 1, tempids: {}, datoms: 0, result: [], root: 1 },
-    }));
-    const source = systemSource({ url: "https://peer.example.com", fetch });
-    const read = makeReadSystemClient(source);
-    const write = makeWriteSystemClient(source);
-    const r = await run(read.create("movies", Movies));
-    expect("transact" in r).toBe(false);
-    expect(calls.filter((c) => c.url.endsWith("/transact"))).toHaveLength(0);
-    await run(r.q((q) => q.where("?e", User.name, "?n").find("?n")));
-
-    const w = await run(write.create("movies", Movies));
-    expect("q" in w).toBe(false);
-    expect(calls.filter((c) => c.url.endsWith("/transact")).length).toBeGreaterThan(0);
-    await run(
-      w.transact(function* (tx) {
-        const e = yield* tx.entity();
-        yield* e.add(User.name, "Ada");
-      }),
-    );
-  });
-
-  test("fromReadWrite / fromWrite ensure the catalog", async () => {
-    const { calls, fetch } = recorder(() => ({
-      body: { t: 1, txEid: 1, tempids: {}, datoms: 0, result: [], root: 1 },
-    }));
-    const untyped = makeUntypedSystem({ url: "https://peer.example.com", fetch });
-    const rw = fromReadWrite(untyped);
-    const db = await run(rw.create("movies", Movies));
-    expect(db.catalog).toBe(Movies);
-    expect(calls.filter((c) => c.url.endsWith("/transact"))).toHaveLength(1);
-
-    const write = fromWrite(untyped);
-    await run(write.create("movies", Movies));
-    expect(calls.filter((c) => c.url.endsWith("/transact"))).toHaveLength(2);
-  });
-});
-
-describe("in-process peer", () => {
-  test("create → gen transact → q Eid → pull :as / nested, asOf, history, catchTags", async () => {
-    const { fetch } = inProcessPeer();
-    const system = makeSystem({ url: "https://peer.local", fetch });
-    const db = await run(system.create("movies", Movies));
-
-    const ack = await run(
+    const report = await run(
       db.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
@@ -408,19 +198,19 @@ describe("in-process peer", () => {
         yield* arrival.add(Movie.year, 2016);
       }),
     );
-    expect(ack.t).toBeGreaterThan(1);
+    expect(report.t).toBeGreaterThan(installed.t);
+    expect(report.txEid.id).toBeGreaterThan(0);
+    expect(report.datomCount).toBeGreaterThan(0);
 
+    // read-your-writes with no second round trip
     const rows = await run(
-      db.q((q) =>
-        q.where("?e", User.name, "?n").options({ minT: ack.t }).find("?e", "?n"),
-      ),
+      report.dbAfter.q((q) => q.where("?e", User.name, "?n").find("?e", "?n")),
     );
-    const adaRow = rows.find((r) => r[1] === "Ada");
-    expect(adaRow).toBeDefined();
-    expect(isEid(adaRow![0])).toBe(true);
+    const ada = rows.find((r) => r[1] === "Ada")!;
+    expect(ada[0].id).toBeGreaterThan(0);
 
     const pulled = await run(
-      adaRow![0].pull({
+      report.dbAfter.pull(ada[0], {
         name: User.name,
         age: User.age.optional,
         source: Meta.source,
@@ -428,10 +218,7 @@ describe("in-process peer", () => {
           name: User.name,
           age: User.age.optional,
         }),
-        friends: User.friends.with({
-          name: User.name,
-          age: User.age.optional,
-        }),
+        friends: User.friends.with({ name: User.name }),
       }),
     );
     expect(pulled).not.toBeNull();
@@ -441,240 +228,269 @@ describe("in-process peer", () => {
     expect(pulled!.bestFriend?.name).toBe("Alonzo");
     expect(pulled!.friends.map((f) => f.name)).toEqual(["Alonzo"]);
 
-    const requiredOnly = await run(adaRow![0].pull({ name: User.name }));
-    expect(requiredOnly).toEqual({ name: "Ada" });
-
-    const soup = await run(adaRow![0].pull([User.name, User.age] as const));
+    // the ident-keyed escape hatch
+    const soup = await run(db.pull(ada[0], [User.name, User.age] as const));
     expect(soup![":user/name"]).toBe("Ada");
     expect(soup![":user/age"]).toBe(36);
 
-    const before = db.asOf(ack.t - 1);
-    const pastRows = await run(
-      before.q((q) => q.where("?e", User.name, "?n").find("?e")),
-    );
-    expect(pastRows).toEqual([]);
-
-    const hist = db.history();
-    const histRows = await run(
-      hist.q((q) => q.where("?e", User.name, "Ada").find("?e")),
-    );
-    expect(histRows.length).toBeGreaterThanOrEqual(1);
-    expect(isEid(histRows[0][0])).toBe(true);
-
-    const friendRows = await run(
-      db.q((q) => q.where("?e", User.friends, "?f").find("?f")),
-    );
-    expect(isEid(friendRows[0][0])).toBe(true);
-    expect(friendRows[0][0].id).toBeGreaterThan(0);
-
-    const viaEffect = await run(
-      db.transact((tx) =>
-        Effect.gen(function* () {
-          const e = yield* tx.entity([User.name, "Ada"]);
-          yield* e.add(User.age, 37);
-        }),
-      ),
-    );
-    expect(viaEffect.t).toBeGreaterThan(ack.t);
-
-    const after = await run(adaRow![0].pull({ age: User.age }));
-    expect(after!.age).toBe(37);
-
-    const caught = await run(
-      db.transactUntyped([[":db/add", 1, ":user/nope", "x"]]).pipe(
-        Effect.catchTags({
-          TxRejected: (e) => Effect.succeed({ error: e._tag, message: e.message }),
-          Unavailable: (e) => Effect.succeed({ error: e._tag, message: e.message }),
-          InvalidRequest: (e) => Effect.succeed({ error: e._tag, message: e.message }),
-          DatabaseNotFound: (e) => Effect.succeed({ error: e._tag, message: e.message }),
-          Unauthorized: (e) => Effect.succeed({ error: e._tag, message: e.message }),
-          QueryBudgetExceeded: (e) =>
-            Effect.succeed({ error: e._tag, message: e.message }),
-          InternalError: (e) => Effect.succeed({ error: e._tag, message: e.message }),
-          NetworkError: (e) => Effect.succeed({ error: e._tag, message: e.message }),
-        }),
-      ),
-    );
-    expect("error" in caught ? caught.error : undefined).toBe("TxRejected");
-
-    const opened = await run(
-      system.create("nope!", Movies).pipe(
-        Effect.catchTags({
-          InvalidRequest: (e) => Effect.succeed({ error: e._tag, message: e.message }),
-          SchemaEnsureError: (e) =>
-            Effect.succeed({ error: e._tag, message: e.message }),
-        }),
-      ),
-    );
-    expect(opened).toEqual(
-      expect.objectContaining({ error: "InvalidRequest" }),
-    );
-
-    const health = await run(system.health());
-    expect(health.ok).toBe(true);
-    expect((await run(db.info())).db).toBe("movies");
+    // reads went over the socket; only the two writes were HTTPS
+    expect(peer.calls.map((c) => c.url)).toEqual([
+      "https://peer.local/db/movies/transact",
+      "https://peer.local/db/movies/transact",
+    ]);
+    expect(peer.frames.map((f) => f.op)).toEqual(["q", "pull", "pull"]);
+    await peer.dispose();
   });
 
-  test("minT fences pull: a stale basis misses the write, the fence sees it", async () => {
-    const { fetch, conns } = inProcessPeer();
-    const system = makeSystem({ url: "https://peer.local", fetch });
-    const db = await run(system.create("movies", Movies));
-    const ack = await run(
-      db.transact(function* (tx) {
-        const ada = yield* tx.entity();
-        yield* ada.add(User.name, "Ada");
-      }),
-    );
+  test("install is idempotent — the second one is the same upsert", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ripple.db("movies", Movies);
+    const first = await run(db.install());
+    const second = await run(db.install());
+    expect(second.t).toBeGreaterThan(first.t);
+    expect(peer.calls[1].body).toEqual(peer.calls[0].body);
 
-    // rebuild the client on a peer whose reads are pinned behind that write
-    const stale = fencedPeer(ack.t - 1);
-    stale.conns.set("movies", conns.get("movies")!);
-    const fenced = await run(
-      makeSystem({ url: "https://peer.local", fetch: stale.fetch }).connect(
-        "movies",
-        Movies,
-      ),
-    );
-    const rows = await run(
-      fenced.q((q) =>
-        q.where("?e", User.name, "?n").options({ minT: ack.t }).find("?e"),
-      ),
-    );
-    const ada = rows[0][0];
-
-    expect(await run(ada.pull({ name: User.name }))).toBeNull();
-    expect(await run(ada.pull({ name: User.name }, { minT: ack.t }))).toEqual({
-      name: "Ada",
-    });
-  });
-
-  test("connect re-ensures (ident upsert) and can read what create wrote", async () => {
-    const { fetch } = inProcessPeer();
-    const system = makeSystem({ url: "https://peer.local", fetch });
-    const a = await run(system.create("movies", Movies));
+    // and the schema is usable either way round
     await run(
-      a.transact(function* (tx) {
+      db.transact(function* (tx) {
         const e = yield* tx.entity();
         yield* e.add(User.name, "Ada");
       }),
     );
-    const b = await run(system.connect("movies", Movies));
-    const rows = await run(
-      b.q((q) => q.where("?e", User.name, "?n").find("?n")),
-    );
-    expect(rows).toEqual([["Ada"]]);
+    expect(
+      await run(db.q((q) => q.where("?e", User.name, "?n").find("?n"))),
+    ).toEqual([["Ada"]]);
+    await peer.dispose();
   });
-});
 
-describe("pull required vs optional (in-process)", () => {
-  test("required missing → null; optional missing → undefined; nested many filters; required nested missing → parent null", async () => {
-    const { fetch } = inProcessPeer();
-    const system = makeSystem({ url: "https://peer.local", fetch });
-    const db = await run(system.create("movies", Movies));
-
-    await run(
+  test("`.find` with a pull terminal yields [Eid, Pull] rows", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ripple.db("movies", Movies);
+    await run(db.install());
+    const { dbAfter } = await run(
       db.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
+        const bob = yield* tx.entity();
+        yield* bob.add(User.name, "Bob");
+      }),
+    );
 
+    const rows = await run(
+      dbAfter.q((q) =>
+        q.where("?e", User.name, "_").find("?e").pull({ name: User.name }),
+      ),
+    );
+    expect(rows.map((r) => r[1].name).sort()).toEqual(["Ada", "Bob"]);
+    expect(rows.every((r) => typeof r[0].id === "number")).toBe(true);
+    await peer.dispose();
+  });
+});
+
+describe("views", () => {
+  test("asOf pins the past, history sees the retraction, and neither can write", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ripple.db("movies", Movies);
+    await run(db.install());
+    const first = await run(
+      db.transact(function* (tx) {
+        const ada = yield* tx.entity();
+        yield* ada.add(User.name, "Ada");
+      }),
+    );
+
+    const before = await run(
+      db.asOf(first.t - 1).q((q) => q.where("?e", User.name, "?n").find("?n")),
+    );
+    expect(before).toEqual([]);
+
+    const now = await run(
+      first.dbAfter.q((q) => q.where("?e", User.name, "?n").find("?n")),
+    );
+    expect(now).toEqual([["Ada"]]);
+
+    const hist = await run(
+      db.history.q((q) => q.where("?e", User.name, "Ada").find("?e")),
+    );
+    expect(hist.length).toBeGreaterThanOrEqual(1);
+
+    expect("transact" in db.asOf(1)).toBe(false);
+    expect("install" in db.history).toBe(false);
+    await peer.dispose();
+  });
+
+  test("a view does not mutate the db it came from", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ripple.db("movies", Movies);
+    await run(db.install());
+    const past = db.asOf(1);
+    await run(db.q((q) => q.where("?e", User.name, "?n").find("?n")));
+    await run(past.q((q) => q.where("?e", User.name, "?n").find("?n")));
+    expect(peer.frames.map((f) => f.asOf)).toEqual([undefined, 1]);
+    await peer.dispose();
+  });
+});
+
+describe("the read fence is what dbAfter carries", () => {
+  test("a stale basis misses the write; the floor sees it", async () => {
+    const peer = await inProcessPeer({ staleT: 1 });
+    const db = peer.ripple.db("movies", Movies);
+    await run(db.install());
+    const report = await run(
+      db.transact(function* (tx) {
+        const ada = yield* tx.entity();
+        yield* ada.add(User.name, "Ada");
+      }),
+    );
+
+    // an unfenced read is served from the pinned basis
+    expect(
+      await run(db.q((q) => q.where("?e", User.name, "?n").find("?n"))),
+    ).toEqual([]);
+    // dbAfter carries `report.t`, which is past the pin
+    expect(
+      await run(
+        report.dbAfter.q((q) => q.where("?e", User.name, "?n").find("?n")),
+      ),
+    ).toEqual([["Ada"]]);
+    await peer.dispose();
+  });
+});
+
+describe("failures", () => {
+  test("pull against an uninstalled database fails InvalidRequest, like q", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ripple.db("movies", Movies);
+    // note: no install()
+
+    const pulled = await runFail(db.pull({ id: 1 }, { name: User.name }));
+    expect(pulled._tag).toBe("InvalidRequest");
+    expect(pulled.message).toContain(":user/name");
+
+    const queried = await runFail(
+      db.q((q) => q.where("?e", User.name, "?n").find("?n")),
+    );
+    expect(queried._tag).toBe("InvalidRequest");
+    await peer.dispose();
+  });
+
+  test("a rejected transaction is TxRejected, and catchTags is total", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ripple.db("movies", Movies);
+    await run(db.install());
+
+    const caught = await run(
+      db
+        .transact(function* (tx) {
+          yield* tx.add(1, ":user/nope" as never, "x" as never);
+        })
+        .pipe(
+          Effect.catchTags({
+            TxRejected: (e) => Effect.succeed(e._tag),
+            Unavailable: (e) => Effect.succeed(e._tag),
+            InvalidRequest: (e) => Effect.succeed(e._tag),
+            DatabaseNotFound: (e) => Effect.succeed(e._tag),
+            Unauthorized: (e) => Effect.succeed(e._tag),
+            QueryBudgetExceeded: (e) => Effect.succeed(e._tag),
+            InternalError: (e) => Effect.succeed(e._tag),
+            NetworkError: (e) => Effect.succeed(e._tag),
+          }),
+        ),
+    );
+    expect(caught).toBe("TxRejected");
+    await peer.dispose();
+  });
+
+  test("a generator body that fails does not submit", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ripple.db("movies", Movies);
+    await run(db.install());
+    const writes = peer.calls.length;
+
+    const e = await runFail(
+      db.transact(function* (tx) {
+        const ada = yield* tx.entity();
+        yield* ada.add(User.name, "Ada");
+        return yield* Effect.fail("nope" as const);
+      }),
+    );
+    expect(e).toBe("nope");
+    expect(peer.calls).toHaveLength(writes);
+    expect(
+      await run(db.q((q) => q.where("?e", User.name, "?n").find("?n"))),
+    ).toEqual([]);
+    await peer.dispose();
+  });
+
+  test("required vs optional: missing required is null, optional is undefined", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ripple.db("movies", Movies);
+    await run(db.install());
+    const { dbAfter } = await run(
+      db.transact(function* (tx) {
+        const ada = yield* tx.entity();
+        yield* ada.add(User.name, "Ada");
         const alonzo = yield* tx.entity();
         yield* alonzo.add(User.name, "Alonzo");
         yield* ada.add(User.friends, alonzo.id as never);
-
         const ghost = yield* tx.entity();
         yield* ghost.add(User.age, 1);
         yield* ada.add(User.friends, ghost.id as never);
       }),
     );
-
     const rows = await run(
-      db.q((q) => q.where("?e", User.name, "Ada").find("?e")),
+      dbAfter.q((q) => q.where("?e", User.name, "Ada").find("?e")),
     );
     const ada = rows[0][0];
-    expect(isEid(ada)).toBe(true);
 
-    const requiredAge = await run(ada.pull({ name: User.name, age: User.age }));
-    expect(requiredAge).toBeNull();
-
-    const optionalAge = await run(
-      ada.pull({ name: User.name, age: User.age.optional }),
-    );
-    expect(optionalAge).toEqual({ name: "Ada", age: undefined });
+    expect(await run(dbAfter.pull(ada, { name: User.name, age: User.age }))).toBeNull();
+    expect(
+      await run(dbAfter.pull(ada, { name: User.name, age: User.age.optional })),
+    ).toEqual({ name: "Ada", age: undefined });
 
     const friends = await run(
-      ada.pull({
+      dbAfter.pull(ada, {
         name: User.name,
         friends: User.friends.with({ name: User.name }),
       }),
     );
-    expect(friends).not.toBeNull();
     expect(friends!.friends.map((f) => f.name)).toEqual(["Alonzo"]);
 
-    const requiredBest = await run(
-      ada.pull({
-        name: User.name,
-        bestFriend: User.bestFriend.with({ name: User.name }),
-      }),
-    );
-    expect(requiredBest).toBeNull();
-
-    const optionalBest = await run(
-      ada.pull({
-        name: User.name,
-        bestFriend: User.bestFriend.optional.with({ name: User.name }),
-      }),
-    );
-    expect(optionalBest).toEqual({ name: "Ada", bestFriend: undefined });
-  });
-});
-
-describe("effect honesty", () => {
-  test("Eid.of without pullFn fails MissingPeer", async () => {
-    const e = await runFail(Eid.of(Movies, 1001).pull({ name: User.name }));
-    expect(e._tag).toBe("MissingPeer");
-    expect(e).toBeInstanceOf(MissingPeer);
+    expect(
+      await run(
+        dbAfter.pull(ada, {
+          name: User.name,
+          bestFriend: User.bestFriend.with({ name: User.name }),
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      await run(
+        dbAfter.pull(ada, {
+          name: User.name,
+          bestFriend: User.bestFriend.optional.with({ name: User.name }),
+        }),
+      ),
+    ).toEqual({ name: "Ada", bestFriend: undefined });
+    await peer.dispose();
   });
 
-  test("unsafeDatabase without a peer fails MissingPeer", async () => {
-    const db = unsafeDatabase(Movies);
-    const e = await runFail(
-      db.q((q) => q.where("?e", User.name, "?n").find("?n")),
-    );
-    expect(e._tag).toBe("MissingPeer");
-  });
-
-  test("generator transact propagates yielded failures and does not submit", async () => {
-    class Extra extends Data.TaggedError("Extra")<{
-      readonly message: string;
-    }> {}
-    const { fetch } = inProcessPeer();
-    const system = makeSystem({ url: "https://peer.local", fetch });
-    const db = await run(system.create("movies", Movies));
-    const e = await runFail(
+  test("a lookup ref resolves, and a miss is null", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ripple.db("movies", Movies);
+    await run(db.install());
+    const { dbAfter } = await run(
       db.transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
-        return yield* Effect.fail(new Extra({ message: "nope" }));
       }),
     );
-    expect(e._tag).toBe("Extra");
-    const rows = await run(
-      db.q((q) => q.where("?e", User.name, "?n").find("?n")),
-    );
-    expect(rows).toEqual([]);
-  });
-
-  test("transactWire rejects unknown idents before the peer", async () => {
-    const { calls, fetch } = recorder(() => ({
-      body: { t: 1, txEid: 1, tempids: {}, datoms: 0 },
-    }));
-    const system = makeSystem({ url: "https://peer.example.com", fetch });
-    const db = await run(system.create("movies", Movies));
-    calls.length = 0;
-    const e = await runFail(
-      db.transactWire([{ ":user/nope": "x" }] as never),
-    );
-    expect(e._tag).toBe("InvalidRequest");
-    expect(calls).toHaveLength(0);
+    expect(
+      await run(dbAfter.pull([":user/name", "Ada"], { name: User.name })),
+    ).toEqual({ name: "Ada" });
+    expect(
+      await run(dbAfter.pull([":user/name", "Nobody"], { name: User.name })),
+    ).toBeNull();
+    await peer.dispose();
   });
 });

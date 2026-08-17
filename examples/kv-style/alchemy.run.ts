@@ -26,16 +26,16 @@ import { Movies } from "./schema.ts";
 // peer's freshly-deployed URL (the local workerd dev server's, under
 // `alchemy dev`).
 //
-// Typed `create("movies", Movies)` validates the name and ensures the catalog
-// (a schema tx). That ensure *is* the install — there is no separate ident-map
-// transact. It has to run in the apply fn (the peer is not up at plan time).
+// `ripple.db("movies", Movies)` is pure — naming a database costs no request —
+// and `install()` is the one place the catalog lands: an ordinary, idempotent
+// transaction. It has to run in the apply fn (the peer is not up at plan time).
 
 export const InstallSchema = Alchemy.Action(
   "InstallSchema",
   Effect.gen(function* () {
-    const system = Ripple.fromWrite(yield* Ripple.WriteSystem(Sys));
+    const ripple = yield* Ripple.WriteSystem(Sys);
     return Effect.fn(function* () {
-      yield* system.create("movies", Movies);
+      yield* ripple.db("movies", Movies).install();
     });
   }).pipe(Effect.provide(Ripple.WriteSystemLocal)),
 );

@@ -1,184 +1,218 @@
+/**
+ * The consumer proof: the app's own query and writes against a real
+ * `@ripple/core` `Connection`, over the two wires the client actually uses —
+ * writes as `POST /db/todos/transact`, reads and `t` ticks as session frames.
+ *
+ * What it pins is the loop the UI depends on: a write moves the live stream
+ * with no refetch and no invalidation call of its own.
+ */
+
 import { describe, expect, test } from "bun:test";
-import { Session } from "@ripple/alchemy/db";
+import * as Ripple from "@ripple/alchemy/db";
 import { Connection, fromJson, pull, query, toJson } from "@ripple/core";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Stream from "effect/Stream";
 import { Todos } from "../schema.ts";
-import { addTodo, deleteTodo, setDone, todoQuery } from "../src/todos.ts";
-
-const run = <A, E>(effect: Effect.Effect<A, E>) =>
-  Effect.runPromise(effect);
-
-interface Frame {
-  id?: number;
-  op: string;
-  [field: string]: unknown;
-}
-
-const inProcessPeer = async () => {
-  const conn = await Connection.create();
-  const sent: Frame[] = [];
-  const listeners = new Map<string, ((ev: any) => void)[]>();
-  const emit = (type: string, ev: unknown) => {
-    for (const cb of listeners.get(type) ?? []) cb(ev);
-  };
-  const push = (frame: unknown) =>
-    emit("message", { data: JSON.stringify(frame) });
-
-  const answer = async (
-    frame: Frame,
-  ): Promise<{ status?: number; body: unknown }> => {
-    const f = fromJson(frame) as Frame;
-    switch (f.op) {
-      case "transact": {
-        const rep = await conn.transact(f.tx as never);
-        return {
-          body: {
-            t: rep.t,
-            txEid: rep.txEid,
-            tempids: rep.tempids,
-            datoms: rep.txData.length,
-          },
-        };
-      }
-      case "q": {
-        const db = conn.db();
-        const result = await query(
-          db,
-          f.query as object,
-          (f.inputs as unknown[]) ?? [],
-        );
-        return { body: { t: db.effectiveT, root: db.effectiveT, result } };
-      }
-      case "pull": {
-        const db = conn.db();
-        return {
-          body: {
-            t: db.effectiveT,
-            result: await pull(db, f.eid as number, f.pattern as never),
-          },
-        };
-      }
-      default:
-        return { status: 404, body: { error: `no such op ${String(f.op)}` } };
-    }
-  };
-
-  const socket = {
-    send: (data: string) => {
-      const frame = JSON.parse(data) as Frame;
-      sent.push(frame);
-      void answer(frame).then(
-        (reply) => {
-          push({ id: frame.id, status: reply.status ?? 200, body: toJson(reply.body) });
-          if (frame.op === "transact") push({ op: "t", t: conn.t });
-        },
-        (cause: unknown) =>
-          push({ id: frame.id, status: 500, body: { error: String(cause) } }),
-      );
-    },
-    close: () => emit("close", {}),
-    addEventListener: (type: string, cb: (ev: any) => void) => {
-      listeners.set(type, [...(listeners.get(type) ?? []), cb]);
-    },
-  };
-
-  return { conn, sent, push, connect: () => socket };
-};
-
-const open = async () => {
-  const peer = await inProcessPeer();
-  const { session, db } = await run(
-    Session.connect({
-      url: "https://peer.local",
-      name: "todos",
-      catalog: Todos,
-      connect: peer.connect,
-    }),
-  );
-  return { peer, session, db };
-};
+import {
+  addTodo,
+  deleteTodo,
+  setDone,
+  todoQuery,
+  type TodoRow,
+  type TodosDb,
+} from "../src/todos.ts";
 
 const settle = () => Bun.sleep(30);
 
-describe("the app's writes move the app's live store", () => {
-  test("add / toggle / delete, with no refetch and no invalidation call", async () => {
-    const { db, session } = await open();
-    const todos = db.live(todoQuery);
-    let notified = 0;
-    todos.subscribe(() => {
-      notified += 1;
+/** One database, one `Connection`, both wires. */
+const inProcessPeer = async () => {
+  const conn = await Connection.create();
+  const pushes: ((frame: unknown) => void)[] = [];
+
+  const answer = async (op: string, body: any) => {
+    if (op === "transact") {
+      const rep = await conn.transact(body.tx);
+      return { status: 200, body: { t: rep.t, txEid: rep.txEid, tempids: rep.tempids, datoms: rep.txData.length } };
+    }
+    const db = conn.db();
+    if (op === "q") {
+      return {
+        status: 200,
+        body: { t: db.effectiveT, root: db.effectiveT, result: await query(db, body.query, body.inputs ?? []) },
+      };
+    }
+    return {
+      status: 200,
+      body: { t: db.effectiveT, result: await pull(db, body.eid as number, body.pattern) },
+    };
+  };
+
+  const fetchImpl = (async (url: string, init: RequestInit) => {
+    const body = fromJson(JSON.parse(String(init.body))) as any;
+    const reply = await answer("transact", body);
+    // a write is basis movement every socket must hear about
+    for (const push of pushes) push({ op: "t", t: conn.t });
+    return new Response(JSON.stringify(toJson(reply.body)), {
+      status: reply.status,
+      headers: { "content-type": "application/json" },
     });
+  }) as unknown as typeof fetch;
 
-    expect(todos.get()).toBeUndefined();
-    await settle();
-    expect(todos.get()).toEqual([]);
+  function WebSocketImpl(this: unknown, _url: string) {
+    const listeners = new Map<string, ((ev: any) => void)[]>();
+    const emit = (type: string, ev: unknown) => {
+      for (const cb of listeners.get(type) ?? []) cb(ev);
+    };
+    pushes.push((frame) => emit("message", { data: JSON.stringify(frame) }));
+    const socket = {
+      readyState: 0,
+      addEventListener: (type: string, cb: (ev: any) => void) => {
+        listeners.set(type, [...(listeners.get(type) ?? []), cb]);
+      },
+      send: (data: string) => {
+        const frame = fromJson(JSON.parse(data)) as any;
+        void answer(frame.op, frame).then((reply) =>
+          emit("message", {
+            data: JSON.stringify({ id: frame.id, status: reply.status, body: toJson(reply.body) }),
+          }),
+        );
+      },
+      close: () => emit("close", {}),
+    };
+    queueMicrotask(() => emit("open", {}));
+    return socket;
+  }
 
-    await run(addTodo(db, "write the spec"));
+  const runtime = ManagedRuntime.make(
+    Ripple.layer({
+      url: "https://peer.local",
+      fetch: fetchImpl,
+      webSocket: WebSocketImpl as unknown as typeof WebSocket,
+    }),
+  );
+  const db: TodosDb = runtime.runSync(Ripple.Databases).db("todos", Todos);
+  await Effect.runPromise(db.install());
+  return {
+    conn,
+    db,
+    tick: () => {
+      for (const push of pushes) push({ op: "t", t: conn.t });
+    },
+    dispose: () => runtime.dispose(),
+  };
+};
+
+/** The example's own `useLive`, minus React. */
+const live = (stream: Stream.Stream<readonly TodoRow[], Ripple.DbError>) => {
+  let rows: readonly TodoRow[] | undefined;
+  let error: unknown;
+  let changes = 0;
+  const fiber = Effect.runFork(
+    Stream.runForEach(stream, (next) =>
+      Effect.sync(() => {
+        rows = next;
+        changes += 1;
+      }),
+    ).pipe(
+      Effect.catchCause((cause) =>
+        Effect.sync(() => {
+          error = Cause.squash(cause);
+        }),
+      ),
+    ),
+  );
+  return {
+    get rows() {
+      return rows;
+    },
+    get error() {
+      return error;
+    },
+    get changes() {
+      return changes;
+    },
+    stop: () => Effect.runPromise(Fiber.interrupt(fiber)),
+  };
+};
+
+const titles = (rows: readonly TodoRow[] | undefined) =>
+  (rows ?? []).map((r) => r[1].title);
+
+describe("the app's writes move the app's live stream", () => {
+  test("add / toggle / delete, with no refetch and no invalidation call", async () => {
+    const peer = await inProcessPeer();
+    const todos = live(peer.db.live(todoQuery));
+
+    expect(todos.rows).toBeUndefined();
     await settle();
-    const added = todos.get()!;
-    expect(added.map((r) => r.title)).toEqual(["write the spec"]);
-    expect(added[0].done).toBe(false);
-    expect(added[0].createdAt).toBeInstanceOf(Date);
-    expect(notified).toBeGreaterThan(0);
+    expect(todos.rows).toEqual([]);
+
+    await Effect.runPromise(addTodo(peer.db, "write the spec"));
+    await settle();
+    const added = todos.rows!;
+    expect(titles(added)).toEqual(["write the spec"]);
+    expect(added[0][1].done).toBe(false);
+    expect(added[0][1].createdAt).toBeInstanceOf(Date);
+    expect(todos.changes).toBeGreaterThan(1);
     expect(todos.error).toBeUndefined();
 
-    await run(setDone(db, added[0].eid, true));
+    const first = added[0][0];
+    await Effect.runPromise(setDone(peer.db, first, true));
     await settle();
-    expect(todos.get()!.map((r) => r.done)).toEqual([true]);
-    expect(todos.get()!.map((r) => r.title)).toEqual(["write the spec"]);
+    expect(todos.rows!.map((r) => r[1].done)).toEqual([true]);
+    expect(titles(todos.rows)).toEqual(["write the spec"]);
 
-    await run(setDone(db, added[0].eid, false));
+    await Effect.runPromise(setDone(peer.db, first, false));
     await settle();
-    expect(todos.get()!.map((r) => r.done)).toEqual([false]);
+    expect(todos.rows!.map((r) => r[1].done)).toEqual([false]);
 
-    await run(addTodo(db, "ship it"));
+    await Effect.runPromise(addTodo(peer.db, "ship it"));
     await settle();
-    expect(todos.get()!.map((r) => r.title).sort()).toEqual([
-      "ship it",
-      "write the spec",
-    ]);
+    expect(titles(todos.rows).sort()).toEqual(["ship it", "write the spec"]);
 
-    await run(deleteTodo(db, added[0].eid));
+    await Effect.runPromise(deleteTodo(peer.db, first));
     await settle();
-    expect(todos.get()!.map((r) => r.title)).toEqual(["ship it"]);
+    expect(titles(todos.rows)).toEqual(["ship it"]);
 
-    session.close();
+    await todos.stop();
+    await peer.dispose();
   });
 
-  test("session.close() stops the store: no wake, no pass, snapshot stands", async () => {
-    const { db, session, peer } = await open();
-    const todos = db.live(todoQuery);
-    await run(addTodo(db, "write the spec"));
+  test("a write by someone else arrives as a t frame and re-runs the query", async () => {
+    const peer = await inProcessPeer();
+    const todos = live(peer.db.live(todoQuery));
     await settle();
-    const last = todos.get();
-    expect(last).toHaveLength(1);
+    expect(todos.rows).toEqual([]);
 
-    let notified = 0;
-    todos.subscribe(() => {
-      notified += 1;
-    });
-    session.close();
-
-    // a write the store must never see: straight at the peer, then a `t` frame
-    const frames = peer.sent.length;
+    // straight at the peer, then the tick the Worker's basis poller would send
     await peer.conn.transact([
-      [":db/add", "tmp", ":todo/title", "invisible"],
+      [":db/add", "tmp", ":todo/title", "from another tab"],
       [":db/add", "tmp", ":todo/done", false],
       [":db/add", "tmp", ":todo/createdAt", new Date()],
     ]);
-    peer.push({ op: "t", t: peer.conn.t });
+    peer.tick();
     await settle();
 
-    expect(notified).toBe(0);
-    expect(peer.sent).toHaveLength(frames); // nothing more was asked
-    expect(todos.get()).toBe(last); // same reference, for useSyncExternalStore
+    expect(titles(todos.rows)).toEqual(["from another tab"]);
+    await todos.stop();
+    await peer.dispose();
+  });
 
-    // and the session itself is gone
-    const failed = await run(
-      addTodo(db, "too late").pipe(
-        Effect.match({ onFailure: () => "failed", onSuccess: () => "wrote" }),
-      ),
-    );
-    expect(failed).toBe("failed");
+  test("interrupting the fiber is the whole teardown", async () => {
+    const peer = await inProcessPeer();
+    const todos = live(peer.db.live(todoQuery));
+    await settle();
+    const seen = todos.changes;
+
+    await todos.stop();
+    await Effect.runPromise(addTodo(peer.db, "invisible"));
+    peer.tick();
+    await settle();
+
+    expect(todos.changes).toBe(seen);
+    await peer.dispose();
   });
 });
