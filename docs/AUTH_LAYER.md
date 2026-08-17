@@ -121,7 +121,7 @@ Any denied op rejects the whole tx. Cost: one policy pass per non-admin tx on th
 | client session | `alchemy/src/Session.ts:21-37`, `:190-193` | token stays on the upgrade; add `setToken` + the refresh `auth` frame |
 | errors | `worker/src/errors.ts:23`, `toHttp:71-72`; `DatabaseTypes.ts:44-46` and the 401/403 arm of `fromResponse` `:119-175` | `Unauthorized` gains `code`/`attr`; upstream bodies mapped, not passed through; add `PolicyError` to `schema/Errors.ts` |
 | policy value | `schema/Catalog.ts:15-20` | `Catalog` unchanged; `SchemaFx.Policy.policy(catalog, …)` is a separate value |
-| Alchemy | `alchemy.run.ts:58-68` | the peer Worker declares its own env beside `RIPPLE_TOKEN`: `RIPPLE_POLICY: SchemaFx.Policy.compile(policy)`, `RIPPLE_JWKS_URL`, `RIPPLE_JWT_AUD`, `RIPPLE_JWT_MAX_TTL` |
+| Alchemy | `alchemy.run.ts:58-68` | the peer Worker declares its own env beside `RIPPLE_TOKEN`: `...Ripple.authEnv({ policy: Ripple.Policy.compile(policy), jwksUrl, issuers, aud })`, `RIPPLE_JWKS_URL`, `RIPPLE_JWT_AUD`, `RIPPLE_JWT_MAX_TTL` |
 
 ## 5. Out of scope
 

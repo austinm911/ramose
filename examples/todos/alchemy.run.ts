@@ -7,18 +7,15 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { Sys } from "./resources.ts";
+import { Server } from "./resources.ts";
 import { Todos } from "./schema.ts";
 
-export const InstallSchema = Alchemy.Action(
-  "InstallSchema",
-  Effect.gen(function* () {
-    const ripple = yield* Ripple.WriteSystem(Sys);
-    return Effect.fn(function* () {
-      yield* ripple.db("todos", Todos).install();
-    });
-  }).pipe(Effect.provide(Ripple.WriteSystemLocal)),
-);
+/**
+ * The one place the catalog is installed: `install()` as a deploy-time
+ * resource, ordered after the server it names. `db.install()` is an ordinary
+ * idempotent transaction, so a redeploy costs one no-op tx.
+ */
+export const TodosDb = Ripple.Database("todos", { server: Server, catalog: Todos });
 
 export default Alchemy.Stack(
   "ripple-todos",
@@ -27,8 +24,8 @@ export default Alchemy.Stack(
     state: Alchemy.localState(),
   },
   Effect.gen(function* () {
-    const sys = yield* Sys;
-    yield* InstallSchema({});
-    return { peerUrl: sys.url };
+    const server = yield* Server;
+    yield* TodosDb;
+    return { peerUrl: server.url };
   }),
 );

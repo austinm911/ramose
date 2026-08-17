@@ -1,8 +1,8 @@
 /**
- * The stack: providers, a deploy-time schema install, outputs.
+ * The stack: providers, the deploy-time catalog install, outputs.
  *
  * Run it with `bun alchemy dev examples/kv-style/alchemy.run.ts` (from the repo
- * root — `Peer`'s `main` is repo-relative), then curl the `url` output.
+ * root — the Worker's `main` is repo-relative), then curl the `url` output.
  *
  * Everything that touches the engine (`Alchemy.Stack`, `Cloudflare.providers()`)
  * stays in this file; the Worker that bundles itself with
@@ -16,29 +16,21 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { App } from "./app.ts";
-import { Sys } from "./resources.ts";
+import { Server } from "./resources.ts";
 import { Movies } from "./schema.ts";
 
-// ── schema install as a deploy-time Action ─────────────────────────────────
+// ── the catalog install ────────────────────────────────────────────────────
 //
-// Actions run in the engine's process, after their upstreams are applied, so
-// they use the `*Local` layer: no host Worker, no service binding — just the
-// peer's freshly-deployed URL (the local workerd dev server's, under
-// `alchemy dev`).
+// `Ripple.Database` is not a cloud object: a database is a name, and this is
+// "install this catalog on that name". The engine orders it after the server
+// (the `server` prop is the dependency), and the provider talks plain HTTPS to
+// whatever URL the server just resolved to — the local dev server's, under
+// `alchemy dev`. `install()` is idempotent, so a redeploy costs one no-op tx.
 //
-// `ripple.db("movies", Movies)` is pure — naming a database costs no request —
-// and `install()` is the one place the catalog lands: an ordinary, idempotent
-// transaction. It has to run in the apply fn (the peer is not up at plan time).
+// Names invented per request (`/t/:tenant` in app.ts) are not resources: they
+// call `db.install()` at tenant-creation instead.
 
-export const InstallSchema = Alchemy.Action(
-  "InstallSchema",
-  Effect.gen(function* () {
-    const ripple = yield* Ripple.WriteSystem(Sys);
-    return Effect.fn(function* () {
-      yield* ripple.db("movies", Movies).install();
-    });
-  }).pipe(Effect.provide(Ripple.WriteSystemLocal)),
-);
+export const MoviesDb = Ripple.Database("movies", { server: Server, catalog: Movies });
 
 export default Alchemy.Stack(
   "ripple-example",
@@ -47,12 +39,12 @@ export default Alchemy.Stack(
     state: Alchemy.localState(),
   },
   Effect.gen(function* () {
-    const sys = yield* Sys;
+    const server = yield* Server;
     const app = yield* App;
-    yield* InstallSchema({});
+    yield* MoviesDb;
     return {
       url: app.url,
-      peerUrl: sys.url,
+      peerUrl: server.url,
     };
   }),
 );

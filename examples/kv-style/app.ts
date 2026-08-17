@@ -1,5 +1,5 @@
 /**
- * An app Worker that uses the Ripple system declared in `resources.ts`.
+ * An app Worker that uses the Ripple server declared in `resources.ts`.
  *
  * This lives in its own module for a reason: `main: import.meta.url` makes the
  * Worker its own bundle entrypoint, and alchemy's virtual entry does
@@ -17,20 +17,20 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import { Sys } from "./resources.ts";
+import { Server } from "./resources.ts";
 import { Movies, User } from "./schema.ts";
 
 // The Effect form: the outer generator runs at deploy time (it lowers a
-// `service` binding to the peer, plus the shared token); the handler runs per
-// request against `env.Sys.fetch` — same colo, no public hop, no TLS
-// handshake.
+// `service` binding to the server Worker, plus the shared token); the handler
+// runs per request against `env.Ripple.fetch` — same colo, no public hop, no
+// TLS handshake.
 
 export const App = Cloudflare.Worker(
   "App",
   { main: import.meta.url },
   Effect.gen(function* () {
     // The binding *is* the client. One `Databases`, bound once at init.
-    const ripple = yield* Ripple.ReadWriteSystem(Sys);
+    const ripple = yield* Ripple.ReadWriteDatabases(Server);
 
     // ── databases are names ──────────────────────────────────────────────────
     //
@@ -40,7 +40,7 @@ export const App = Cloudflare.Worker(
     // per tenant. An illegal name fails the first operation with
     // `InvalidRequest`, so it never reaches the peer.
     //
-    // The catalog is installed once, at deploy (`InstallSchema` in
+    // The catalog is installed once, at deploy (`Ripple.Database` in
     // alchemy.run.ts) or at tenant creation with `db.install()` — never per
     // request. The token is shared across every name: it is the peer's one
     // `RIPPLE_TOKEN`, checked for every tenant database and ignored when the
@@ -72,8 +72,8 @@ export const App = Cloudflare.Worker(
         const path = request.url.split("?")[0] ?? "/";
         if (path.startsWith("/t/")) return yield* tenantRoute(path.slice("/t/".length));
 
-        // The default database. `InstallSchema` (alchemy.run.ts) already
-        // installed Movies on this name at deploy time.
+        // The default database. `Ripple.Database("movies", …)` in
+        // alchemy.run.ts installed Movies on this name at deploy time.
         const db = ripple.db("movies", Movies);
 
         const report = yield* db.transact(function* (tx) {
@@ -125,7 +125,7 @@ export const App = Cloudflare.Worker(
         }),
       ),
     };
-  }).pipe(Effect.provide(Ripple.ReadWriteSystemBinding)),
+  }).pipe(Effect.provide(Ripple.ServerBinding)),
 );
 
 export default App;

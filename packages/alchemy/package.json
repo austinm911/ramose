@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Alchemy 2 + Effect interface for Ripple: the portable `@ripple/alchemy/db` entry, the Ripple.System resource and the Read/Write/ReadWrite system capabilities (Binding / Http / Local).",
+  "description": "Alchemy 2 + Effect interface for Ripple: the portable `@ripple/alchemy/db` entry, the Ripple.Server and Ripple.Database resources, the ReadWriteDatabases / ReadDatabases capabilities and the ServerBinding / ServerHttp transports.",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "exports": {

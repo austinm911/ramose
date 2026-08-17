@@ -18,16 +18,15 @@
 
 import * as Provider from "alchemy/Provider";
 import * as Layer from "effect/Layer";
-import { System, SystemProvider } from "./System.ts";
+import { Database, DatabaseProvider } from "./Database.ts";
+import { Server, ServerProvider } from "./Server.ts";
 
 export class Providers extends Provider.ProviderCollection<Providers>()(
   "Ripple",
 ) {}
 
-export type ProviderRequirements = Layer.Services<ReturnType<typeof providers>>;
-
 export const providers = () =>
-  Layer.effect(Providers, Provider.collection([System])).pipe(
-    Layer.provide(SystemProvider()),
+  Layer.effect(Providers, Provider.collection([Server, Database])).pipe(
+    Layer.provide(Layer.mergeAll(ServerProvider(), DatabaseProvider())),
     Layer.orDie,
   );

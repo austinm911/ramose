@@ -1,5 +1,5 @@
 /**
- * Carrying a {@link System}'s attributes into the runtime.
+ * Carrying a {@link Server}'s attributes into the runtime.
  *
  * A resource attribute is an `Output`, not a value: at deploy time it is a
  * promise the engine has not kept yet, and inside the deployed bundle it is
@@ -16,30 +16,30 @@
  * its init Effect runs (`alchemy/ActionRuntimeContext.ts`) — at apply time the
  * resolve context's `set` is a no-op. So `bind` MUST be called while the host
  * is still initializing, i.e. inside the capability's `Effect.fn(function*
- * (system) { … })`, not per request. Binding lazily from inside a client
+ * (server) { … })`, not per request. Binding lazily from inside a client
  * method registers nothing and reads back `undefined`.
  *
- * NOT exported from `index.ts` — internal scaffolding shared by the Binding,
- * Http and Local layers.
+ * NOT exported from `index.ts` — internal scaffolding shared by the two
+ * transport layers.
  */
 
 import * as Output from "alchemy/Output";
 import * as Effect from "effect/Effect";
 import type * as Redacted from "effect/Redacted";
-import type { System } from "./System.ts";
+import type { Server } from "./Server.ts";
 
 /**
- * Binding / env-var names a system contributes to its consumer.
+ * Binding / env-var names a server contributes to its consumer.
  *
- * There is no `_DB` key: a system pins no database name. The name is chosen
- * per call by `system.create(name)`, so nothing about it can be lowered at
- * deploy time.
+ * There is no `_DB` key: a server pins no database name. The name is chosen
+ * per call by `ripple.db(name, catalog)`, so nothing about it can be lowered
+ * at deploy time.
  */
-export const envKeys = (system: Pick<System, "LogicalId">) => ({
+export const envKeys = (server: Pick<Server, "LogicalId">) => ({
   /** The service binding (and the `env` key the Fetcher arrives under). */
-  service: system.LogicalId,
-  url: `${system.LogicalId}_URL`,
-  token: `${system.LogicalId}_TOKEN`,
+  service: server.LogicalId,
+  url: `${server.LogicalId}_URL`,
+  token: `${server.LogicalId}_TOKEN`,
 });
 
 /**
@@ -65,11 +65,11 @@ export const bindOutput = <A>(
  * nothing. The empty string does, and the client treats it as "no token".
  */
 export const bindToken = (
-  system: System,
+  server: Server,
 ): Effect.Effect<Effect.Effect<Redacted.Redacted<string> | string>> =>
   bindOutput(
-    envKeys(system).token,
-    system.token.pipe(Output.map((token) => token ?? "")) as Output.Output<
+    envKeys(server).token,
+    server.token.pipe(Output.map((token) => token ?? "")) as Output.Output<
       Redacted.Redacted<string> | string
     >,
   );
@@ -89,7 +89,7 @@ export const required = (
       value === undefined || value === null || value === ""
         ? Effect.die(
             new Error(
-              `ripple: no value bound under "${key}" — the system capability must be provided on a host that takes bindings (a Cloudflare.Worker, or an Alchemy.Action via the *SystemLocal layers)`,
+              `ripple: no value bound under "${key}" — the capability must be provided on a host that takes bindings (a Cloudflare.Worker, or an Alchemy.Action via Ripple.ServerHttp)`,
             ),
           )
         : Effect.succeed(value),

@@ -1,6 +1,6 @@
 /**
- * The three transports, at the seam where they differ: how a
- * {@link SystemSource} turns a system's *attributes* (Outputs, not values)
+ * The two transports, at the seam where they differ: how a
+ * {@link ServerSource} turns a server's *attributes* (Outputs, not values)
  * into "where do I send, with which token".
  *
  * The `RuntimeContext` here is the one a deployed Worker (or an
@@ -19,33 +19,33 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
-import type { System } from "../src/System.ts";
+import type { Server } from "../src/Server.ts";
 import { Self } from "alchemy/Self";
 import { WorkerEnvironment } from "alchemy/Cloudflare/Workers";
 import {
   makeBindingSource,
-  makeSystemBinding,
+  makeServerBinding,
   SERVICE_ORIGIN,
-} from "../src/SystemBinding.ts";
-import { makeHttpSource } from "../src/SystemHttp.ts";
+} from "../src/ServerBinding.ts";
+import { makeHttpSource } from "../src/ServerHttp.ts";
 
-/** A system whose attributes are literal Outputs, as after a deploy. */
-const system = (attrs: {
+/** A server whose attributes are literal Outputs, as after a deploy. */
+const server = (attrs: {
   url: string;
   token?: Redacted.Redacted<string> | undefined;
-}): System =>
+}): Server =>
   ({
-    LogicalId: "Sys",
-    FQN: "app/Sys",
-    Type: "Ripple.System",
+    LogicalId: "Ripple",
+    FQN: "app/Ripple",
+    Type: "Ripple.Server",
     url: Output.literal(attrs.url),
-    peerName: Output.literal("ripple-peer"),
+    workerName: Output.literal("ripple-peer"),
     token: Output.literal(attrs.token),
-  }) as unknown as System;
+  }) as unknown as Server;
 
 /**
  * Evaluate the Output expressions the sources build — literals off the fake
- * system, and the `.map(…)` over the token. (The engine's own evaluator
+ * server, and the `.map(…)` over the token. (The engine's own evaluator
  * needs a state store; these two node kinds are all that is in play here.)
  */
 const evaluate = (expr: unknown): unknown => {
@@ -81,16 +81,16 @@ describe("the service-binding source", () => {
   test("dispatches through env[LogicalId] against the synthetic origin", async () => {
     const seen: string[] = [];
     const env = {
-      Sys: {
+      Ripple: {
         fetch: (url: string) => {
           seen.push(url);
           return Promise.resolve(new Response("{}"));
         },
       },
     };
-    const sys = system({ url: "https://peer.example.com" });
+    const srv = server({ url: "https://peer.example.com" });
     const { layer } = runtime();
-    const source = await resolve(makeBindingSource(env, sys), layer);
+    const source = await resolve(makeBindingSource(env, srv), layer);
 
     const endpoint = await resolve(source.endpoint, layer);
     expect(endpoint.url).toBe(SERVICE_ORIGIN);
@@ -99,24 +99,38 @@ describe("the service-binding source", () => {
     expect(seen).toEqual([`${SERVICE_ORIGIN}/db/movies/info`]);
   });
 
-  test("a missing service binding rejects with an actionable message", async () => {
+  test("a missing service binding is a defect, not a DbError", async () => {
     const { layer } = runtime();
-    const source = await resolve(makeBindingSource({}, system({ url: "https://x" })), layer);
+    const source = await resolve(makeBindingSource({}, server({ url: "https://x" })), layer);
+
+    // provisioning mistakes die: the endpoint is read per request, and a
+    // binding that was never lowered has no `DbError` to report
+    const died = await Effect.runPromise(
+      source.endpoint.pipe(
+        Effect.catchCause((cause) =>
+          Effect.succeed({ die: Cause.hasDies(cause), message: String(Cause.squash(cause)) }),
+        ),
+        Effect.provide(layer),
+      ),
+    );
+    expect(died).toMatchObject({ die: true });
+    expect((died as { message: string }).message).toMatch(/no service binding "Ripple"/);
+
     await expect(
       source.fetch("https://ripple.internal/db/movies/info", { method: "GET", headers: {} }),
-    ).rejects.toThrow(/no service binding "Sys"/);
+    ).rejects.toThrow(/no service binding "Ripple"/);
   });
 
-  test("only the token is bound — a system pins no database name", async () => {
-    const sys = system({
+  test("only the token is bound — a server pins no database name", async () => {
+    const srv = server({
       url: "https://peer.example.com",
       token: Redacted.make("s3cret"),
     });
     const { bound, layer } = runtime();
-    const source = await resolve(makeBindingSource({}, sys), layer);
+    const source = await resolve(makeBindingSource({ Ripple: {} }, srv), layer);
 
-    expect(Object.keys(bound).sort()).toEqual(["Sys_TOKEN"]);
-    expect(Object.keys(bound)).not.toContain("Sys_DB");
+    expect(Object.keys(bound).sort()).toEqual(["Ripple_TOKEN"]);
+    expect(Object.keys(bound)).not.toContain("Ripple_DB");
     const endpoint = await resolve(source.endpoint, layer);
     expect(Redacted.value(endpoint.token as Redacted.Redacted<string>)).toBe("s3cret");
   });
@@ -124,17 +138,17 @@ describe("the service-binding source", () => {
 
 describe("the HTTP source", () => {
   test("takes the peer url from the attribute, and binds url + token only", async () => {
-    const sys = system({ url: "https://peer.example.com" });
+    const srv = server({ url: "https://peer.example.com" });
     const { bound, layer } = runtime();
 
-    const source = await resolve(makeHttpSource(sys), layer);
+    const source = await resolve(makeHttpSource(srv), layer);
     const endpoint = await resolve(source.endpoint, layer);
 
     expect(endpoint.url).toBe("https://peer.example.com");
     // no token configured → the empty string, which the client reads as "none"
     expect(endpoint.token).toBe("");
-    expect(Object.keys(bound).sort()).toEqual(["Sys_TOKEN", "Sys_URL"]);
-    expect(Object.keys(bound)).not.toContain("Sys_DB");
+    expect(Object.keys(bound).sort()).toEqual(["Ripple_TOKEN", "Ripple_URL"]);
+    expect(Object.keys(bound)).not.toContain("Ripple_DB");
   });
 });
 
@@ -149,31 +163,31 @@ describe("the HTTP source", () => {
  */
 describe("registration happens at bind time", () => {
   test("a Worker's env is populated before any client call", async () => {
-    const sys = system({ url: "https://peer.example.com" });
+    const srv = server({ url: "https://peer.example.com" });
     const { bound, layer } = runtime();
 
     // the init closure: bind the capability, return a handler, run nothing
     await resolve(
       Effect.gen(function* () {
-        yield* makeHttpSource(sys);
+        yield* makeHttpSource(srv);
       }),
       layer,
     );
 
-    expect(Object.keys(bound).sort()).toEqual(["Sys_TOKEN", "Sys_URL"]);
+    expect(Object.keys(bound).sort()).toEqual(["Ripple_TOKEN", "Ripple_URL"]);
   });
 
   test("an Action captures the outputs during init and reads them at apply", async () => {
-    const sys = system({ url: "https://peer.example.com" });
+    const srv = server({ url: "https://peer.example.com" });
 
     // init: the capture context records every Output the capability binds.
     const captures: Record<string, Output.Output> = {};
     const source = await Effect.runPromise(
-      makeHttpSource(sys).pipe(
+      makeHttpSource(srv).pipe(
         Effect.provide(Layer.succeed(RuntimeContext, makeCaptureContext(captures) as never)),
       ),
     );
-    expect(Object.keys(captures).sort()).toEqual(["Sys_TOKEN", "Sys_URL"]);
+    expect(Object.keys(captures).sort()).toEqual(["Ripple_TOKEN", "Ripple_URL"]);
 
     // apply: the engine resolves what was captured; the accessors read it back.
     const resolved = Object.fromEntries(
@@ -188,13 +202,13 @@ describe("registration happens at bind time", () => {
   });
 
   test("a host that registered nothing dies naming the key that is missing", async () => {
-    const sys = system({ url: "https://peer.example.com" });
+    const srv = server({ url: "https://peer.example.com" });
     // A context whose `set` is a no-op and whose `get` knows nothing — what an
     // Action sees at apply when the capture never happened, or a Worker whose
     // env is missing the binding. The endpoint must not fabricate
     // `https://undefined/db/undefined`.
     const blind = Layer.succeed(RuntimeContext, makeResolveContext({}) as never);
-    const source = await Effect.runPromise(makeHttpSource(sys).pipe(Effect.provide(blind)));
+    const source = await Effect.runPromise(makeHttpSource(srv).pipe(Effect.provide(blind)));
 
     const error = await Effect.runPromise(
       source.endpoint.pipe(
@@ -202,7 +216,7 @@ describe("registration happens at bind time", () => {
         Effect.provide(blind),
       ),
     );
-    expect(error).toMatch(/no value bound under "Sys_URL"/);
+    expect(error).toMatch(/no value bound under "Ripple_URL"/);
   });
 });
 
@@ -210,7 +224,7 @@ describe("registration happens at bind time", () => {
  * The deploy-time half of the Binding layers: what they lower onto the host,
  * and the hosts they refuse.
  */
-describe("the service binding the *SystemBinding layers lower", () => {
+describe("the service binding ServerBinding lowers", () => {
   /** A stand-in host Worker that records what was bound to it. */
   const worker = (bound: unknown[]) =>
     ({
@@ -227,14 +241,14 @@ describe("the service binding the *SystemBinding layers lower", () => {
 
   const bind = (
     host: unknown,
-    sys: System,
+    srv: Server,
     env: Record<string, unknown> = {},
     layer = runtime().layer,
   ) =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const make = yield* makeSystemBinding({ makeClient: (s) => s });
-        return yield* make(sys);
+        const make = yield* makeServerBinding({ makeClient: (s) => s });
+        return yield* make(srv);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -246,32 +260,32 @@ describe("the service binding the *SystemBinding layers lower", () => {
       ),
     );
 
-  const withPeer = (peer: unknown): System => {
-    const sys = system({ url: "https://peer.example.com" });
-    return Object.assign(sys as object, { Props: { peer } }) as System;
+  const withWorker = (worker: unknown): Server => {
+    const srv = server({ url: "https://peer.example.com" });
+    return Object.assign(srv as object, { Props: { worker } }) as Server;
   };
 
   test("a Worker host gets one `service` binding named after the logical id", async () => {
     const bound: unknown[] = [];
-    await bind(worker(bound), withPeer({ Type: "Cloudflare.Worker", LogicalId: "Peer" }));
+    await bind(worker(bound), withWorker({ Type: "Cloudflare.Worker", LogicalId: "Peer" }));
     expect(bound).toHaveLength(1);
     const bindings = (bound[0] as { bindings: { type: string; name: string }[] }).bindings;
     expect(bindings).toHaveLength(1);
     expect(bindings[0].type).toBe("service");
-    expect(bindings[0].name).toBe("Sys");
+    expect(bindings[0].name).toBe("Ripple");
   });
 
-  test("a bare-URL peer is refused — a service binding needs a script name", async () => {
+  test("a bare-URL worker is refused — a service binding needs a script name", async () => {
     const bound: unknown[] = [];
-    await expect(bind(worker(bound), withPeer("https://peer.example.com"))).rejects.toThrow(
-      /bare URL peer/,
+    await expect(bind(worker(bound), withWorker("https://peer.example.com"))).rejects.toThrow(
+      /bare URL worker/,
     );
     expect(bound).toEqual([]);
   });
 
   test("a host that is not a Worker is refused, naming its type", async () => {
     await expect(
-      bind({ Type: "AWS.Lambda.Function", LogicalId: "Fn" }, withPeer("x")),
+      bind({ Type: "AWS.Lambda.Function", LogicalId: "Fn" }, withWorker("x")),
     ).rejects.toThrow(/AWS\.Lambda\.Function/);
   });
 });
