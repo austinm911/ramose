@@ -23,7 +23,7 @@ console. Set `RIPPLE_LOG_LEVEL=debug` to also see per-batch / per-query events.
 
 **Every logical database has exactly one writer** — its Transactor Durable
 Object — which serializes all transactions and assigns `t`. That is a design
-invariant (SPEC §1.2), not a tuning knob: it is what makes `t` total,
+invariant, not a tuning knob: it is what makes `t` total,
 tempid/unique resolution consistent, and the log gap-free.
 
 Measured ceiling of one database on dev hardware (`bench/RESULTS.md`):
