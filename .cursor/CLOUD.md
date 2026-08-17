@@ -48,52 +48,14 @@ installed Bun and run `bun install`, so dependencies are ready when an agent sta
 
 ## Running the e2e suite against real Cloudflare
 
-The `test/e2e` suite is self-contained — it creates its own `e2e-<ts>` database
-and installs the schema — so it can run against any live peer. To run it against a
-real Cloudflare deployment (the only place the cross-isolate live-query case can
-pass), use the helper, which deploys a throwaway stage, runs the suite, and
-destroys the stage afterwards (even on failure):
+The full flow, credentials, and CI wiring live in
+[`CONTRIBUTING.md`](../CONTRIBUTING.md). From a Cloud Agent:
 
 ```sh
 bun run test:e2e:cf
 ```
 
-`bun run test:e2e:cf` wraps `scripts/e2e-cloudflare.sh`, which:
-1. Deploys a uniquely-named stage (`e2e-<epoch>-<rand>`, or `ALCHEMY_STAGE` if set)
-   with `ALCHEMY_STATE=local` and `CI=1` (env-var creds, non-interactive) — an
-   **open** peer, no auth.
-2. Parses the Worker URL from the deploy output and polls `/health`.
-3. Runs `RIPPLE_URL=<url> bun run test:e2e`.
-4. Destroys the stage (set `KEEP_STAGE=1` to leave it up for debugging).
-
-### Required credentials (Cursor secrets + GitHub Environment secrets)
-
-| Name | Required | Purpose |
-|---|---|---|
-| `CLOUDFLARE_API_TOKEN` | yes (secret) | Deploy Workers / DOs / R2 / Analytics Engine |
-| `CLOUDFLARE_ACCOUNT_ID` | yes (variable or secret) | Account to deploy into |
-| `RIPPLE_TOKEN` | no | Only if the peer is deployed with bearer auth |
-
-Token permission groups (scoped to the account), at minimum:
-- **Workers Scripts Write** (covers Durable Objects)
-- **Workers R2 Storage Write**
-- **Account Settings Read**
-
-This stack also declares a Workers Analytics Engine dataset; grant **Account
-Analytics Read/Edit** if a deploy reports an AE permission error.
-
-- **Cursor Cloud:** Secrets panel for this environment / agent (then start a new
-  agent so the secrets are injected). Without them, `bun run test:e2e:cf` exits
-  immediately with a clear error; local `alchemy dev` still works with placeholders.
-- **GitHub Actions:** on the **Development** environment (Settings →
-  Environments → Development): `CLOUDFLARE_API_TOKEN` as a secret,
-  `CLOUDFLARE_ACCOUNT_ID` as a variable (or secret). The workflow
-  `.github/workflows/e2e-cloudflare.yml` sets `environment: Development` and
-  runs the same `bun run test:e2e:cf` flow on every PR, every push to `master`,
-  and `workflow_dispatch`.
-
-### Auth note
-The deploy is an open peer (no `RIPPLE_TOKEN`/`RIPPLE_POLICY`), so the throwaway
-`workers.dev` URL is briefly writable by anyone who knows it. The stage name is
-unguessable and torn down at the end of the run; if you need an authenticated peer,
-set `RIPPLE_TOKEN` (and it is passed through to the test client).
+Add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the Cursor Secrets
+panel, then start a new agent so they are injected. Without them the script
+exits immediately with a clear error; local `alchemy dev` still works with
+placeholders (above). Token permission groups are listed in CONTRIBUTING.md.

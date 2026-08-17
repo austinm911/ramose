@@ -7,7 +7,7 @@
 #   RIPPLE_TOKEN — only if the peer is deployed with bearer auth
 #
 # Same flow as `bun run test:e2e:cf` (scripts/e2e-cloudflare.sh). See
-# .cursor/CLOUD.md for token permission groups.
+# CONTRIBUTING.md for credentials and token permission groups.
 name: E2E Cloudflare
 
 on:
@@ -41,7 +41,7 @@ jobs:
           ALCHEMY_STAGE: e2e-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
-            echo "::error::Need CLOUDFLARE_API_TOKEN (secret) and CLOUDFLARE_ACCOUNT_ID (variable or secret) on the Development environment. See .cursor/CLOUD.md."
+            echo "::error::Need CLOUDFLARE_API_TOKEN (secret) and CLOUDFLARE_ACCOUNT_ID (variable or secret) on the Development environment. See CONTRIBUTING.md."
             exit 1
           fi
           bun run test:e2e:cf

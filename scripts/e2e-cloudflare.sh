@@ -9,7 +9,7 @@
 # Required env:
 #   CLOUDFLARE_API_TOKEN   API token that can deploy Workers + R2 (+ Durable
 #                          Objects, which ride on Workers Scripts). See
-#                          .cursor/CLOUD.md for the exact permission groups.
+#                          CONTRIBUTING.md for the exact permission groups.
 #   CLOUDFLARE_ACCOUNT_ID  The account to deploy into.
 #
 # Optional:
