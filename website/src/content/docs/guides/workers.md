@@ -28,8 +28,8 @@ export default Cloudflare.Worker("App", { main: import.meta.url },
           const movie = yield* tx.entity();
           yield* movie.add(Movie.title, "Arrival");
         });
-        const rows = yield* dbAfter.q((q) =>
-          q.where("?m", Movie.title, "?t").find("?t"),
+        const rows = yield* dbAfter.q(
+          Ripple.query(Movie).select({ title: Movie.title }),
         );
         return yield* HttpServerResponse.json(rows);
       }),

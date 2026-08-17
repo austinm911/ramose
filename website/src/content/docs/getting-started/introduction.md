@@ -13,8 +13,8 @@ and you're in. No provision step.
 
 - **Typed catalog.** `@ripple/alchemy/db` is the schema. Attributes,
   uniqueness, cardinality — TypeScript, checked at compile time.
-- **Effect-native writes and reads.** Generator `transact`. Literate `q`.
-  `db.pull`.
+- **Effect-native writes and reads.** Generator `transact`. Navigational
+  `Ripple.query` → `db.q` / `db.live`. `db.pull`.
 - **Live queries.** `db.live` is a `Stream` on the session socket. Write a
   row, it re-runs. No refetch. No invalidation call at the write site.
 - **Db-per-tenant is a function call.** One Alchemy resource, one

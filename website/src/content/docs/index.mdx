@@ -81,12 +81,11 @@ export const Todos = Ripple.Catalog({ todo: Todo });
     <div>
 
 ```ts
-const todos = db.live((q) =>
-  q.where("?e", Todo.title, "_").find("?e").pull({
-    title: Todo.title,
-    done: Todo.done,
-  }),
-);
+const todoQuery = Ripple.query(Todo)
+  .orderBy(Todo.createdAt, "asc")
+  .select({ id: Todo.id, title: Todo.title, done: Todo.done });
+
+const todos = db.live(todoQuery);
 
 await run(
   db.transact(function* (tx) {
@@ -144,7 +143,7 @@ export const TodosDb = Ripple.Database("todos", {
     </div>
     <div class="rg-cell">
       <h3>Effect-native</h3>
-      <p>Generator <code>transact</code>, literate <code>q</code>, <code>db.pull</code>. Every signature's requirements channel is <code>never</code> — one runtime runs everything.</p>
+      <p>Generator <code>transact</code>, navigational <code>Ripple.query</code>, <code>db.pull</code>. Every signature's requirements channel is <code>never</code> — one runtime runs everything.</p>
     </div>
     <div class="rg-cell">
       <h3>Live queries</h3>

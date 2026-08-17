@@ -110,13 +110,17 @@ export const db = runtime.runSync(Ripple.Databases).db("todos", Todos);
 Write and react:
 
 ```ts
-const todos = db.live((q) =>
-  q.where("?e", Todo.title, "_").find("?e").pull({
+const todoQuery = Ripple.query(Todo)
+  .orderBy(Todo.createdAt, "asc")
+  .select({
+    id: Todo.id,
     title: Todo.title,
     done: Todo.done,
     createdAt: Todo.createdAt,
-  }),
-);
+  });
+
+const todos = db.live(todoQuery);
+// Stream<readonly { id, title, done, createdAt }[], DbError>
 
 await run(
   db.transact(function* (tx) {

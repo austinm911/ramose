@@ -8,7 +8,7 @@ Match with `Effect.catchTags`:
 
 ```ts
 const rows = yield* db
-  .q((q) => q.where("?e", Todo.title, "?t").find("?t"))
+  .q(Ripple.query(Todo).select({ title: Todo.title }))
   .pipe(
     Effect.catchTags({
       QueryBudgetExceeded: () => Effect.succeed([]),

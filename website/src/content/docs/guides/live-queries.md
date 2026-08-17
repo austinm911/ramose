@@ -3,24 +3,29 @@ title: Live queries
 description: db.live is a Stream on the session socket — write a row, it re-runs. No refetch, no invalidation.
 ---
 
-`db.live` takes the same builder as `q` and stands the query up: the result is
+`db.live` takes the same query value as `q` and stands it up: the result is
 an Effect `Stream` that emits the current rows, then re-emits whenever a write
 lands.
 
 ```ts
-const todos = db.live((q) =>
-  q.where("?e", Todo.title, "_").find("?e").pull({
+const todoQuery = Ripple.query(Todo)
+  .orderBy(Todo.createdAt, "asc")
+  .select({
+    id: Todo.id,
     title: Todo.title,
     done: Todo.done,
     createdAt: Todo.createdAt,
-  }),
-);
-// Stream<readonly [Eid<typeof Todos>, { title, done, createdAt }][], DbError>
+  });
+
+const todos = db.live(todoQuery);
+// Stream<readonly { id, title, done, createdAt }[], DbError>
 ```
 
 There is no invalidation call at the write site and no refetch in the UI. The
 session socket ticks `t` when the database advances; the client re-runs the
-query against the new basis.
+query against the new basis. Because a query is a value, `todoQuery` can live
+at module scope — one artifact for the once, live, and `asOf` forms, and a
+stable dependency for a React hook.
 
 ## Consuming the stream
 

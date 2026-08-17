@@ -19,8 +19,8 @@ export const User = Ripple.Namespace("user", {
 export const Movie = Ripple.Namespace("movie", {
   title: Ripple.Attr(Schema.String),
   year: Ripple.Attr(Schema.Number),
-  cast: Ripple.Attr(Ripple.Ref, { cardinality: "many" }),
-  addedBy: Ripple.Attr(Ripple.Ref),
+  cast: Ripple.Attr(Ripple.Ref(() => User), { cardinality: "many" }),
+  addedBy: Ripple.Attr(Ripple.Ref(() => User)),
   releasedAt: Ripple.Attr(Ripple.Instant),
 });
 
@@ -49,7 +49,9 @@ database types TypeScript cannot infer:
 | --- | --- |
 | `Ripple.Instant` | a point in time (use `Date` values) |
 | `Ripple.Uuid` / `Ripple.UuidString` | UUIDs |
-| `Ripple.Ref` | a reference to another entity |
+| `Ripple.Ref(() => Namespace)` | a reference to an entity of that namespace — the typed target is what lets queries navigate `Movie.addedBy.name` |
+| `Ripple.Ref.self` | a self-edge (`user.friends` → users) |
+| `Ripple.Ref` | an untargeted reference; stores fine, but navigational paths need a target |
 | `Ripple.Long` | 64-bit integer |
 | `Ripple.Bytes` | binary |
 
@@ -71,15 +73,16 @@ Everything downstream is typed by the catalog — no annotations at use sites:
 // Eid<typeof Movies> — a catalog-branded entity id; data, no methods
 declare const e: Ripple.Eid<typeof Movies>;
 
-// Pull results type themselves from the pattern
-const pattern = { title: Movie.title, year: Movie.year };
-type Row = Ripple.Pull<typeof Movies, typeof pattern>;
+// Pull results type themselves from the shape
+const shape = { title: Movie.title, year: Movie.year };
+type Row = Ripple.Pull<typeof Movies, typeof shape>;
 // { title: string; year: number }
 ```
 
-Patterns nest through refs (`Movie.addedBy.with({ name: User.name })`) and go
-optional (`Movie.releasedAt.optional`). A React component's props can be
-`Pull<typeof Movies, typeof pattern>` — the UI types are the database types.
+Shapes nest through refs (`Movie.addedBy.select({ name: User.name })`) and go
+optional (`Movie.releasedAt.optional`) — the same grammar `Ripple.query`'s
+`select` uses. A React component's props can be
+`Pull<typeof Movies, typeof shape>` — the UI types are the database types.
 
 ## Evolving a catalog
 

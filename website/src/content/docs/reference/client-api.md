@@ -15,6 +15,7 @@ Vite app needs no alias. Import it as `* as Ripple`.
 | `Namespace` | `(name: string, attrs: Record<string, Attribute>) => Namespace` |
 | `Catalog` | `(namespaces: Record<string, Namespace>) => Catalog` |
 | `Instant` `Uuid` `UuidString` `Ref` `Long` `Bytes` | branded `Schema`s carrying a `:db.type/*` TypeScript cannot infer |
+| `Ref(() => Namespace)` / `Ref.self` | targeted refs — the typed target navigational query paths join through |
 | `Attribute` `Namespace` `Catalog` `Catalog.Any` | types (`Catalog.Any` for catalog-generic helpers) |
 
 ## Connecting
@@ -36,9 +37,9 @@ refresh needs no client surface — return the current token from the Effect.
 | --- | --- |
 | `Db<C>` | `ReadDb<C> & { transact; install }` |
 | `ReadDb<C>` | `{ name; catalog; q; pull; live; asOf; history }` |
-| `db.q` | `<R>(build: (q: QueryBuilder<C>) => Query<C, R>) => Effect<R, DbError>` |
-| `db.live` | `<R>(build: (q: QueryBuilder<C>) => Query<C, R>) => Stream<R, DbError>` |
-| `db.pull` | `<const P>(subject: Eid<C> \| LookupRef<C>, pattern: P) => Effect<Pull<C, P> \| null, DbError>` |
+| `db.q` | `(query) => Effect<R, DbError>` — takes a navigational query value (`Ripple.query(N)…`) or the legacy callback builder |
+| `db.live` | same input as `db.q` → `Stream<R, DbError>` |
+| `db.pull` | `<const P>(subject: Eid<C> \| LookupRef<C>, shape: P) => Effect<Pull<C, P> \| null, DbError>` |
 | `db.transact` | `<A, E, R>(body: (tx: Tx<C>) => Generator<Effect<unknown, E, R>, A>) => Effect<TxReport<C>, DbError \| E, R>` |
 | `db.install` | `() => Effect<TxReport<C>, DbError>` — idempotent catalog upsert |
 | `db.asOf` | `(t: number) => ReadDb<C>` — pure view; you cannot transact into the past |
@@ -48,11 +49,12 @@ refresh needs no client surface — return the current token from the Effect.
 
 | name | signature |
 | --- | --- |
-| `QueryBuilder<C, B>` | `.where(e, a, v)` accumulates bindings `B`; `.find(...vars)` and `.explain(...vars)` are terminals |
-| `Query<C, R>` | a built query. `db.q` runs it once, `db.live` stands it up. `.pull(pattern)` after a one-eid `find` |
-| `Pull<C, P>` | result of pattern `P`. Patterns nest (`Todo.author.with({…})`) and go optional (`Todo.due.optional`) |
+| `query` | `Ripple.query(N)` — the navigational builder: `.where(...predicates)` `.orderBy(attr, dir?, opts?)` `.limit(n)` `.offset(n)` `.select(shape)`. A query is a value; see [Query and pull](/guides/queries/) |
+| predicates | on attributes: `eq` `ne` `lt` `lte` `gt` `gte` `exists` `missing`; strings add `startsWith` `includes`; paths join through targeted refs (`Todo.owner.name.startsWith("A")`) |
+| `Pull<C, P>` | result of shape `P`. Shapes nest (`Todo.owner.select({…})`) and go optional (`Todo.due.optional`) — the same grammar for `select` and `db.pull` |
 | `Eid<C>` | `{ readonly id: number }`, catalog-branded. Data — no methods, no I/O |
 | `LookupRef<C>` | `[AttrRef, value]` on a unique attribute |
+| legacy builder | `db.q((q) => q.where("?e", Todo.title, "?t").find("?t"))` still works; prefer `Ripple.query` for new code |
 
 ## Transactions
 

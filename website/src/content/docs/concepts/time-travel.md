@@ -21,10 +21,8 @@ you cannot write into the past.
 const report = yield* db.transact(function* (tx) { /* … */ });
 
 // later: what did the world look like just before that write?
-const before = db.asOf(report.t - 1);
-const rows = yield* before.q((q) =>
-  q.where("?e", Todo.title, "?title").find("?title"),
-);
+const titles = Ripple.query(Todo).select({ title: Todo.title });
+const rows = yield* db.asOf(report.t - 1).q(titles);
 ```
 
 Where `dbAfter`'s floor is best-effort ("at least this fresh"), `asOf(t)` pins
