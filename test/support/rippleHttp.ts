@@ -22,11 +22,13 @@ export interface PeerOptions {
   /** Extra request headers, e.g. `x-ripple-replica-hint: enam`, `x-ripple-cache-basis: 1`, `x-ripple-cache-mode: peer` (read-path knobs). */
   headers?: Record<string, string>;
   /**
-   * Extra attempts after a transient Cloudflare platform error (HTML 404 /
-   * "Worker not found" / 1042 / 1104 / 503). Fresh workers.dev hosts flake
-   * under concurrent bursts; e2e sets this. Default 0 = no retry.
+   * How long (ms) to keep retrying transient Cloudflare platform errors
+   * (workers.dev HTML 404, 1042/1104, "Worker not found", 503). A fresh
+   * workers.dev hostname is eventually consistent across the edge, so a colo
+   * can serve the placeholder well after /health passes; this is the budget
+   * for waiting that out. Application errors never retry. Default 0.
    */
-  retryTransient?: number;
+  retryTransientMs?: number;
 }
 
 export interface Ack {
@@ -74,40 +76,28 @@ export class Peer {
   }
 
   async request<T>(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
-    const retries = Math.max(0, this.opts.retryTransient ?? 0);
-    let last: unknown;
-    for (let attempt = 0; attempt <= retries; attempt++) {
+    const deadline = Date.now() + Math.max(0, this.opts.retryTransientMs ?? 0);
+    for (let attempt = 0; ; attempt++) {
       try {
-        return await this.requestOnce<T>(method, path, body, extraHeaders, attempt);
+        return await this.requestOnce<T>(method, path, body, extraHeaders, attempt > 0);
       } catch (e) {
-        last = e;
-        if (attempt >= retries || !isTransientCf(e)) throw e;
-        // Exponential backoff with jitter so a dual-write burst does not
-        // retry-storm the same workers.dev colo in lockstep.
+        if (!isTransientCf(e) || Date.now() >= deadline) throw e;
+        // Jittered backoff so a concurrent burst does not retry in lockstep.
         const base = Math.min(2000, 150 * 2 ** attempt);
         await Bun.sleep(Math.round(base * (0.5 + Math.random())));
       }
     }
-    throw last;
   }
 
-  private async requestOnce<T>(
-    method: string,
-    path: string,
-    body?: unknown,
-    extraHeaders?: Record<string, string>,
-    attempt = 0,
-  ): Promise<T> {
+  private async requestOnce<T>(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>, fresh = false): Promise<T> {
     const headers: Record<string, string> = { "content-type": "application/json", ...(this.opts.headers ?? {}), ...(extraHeaders ?? {}) };
     if (this.opts.token) headers.authorization = `Bearer ${this.opts.token}`;
-    const res = await this.f(this.base + path, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(toJson(body)),
-      // Retries must not reuse a keep-alive socket pinned to a colo still
-      // serving the workers.dev "nothing here yet" placeholder.
-      keepalive: attempt === 0,
-    });
+    // A platform 404/1042 is often pinned to one pooled socket (one edge
+    // server behind the anycast IP keeps serving the placeholder). Retries
+    // send `Connection: close`, which evicts that socket from Bun's pool so
+    // the attempt after it dials a fresh server. Verified: Bun honors this.
+    if (fresh) headers.connection = "close";
+    const res = await this.f(this.base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(toJson(body)) });
     const text = await res.text();
     let parsed: any;
     try {

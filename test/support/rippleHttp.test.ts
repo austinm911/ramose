@@ -1,6 +1,7 @@
 /**
- * Ops HTTP harness: transient Cloudflare platform errors must retry without
- * dumping the workers.dev HTML body into the test reporter.
+ * Ops HTTP harness: transient Cloudflare platform errors retry within the
+ * `retryTransientMs` budget; application errors propagate immediately; and
+ * the workers.dev HTML placeholder never lands verbatim in a test reporter.
  */
 import { describe, expect, test } from "bun:test";
 import {
@@ -19,30 +20,28 @@ const json = (status: number, body: unknown) =>
   });
 
 describe("Peer — Cloudflare platform retries", () => {
-  test("retries workers.dev HTML 404 then succeeds", async () => {
+  test("retries workers.dev HTML 404 within the budget, then succeeds", async () => {
     let n = 0;
-    const inits: RequestInit[] = [];
+    const connectionHeaders: (string | undefined)[] = [];
     const peer = new Peer("https://example.workers.dev", {
-      retryTransient: 4,
+      retryTransientMs: 10_000,
       fetch: (async (_url: string | URL | Request, init?: RequestInit) => {
         n++;
-        inits.push(init ?? {});
+        connectionHeaders.push((init?.headers as Record<string, string>)?.connection);
         if (n < 3) return new Response(html404, { status: 404 });
         return json(200, { ok: true, stage: "e2e" });
       }) as unknown as typeof fetch,
     });
-    const h = await peer.health();
-    expect(h.ok).toBe(true);
+    expect((await peer.health()).ok).toBe(true);
     expect(n).toBe(3);
-    expect(inits[0]?.keepalive).toBe(true);
-    expect(inits[1]?.keepalive).toBe(false);
-    expect(inits[2]?.keepalive).toBe(false);
+    // first attempt pools; retries evict the suspect socket
+    expect(connectionHeaders).toEqual([undefined, "close", "close"]);
   });
 
   test("retries error 1104 then succeeds", async () => {
     let n = 0;
     const peer = new Peer("https://example.workers.dev", {
-      retryTransient: 3,
+      retryTransientMs: 10_000,
       fetch: (async () => {
         n++;
         if (n === 1) return new Response("error code: 1104", { status: 500 });
@@ -56,7 +55,7 @@ describe("Peer — Cloudflare platform retries", () => {
   test("retries Worker not found JSON 500 then succeeds", async () => {
     let n = 0;
     const peer = new Peer("https://example.workers.dev", {
-      retryTransient: 3,
+      retryTransientMs: 10_000,
       fetch: (async () => {
         n++;
         if (n === 1) {
@@ -69,10 +68,23 @@ describe("Peer — Cloudflare platform retries", () => {
     expect(n).toBe(2);
   });
 
+  test("gives up when the budget is exhausted", async () => {
+    let n = 0;
+    const peer = new Peer("https://example.workers.dev", {
+      retryTransientMs: 400,
+      fetch: (async () => {
+        n++;
+        return new Response(html404, { status: 404 });
+      }) as unknown as typeof fetch,
+    });
+    await expect(peer.health()).rejects.toBeInstanceOf(HttpError);
+    expect(n).toBeGreaterThan(1); // it did retry
+  });
+
   test("does not retry an application 409", async () => {
     let n = 0;
     const peer = new Peer("https://example.workers.dev", {
-      retryTransient: 8,
+      retryTransientMs: 10_000,
       fetch: (async () => {
         n++;
         return json(409, { error: "unique conflict", code: "tx/unique-conflict" });
@@ -91,7 +103,6 @@ describe("Peer — Cloudflare platform retries", () => {
 
   test("truncates workers.dev HTML so the reporter stays readable", async () => {
     const peer = new Peer("https://example.workers.dev", {
-      retryTransient: 0,
       fetch: (async () => new Response(html404, { status: 404 })) as unknown as typeof fetch,
     });
     try {

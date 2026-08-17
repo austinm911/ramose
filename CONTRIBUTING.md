@@ -68,9 +68,9 @@ The e2e job uses the GitHub **Development** environment
 same names in the Cursor secrets panel — see [`.cursor/CLOUD.md`](.cursor/CLOUD.md).
 
 Each run deploys its own Alchemy stage (`ALCHEMY_STAGE=e2e-<run_id>-<attempt>`),
-so Worker / Durable Object / R2 names do not collide across parallel jobs.
-Transient workers.dev HTML 404s / 1042 / 1104 under concurrent write bursts are
-retried by the e2e `Peer` harness (jittered backoff, no keep-alive on retry)
-and the alchemy HTTPS client. If the suite still fails, `scripts/e2e-cloudflare.sh`
-re-runs it once against the same peer. CI does **not** serialize the whole
-account.
+so Worker / Durable Object / R2 names do not collide across parallel jobs. A
+fresh workers.dev hostname is eventually consistent across the edge, so a colo
+can serve the HTML placeholder (or 1042/1104/"Worker not found") mid-suite;
+both the e2e `Peer` harness and the alchemy HTTPS client classify those as
+transient and retry them with jittered backoff — application errors never
+retry, and CI does **not** serialize the whole account.
