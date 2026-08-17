@@ -23,7 +23,8 @@ installed Bun and run `bun install`, so dependencies are ready when an agent sta
     e2e case "a write on another connection wakes db.live" fails consistently
     (cross-connection novelty over WebSockets does not propagate across isolates in
     miniflare local). Same-connection live queries work — the todos UI updates live
-    on write. The remaining e2e cases pass. Don't chase this against a local peer.
+    on write. The remaining e2e cases pass. Don't chase this against a local peer —
+    run it against real Cloudflare (below) to see the full suite pass.
 - There is no production "build" step for local dev; the app runs via `alchemy dev`
   (miniflare) and Vite.
 
@@ -44,3 +45,48 @@ installed Bun and run `bun install`, so dependencies are ready when an agent sta
   `POST /db/<name>/query`, `POST /db/<name>/pull`, `GET /db/<name>/info`. There is a
   top-level `GET /health`. In `tx` maps, every key must be a fully-qualified ident
   (e.g. `:todo/title`); a bare key like `done` is rejected as `tx/invalid`.
+
+## Running the e2e suite against real Cloudflare
+
+The `test/e2e` suite is self-contained — it creates its own `e2e-<ts>` database
+and installs the schema — so it can run against any live peer. To run it against a
+real Cloudflare deployment (the only place the cross-isolate live-query case can
+pass), use the helper, which deploys a throwaway stage, runs the suite, and
+destroys the stage afterwards (even on failure):
+
+```sh
+CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... bun run test:e2e:cf
+```
+
+`bun run test:e2e:cf` wraps `scripts/e2e-cloudflare.sh`, which:
+1. Deploys a uniquely-named stage (`e2e-<epoch>-<rand>`) with `ALCHEMY_STATE=local`
+   and `CI=1` (env-var creds, non-interactive) — an **open** peer, no auth.
+2. Parses the `workers.dev` URL from the deploy output and polls `/health`.
+3. Runs `RIPPLE_URL=<url> bun run test:e2e`.
+4. Destroys the stage (set `KEEP_STAGE=1` to leave it up for debugging).
+
+### Required credentials (add as Cursor secrets, then re-run this agent)
+- `CLOUDFLARE_API_TOKEN` — a Cloudflare API token for the target account with, at
+  minimum, these permission groups (scoped to the account): **Workers Scripts
+  Write** (covers Durable Objects), **Workers R2 Storage Write**, and
+  **Account Settings Read**. This stack also declares a Workers Analytics Engine
+  dataset; grant **Account Analytics Read/Edit** if a deploy reports an AE
+  permission error. See the Alchemy Cloudflare auth guide for the authoritative
+  list.
+- `CLOUDFLARE_ACCOUNT_ID` — the account to deploy into.
+
+Because a Cloud Agent starts with no Cloudflare credentials, this suite cannot run
+against Cloudflare until those two secrets are added. `alchemy dev` (local
+miniflare) needs neither and is the default for everyday work.
+
+### CI
+`.github/workflows/e2e-cloudflare.yml` runs the same flow on **manual dispatch**
+only (deploying to Cloudflare has side effects/cost, so it is intentionally not on
+push/PR). It requires the repository secrets `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID`.
+
+### Auth note
+The deploy is an open peer (no `RIPPLE_TOKEN`/`RIPPLE_POLICY`), so the throwaway
+`workers.dev` URL is briefly writable by anyone who knows it. The stage name is
+unguessable and torn down at the end of the run; if you need an authenticated peer,
+set `RIPPLE_TOKEN` (and it is passed through to the test client).
