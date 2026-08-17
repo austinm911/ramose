@@ -18,6 +18,9 @@ export type TodoRow = readonly [TodoEid, Pull<typeof Todos, typeof pattern>];
 export const todoQuery = (q: QueryBuilder<typeof Todos>) =>
   q.where("?e", Todo.title, "_").find("?e").pull(pattern);
 
+/** One row, straight from its eid — the same `pattern`, no query. */
+export const pullTodo = (db: TodosDb, eid: TodoEid) => db.pull(eid, pattern);
+
 export const addTodo = (db: TodosDb, title: string) =>
   db.transact(function* (tx) {
     const t = yield* tx.entity();

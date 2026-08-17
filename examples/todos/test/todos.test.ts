@@ -15,10 +15,11 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Stream from "effect/Stream";
-import { Todos } from "../schema.ts";
+import { Todo, Todos } from "../schema.ts";
 import {
   addTodo,
   deleteTodo,
+  pullTodo,
   setDone,
   todoQuery,
   type TodoRow,
@@ -198,6 +199,21 @@ describe("the app's writes move the app's live stream", () => {
 
     expect(titles(todos.rows)).toEqual(["from another tab"]);
     await todos.stop();
+    await peer.dispose();
+  });
+
+  test("one row without a query: db.pull(eid, pattern)", async () => {
+    const peer = await inProcessPeer();
+    const report = await Effect.runPromise(addTodo(peer.db, "pull me"));
+
+    // `dbAfter` is floored at the write, so this reads its own write
+    const [[eid]] = await Effect.runPromise(
+      report.dbAfter.q((q) => q.where("?e", Todo.title, "_").find("?e")),
+    );
+    const row = await Effect.runPromise(pullTodo(peer.db, eid));
+    expect(row).toMatchObject({ title: "pull me", done: false });
+    expect(row?.createdAt).toBeInstanceOf(Date);
+
     await peer.dispose();
   });
 

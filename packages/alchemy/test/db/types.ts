@@ -8,9 +8,13 @@
 
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import {
+  type AnyAttribute,
+  type AnyNamespace,
   Attr,
+  type Attribute,
   Bytes,
   Catalog,
   type CatalogIdent,
@@ -20,11 +24,14 @@ import {
   type Db,
   type DbError,
   type Eid,
+  type Entity,
+  type EntityRef,
   type Equal,
   type Expect,
   type Extends,
   Instant,
   Long,
+  type LookupRef,
   Namespace,
   type ReadDb,
   Ref,
@@ -211,3 +218,114 @@ type _caught = Expect<
   Equal<Effect.Success<typeof caught>, TxReport<typeof Movies> | string>
 >;
 type _caughtErr = Expect<Equal<Effect.Error<typeof caught>, never>>;
+
+// ── §2 of docs/API.md, name by name ────────────────────────────────────────
+//
+// `db-portable.test.ts` pins that the barrel exports *these names and no
+// others*; `surface.test.ts` does the same for `@ripple/alchemy`. What is left
+// is the signature each table row promises, which is a compile-time claim.
+
+/** `ClientOptions` — url, an Effect token, and the two injection seams. */
+type _optUrl = Expect<Equal<ClientOptions["url"], string>>;
+type _optToken = Expect<
+  Equal<
+    ClientOptions["token"],
+    Effect.Effect<Redacted.Redacted<string>> | undefined
+  >
+>;
+type _optFetch = Expect<Equal<ClientOptions["fetch"], typeof fetch | undefined>>;
+type _optWs = Expect<
+  Equal<ClientOptions["webSocket"], typeof WebSocket | undefined>
+>;
+/** A static token is one expression, with nothing else to supply. */
+const _staticToken: ClientOptions["token"] = Effect.succeed(
+  Redacted.make("t"),
+);
+void _staticToken;
+
+/** `Databases` — the key *is* the client, and it has exactly one method. */
+type _databasesShape = Expect<Equal<keyof DatabasesShape, "db">>;
+
+/** `Db<C>` is `ReadDb<C>` plus `transact` and `install`, and nothing else. */
+type _readDbKeys = Expect<
+  Equal<keyof ReadDb<typeof Movies>, "name" | "catalog" | "q" | "pull" | "live" | "asOf" | "history">
+>;
+type _dbKeys = Expect<
+  Equal<Exclude<keyof Db<typeof Movies>, keyof ReadDb<typeof Movies>>, "transact" | "install">
+>;
+type _dbExtendsRead = Expect<Extends<Db<typeof Movies>, ReadDb<typeof Movies>>>;
+
+/** `db.install()` — an idempotent catalog upsert, reported like any tx. */
+const installed = movies.install();
+type _install = Expect<
+  Equal<typeof installed, Effect.Effect<TxReport<typeof Movies>, DbError>>
+>;
+
+/** `db.pull` — `null` when a required field is missing, never `undefined`. */
+const pulled = movies.pull(eid, { name: User.name });
+type _pullOk = Expect<
+  Equal<Effect.Success<typeof pulled>, { readonly name: string } | null>
+>;
+type _pullErr = Expect<Equal<Effect.Error<typeof pulled>, DbError>>;
+type _pullR = Expect<Equal<Effect.Services<typeof pulled>, never>>;
+
+/** …and a `LookupRef` on a unique attribute is the other subject form. */
+const byLookup = movies.pull([User.name, "Ada"], { name: User.name });
+type _lookupIsSubject = Expect<
+  Equal<Effect.Success<typeof byLookup>, Effect.Success<typeof pulled>>
+>;
+declare const lookup: LookupRef<typeof Movies>;
+type _lookupPair = Expect<Extends<typeof lookup, readonly [unknown, unknown]>>;
+/** …and only on a unique attribute: `:user/age` resolves nothing. */
+// @ts-expect-error :user/age is not unique, so it is not a lookup ref
+movies.pull([User.age, 30], { name: User.name });
+// @ts-expect-error same, spelled as the ident
+movies.pull([":user/age", 30], { name: User.name });
+
+/** `Entity<C>` — the handle `tx.entity()` returns: `eid`, `add`, `retract`. */
+type _entityKeys = Expect<
+  Equal<
+    Exclude<keyof Entity<typeof Movies>, "_tag">,
+    "eid" | "add" | "retract" | "retractEntity"
+  >
+>;
+type _entityEid = Expect<Extends<Entity<typeof Movies>["eid"], EntityRef<typeof Movies>>>;
+
+/** `TxReport<C>` — exactly the four fields the table lists. */
+type _reportKeys = Expect<
+  Equal<keyof TxReport<typeof Movies>, "t" | "txEid" | "datomCount" | "dbAfter">
+>;
+type _reportT = Expect<Equal<TxReport<typeof Movies>["t"], number>>;
+type _reportCount = Expect<
+  Equal<TxReport<typeof Movies>["datomCount"], number>
+>;
+
+/** `Catalog.Any` is the bound catalog-generic helpers are written against. */
+const anyCatalog = <C extends Catalog.Any>(db: Db<C>): C => db.catalog;
+type _anyCatalog = Expect<
+  Equal<ReturnType<typeof anyCatalog<typeof Movies>>, typeof Movies>
+>;
+type _moviesIsAny = Expect<Extends<typeof Movies, Catalog.Any>>;
+
+/** `Attribute` / `Namespace` / `Catalog` are types as well as constructors. */
+type _attributeTag = Expect<Equal<Attribute["_tag"], "Attribute">>;
+type _attributeIsAttribute = Expect<Extends<(typeof User)["name"], AnyAttribute>>;
+type _namespaceTag = Expect<Equal<Namespace["_tag"], "Namespace">>;
+type _namespaceIsNamespace = Expect<Extends<typeof User, AnyNamespace>>;
+type _catalogTag = Expect<Equal<Catalog["_tag"], "Catalog">>;
+type _catalogIsCatalog = Expect<Extends<typeof Movies, Catalog>>;
+
+/** `DbError` is the union of exactly the eight tagged errors. */
+type _dbErrorUnion = Expect<
+  Equal<
+    DbError["_tag"],
+    | "TxRejected"
+    | "Unavailable"
+    | "InvalidRequest"
+    | "DatabaseNotFound"
+    | "Unauthorized"
+    | "QueryBudgetExceeded"
+    | "InternalError"
+    | "NetworkError"
+  >
+>;

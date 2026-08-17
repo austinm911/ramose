@@ -143,7 +143,8 @@ views.
   builder; `live` is a `Stream` on the session socket.
 - One writer per name, dense `t`, persist-before-ack.
 - QueryReplicas hold novelty; workers read through them.
-- Privilege follows the system: `Read` / `Write` / `ReadWrite`.
+- Privilege is the capability you bind: `Ripple.ReadWriteDatabases` or
+  `Ripple.ReadDatabases`; the transport is a Layer.
 - Engine in `packages/core`, Cloudflare peer in `packages/worker`, client in
   `packages/alchemy`.
 
