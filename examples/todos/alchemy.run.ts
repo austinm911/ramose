@@ -1,10 +1,5 @@
-/**
- * The stack: providers, a deploy-time schema install, outputs.
- *
- *   bun alchemy dev examples/todos/alchemy.run.ts
- *   VITE_RIPPLE_URL=http://localhost:8787 bunx vite examples/todos
- *
- * Run it from the repo root — `Peer`'s `main` is repo-relative.
+/** bun alchemy dev examples/todos/alchemy.run.ts
+ *  VITE_RIPPLE_URL=http://localhost:8787 bunx vite examples/todos
  */
 
 import * as Ripple from "@ripple/alchemy";
@@ -15,11 +10,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { Sys } from "./resources.ts";
 import { Todos } from "./schema.ts";
-
-// Actions run in the engine's process after their upstreams apply, so this uses
-// the `*Local` layer: no host Worker, just the peer's deployed URL. Typed
-// `create("todos", Todos)` validates the name and ensures the catalog — that
-// ensure *is* the install.
 
 export const InstallSchema = Alchemy.Action(
   "InstallSchema",

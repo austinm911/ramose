@@ -1,5 +1,3 @@
-/** The list query and the three writes. Plain `db.transact` — nothing invalidates. */
-
 import type {
   Eid,
   LiveQueryBuilder,
@@ -10,7 +8,6 @@ import { Todo, type Todos } from "../schema.ts";
 export type TodosDb = TypedLiveDatabaseClient<typeof Todos>;
 export type TodoEid = Eid<typeof Todos>;
 
-/** The standing query. Exported so a test stands up exactly the app's list. */
 export const todoQuery = (q: LiveQueryBuilder<typeof Todos>) =>
   q.where("?e", Todo.title, "_").find("?e").pull({
     title: Todo.title,

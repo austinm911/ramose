@@ -75,23 +75,7 @@ VITE_RIPPLE_URL=http://localhost:8787 bunx vite examples/todos
 ```
 
 `@ripple/alchemy` is TS-source and its barrel pulls the deploy engine, so
-Vite aliases `@ripple/alchemy/schema` (and `@ripple/core` if needed) the
-way the old draft described. Put `react`, `react-dom`, `@types/react`,
+Vite aliases `@ripple/alchemy/schema` (and `@ripple/core` if needed).
+Put `react`, `react-dom`, `@types/react`,
 `vite`, `@vitejs/plugin-react` in the **root** `devDependencies`
 (`examples/` is not a workspace).
-
-## Out of scope
-
-Auth beyond `RIPPLE_TOKEN`. Presence, offline, mobile. A second live
-runtime. Hibernating session DOs. PR #2 write-WS. Wrapping `processTx` /
-`SortedNovelty.flush`. Changing Transactor / Replica / Worker beyond
-whatever the example already copies from kv-style. Do not invent `bump`.
-Do not implement this UI on HTTP `makeSystem` + a poll.
-
-## Done when
-
-- Add / toggle / delete a todo against a real peer and the list updates
-  with no refetch and no invalidation call
-- A second tab sees the write via session `t` frames, not a client poll
-- `session.close()` stops the store
-- Typecheck clean; a bun test covers transact → store rows without Cloudflare

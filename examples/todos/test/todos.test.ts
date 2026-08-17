@@ -1,8 +1,3 @@
-/**
- * The app's writes against a real in-process peer (a `Connection` worn as a
- * session socket — no Cloudflare), read back through the app's own live query.
- */
-
 import { describe, expect, test } from "bun:test";
 import { Session } from "@ripple/alchemy/schema";
 import { Connection, fromJson, pull, query, toJson } from "@ripple/core";
@@ -20,7 +15,6 @@ interface Frame {
   [field: string]: unknown;
 }
 
-/** A `Connection` behind the session frames the client speaks. */
 const inProcessPeer = async () => {
   const conn = await Connection.create();
   const sent: Frame[] = [];
@@ -77,7 +71,6 @@ const inProcessPeer = async () => {
       void answer(frame).then(
         (reply) => {
           push({ id: frame.id, status: reply.status ?? 200, body: toJson(reply.body) });
-          // the peer tells the sessions where the log now is
           if (frame.op === "transact") push({ op: "t", t: conn.t });
         },
         (cause: unknown) =>
@@ -106,7 +99,6 @@ const open = async () => {
   return { peer, session, db };
 };
 
-/** A pass is a q plus a pull per row; a tick is plenty. */
 const settle = () => Bun.sleep(30);
 
 describe("the app's writes move the app's live store", () => {
