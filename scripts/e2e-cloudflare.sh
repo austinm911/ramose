@@ -49,9 +49,14 @@ cleanup() {
     echo ">> KEEP_STAGE=1 set; leaving stage '$STAGE' deployed. Destroy later with:" >&2
     echo "   ALCHEMY_STATE=local CI=1 bun alchemy destroy --stage $STAGE --yes" >&2
   else
+    # R2 empty-then-delete can 409 if list/delete races with recent puts; retry.
     echo ">> Destroying stage '$STAGE' ..." >&2
-    bun alchemy destroy --stage "$STAGE" --yes \
-      || echo "warning: destroy failed for stage '$STAGE'; check the Cloudflare dashboard." >&2
+    local ok=""
+    for _ in $(seq 1 5); do
+      if bun alchemy destroy --stage "$STAGE" --yes; then ok=1; break; fi
+      sleep 3
+    done
+    [ -n "$ok" ] || echo "warning: destroy failed for stage '$STAGE'; check the Cloudflare dashboard." >&2
   fi
   rm -f "$DEPLOY_LOG"
 }
@@ -87,6 +92,28 @@ for _ in $(seq 1 30); do
 done
 [ -n "$ok" ] || fail "peer did not become healthy at $URL/health within ~60s."
 echo ">> Peer is healthy."
+
+# /health only exercises the Worker fetch handler. Fresh DO namespaces often
+# answer "Worker not found" for a few seconds after deploy; /info hits both
+# the Transactor and a QueryReplica.
+echo ">> Waiting for Durable Objects (GET /db/e2e-warmup/info) ..."
+ok=""
+for _ in $(seq 1 45); do
+  body="$(mktemp "${TMPDIR:-/tmp}/ripple-e2e-warmup.XXXXXX")"
+  code="$(curl -sS -o "$body" -w '%{http_code}' "$URL/db/e2e-warmup/info" || echo 000)"
+  if [ "$code" = "200" ]; then
+    ok=1
+    rm -f "$body"
+    break
+  fi
+  # Surface the platform error while we wait (truncated).
+  head -c 200 "$body" 2>/dev/null | tr '\n' ' ' >&2 || true
+  echo " (HTTP $code); retrying..." >&2
+  rm -f "$body"
+  sleep 2
+done
+[ -n "$ok" ] || fail "Durable Objects not ready at $URL/db/e2e-warmup/info within ~90s."
+echo ">> Durable Objects ready."
 
 echo ">> Running e2e suite against $URL ..."
 set +e
