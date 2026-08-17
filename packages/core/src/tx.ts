@@ -58,7 +58,8 @@ export interface TxResult {
 
 type EForm = number | string | unknown[];
 
-interface Op {
+/** A tx item after map/reverse-ref expansion, before entity/value resolution. */
+export interface TxOp {
   kind: "add" | "retract" | "retractEntity";
   e: EForm;
   a?: string | number;
@@ -66,16 +67,48 @@ interface Op {
   hasV?: boolean;
 }
 
-let tmpCounter = 0;
-function freshTempid(): string {
-  return `__ripple.tmp/${++tmpCounter}`;
+/**
+ * One concrete datom the tx will produce, with the provenance a policy check
+ * needs: which resolved entity/attribute it lands on and why it exists.
+ */
+export interface ExpandedOp {
+  readonly kind: "add" | "retract";
+  readonly e: number;
+  readonly a: number;
+  readonly attr: Attribute;
+  readonly datom: Datom;
+  /** retract emitted by cardinality-one replacement */
+  readonly implicit: boolean;
+  /** retract emitted by a :db/retractEntity closure */
+  readonly fromRetractEntity: boolean;
 }
+
+export interface TxExpansion extends TxResult {
+  /** entity ids this tx allocates (never seen before), plus the tx entity */
+  newEntities: Set<number>;
+  /** the concrete per-datom ops, in emission order (tx-instant excluded) */
+  ops: ExpandedOp[];
+}
+
+export interface ExpandOptions {
+  /** max datoms a :db/retractEntity closure may produce before throwing */
+  closureCap?: number;
+}
+
+/** Prefix of tempids generated for map forms without an explicit `:db/id`. */
+export const GENERATED_TEMPID_PREFIX = "__ripple.tmp/";
 
 const TX_TEMPID = new Set([":db/tx", "datomic.tx", "db.tx"]);
 
-/** Expand map forms into add ops. Returns the flat op list. */
-function flatten(txData: TxData): Op[] {
-  const ops: Op[] = [];
+/**
+ * Expand map forms into add ops. Returns the flat op list. Generated tempids
+ * are numbered per call, so flattening the same tx data twice yields the same
+ * names (the policy pre-check relies on it).
+ */
+export function flattenTxData(txData: TxData): TxOp[] {
+  const ops: TxOp[] = [];
+  let tmpCounter = 0;
+  const freshTempid = (): string => `${GENERATED_TEMPID_PREFIX}${++tmpCounter}`;
   const expandMap = (m: Record<string, unknown>): EForm => {
     let e: EForm | undefined = m[":db/id"] as EForm | undefined;
     if (e === undefined || e === null) e = freshTempid();
@@ -159,10 +192,37 @@ export async function processTx(
   nextEid: number,
   txInstant: number,
 ): Promise<TxResult> {
-  const ops = flatten(txData);
+  const { ops: _ops, newEntities: _ne, ...res } = await expandTx(db, txData, t, nextEid, txInstant);
+  return res;
+}
+
+/**
+ * `processTx` plus the per-datom provenance the policy layer checks against.
+ * Same semantics — `processTx` is a projection of this.
+ */
+export async function expandTx(
+  db: Db,
+  txData: TxData,
+  t: number,
+  nextEid: number,
+  txInstant: number,
+  options: ExpandOptions = {},
+): Promise<TxExpansion> {
+  const ops = flattenTxData(txData);
   const txe = txEid(t);
   const tempids = new Map<string, number>();
   const out: Datom[] = [];
+  const expanded: ExpandedOp[] = [];
+  const newEntities = new Set<number>([txe]);
+  const closureCap = options.closureCap ?? Number.POSITIVE_INFINITY;
+  let closureCount = 0;
+  let inRetractEntity = false;
+  const record = (kind: "add" | "retract", e: number, attr: Attribute, d: Datom, implicit = false): void => {
+    expanded.push({ kind, e, a: attr.id, attr, datom: d, implicit, fromRetractEntity: inRetractEntity });
+    if (inRetractEntity && ++closureCount > closureCap) {
+      throw new TxError(`:db/retractEntity closure exceeds ${closureCap} datoms`, "tx/closure-cap");
+    }
+  };
 
   // --- Attribute resolution -------------------------------------------------
   const attrOf = (a: string | number | undefined): Attribute => {
@@ -202,6 +262,7 @@ export async function processTx(
       }
       if (!allocate) return undefined;
       const id = nextEid++;
+      newEntities.add(id);
       tempids.set(canonical, id);
       if (canonical !== form) tempids.set(form, id);
       return id;
@@ -307,12 +368,15 @@ export async function processTx(
     }
     if (attr.cardinality === "one" && vals.size > 0) {
       for (const [ok, od] of vals) {
-        out.push({ e, a: attr.id, vt: od.vt, v: od.v, t, op: false });
+        const r: Datom = { e, a: attr.id, vt: od.vt, v: od.v, t, op: false };
+        out.push(r);
+        record("retract", e, attr, r, true);
         vals.delete(ok);
       }
     }
     const d: Datom = { e, a: attr.id, vt: tv.vt, v: tv.v, t, op: true };
     out.push(d);
+    record("add", e, attr, d);
     vals.set(vk, d);
   };
 
@@ -320,7 +384,9 @@ export async function processTx(
     const vals = await current(e, attr.id);
     if (tv === undefined) {
       for (const [k, d] of vals) {
-        out.push({ e, a: attr.id, vt: d.vt, v: d.v, t, op: false });
+        const r: Datom = { e, a: attr.id, vt: d.vt, v: d.v, t, op: false };
+        out.push(r);
+        record("retract", e, attr, r);
         vals.delete(k);
       }
       return;
@@ -328,7 +394,9 @@ export async function processTx(
     const vk = valueKey(tv.vt, tv.v);
     const d = vals.get(vk);
     if (!d) return; // absent → elide
-    out.push({ e, a: attr.id, vt: d.vt, v: d.v, t, op: false });
+    const r: Datom = { e, a: attr.id, vt: d.vt, v: d.v, t, op: false };
+    out.push(r);
+    record("retract", e, attr, r);
     vals.delete(vk);
   };
 
@@ -355,7 +423,9 @@ export async function processTx(
       if (attr && attr.valueType === ValueTag.Ref) {
         for (const [vk, d] of m) {
           if (d.v === e && d.t === t) {
-            out.push({ e: ee, a: aa, vt: d.vt, v: d.v, t, op: false });
+            const r: Datom = { e: ee, a: aa, vt: d.vt, v: d.v, t, op: false };
+            out.push(r);
+            record("retract", ee, attr, r);
             m.delete(vk);
           }
         }
@@ -400,7 +470,12 @@ export async function processTx(
     if (op.kind === "retractEntity") {
       const e = await resolveEntity(op.e, false);
       if (e === undefined) continue; // unresolved tempid → nothing to retract
-      await retractEntity(e);
+      inRetractEntity = true;
+      try {
+        await retractEntity(e);
+      } finally {
+        inRetractEntity = false;
+      }
       continue;
     }
     const attr = attrOf(op.a);
@@ -421,5 +496,5 @@ export async function processTx(
 
   const tempidsOut: Record<string, number> = {};
   for (const [k, v] of tempids) tempidsOut[k] = v;
-  return { t, txEid: txe, datoms: out, tempids: tempidsOut, nextEid };
+  return { t, txEid: txe, datoms: out, tempids: tempidsOut, nextEid, newEntities, ops: expanded };
 }
