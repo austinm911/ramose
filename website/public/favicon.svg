@@ -1,5 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <rect width="64" height="64" rx="12" fill="#050505"/>
-  <!-- Micro use: below 24px the inner ripple is omitted; the primary loop stands alone. -->
-  <path d="M28 32 C22 21.5 6 21.5 6 32 C6 42.5 22 42.5 28 32 C35.5 18.5 58 18.5 58 32 C58 45.5 35.5 45.5 28 32" stroke="#F3F1EA" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- Micro use: below 24px the inner ripple is omitted; the primary loop stands alone.
+       Loop geometry extracted from the brand guide PDF. -->
+  <g transform="translate(6 20.7) scale(0.2407)" fill="none">
+    <path d="M90.8 61.2 C74.2 82.5 60 88 41.8 85.7 C16.5 82.5 3.9 63.6 5.5 42.2 C7.1 19.3 23.6 5.1 45.7 6.7 C67.9 7.5 80.5 25.7 95.5 41.4 C111.3 57.2 128.7 71.4 148.4 80.1 C170.5 89.6 188.7 84.1 199.7 69.1 C212.4 51.7 207.6 28 191.8 17 C174.5 4.3 150 5.1 131 17.8 C126.3 20.9 122.3 24.1 119.2 27.2" stroke="#F3F1EA" stroke-width="17" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
 </svg>
