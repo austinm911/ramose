@@ -34,7 +34,7 @@ command -v bun >/dev/null 2>&1 || fail "bun is not on PATH."
 
 # Unique DNS-safe stage so concurrent runs never share Worker/DO/R2 resources.
 STAGE="${ALCHEMY_STAGE:-${E2E_STAGE:-e2e-$(date +%s)-${RANDOM}}}"
-DEPLOY_LOG="$(mktemp -t ripple-e2e-deploy.XXXXXX.log)"
+DEPLOY_LOG="$(mktemp "${TMPDIR:-/tmp}/ripple-e2e-deploy.XXXXXX.log")"
 STATUS=0
 
 # Local state store: this run's state lives in ./.alchemy, so destroy
