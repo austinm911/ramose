@@ -105,7 +105,8 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
    * Stand a query up: re-run on every basis tick this session sees,
    * and after a local `transact`. Requirements are `never` — teardown is fiber
    * interruption — and a pinned view (`asOf` / `history`) emits once and
-   * completes.
+   * completes. A pass that returns the rows already emitted is not emitted
+   * again: a write this query does not see is not a re-render.
    */
   live<R>(input: QueryInput<R>): Stream.Stream<QueryRows<C, R>, DbError>;
 
@@ -230,11 +231,13 @@ const makeRead = <C extends AnyCatalog>(
   const runQuery = <R>(
     input: QueryInput<R>,
     minT: number | undefined,
-  ): Effect.Effect<{ readonly rows: unknown; readonly t: number }, DbError> =>
+  ): Effect.Effect<
+    { readonly rows: unknown; readonly t: number; readonly raw: unknown },
+    DbError
+  > =>
     Effect.gen(function* () {
-      const nav = asNavQuery(input);
+      const lowered = lowerNavQuery(asNavQuery(input));
       const fence = minT ?? view.minT;
-      const lowered = lowerNavQuery(nav);
       const body = record(
         yield* wire.read(
           name,
@@ -250,8 +253,9 @@ const makeRead = <C extends AnyCatalog>(
       );
       const t = typeof body.t === "number" ? body.t : 0;
       return {
-        rows: finalizeNavResult(nav, body.result, lowered.pullMap),
+        rows: finalizeNavResult(body.result, lowered.pullMap),
         t,
+        raw: body.result,
       };
     });
 
@@ -299,10 +303,16 @@ const makeRead = <C extends AnyCatalog>(
             );
           }
 
+          let last: string | undefined;
           for (;;) {
             const seen = session?.t ?? 0;
             const pass = yield* withBackoff(runQuery(input, seen || undefined));
-            yield* Queue.offer(queue, pass.rows as R);
+            // a tick the query's rows did not notice is not news
+            const digest = JSON.stringify(pass.raw) ?? "";
+            if (digest !== last) {
+              last = digest;
+              yield* Queue.offer(queue, pass.rows as R);
+            }
             if (pinned || session === undefined) break;
             yield* awaitWake(
               session,

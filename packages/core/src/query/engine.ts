@@ -592,7 +592,6 @@ class Executor {
   }
 
   private async execOr(rel: Rel, c: OrClause): Promise<Rel> {
-    if (rel.rows.length === 0) return rel;
     // exported vars: explicit (or-join) or the vars common to all branches
     let exported: string[];
     if (c.join) exported = c.join;
@@ -609,6 +608,9 @@ class Executor {
         throw new QueryError(`all clauses in 'or' must use the same variables (use or-join to scope): ${[...all].filter((v) => !exported.includes(v)).join(", ")}`);
       }
     }
+    // an empty input still binds what the branches export: a later clause
+    // (or :order) may name those variables
+    if (rel.rows.length === 0) return { vars: [...rel.vars, ...exported.filter((v) => !rel.vars.includes(v))], rows: [] };
     const shared = exported.filter((v) => rel.vars.includes(v));
     const seed = shared.length ? project(rel, shared) : EMPTY;
     const seen = new Set<string>();

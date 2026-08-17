@@ -3,6 +3,7 @@
 import type { AnyAttribute } from "./Attribute.ts";
 import {
   attachAttrNav,
+  cardsOf,
   withPath,
   type AttrNav,
   type PathCarrier,
@@ -105,10 +106,12 @@ export type Namespace<
   readonly attributes: StampedMap<Name, Attrs>;
   /**
    * Pseudo-attribute `:db/id`, usable in `where` / `select` / `orderBy`.
-   * Typed as a stamped attr so it is a valid {@link ShapeField}.
+   * Typed as a stamped attr so it is a valid {@link ShapeField}, and as a
+   * number so `Todo.id.eq(42)` / `.lt(n)` take the id they compare against.
    */
   readonly id: AttrNav<
     AnyAttribute & {
+      readonly schema: { readonly Type: number };
       readonly attrName: "id";
       readonly ident: ":db/id";
       readonly valueType: ":db.type/ref";
@@ -147,6 +150,7 @@ const OWN_ATTR_KEYS = new Set([
   "exists",
   "missing",
   "__path",
+  "__cards",
 ]);
 
 const stampOne = (
@@ -186,7 +190,11 @@ const stampOne = (
       const child = resolveTarget(prop);
       if (child === undefined) return undefined;
       const childAttr = child as PathCarrier;
-      return withPath(childAttr, [...pathOfSafe(target), childAttr.ident!]);
+      return withPath(
+        childAttr,
+        [...pathOfSafe(target), childAttr.ident!],
+        [...cardsOf(target), childAttr.cardinality ?? "one"],
+      );
     },
   }) as StampedAttribute<string, string, AnyAttribute>;
 };

@@ -43,7 +43,8 @@ const namesWire = {
   find: [
     ["pull", "?e", [{ kind: "attr", attr: ":user/name", reverse: false, as: "name" }]],
   ],
-  where: [userScope],
+  // `name` is not `.optional`, so the peer drops the rows that lack it
+  where: [userScope, ["?e", ":user/name", "_"]],
 };
 
 const ack = (t = 7, txEid = 13194139533319, datoms = 3) => ({

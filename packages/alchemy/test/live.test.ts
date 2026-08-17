@@ -74,6 +74,8 @@ const namesWire = {
       ["?e", ":user/friends", "_"],
       ["?e", ":user/bestFriend", "_"],
     ],
+    // `name` is not `.optional`: the required field is the peer's to enforce
+    ["?e", ":user/name", "_"],
   ],
 };
 

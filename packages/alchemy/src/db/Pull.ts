@@ -367,7 +367,14 @@ export const reshapePullResult = (pattern: unknown, result: unknown): unknown =>
 const isPresent = (value: unknown): boolean =>
   value !== undefined && value !== null;
 
-/** `undefined` means this entity failed a required field and should be dropped. */
+/**
+ * `undefined` means this entity failed a required field and should be dropped.
+ *
+ * For a query, `lowerNavQuery` lowers every top-level required field into a
+ * `where` clause, so the drop is the peer's and the top-level `undefined` is
+ * unreachable; what stays here is per-element work that cannot change the row
+ * count — filtering a cardinality-many array, and `db.pull` of one subject.
+ */
 const filterPull = (pattern: unknown, result: unknown): unknown => {
   if (!isPresent(result)) return undefined;
   if (Array.isArray(pattern)) return result;

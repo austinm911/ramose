@@ -123,7 +123,8 @@ describe("reads become frames", () => {
               [{ kind: "attr", attr: ":user/name", reverse: false, as: "name" }],
             ],
           ],
-          where: userScope,
+          // `name` is not `.optional`, so it is a where clause too
+          where: [...userScope, ["?e", ":user/name", "_"]],
         },
         inputs: [],
         history: true,

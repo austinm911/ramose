@@ -3,15 +3,17 @@
  *
  * `Ripple.query(Todo).where(...).select(...).orderBy(...).limit(n)` builds a
  * {@link NavQuery} value. `db.q` / `db.live` run it. Datalog is the IR: we
- * lower to `{ find: [["pull", "?e", pattern]], where }` so the peer does
- * pull-in-query (no client N+1).
+ * lower to `{ find: [["pull", "?e", pattern]], where, order, limit, offset }`
+ * so the peer does pull-in-query (no client N+1) and sorts and pages the row
+ * set itself — the client never sees the rows a page dropped.
  *
- * `.orderBy` / `.limit` are applied client-side on the projected rows until
- * the core AST gains top-level order/limit (QUERY.md §11 P0 #5).
+ * Everything that changes the row count is lowered: `.orderBy` binds a sort
+ * variable, and a required (non-`.optional`) selected field becomes a `where`
+ * clause, so `:limit 20` really is twenty rows the client keeps.
  */
 
 import { lowerAttr } from "./attrRef.ts";
-import type { AnyAttribute } from "./Attribute.ts";
+import type { AnyAttribute, Cardinality } from "./Attribute.ts";
 import { type Eid, makeEid } from "./Eid.ts";
 import type { AnyNamespace } from "./Namespace.ts";
 import {
@@ -59,10 +61,16 @@ export type Shape = { readonly [key: string]: ShapeField };
 export type OrderEmpty = "first" | "last";
 export type OrderDir = "asc" | "desc";
 
+/**
+ * One sort key, as a path of idents from the query root. Lowering binds it to
+ * an order variable the peer sorts on; `empty` places rows whose path has no
+ * value, in both directions, and defaults to `"last"`.
+ *
+ * Multi-hop paths keep such rows: the order variable is bound through an
+ * `or-join` whose second branch grounds `null` when the path is absent.
+ */
 export interface OrderBy {
   readonly path: readonly string[];
-  /** Result key to sort by when the path was also selected under this name. */
-  readonly key?: string;
   readonly dir: OrderDir;
   readonly empty: OrderEmpty;
 }
@@ -97,11 +105,17 @@ export const isNavQuery = (x: unknown): x is NavQuery =>
 
 export type PathCarrier = {
   readonly ident: string;
+  readonly cardinality?: Cardinality;
   readonly __path?: readonly string[];
+  /** Cardinality of each hop in `__path` — parallel to it. */
+  readonly __cards?: readonly Cardinality[];
 };
 
 export const pathOf = (attr: PathCarrier): readonly string[] =>
   attr.__path ?? [attr.ident];
+
+export const cardsOf = (attr: PathCarrier): readonly Cardinality[] =>
+  attr.__cards ?? [attr.cardinality ?? "one"];
 
 const pred = (
   op: PredTag,
@@ -226,11 +240,13 @@ export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
 export const withPath = <A extends PathCarrier>(
   attr: A,
   path: readonly string[],
+  cards: readonly Cardinality[],
 ): A => {
   if (attr.__path === path) return attr;
   return new Proxy(attr, {
     get(target, prop, receiver) {
       if (prop === "__path") return path;
+      if (prop === "__cards") return cards;
       const v = Reflect.get(target, prop, receiver);
       if (
         typeof prop === "string" &&
@@ -363,18 +379,21 @@ const builder = <N extends AnyNamespace, R>(
         N,
         readonly SelectResult<typeof shape>[]
       >,
-    orderBy: (attr, dir = "asc", opts) =>
-      builder(ns, {
+    orderBy: (attr, dir = "asc", opts) => {
+      const path = pathOf(attr);
+      if (cardsOf(attr).includes("many")) {
+        throw new Error(
+          `ripple/query: orderBy(${path.join(" → ")}) crosses a cardinality-many attribute — the sort key would be a set, not a value`,
+        );
+      }
+      return builder(ns, {
         ...spec,
         orderBy: [
           ...spec.orderBy,
-          {
-            path: pathOf(attr),
-            dir,
-            empty: opts?.empty ?? "last",
-          },
+          { path, dir, empty: opts?.empty ?? "last" },
         ],
-      }),
+      });
+    },
     limit: (n) => builder(ns, { ...spec, limit: n }),
     offset: (n) => builder(ns, { ...spec, offset: n }),
     build: () => freeze<R>(spec),
@@ -419,14 +438,29 @@ const resetGensym = () => {
   fresh = 0;
 };
 
-/** Lower predicates + optional namespace scope into where clauses + find pull. */
+/** The pseudo-attribute: the entity variable itself, never a datom. */
+const ID = ":db/id";
+
+/** One sort key on the wire — `empty` is always explicit. */
+interface OrderClause {
+  readonly var: string;
+  readonly dir: OrderDir;
+  readonly empty: OrderEmpty;
+}
+
+export interface LoweredQuery {
+  readonly find: unknown[];
+  readonly where: unknown[];
+  readonly order?: readonly OrderClause[];
+  readonly limit?: number;
+  readonly offset?: number;
+}
+
+/** Lower predicates, namespace scope, required fields and sort keys. */
 export const lowerNavQuery = (
   q: NavQuery,
 ): {
-  readonly query: {
-    readonly find: unknown[];
-    readonly where: unknown[];
-  };
+  readonly query: LoweredQuery;
   readonly pullMap: Record<string, unknown> | undefined;
 } => {
   resetGensym();
@@ -447,17 +481,113 @@ export const lowerNavQuery = (
 
   const pullMap =
     q.spec.shape !== undefined ? shapeToPullMap(q.spec.shape) : undefined;
+  if (pullMap !== undefined) where.push(...requiredClauses(root, pullMap));
+
+  const order: OrderClause[] = [];
+  for (const o of q.spec.orderBy) {
+    const bound = lowerOrderPath(root, o.path);
+    where.push(...bound.clauses);
+    order.push({ var: bound.var, dir: o.dir, empty: o.empty });
+  }
+
   const find =
     pullMap !== undefined
       ? [["pull", root, lowerPullPattern(pullMap)]]
       : [root];
 
-  return { query: { find, where }, pullMap };
+  return {
+    query: {
+      find,
+      where,
+      ...(order.length > 0 ? { order } : {}),
+      ...(q.spec.limit !== undefined ? { limit: q.spec.limit } : {}),
+      ...(q.spec.offset !== undefined ? { offset: q.spec.offset } : {}),
+    },
+    pullMap,
+  };
 };
+
+/** `[?e :a ?j] [?j :b <value>]` — the join chain a path of idents walks. */
+const hopClauses = (
+  root: string,
+  path: readonly string[],
+  value: unknown,
+): unknown[] => {
+  const clauses: unknown[] = [];
+  let e = root;
+  for (let i = 0; i < path.length - 1; i++) {
+    const next = gensym("j");
+    clauses.push([e, path[i], next]);
+    e = next;
+  }
+  return [...clauses, [e, path[path.length - 1], value]];
+};
+
+/**
+ * Bind a sort variable to the value at `path` **without dropping rows**: one
+ * or-join branch walks the path, the other proves it is absent and grounds
+ * `null`, which the engine places per the key's `empty`. (`get-else` cannot
+ * stand in: a function binding of `null` drops the row.)
+ */
+const lowerOrderPath = (
+  root: string,
+  path: readonly string[],
+): { readonly var: string; readonly clauses: unknown[] } => {
+  if (path.length === 1 && path[0] === ID) return { var: root, clauses: [] };
+  const bound = gensym("o");
+  return {
+    var: bound,
+    clauses: [
+      [
+        "or-join",
+        [root, bound],
+        ["and", ...hopClauses(root, path, bound)],
+        [
+          "and",
+          ["not", ...hopClauses(root, path, "_")],
+          [["ground", [null]], [bound, "..."]],
+        ],
+      ],
+    ],
+  };
+};
+
+/**
+ * The row-dropping half of `filterPull`, as `where` clauses — so the peer's
+ * row set is already the one the client keeps and `:limit` pages it honestly.
+ *
+ * A required cardinality-one field must be present (a nested one recursively,
+ * through the ref); `.optional` and cardinality-many fields never drop the
+ * row (a missing many is `[]`), and `:db/id` is always there.
+ */
+const requiredClauses = (e: string, pattern: unknown): unknown[] => {
+  if (Array.isArray(pattern)) return [];
+  const out: unknown[] = [];
+  for (const field of Object.values(fieldsOf(pattern))) {
+    const info = inspectPullField(field);
+    if (info.optional || info.many) continue;
+    const ident = lowerAttr(info.attr);
+    if (ident === ID) continue;
+    if (info.nestedPattern === undefined) {
+      out.push([e, ident, "_"]);
+      continue;
+    }
+    const target = gensym("r");
+    const sub = requiredClauses(target, info.nestedPattern);
+    out.push([e, ident, sub.length > 0 ? target : "_"], ...sub);
+  }
+  return out;
+};
+
+const fieldsOf = (pattern: unknown): Record<string, unknown> =>
+  typeof pattern === "object" && pattern !== null && !Array.isArray(pattern)
+    ? (pattern as Record<string, unknown>)
+    : {};
 
 const lowerPredicate = (root: string, p: Predicate): unknown[] => {
   const { path, op, value } = p;
   if (path.length === 0) return [];
+  if (path[path.length - 1] === ID) return lowerIdPredicate(root, path, p);
 
   const clauses: unknown[] = [];
   let e = root;
@@ -514,85 +644,74 @@ const lowerPredicate = (root: string, p: Predicate): unknown[] => {
 };
 
 /**
- * Apply interim client-side order/limit/offset and reshape pull rows.
- * Returns `readonly R[]` (pull maps) or `readonly Eid[]` (no `.select`).
+ * `:db/id` is the entity variable, not a datom: `eq` unifies it with the
+ * constant so the planner starts there, and the ordering predicates compare
+ * it as the number it is. Every entity has one, so `exists` costs no clause.
+ */
+const lowerIdPredicate = (
+  root: string,
+  path: readonly string[],
+  p: Predicate,
+): unknown[] => {
+  const clauses: unknown[] = [];
+  let e = root;
+  for (let i = 0; i < path.length - 1; i++) {
+    const next = gensym("j");
+    clauses.push([e, path[i], next]);
+    e = next;
+  }
+  switch (p.op) {
+    case "eq":
+      clauses.push([["ground", p.value], e]);
+      break;
+    case "ne":
+      clauses.push([["not=", e, p.value]]);
+      break;
+    case "lt":
+      clauses.push([["<", e, p.value]]);
+      break;
+    case "lte":
+      clauses.push([["<=", e, p.value]]);
+      break;
+    case "gt":
+      clauses.push([[">", e, p.value]]);
+      break;
+    case "gte":
+      clauses.push([[">=", e, p.value]]);
+      break;
+    case "exists":
+      break;
+    default:
+      throw new Error(
+        `ripple/query: ${p.op} is not defined on :db/id — an entity id is a number`,
+      );
+  }
+  return clauses;
+};
+
+/**
+ * Reshape the peer's rows: pull maps into the selected shape, bare ids into
+ * `Eid`s. Order, paging and every row-dropping constraint already happened on
+ * the peer, so this changes the shape of a row, never the number of them.
  */
 export const finalizeNavResult = (
-  q: NavQuery,
   raw: unknown,
   pullMap: Record<string, unknown> | undefined,
 ): unknown => {
-  let rows: unknown[] = Array.isArray(raw) ? [...raw] : [];
+  const rows: unknown[] = Array.isArray(raw) ? raw : [];
 
   // find-pull → [[map] | [null], ...] or pull scalar forms; normalize to maps/eids
   if (pullMap !== undefined) {
-    rows = rows
+    return rows
       .map((row) => {
         const cell = Array.isArray(row) ? row[0] : row;
         if (cell === null || cell === undefined) return null;
         return reshapePullResult(pullMap, cell);
       })
       .filter((x) => x !== null);
-  } else {
-    rows = rows.map((row) => {
-      const cell = Array.isArray(row) ? row[0] : row;
-      return typeof cell === "number" ? makeEid(cell) : cell;
-    });
   }
-
-  if (q.spec.orderBy.length > 0 && pullMap !== undefined) {
-    rows = sortRows(rows, q.spec.orderBy, pullMap);
-  }
-
-  const offset = q.spec.offset ?? 0;
-  if (offset > 0) rows = rows.slice(offset);
-  if (q.spec.limit !== undefined) rows = rows.slice(0, q.spec.limit);
-
-  return rows;
-};
-
-const sortRows = (
-  rows: unknown[],
-  orders: readonly OrderBy[],
-  pullMap: Record<string, unknown>,
-): unknown[] => {
-  const keys = orders.map((o) => keyForOrder(o, pullMap));
-  return [...rows].sort((a, b) => {
-    for (let i = 0; i < orders.length; i++) {
-      const ord = orders[i]!;
-      const key = keys[i];
-      const av = key === undefined ? undefined : (a as Record<string, unknown>)[key];
-      const bv = key === undefined ? undefined : (b as Record<string, unknown>)[key];
-      const aMiss = av === undefined || av === null;
-      const bMiss = bv === undefined || bv === null;
-      if (aMiss || bMiss) {
-        if (aMiss && bMiss) continue;
-        if (ord.empty === "last") return aMiss ? 1 : -1;
-        return aMiss ? -1 : 1;
-      }
-      const cmp = compare(av, bv);
-      if (cmp !== 0) return ord.dir === "asc" ? cmp : -cmp;
-    }
-    return 0;
+  return rows.map((row) => {
+    const cell = Array.isArray(row) ? row[0] : row;
+    return typeof cell === "number" ? makeEid(cell) : cell;
   });
-};
-
-/** Match an order path to a select key when possible. */
-const keyForOrder = (
-  order: OrderBy,
-  pullMap: Record<string, unknown>,
-): string | undefined => {
-  for (const [key, field] of Object.entries(pullMap)) {
-    const info = inspectPullField(field);
-    const ident = lowerAttr(info.attr);
-    if (order.path.length === 1 && ident === order.path[0]) return key;
-  }
-  return undefined;
-};
-
-const compare = (a: unknown, b: unknown): number => {
-  if (a === b) return 0;
-  if (typeof a === "number" && typeof b === "number") return a - b;
-  if (a instanceof Date && b instanceof Date) return a.getTime() - b.getTime();
-  return String(a).localeCompare(String(b));
 };
