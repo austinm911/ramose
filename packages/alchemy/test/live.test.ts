@@ -1,259 +1,178 @@
+/**
+ * `db.live` — a standing `db.q` as a `Stream`.
+ *
+ * The two terminals share one builder callback, so everything `q` can express
+ * `live` can too. What is specific to `live` is time: it re-runs when the
+ * session's basis moves (a `{ op: "t" }` tick, or a local `transact`), it
+ * reconnects in place rather than failing, it fails only on the terminal
+ * refusals, and over a pinned view it emits once and completes.
+ *
+ * Its requirements channel is `never`: teardown is fiber interruption, and
+ * there is no `Scope` in the type.
+ */
+
 import { describe, expect, test } from "bun:test";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
-import type { WebSocketLike } from "../src/Session.ts";
-import { Session as TypedSession } from "../src/db/internal.ts";
+import * as Fiber from "effect/Fiber";
+import * as Redacted from "effect/Redacted";
+import * as Stream from "effect/Stream";
+import type { QueryBuilder } from "../src/db/internal.ts";
+import { client, fakePeer, settle, type Frame, type Reply } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
-const run = <A, E>(eff: Effect.Effect<A, E>) =>
-  Effect.runPromise(eff);
+const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
 
-interface Frame {
-  id: number;
-  op: string;
-  [field: string]: unknown;
-}
-
-interface Reply {
-  status?: number;
-  body?: unknown;
-  headers?: Record<string, string>;
-  /** Answer after this many ms instead of on the next microtask. */
-  delay?: number;
-}
-
-/** Records every frame, answers with a canned reply, can push unsolicited ones. */
-const fakePeer = (answer: (frame: Frame) => Reply | undefined) => {
-  const sent: Frame[] = [];
-  const listeners = new Map<string, ((ev: unknown) => void)[]>();
-  const emit = (type: string, ev: unknown) => {
-    for (const cb of listeners.get(type) ?? []) cb(ev);
-  };
-  const socket: WebSocketLike = {
-    send: (data) => {
-      const frame = JSON.parse(data) as Frame;
-      sent.push(frame);
-      const reply = answer(frame);
-      if (reply === undefined) return;
-      const { delay, ...body } = reply;
-      const send = () =>
-        emit("message", { data: JSON.stringify({ id: frame.id, ...body }) });
-      if (delay === undefined) queueMicrotask(send);
-      else setTimeout(send, delay);
-    },
-    close: () => emit("close", {}),
-    addEventListener: (type, cb) => {
-      listeners.set(type, [...(listeners.get(type) ?? []), cb]);
-    },
-  };
+/** Drain a stream into an array on its own fiber, as `useLive` would. */
+const collect = <A, E>(stream: Stream.Stream<A, E>) => {
+  const seen: A[] = [];
+  let error: unknown;
+  let done = false;
+  const fiber = Effect.runFork(
+    Stream.runForEach(stream, (a) =>
+      Effect.sync(() => {
+        seen.push(a);
+      }),
+    ).pipe(
+      Effect.catchCause((cause) =>
+        Effect.sync(() => {
+          error = Cause.squash(cause);
+        }),
+      ),
+      Effect.andThen(() =>
+        Effect.sync(() => {
+          done = true;
+        }),
+      ),
+    ),
+  );
   return {
-    sent,
-    connect: () => socket,
-    ops: (op: string) => sent.filter((f) => f.op === op),
-    /** An unsolicited server frame (`{ op: "t", t }`). */
-    push: (frame: unknown) => emit("message", { data: JSON.stringify(frame) }),
+    seen,
+    get error() {
+      return error;
+    },
+    get done() {
+      return done;
+    },
+    stop: () => Effect.runPromise(Fiber.interrupt(fiber)),
   };
 };
 
-const ensure = { t: 2, txEid: 1, tempids: { "tmp-1": 1001 }, datoms: 4 };
+type Q = QueryBuilder<typeof Movies>;
+const names = (q: Q) => q.where("?e", User.name, "?n").find("?n");
+const pulled = (q: Q) =>
+  q.where("?e", User.name, "_").find("?e").pull({ name: User.name });
 
-/** Every pass is a handful of microtasks; a tick is plenty. */
-const settle = () => Bun.sleep(20);
-
-const open = (answer: (frame: Frame) => Reply | undefined) => {
-  const peer = fakePeer(answer);
-  return run(
-    TypedSession.connect({
-      url: "https://peer.example.com",
-      name: "movies",
-      catalog: Movies,
-      connect: peer.connect,
-    }),
-  ).then((session) => ({ ...session, peer }));
-};
-
-/** The peer everything below shares: one q, one pull per row, `t` on demand. */
+/** A peer whose relation and basis the test moves under it. */
 const peerAt = (state: {
   t: number;
-  rows: number[][];
-  names: Record<number, string | null>;
-  /** what a transact acks with — the ensure lands at 2 */
+  rows: unknown[][];
+  names?: Record<number, string | null>;
   ackT?: number;
-  /** hold every q reply back this many ms */
-  qDelay?: number;
-  /** refuse this many q frames before answering */
-  qFails?: number;
-  /** hold every pull reply back this many ms */
-  pullDelay?: number;
-  /** eids whose pull the peer refuses */
-  pullFails?: number[];
+  answer?: (frame: Frame) => Reply | undefined;
 }) =>
-  open((frame) => {
-    switch (frame.op) {
-      case "transact":
-        return { body: { ...ensure, t: state.ackT ?? ensure.t } };
-      case "q":
-        if ((state.qFails ?? 0) > 0) {
-          state.qFails = (state.qFails ?? 0) - 1;
-          return { status: 500, body: { error: "the replica is having a moment" } };
-        }
-        return {
-          body: { t: state.t, root: state.t, result: state.rows },
-          delay: state.qDelay,
-        };
-      case "pull": {
-        if ((state.pullFails ?? []).includes(frame.eid as number)) {
-          return { status: 500, body: { error: "no" } };
-        }
-        const name = state.names[frame.eid as number];
-        return {
-          body: { t: state.t, result: name == null ? null : { name } },
-          delay: state.pullDelay,
-        };
+  fakePeer({
+    http: () => ({
+      body: { t: state.ackT ?? state.t, txEid: 1, tempids: {}, datoms: 1 },
+    }),
+    answer: (frame) => {
+      const custom = state.answer?.(frame);
+      if (custom !== undefined) return custom;
+      if (frame.op === "pull") {
+        const name = (state.names ?? {})[frame.eid as number];
+        return { body: { t: state.t, result: name == null ? null : { name } } };
       }
-      default:
-        return { status: 404, body: { error: "no such op" } };
-    }
+      return { body: { t: state.t, root: state.t, result: state.rows } };
+    },
   });
 
-describe("db.live is a standing db.q", () => {
-  test("undefined first, then the q's rows pulled into the map", async () => {
-    const state = { t: 5, rows: [[1001], [1002]], names: { 1001: "Ada", 1002: "Bob" } };
-    const { db, peer, session } = await peerAt(state);
+describe("q and live are two terminals over one builder", () => {
+  test("the same callback runs once, or stands up", async () => {
+    const state = { t: 5, rows: [["Ada"]] };
+    const peer = peerAt(state);
+    const c = client(peer);
+    const db = c.ripple.db("movies", Movies);
 
-    const users = db.live((q) =>
-      q.where("?e", User.name, "?n").find("?e").pull({ name: User.name }),
-    );
-    expect(users.get()).toBeUndefined();
+    expect(await run(db.q(names))).toEqual([["Ada"]]);
+    const live = collect(db.live(names));
     await settle();
-
-    expect(users.get()).toEqual([
-      { name: "Ada", eid: expect.objectContaining({ id: 1001 }) },
-      { name: "Bob", eid: expect.objectContaining({ id: 1002 }) },
+    expect(live.seen).toEqual([[["Ada"]]]);
+    expect(peer.frameOps("q").map((f) => f.query)).toEqual([
+      { find: ["?n"], where: [["?e", ":user/name", "?n"]] },
+      { find: ["?n"], where: [["?e", ":user/name", "?n"]] },
     ]);
 
-    // the ensure is frame 1; the q is fenced at the basis this socket has seen
-    expect(peer.sent[0].op).toBe("transact");
-    expect(peer.ops("q")).toEqual([
-      {
-        id: 2,
-        op: "q",
-        query: { find: ["?e"], where: [["?e", ":user/name", "?n"]] },
-        inputs: [],
-        minT: 2,
-      },
-    ]);
-    // one pull per row, fenced at the q's own t
-    const pattern = [{ kind: "attr", attr: ":user/name", reverse: false, as: "name" }];
-    expect(
-      peer
-        .ops("pull")
-        .map((f) => ({ eid: f.eid, minT: f.minT, pattern: f.pattern }))
-        .sort((a, b) => (a.eid as number) - (b.eid as number)),
-    ).toEqual([
-      { eid: 1001, minT: 5, pattern },
-      { eid: 1002, minT: 5, pattern },
-    ]);
-    session.close();
+    await live.stop();
+    await c.dispose();
   });
 
-  test("no .pull is a store of eids, and no pull frames", async () => {
-    const state = { t: 5, rows: [[1001], [1002]], names: {} };
-    const { db, peer, session } = await peerAt(state);
-
-    const eids = db.live((q) => q.where("?e", User.name, "_").find("?e"));
-    await settle();
-
-    expect(eids.get()?.map((e) => e.id)).toEqual([1001, 1002]);
-    expect(peer.ops("pull")).toHaveLength(0);
-    expect(peer.ops("q")[0].query).toEqual({
-      find: ["?e"],
-      where: [["?e", ":user/name", "_"]],
-    });
-    session.close();
-  });
-
-  test("a row whose pull comes back null is dropped", async () => {
+  test("`.pull` after a one-eid find makes rows of [Eid, Pull]", async () => {
     const state = {
       t: 5,
-      rows: [[1001], [1002]],
-      names: { 1001: "Ada", 1002: null },
+      rows: [[1001], [1002], [1003]],
+      names: { 1001: "Ada", 1002: null, 1003: "Cy" },
     };
-    const { db, session } = await peerAt(state);
-
-    const users = db.live((q) =>
-      q.where("?e", User.name, "_").find("?e").pull({ name: User.name }),
-    );
+    const peer = peerAt(state);
+    const c = client(peer);
+    const live = collect(c.ripple.db("movies", Movies).live(pulled));
     await settle();
 
-    expect(users.get()).toEqual([
-      { name: "Ada", eid: expect.objectContaining({ id: 1001 }) },
+    // a row whose pull comes back null is dropped
+    expect(live.seen[0]).toEqual([
+      [{ id: 1001 }, { name: "Ada" }],
+      [{ id: 1003 }, { name: "Cy" }],
     ]);
-    session.close();
+    // one pull per row, fenced at the q's own t
+    expect(
+      peer
+        .frameOps("pull")
+        .map((f) => ({ eid: f.eid, minT: f.minT }))
+        .sort((a, b) => (a.eid as number) - (b.eid as number)),
+    ).toEqual([
+      { eid: 1001, minT: 5 },
+      { eid: 1002, minT: 5 },
+      { eid: 1003, minT: 5 },
+    ]);
+
+    await live.stop();
+    await c.dispose();
   });
 });
 
-describe("the session's t is the wake", () => {
-  test("a t frame re-runs at that fence; an unmoved basis short-circuits", async () => {
-    const state: Parameters<typeof peerAt>[0] = {
-      t: 5,
-      rows: [[1001]],
-      names: { 1001: "Ada" },
-    };
-    const { db, peer, session } = await peerAt(state);
-
-    const users = db.live((q) =>
-      q.where("?e", User.name, "_").find("?e").pull({ name: User.name }),
-    );
+describe("the basis is the wake", () => {
+  test("a t frame re-runs the query at that fence", async () => {
+    const state = { t: 5, rows: [["Ada"]] };
+    const peer = peerAt(state);
+    const c = client(peer);
+    const live = collect(c.ripple.db("movies", Movies).live(names));
     await settle();
-    const first = users.get();
-    let notified = 0;
-    users.subscribe(() => {
-      notified += 1;
-    });
+    expect(live.seen).toHaveLength(1);
 
-    // the basis moved, but the peer answers with the same t: nothing changed
+    state.t = 9;
+    state.rows = [["Ada"], ["Bob"]];
     peer.push({ op: "t", t: 9 });
     await settle();
-    expect(peer.ops("q")).toHaveLength(2);
-    expect(peer.ops("q")[1].minT).toBe(9);
-    expect(peer.ops("pull")).toHaveLength(1); // no second pull round
-    expect(notified).toBe(0);
-    expect(users.get()).toBe(first); // the same reference, for useSyncExternalStore
 
-    // now the peer really has moved
-    state.t = 12;
-    state.rows = [[1001], [1002]];
-    state.names = { 1001: "Ada", 1002: "Bob" };
-    peer.push({ op: "t", t: 13 });
-    await settle();
+    expect(live.seen).toHaveLength(2);
+    expect(live.seen[1]).toEqual([["Ada"], ["Bob"]]);
+    expect(peer.frameOps("q").map((f) => f.minT)).toEqual([undefined, 9]);
 
-    expect(peer.ops("q")[2].minT).toBe(13);
-    expect(peer.ops("pull").slice(1).every((f) => f.minT === 12)).toBe(true);
-    expect(notified).toBe(1);
-    expect(users.get()).not.toBe(first);
-    expect(users.get()?.map((r) => r.name)).toEqual(["Ada", "Bob"]);
-    session.close();
+    await live.stop();
+    await c.dispose();
   });
 
-  test("a transact on the same socket refreshes with no invalidation call", async () => {
-    const state: Parameters<typeof peerAt>[0] = {
-      t: 5,
-      rows: [[1001]],
-      names: { 1001: "Ada", 1002: "Bob" },
-    };
-    const { db, peer, session } = await peerAt(state);
-
-    const users = db.live((q) =>
-      q.where("?e", User.name, "_").find("?e").pull({ name: User.name }),
-    );
+  test("a local transact bumps the basis, so a standing live re-runs", async () => {
+    const state = { t: 5, rows: [["Ada"]], ackT: 30 };
+    const peer = peerAt(state);
+    const c = client(peer);
+    const db = c.ripple.db("movies", Movies);
+    const live = collect(db.live(names));
     await settle();
-    expect(users.get()).toHaveLength(1);
+    expect(live.seen).toHaveLength(1);
 
-    // the write's own ack carries the new basis
     state.t = 30;
-    state.ackT = 30;
-    state.rows = [[1001], [1002]];
+    state.rows = [["Ada"], ["Bob"]];
     await run(
       db.transact(function* (tx) {
         const bob = yield* tx.entity();
@@ -262,301 +181,174 @@ describe("the session's t is the wake", () => {
     );
     await settle();
 
-    expect(users.get()?.map((r) => r.name)).toEqual(["Ada", "Bob"]);
-    expect(peer.ops("q").at(-1)?.minT).toBe(30);
-    session.close();
+    // no invalidation call: the write's own ack carried the new basis
+    expect(live.seen).toHaveLength(2);
+    expect(live.seen[1]).toEqual([["Ada"], ["Bob"]]);
+    expect(peer.frameOps("q").at(-1)?.minT).toBe(30);
+
+    await live.stop();
+    await c.dispose();
   });
 
-  test("subscribe returns an unsubscribe, and close stops the socket wake", async () => {
-    const state = { t: 5, rows: [[1001]], names: { 1001: "Ada" } };
-    const { db, peer, session } = await peerAt(state);
+  test("interrupting the fiber is the whole teardown", async () => {
+    const state = { t: 5, rows: [["Ada"]] };
+    const peer = peerAt(state);
+    const c = client(peer);
+    const live = collect(c.ripple.db("movies", Movies).live(names));
+    await settle();
+    const frames = peer.frames.length;
 
-    const users = db.live((q) => q.where("?e", User.name, "_").find("?e"));
+    await live.stop();
+    peer.push({ op: "t", t: 9 });
     await settle();
 
-    let notified = 0;
-    const off = users.subscribe(() => {
-      notified += 1;
-    });
-    state.t = 12;
-    state.rows = [[1001], [1002]];
-    peer.push({ op: "t", t: 12 });
-    await settle();
-    expect(notified).toBe(1);
-
-    off();
-    state.t = 13;
-    peer.push({ op: "t", t: 13 });
-    await settle();
-    expect(notified).toBe(1); // unsubscribed, but the store still tracks
-    expect(users.get()).toHaveLength(2);
-
-    users.close();
-    const frames = peer.sent.length;
-    peer.push({ op: "t", t: 20 });
-    await settle();
-    expect(peer.sent).toHaveLength(frames); // closed: nothing more is asked
-    session.close();
+    expect(peer.frames).toHaveLength(frames);
+    expect(live.seen).toHaveLength(1);
+    await c.dispose();
   });
 });
 
-describe("session.close() closes the stores it handed out", () => {
-  test("a store in backoff stops retrying the dead socket", async () => {
-    const { db, peer, session } = await peerAt({
-      t: 5,
-      rows: [[1001]],
-      names: { 1001: "Ada" },
-      qFails: 9,
-    });
-
-    const users = db.live((q) => q.where("?e", User.name, "_").find("?e"));
-    let notified = 0;
-    users.subscribe(() => {
-      notified += 1;
-    });
+describe("live survives the network", () => {
+  test("a dropped socket reconnects in place and the stream keeps emitting", async () => {
+    const state = { t: 5, rows: [["Ada"]] };
+    const peer = peerAt(state);
+    const c = client(peer);
+    const live = collect(c.ripple.db("movies", Movies).live(names));
     await settle();
-    expect(users.error).toBeDefined(); // the retry timer is armed
-    expect(notified).toBe(1);
+    expect(live.seen).toHaveLength(1);
+    expect(peer.sockets).toHaveLength(1);
 
-    session.close();
-    await Bun.sleep(600); // two backoffs would have fired by now
-    expect(notified).toBe(1); // no pass ran against the dead peer
-    expect(peer.ops("q")).toHaveLength(1);
+    state.rows = [["Ada"], ["Bob"]];
+    peer.drop();
+    await settle(60);
+
+    expect(peer.sockets).toHaveLength(2);
+    expect(live.seen.at(-1)).toEqual([["Ada"], ["Bob"]]);
+    expect(live.error).toBeUndefined();
+
+    await live.stop();
+    await c.dispose();
   });
 
-  test("the last snapshot stays readable, and no t wakes it again", async () => {
-    const state = { t: 5, rows: [[1001]], names: { 1001: "Ada" } };
-    const { db, peer, session } = await peerAt(state);
-
-    const users = db.live((q) => q.where("?e", User.name, "_").find("?e"));
-    await settle();
-    const last = users.get();
-    let notified = 0;
-    users.subscribe(() => {
-      notified += 1;
-    });
-
-    session.close();
-    state.t = 12;
-    state.rows = [[1001], [1002]];
-    peer.push({ op: "t", t: 12 });
-    await settle();
-
-    expect(peer.ops("q")).toHaveLength(1);
-    expect(notified).toBe(0);
-    expect(users.get()).toBe(last);
-  });
-
-  test("a reconnect does not leave the old store retrying the old socket", async () => {
-    const first = await peerAt({
+  test("a 5xx is retried with backoff, not surfaced", async () => {
+    let failures = 1;
+    const state = {
       t: 5,
-      rows: [[1001]],
-      names: { 1001: "Ada" },
-      qFails: 9,
-    });
-    const stale = first.db.live((q) => q.where("?e", User.name, "_").find("?e"));
-    let staleNotified = 0;
-    stale.subscribe(() => {
-      staleNotified += 1;
-    });
-    await settle();
-    expect(staleNotified).toBe(1);
-    const staleError = stale.error;
-    first.session.close();
-
-    const second = await peerAt({ t: 5, rows: [[1001], [1002]], names: {} });
-    const fresh = second.db.live((q) => q.where("?e", User.name, "_").find("?e"));
-    await Bun.sleep(600);
-
-    expect(staleNotified).toBe(1);
-    expect(stale.error).toBe(staleError); // no later pass touched it
-    expect(fresh.get()?.map((e) => e.id)).toEqual([1001, 1002]);
-    second.session.close();
-  });
-});
-
-describe("a pass that overlaps, closes, or fails", () => {
-  test("a t that lands mid-pass is drained after it, at the newer fence", async () => {
-    const { db, peer, session } = await peerAt({
-      t: 5,
-      rows: [[1001]],
-      names: { 1001: "Ada" },
-      qDelay: 30,
-    });
-
-    const users = db.live((q) => q.where("?e", User.name, "_").find("?e"));
-    await Bun.sleep(5); // the q is out, its reply is not back
-    expect(peer.ops("q")).toHaveLength(1);
-
-    peer.push({ op: "t", t: 9 });
-    expect(peer.ops("q")).toHaveLength(1); // no second pass while one runs
-
-    await Bun.sleep(120);
-    expect(peer.ops("q").map((f) => f.minT)).toEqual([2, 9]);
-    expect(users.get()?.map((e) => e.id)).toEqual([1001]);
-    session.close();
-  });
-
-  test("close mid-pass emits nothing and asks for nothing more", async () => {
-    const { db, peer, session } = await peerAt({
-      t: 5,
-      rows: [[1001]],
-      names: { 1001: "Ada" },
-      qDelay: 30,
-    });
-
-    const users = db.live((q) =>
-      q.where("?e", User.name, "_").find("?e").pull({ name: User.name }),
-    );
-    let notified = 0;
-    users.subscribe(() => {
-      notified += 1;
-    });
-    await Bun.sleep(5);
-    users.close();
-
-    await Bun.sleep(120);
-    expect(notified).toBe(0);
-    expect(users.get()).toBeUndefined();
-    expect(peer.ops("pull")).toHaveLength(0);
-    session.close();
-  });
-
-  test("close during the pull round publishes nothing and asks for nothing more", async () => {
-    const { db, peer, session } = await peerAt({
-      t: 5,
-      rows: [[1001], [1002]],
-      names: { 1001: "Ada", 1002: "Bob" },
-      pullDelay: 40,
-    });
-
-    const users = db.live((q) =>
-      q.where("?e", User.name, "_").find("?e").pull({ name: User.name }),
-    );
-    let notified = 0;
-    users.subscribe(() => {
-      notified += 1;
-    });
-    await Bun.sleep(10); // the q is back, both pulls are out
-    expect(peer.ops("pull")).toHaveLength(2);
-
-    users.close();
-    const frames = peer.sent.length;
-    peer.push({ op: "t", t: 9 });
-
-    await Bun.sleep(150); // the pulls land, on a store that is gone
-    expect(notified).toBe(0);
-    expect(users.get()).toBeUndefined();
-    expect(peer.sent).toHaveLength(frames);
-    session.close();
-  });
-
-  test("a subscriber registered before the first result fires when it lands", async () => {
-    const { db, session } = await peerAt({
-      t: 5,
-      rows: [[1001]],
-      names: { 1001: "Ada" },
-      qDelay: 20,
-    });
-
-    const users = db.live((q) => q.where("?e", User.name, "_").find("?e"));
-    let notified = 0;
-    users.subscribe(() => {
-      notified += 1;
-    });
-    expect(users.get()).toBeUndefined();
-
-    await Bun.sleep(120);
-    expect(notified).toBe(1);
-    expect(users.get()).toHaveLength(1);
-    session.close();
-  });
-
-  test("a failed pass records the error, then retries and recovers", async () => {
-    const { db, session } = await peerAt({
-      t: 5,
-      rows: [[1001]],
-      names: { 1001: "Ada" },
-      qFails: 1,
-    });
-
-    const users = db.live((q) => q.where("?e", User.name, "_").find("?e"));
-    await settle();
-    expect(users.get()).toBeUndefined();
-    expect(users.error).toBeDefined();
-
-    await Bun.sleep(400); // the first backoff is 250ms
-    expect(users.get()?.map((e) => e.id)).toEqual([1001]);
-    expect(users.error).toBeUndefined();
-    session.close();
-  });
-
-  test("subscribers hear the error land, and hear it cleared on the recovery", async () => {
-    const { db, session } = await peerAt({
-      t: 5,
-      rows: [[1001]],
-      names: { 1001: "Ada" },
-      qFails: 1,
-    });
-
-    const users = db.live((q) => q.where("?e", User.name, "_").find("?e"));
-    const seen: unknown[] = [];
-    users.subscribe(() => seen.push(users.error));
-
-    await settle();
-    expect(seen).toHaveLength(1);
-    expect(seen[0]).toBeDefined();
-
-    await Bun.sleep(400); // the first backoff is 250ms
-    expect(seen).toHaveLength(2);
-    expect(seen[1]).toBeUndefined(); // the recovering pass reads no error
-    expect(users.get()?.map((e) => e.id)).toEqual([1001]);
-    session.close();
-  });
-
-  test("a recovery whose rows did not move still notifies", async () => {
-    const state: Parameters<typeof peerAt>[0] = {
-      t: 5,
-      rows: [[1001]],
-      names: { 1001: "Ada" },
+      rows: [["Ada"]],
+      answer: (frame: Frame) => {
+        if (frame.op !== "q" || failures === 0) return undefined;
+        failures -= 1;
+        return { status: 500, body: { error: "the replica is having a moment" } };
+      },
     };
-    const { db, peer, session } = await peerAt(state);
+    const peer = peerAt(state);
+    const c = client(peer);
+    const live = collect(c.ripple.db("movies", Movies).live(names));
 
-    const users = db.live((q) => q.where("?e", User.name, "_").find("?e"));
     await settle();
-    const first = users.get();
-    const seen: unknown[] = [];
-    users.subscribe(() => seen.push(users.error));
+    expect(live.seen).toHaveLength(0);
+    expect(live.error).toBeUndefined();
 
-    state.qFails = 1;
-    peer.push({ op: "t", t: 9 });
-    await settle();
-    expect(seen).toHaveLength(1);
-    expect(users.error).toBeDefined();
+    await settle(400); // the first backoff is 250ms
+    expect(live.seen).toEqual([[["Ada"]]]);
+    expect(live.error).toBeUndefined();
 
-    await Bun.sleep(400);
-    expect(seen).toHaveLength(2);
-    expect(seen[1]).toBeUndefined();
-    expect(users.error).toBeUndefined();
-    expect(users.get()).toBe(first); // same basis, same reference
-    session.close();
+    await live.stop();
+    await c.dispose();
   });
 
-  test("one unreadable row drops out; the rest of the pass stands", async () => {
-    const { db, session } = await peerAt({
+  test("Unauthorized re-reads the token and reconnects; a second refusal is terminal", async () => {
+    let issued = 0;
+    let refusals = 1;
+    const state = {
       t: 5,
-      rows: [[1001], [1002], [1003]],
-      names: { 1001: "Ada", 1002: "Bob", 1003: "Cy" },
-      pullFails: [1002],
+      rows: [["Ada"]],
+      answer: (frame: Frame) => {
+        if (frame.op === "auth") return { ok: true };
+        if (frame.op === "q" && refusals > 0) {
+          refusals -= 1;
+          return { status: 401, body: { error: "token expired" } };
+        }
+        return undefined;
+      },
+    };
+    const peer = peerAt(state);
+    const c = client(peer, {
+      token: Effect.sync(() => Redacted.make(`token-${++issued}`)),
     });
-
-    const users = db.live((q) =>
-      q.where("?e", User.name, "_").find("?e").pull({ name: User.name }),
-    );
+    const live = collect(c.ripple.db("movies", Movies).live(names));
     await settle();
 
-    expect(users.get()?.map((r) => r.name)).toEqual(["Ada", "Cy"]);
-    expect(users.error).toBeUndefined();
-    session.close();
+    // the swap happened on the same socket, and the stream never saw it
+    expect(peer.sockets).toHaveLength(1);
+    expect(peer.frames.map((f) => f.op)).toEqual(["q", "auth", "q"]);
+    expect(live.seen).toEqual([[["Ada"]]]);
+    expect(live.error).toBeUndefined();
+
+    await live.stop();
+    await c.dispose();
+  });
+
+  test("a refusal that survives the fresh token fails the stream", async () => {
+    const peer = peerAt({
+      t: 5,
+      rows: [],
+      answer: () => ({ status: 401, body: { error: "no" } }),
+    });
+    const c = client(peer, { token: Effect.succeed(Redacted.make("stale")) });
+    const live = collect(c.ripple.db("movies", Movies).live(names));
+    await settle();
+
+    expect(live.done).toBe(true);
+    expect((live.error as { _tag?: string })?._tag).toBe("Unauthorized");
+    await c.dispose();
+  });
+
+  test("a terminal InvalidRequest fails the stream rather than retrying", async () => {
+    const peer = peerAt({
+      t: 5,
+      rows: [],
+      answer: () => ({ status: 400, body: { error: "unknown attribute" } }),
+    });
+    const c = client(peer);
+    const live = collect(c.ripple.db("movies", Movies).live(names));
+    await settle();
+
+    expect(live.done).toBe(true);
+    expect((live.error as { _tag?: string })?._tag).toBe("InvalidRequest");
+    expect(peer.frameOps("q")).toHaveLength(1);
+    await c.dispose();
+  });
+});
+
+describe("a pinned view has no news", () => {
+  test("live over asOf emits once and completes", async () => {
+    const state = { t: 5, rows: [["Ada"]] };
+    const peer = peerAt(state);
+    const c = client(peer);
+    const live = collect(c.ripple.db("movies", Movies).asOf(3).live(names));
+    await settle();
+
+    expect(live.seen).toEqual([[["Ada"]]]);
+    expect(live.done).toBe(true);
+    expect(peer.frameOps("q")[0].asOf).toBe(3);
+
+    peer.push({ op: "t", t: 99 });
+    await settle();
+    expect(live.seen).toHaveLength(1);
+    await c.dispose();
+  });
+
+  test("live over history emits once and completes", async () => {
+    const state = { t: 5, rows: [["Ada"]] };
+    const peer = peerAt(state);
+    const c = client(peer);
+    const live = collect(c.ripple.db("movies", Movies).history.live(names));
+    await settle();
+
+    expect(live.seen).toHaveLength(1);
+    expect(live.done).toBe(true);
+    expect(peer.frameOps("q")[0].history).toBe(true);
+    await c.dispose();
   });
 });

@@ -1,12 +1,16 @@
-/** Catalog-generic datalog builder. Bindings accumulate; `find` is the typed terminal. */
+/**
+ * The catalog-generic datalog builder.
+ *
+ * `where` accumulates bindings; `find` and `explain` are the terminals, and
+ * both produce a {@link Query} — a *value*, not an Effect. Which of the two
+ * terminals on `Db` runs it is the caller's choice: `db.q(build)` runs it once,
+ * `db.live(build)` stands it up. One builder, two terminals, no `db.query`.
+ */
 
-import * as Effect from "effect/Effect";
-import type { QueryOptions, QueryResponse } from "../Client.ts";
-import type { DbError } from "./Errors.ts";
 import { lowerAttr } from "./attrRef.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import type { Eid } from "./Eid.ts";
-import { noPeer, type MissingPeer } from "./SchemaErrors.ts";
+import type { Pull, ValidatePull } from "./Pull.ts";
 import type { AttrAtIdent, CatalogIdent, ValueAtIdent } from "./idents.ts";
 
 export type QueryVar = `?${string}`;
@@ -104,11 +108,7 @@ export type BindClause<
   E,
   A,
   V,
-> = Bind<
-  Bind<Bind<B, E, Eid<C>>, A, string>,
-  V,
-  BindValue<C, A>
->;
+> = Bind<Bind<Bind<B, E, Eid<C>>, A, string>, V, BindValue<C, A>>;
 
 export type FindRow<
   B extends object,
@@ -116,10 +116,7 @@ export type FindRow<
 > = Vars extends readonly [infer H, ...infer Rest]
   ? [
       H extends keyof B ? B[H] : unknown,
-      ...FindRow<
-        B,
-        Rest extends readonly QueryVar[] ? Rest : readonly []
-      >,
+      ...FindRow<B, Rest extends readonly QueryVar[] ? Rest : readonly []>,
     ]
   : [];
 
@@ -129,22 +126,32 @@ export type FindRows<
   Vars extends readonly QueryVar[],
 > = ReadonlyArray<FindRow<B, Vars>>;
 
+/** One row of a pulled query: the entity, and the pattern's result for it. */
+export type PullRow<C extends AnyCatalog, P> = readonly [Eid<C>, Pull<C, P>];
+
+/** What `.explain(...)` yields: the rows, plus the planner's own account. */
+export interface Explained<R> {
+  readonly rows: R;
+  /** One entry per clause, in plan order. */
+  readonly explain: readonly unknown[];
+  /** Peak intermediate-relation size against the budget, when the peer reports it. */
+  readonly budget?: unknown;
+}
+
 export interface QuerySpec {
   readonly find: readonly string[];
   readonly where: readonly (readonly [unknown, unknown, unknown])[];
-  readonly options?: QueryOptions | undefined;
   /** Vars bound as an entity or `:db.type/ref` — wrapped as {@link Eid} on find. */
   readonly eidVars?: readonly string[] | undefined;
+  /** `.explain(...)` rather than `.find(...)`. */
+  readonly explain?: boolean | undefined;
+  /** The literate pattern `.pull(...)` attached, if any. */
+  readonly pull?: unknown;
 }
 
 /**
- * A built query: the lowered spec, the vars its terminal selects, and the row
- * type `R` those vars yield.
- *
- * `db.q` runs one once and `db.live` stands one up — those two terminals over
- * a single {@link QueryBuilder} callback land with the `Db` redesign. Today
- * the builder's own `find` / `query` are the terminals, and this is the shape
- * they lower to.
+ * A built query. `db.q` runs it once, `db.live` stands it up; both take the
+ * builder callback that produces it, so neither terminal is on the builder.
  */
 export interface Query<C extends AnyCatalog = AnyCatalog, R = unknown> {
   readonly catalog: C;
@@ -152,6 +159,36 @@ export interface Query<C extends AnyCatalog = AnyCatalog, R = unknown> {
   readonly vars: readonly QueryVar[];
   /** Phantom: the row type the selected vars yield. Never present at runtime. */
   readonly _result?: R;
+}
+
+/** The one var a `.pull` may hang off: a single `find` var bound as an entity. */
+type SoleEidVar<
+  C extends AnyCatalog,
+  B extends object,
+  Vars extends readonly QueryVar[],
+> = Vars extends readonly [infer V extends QueryVar]
+  ? V extends keyof B
+    ? [B[V]] extends [Eid<C>]
+      ? V
+      : never
+    : never
+  : never;
+
+/**
+ * A `find` terminal. It *is* a {@link Query}; `.pull(pattern)` narrows it to
+ * one row per entity — `readonly [Eid<C>, Pull<C, P>]` — and is only callable
+ * when exactly one var was selected and it was bound as an entity.
+ */
+export interface FindQuery<
+  C extends AnyCatalog,
+  B extends object,
+  Vars extends readonly QueryVar[],
+> extends Query<C, FindRows<B, Vars>> {
+  pull<const P>(
+    pattern: [SoleEidVar<C, B, Vars>] extends [never]
+      ? never
+      : P & ValidatePull<C, P>,
+  ): Query<C, ReadonlyArray<PullRow<C, P>>>;
 }
 
 const isQueryVar = (x: unknown): x is QueryVar =>
@@ -170,18 +207,6 @@ const isRefAttr = (catalog: AnyCatalog, a: unknown): boolean => {
   }
   return false;
 };
-
-/** I/O for `find` / `query`. The client supplies this; fixtures omit it. */
-export interface QueryIo {
-  find(
-    spec: QuerySpec,
-    vars: readonly QueryVar[],
-  ): Effect.Effect<unknown, DbError>;
-  query(
-    spec: QuerySpec,
-    vars: readonly QueryVar[],
-  ): Effect.Effect<QueryResponse<unknown>, DbError>;
-}
 
 /** Lower a builder spec to the JS query object the peer already accepts. */
 export const toQueryObject = (
@@ -214,9 +239,6 @@ export interface QueryBuilder<
     v: V,
   ): QueryBuilder<C, BindClause<C, B, E, A, V>>;
 
-  /** Read fence / explain. Does not change bindings. */
-  options(opts: QueryOptions): QueryBuilder<C, B>;
-
   /**
    * Select variables. The row is a tuple of their bound types.
    * `find("?e", "?n")` → `readonly [Eid<C>, string][]` after `?e`
@@ -224,61 +246,55 @@ export interface QueryBuilder<
    */
   find<const Vars extends readonly QueryVar[]>(
     ...vars: Vars
-  ): Effect.Effect<FindRows<B, Vars>, DbError | MissingPeer>;
+  ): FindQuery<C, B, Vars>;
 
-  /** Same as {@link find} but keeps `t` / `root` / `explain` / meta. */
-  query<const Vars extends readonly QueryVar[]>(
+  /** Same selection, plus the planner's clause-by-clause plan. */
+  explain<const Vars extends readonly QueryVar[]>(
     ...vars: Vars
-  ): Effect.Effect<QueryResponse<FindRows<B, Vars>>, DbError | MissingPeer>;
+  ): Query<C, Explained<FindRows<B, Vars>>>;
 }
+
+const query = <C extends AnyCatalog>(
+  catalog: C,
+  spec: QuerySpec,
+  vars: readonly QueryVar[],
+): Query<C> => ({ catalog, spec, vars });
+
+const findQuery = <C extends AnyCatalog>(
+  catalog: C,
+  spec: QuerySpec,
+  vars: readonly QueryVar[],
+): Query<C> & { pull: (pattern: unknown) => Query<C> } => ({
+  ...query(catalog, spec, vars),
+  pull: (pattern: unknown) =>
+    query(catalog, { ...spec, pull: pattern }, vars),
+});
 
 const makeBuilder = <C extends AnyCatalog, B extends object>(
   catalog: C,
   spec: QuerySpec,
-  io?: QueryIo,
-): QueryBuilder<C, B> => ({
-  catalog,
-  spec,
-  where: (e: EntitySlot, a: unknown, v: unknown) => {
-    const eidVars = new Set(spec.eidVars ?? []);
-    if (isQueryVar(e)) eidVars.add(e);
-    if (isQueryVar(v) && isRefAttr(catalog, a)) eidVars.add(v);
-    return makeBuilder(
-      catalog,
-      {
-        find: spec.find,
+): QueryBuilder<C, B> =>
+  ({
+    catalog,
+    spec,
+    where: (e: EntitySlot, a: unknown, v: unknown) => {
+      const eidVars = new Set(spec.eidVars ?? []);
+      if (isQueryVar(e)) eidVars.add(e);
+      if (isQueryVar(v) && isRefAttr(catalog, a)) eidVars.add(v);
+      return makeBuilder(catalog, {
+        ...spec,
         where: [...spec.where, [e, lowerAttr(a), v] as const],
-        options: spec.options,
         eidVars: [...eidVars],
-      },
-      io,
-    );
-  },
-  options: (opts: QueryOptions) =>
-    makeBuilder(
-      catalog,
-      { ...spec, options: { ...spec.options, ...opts } },
-      io,
-    ),
-  find: (...vars: readonly QueryVar[]) =>
-    io
-      ? (io.find({ ...spec, find: vars }, vars) as ReturnType<
-          QueryBuilder<C, B>["find"]
-        >)
-      : noPeer("q"),
-  query: (...vars: readonly QueryVar[]) =>
-    io
-      ? (io.query({ ...spec, find: vars }, vars) as ReturnType<
-          QueryBuilder<C, B>["query"]
-        >)
-      : noPeer("query"),
-}) as unknown as QueryBuilder<C, B>;
+      });
+    },
+    find: (...vars: readonly QueryVar[]) =>
+      findQuery(catalog, { ...spec, find: vars }, vars),
+    explain: (...vars: readonly QueryVar[]) =>
+      query(catalog, { ...spec, find: vars, explain: true }, vars),
+  }) as unknown as QueryBuilder<C, B>;
 
-/**
- * Start a catalog-typed query builder. Used by `db.q()` / `db.q(q => …)`.
- */
+/** @internal Start a catalog-typed query builder. `db.q` / `db.live` hand one out. */
 export const queryBuilder = <C extends AnyCatalog>(
   catalog: C,
-  io?: QueryIo,
 ): QueryBuilder<C, {}> =>
-  makeBuilder(catalog, { find: [], where: [], options: undefined }, io);
+  makeBuilder(catalog, { find: [], where: [] });

@@ -9,9 +9,13 @@
  */
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Redacted from "effect/Redacted";
+import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+import * as Ripple from "../../packages/alchemy/src/db/index.ts";
 import { RippleClient, attribute } from "../../packages/client/src/index.ts";
-import * as AlchemyClient from "../../packages/alchemy/src/Client.ts";
-import { openSession } from "../../packages/alchemy/src/Session.ts";
 
 const URL_ = process.env.RIPPLE_URL;
 const token = process.env.RIPPLE_TOKEN;
@@ -158,65 +162,83 @@ d("ripple e2e", () => {
 });
 
 /**
- * The session socket (`GET /db/:name/session`), over a real WebSocket: the
- * Effect client's `fetch` seam is the socket, so `transact` / `q` / `pull` /
- * `info` are frames on one connection — and a write on another socket shows up
- * on this one as an unsolicited `t` frame.
+ * The session socket (`GET /db/:name/session`), over a real WebSocket.
+ *
+ * `Ripple.layer` is the whole client: reads and `t` ticks ride the socket,
+ * `transact` is HTTPS, and a write on *another* connection shows up here as a
+ * standing `db.live` re-running.
  */
+const Session = Ripple.Namespace("s", {
+  name: Ripple.Attr(Schema.String, { unique: "identity" }),
+  n: Ripple.Attr(Ripple.Long),
+});
+const SessionCatalog = Ripple.Catalog({ s: Session });
+
 d("ripple session socket e2e", () => {
   const url = URL_ ?? "http://invalid";
   const sessionDb = `${dbName}-session`;
-  const run = <A, E>(eff: Effect.Effect<A, E>) =>
-    Effect.runPromise(eff);
 
   test(
-    "one socket transacts, queries and pulls; a write on another socket arrives as a t frame",
+    "one socket queries and pulls; a write on another connection wakes db.live",
     async () => {
-      const a = openSession({ url, name: sessionDb, token });
-      const b = openSession({ url, name: sessionDb, token });
+      const options = {
+        url,
+        token: token === undefined ? undefined : Effect.succeed(Redacted.make(token)),
+      };
+      const a = ManagedRuntime.make(Ripple.layer(options));
+      const b = ManagedRuntime.make(Ripple.layer(options));
       try {
-        const dbA = AlchemyClient.make({ url, name: sessionDb, token, fetch: a.fetch });
-        const dbB = AlchemyClient.make({ url, name: sessionDb, token, fetch: b.fetch });
+        const dbA = a.runSync(Ripple.Databases).db(sessionDb, SessionCatalog);
+        const dbB = b.runSync(Ripple.Databases).db(sessionDb, SessionCatalog);
 
-        await run(
-          dbA.transact([
-            attribute(":s/name", "string", { unique: "identity" }),
-            attribute(":s/n", "long"),
-          ]),
+        await a.runPromise(dbA.install());
+        const report = await a.runPromise(
+          dbA.transact(function* (tx) {
+            const ada = yield* tx.entity();
+            yield* ada.add(Session.name, "Ada");
+            yield* ada.add(Session.n, 1);
+          }),
         );
-        const ack = await run(
-          dbA.transact([{ ":db/id": "ada", ":s/name": "Ada", ":s/n": 1 }]),
-        );
-        // the write's own ack moved this socket's basis
-        expect(a.t).toBeGreaterThanOrEqual(ack.t);
+        expect(report.t).toBeGreaterThan(0);
 
-        const names = await run(
-          dbA.q<string[]>(`[:find [?n ...] :where [?e :s/name ?n]]`, [], { minT: ack.t }),
+        // read-your-writes with no second round trip
+        const names = await a.runPromise(
+          report.dbAfter.q((q) => q.where("?e", Session.name, "?n").find("?n")),
         );
-        expect(names).toEqual(["Ada"]);
-        const pulled = await run(
-          dbA.pull<Record<string, unknown>>(ack.tempids.ada, `[:s/name :s/n]`),
-        );
-        expect(pulled).toEqual({
-          ":s/name": "Ada",
-          ":s/n": 1,
-        });
-        expect((await run(dbA.info())).db).toBe(sessionDb);
-        // peer-level routes are not session-shaped: they fall through to fetch
-        expect((await run(dbA.health())).ok).toBe(true);
+        expect(names).toEqual([["Ada"]]);
 
-        // …and B's write reaches A without A reading anything
-        const ticks: number[] = [];
-        const off = a.onT((t) => ticks.push(t));
-        const write = await run(dbB.transact([{ ":s/name": "Bob", ":s/n": 2 }]));
-        expect(write.t).toBeGreaterThan(ack.t);
-        for (let i = 0; i < 60 && a.t < write.t; i++) await Bun.sleep(250);
-        off();
-        expect(ticks.length).toBeGreaterThan(0);
-        expect(a.t).toBeGreaterThanOrEqual(write.t);
+        const pulled = await a.runPromise(
+          report.dbAfter.pull([":s/name", "Ada"], {
+            name: Session.name,
+            n: Session.n,
+          }),
+        );
+        expect(pulled).toEqual({ name: "Ada", n: 1 });
+
+        // …and B's write reaches A's standing stream without A polling
+        const seen: number[] = [];
+        const fiber = a.runFork(
+          Stream.runForEach(
+            dbA.live((q) => q.where("?e", Session.name, "?n").find("?n")),
+            (rows) => Effect.sync(() => seen.push(rows.length)),
+          ),
+        );
+        for (let i = 0; i < 40 && seen.length === 0; i++) await Bun.sleep(100);
+
+        await b.runPromise(
+          dbB.transact(function* (tx) {
+            const bob = yield* tx.entity();
+            yield* bob.add(Session.name, "Bob");
+            yield* bob.add(Session.n, 2);
+          }),
+        );
+        for (let i = 0; i < 60 && (seen.at(-1) ?? 0) < 2; i++) await Bun.sleep(250);
+        await Effect.runPromise(Fiber.interrupt(fiber));
+
+        expect(seen.at(-1)).toBeGreaterThanOrEqual(2);
       } finally {
-        a.close();
-        b.close();
+        await a.dispose();
+        await b.dispose();
       }
     },
     60_000,

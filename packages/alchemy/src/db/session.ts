@@ -1,0 +1,285 @@
+/**
+ * @internal One reconnecting WebSocket to `GET /db/:name/session`.
+ *
+ * The client speaks exactly one socket route, and it terminates in the peer
+ * Worker's isolate — no Durable Object is reachable or nameable from here.
+ * Reads (`q`, `pull`) and the unsolicited `{ op: "t" }` basis ticks ride it;
+ * writes never do (`transact` is HTTPS, so `processTx` is untouched).
+ *
+ * Unlike the socket this replaces, a drop is **not** terminal. The socket is
+ * opened lazily by the first read, and after a close / error the next request
+ * opens a fresh one — re-reading the token, because a token is
+ * `Effect<Redacted<string>>` and is re-read on every (re)connect. A standing
+ * `db.live` therefore survives the network: it is woken by
+ * {@link Session.onWake} on both a basis tick and a drop, and its next pass
+ * reconnects.
+ *
+ * `Unauthorized` is handled in place: the frame's 401/403 makes the session
+ * re-read the token, send `{ op: "auth", token }` on the *same* socket, and
+ * re-issue the frame once. Nothing standing is torn down by that swap — which
+ * is the whole point of the peer having an `auth` op.
+ */
+
+import * as Redacted from "effect/Redacted";
+
+/**
+ * The slice of `WebSocket` a session uses — so a test can hand in a fake, and
+ * so this file does not depend on whose `WebSocket` global is in scope.
+ */
+export interface WebSocketLike {
+  send(data: string): void;
+  close(): void;
+  addEventListener(
+    type: "message" | "open" | "close" | "error",
+    cb: (ev: any) => void,
+  ): void;
+  /** `1` is OPEN. Absent (a fake) is treated as already open. */
+  readonly readyState?: number;
+}
+
+/** How a session obtains its socket. `layer` defaults it to the global `WebSocket`. */
+export type SocketFactory = (url: string) => WebSocketLike;
+
+/** The ambient `WebSocket`, if this runtime has one. */
+export const globalWebSocket = (): SocketFactory | undefined =>
+  typeof WebSocket === "undefined"
+    ? undefined
+    : (url: string) => new WebSocket(url) as unknown as WebSocketLike;
+
+/** A reply frame, normalized: an `auth` ack (`{ ok: true }`) is a 200. */
+export interface Reply {
+  readonly status: number;
+  readonly body: unknown;
+  readonly headers?: Record<string, string> | undefined;
+}
+
+export interface SessionOptions {
+  /**
+   * Peer base URL — `http(s)://…` is rewritten to `ws(s)://…`. A thunk,
+   * because a deploy-time Alchemy Output resolves as an Effect.
+   */
+  readonly url: () => Promise<string>;
+  /** Ripple database name — the `:name` in `/db/:name/session`. */
+  readonly name: string;
+  /** Re-read on every (re)connect and every re-auth. */
+  readonly token?: (() => Promise<Redacted.Redacted<string> | undefined>) | undefined;
+  readonly connect: SocketFactory;
+}
+
+export interface Session {
+  /** One correlated frame out, its reply back. Reconnects and re-auths as needed. */
+  request(frame: Record<string, unknown>): Promise<Reply>;
+  /** Highest transaction `t` this session has seen — ticks, read replies, local writes. */
+  readonly t: number;
+  /** Bumped on every (re)connect, so a waiter can tell a reconnect from a tick. */
+  readonly generation: number;
+  /** Sockets this session has opened. Test hook. */
+  readonly connects: number;
+  /** Move the basis (a local `transact` is the cheapest possible notification). */
+  bump(t: number): void;
+  /** Called on a basis tick *and* on a dropped socket. Returns the unsubscribe. */
+  onWake(cb: () => void): () => void;
+  /** Close for good; nothing reopens. */
+  close(): void;
+}
+
+const OPEN = 1;
+
+const tokenValue = (
+  token: Redacted.Redacted<string> | undefined,
+): string | undefined => {
+  if (token === undefined) return undefined;
+  const value = Redacted.value(token);
+  return value.length > 0 ? value : undefined;
+};
+
+/** `https://peer/…` → `wss://peer/db/:name/session[?token=…]`. */
+export const sessionUrl = (
+  url: string,
+  name: string,
+  token?: string | undefined,
+): string =>
+  `${url.replace(/\/+$/, "").replace(/^http/, "ws")}/db/${encodeURIComponent(
+    name,
+  )}/session${token === undefined ? "" : `?token=${encodeURIComponent(token)}`}`;
+
+const asRecord = (value: unknown): Record<string, unknown> =>
+  (typeof value === "object" && value !== null ? value : {}) as Record<
+    string,
+    unknown
+  >;
+
+/** The transport failure a socket that went away produces. */
+export class SocketGone extends Error {}
+
+export const openSession = (options: SessionOptions): Session => {
+  const pending = new Map<
+    number,
+    { resolve: (r: Reply) => void; reject: (e: unknown) => void }
+  >();
+  const wakers = new Set<() => void>();
+
+  let socket: WebSocketLike | undefined;
+  let opening: Promise<void> | undefined;
+  let nextId = 1;
+  let basisT = 0;
+  let generation = 0;
+  let connects = 0;
+  let closed = false;
+
+  const wake = (): void => {
+    // copy: a waker may unsubscribe itself while being notified
+    for (const cb of [...wakers]) cb();
+  };
+
+  const bump = (value: unknown): void => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return;
+    if (value <= basisT) return;
+    basisT = value;
+    wake();
+  };
+
+  /** This socket is gone. Everything waiting on it fails; the next request reopens. */
+  const drop = (message: string): void => {
+    if (socket === undefined && pending.size === 0) return;
+    socket = undefined;
+    const waiting = [...pending.values()];
+    pending.clear();
+    for (const p of waiting) p.reject(new SocketGone(message));
+    generation += 1;
+    wake();
+  };
+
+  const onMessage = (ev: { data?: unknown }): void => {
+    const data = typeof ev?.data === "string" ? ev.data : undefined;
+    if (data === undefined) return;
+    let frame: Record<string, unknown>;
+    try {
+      frame = asRecord(JSON.parse(data));
+    } catch {
+      return;
+    }
+    if (typeof frame.id === "number") {
+      const p = pending.get(frame.id);
+      if (p === undefined) return;
+      pending.delete(frame.id);
+      bump(asRecord(frame.body).t);
+      // an `auth` ack is `{ id, ok: true }` — no status, and not a refusal
+      p.resolve({
+        status: typeof frame.status === "number" ? frame.status : 200,
+        body: frame.body,
+        headers: frame.headers as Record<string, string> | undefined,
+      });
+      return;
+    }
+    if (frame.op === "t") bump(frame.t);
+  };
+
+  const connect = (): Promise<void> => {
+    if (closed) {
+      return Promise.reject(new SocketGone("ripple: the client is closed"));
+    }
+    if (socket !== undefined) return Promise.resolve();
+    if (opening !== undefined) return opening;
+    const started = (async () => {
+      // the token is re-read here: every (re)connect authenticates afresh
+      const token = tokenValue(
+        options.token === undefined ? undefined : await options.token(),
+      );
+      const ws = options.connect(
+        sessionUrl(await options.url(), options.name, token),
+      );
+      connects += 1;
+      let settle!: (e?: unknown) => void;
+      const opened = new Promise<void>((resolve, reject) => {
+        settle = (e) => (e === undefined ? resolve() : reject(e));
+      });
+      ws.addEventListener("open", () => settle());
+      ws.addEventListener("close", () => {
+        settle(new SocketGone("ripple: session socket closed"));
+        if (socket === ws) drop("ripple: session socket closed");
+      });
+      ws.addEventListener("error", () => {
+        settle(new SocketGone("ripple: session socket failed"));
+        if (socket === ws) drop("ripple: session socket failed");
+      });
+      ws.addEventListener("message", onMessage);
+      socket = ws;
+      generation += 1;
+      if (ws.readyState === undefined || ws.readyState === OPEN) settle();
+      await opened;
+    })();
+    const tracked: Promise<void> = started.finally(() => {
+      if (opening === tracked) opening = undefined;
+    });
+    opening = tracked;
+    return tracked;
+  };
+
+  const dispatch = (frame: Record<string, unknown>): Promise<Reply> => {
+    const ws = socket;
+    if (ws === undefined) {
+      return Promise.reject(new SocketGone("ripple: session socket closed"));
+    }
+    const id = nextId++;
+    return new Promise<Reply>((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      try {
+        ws.send(JSON.stringify({ id, ...frame }));
+      } catch (cause) {
+        pending.delete(id);
+        reject(new SocketGone(String(cause)));
+      }
+    });
+  };
+
+  /** 401/403: re-read the token, swap the principal in place, re-issue once. */
+  const reauth = async (): Promise<boolean> => {
+    if (options.token === undefined) return false;
+    const token = tokenValue(await options.token());
+    const ack = await dispatch({ op: "auth", token: token ?? "" });
+    return ack.status < 400;
+  };
+
+  const request = async (
+    frame: Record<string, unknown>,
+  ): Promise<Reply> => {
+    await connect();
+    const reply = await dispatch(frame);
+    if (reply.status !== 401 && reply.status !== 403) return reply;
+    return (await reauth()) ? dispatch(frame) : reply;
+  };
+
+  return {
+    request,
+    get t() {
+      return basisT;
+    },
+    get generation() {
+      return generation;
+    },
+    get connects() {
+      return connects;
+    },
+    bump: (t) => bump(t),
+    onWake: (cb) => {
+      wakers.add(cb);
+      return () => {
+        wakers.delete(cb);
+      };
+    },
+    close: () => {
+      if (closed) return;
+      closed = true;
+      const ws = socket;
+      drop("ripple: the client is closed");
+      generation += 1;
+      wake();
+      try {
+        ws?.close();
+      } catch {
+        // closing a socket that never opened is not an error worth raising
+      }
+    },
+  };
+};

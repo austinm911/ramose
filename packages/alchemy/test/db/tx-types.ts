@@ -8,32 +8,27 @@
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import type { TxAck } from "../../src/Client.ts";
-import type { DbError } from "../../src/db/Errors.ts";
-import {
-  Attr,
-  type Entity,
-  type Equal,
-  type Expect,
-  type Extends,
-  Namespace,
-  type Tx,
-  type TypedReadDatabaseClient,
-  type TypedReadWriteDatabaseClient,
-  type TypedWriteDatabaseClient,
-  unsafeDatabase,
-  unsafeReadDatabase,
-  unsafeWriteDatabase,
+import type {
+  Db,
+  DbError,
+  Entity,
+  Equal,
+  Expect,
+  Extends,
+  ReadDb,
+  Tx,
+  TxReport,
 } from "../../src/db/internal.ts";
+import { Attr, Namespace } from "../../src/db/internal.ts";
 
 import { Meta, Movie, Movies, User } from "./fixture.ts";
 
 const Tag = Namespace("tag", {
   label: Attr(Schema.String),
 });
-const db = unsafeDatabase(Movies);
+declare const db: Db<typeof Movies>;
 
-// ── generator transact is the happy path ───────────────────────────────────
+// ── generator transact is the only write ───────────────────────────────────
 
 const crossNs = db.transact(function* (tx) {
   const ada = yield* tx.entity();
@@ -43,17 +38,23 @@ const crossNs = db.transact(function* (tx) {
   // bag: Movie.title on a user handle is legal — do not close the world
   yield* ada.add(Movie.title, "not a movie but types allow any ns");
 });
-type _crossNsAck = Expect<Equal<Effect.Success<typeof crossNs>, TxAck>>;
+type _crossNsReport = Expect<
+  Equal<Effect.Success<typeof crossNs>, TxReport<typeof Movies>>
+>;
 type _crossNsErr = Expect<Extends<DbError, Effect.Error<typeof crossNs>>>;
+type _crossNsR = Expect<Equal<Effect.Services<typeof crossNs>, never>>;
 
-// Effect-returning callback stays for composition (not the default)
-const viaEffect = db.transact((tx) =>
-  Effect.gen(function* () {
-    const e = yield* tx.entity();
-    yield* e.add(User.name, "Ada");
-  }),
-);
-type _viaEffect = Expect<Equal<Effect.Success<typeof viaEffect>, TxAck>>;
+// ── the report is `{ t, txEid, datomCount, dbAfter }` ──────────────────────
+
+type Report = TxReport<typeof Movies>;
+type _reportKeys = Expect<
+  Equal<keyof Report, "t" | "txEid" | "datomCount" | "dbAfter">
+>;
+type _reportT = Expect<Equal<Report["t"], number>>;
+type _reportCount = Expect<Equal<Report["datomCount"], number>>;
+type _dbAfterIsDb = Expect<Equal<Report["dbAfter"], Db<typeof Movies>>>;
+/** No public `minT`: the floor is a property of the db, not an option. */
+type _noMinT = Expect<Equal<"minT" extends keyof Report ? true : false, false>>;
 
 // ── unknown attr is a type error ───────────────────────────────────────────
 
@@ -96,46 +97,43 @@ const retracts = db.transact(function* (tx) {
   yield* byLookup.add(Meta.source, "lookup");
   yield* tx.add([":user/name", "Ada"], User.age, 36);
 });
-type _retractAck = Expect<Equal<Effect.Success<typeof retracts>, TxAck>>;
+type _retractReport = Expect<
+  Equal<Effect.Success<typeof retracts>, TxReport<typeof Movies>>
+>;
 
-// ── Write vs Read still distinguishes transact ─────────────────────────────
+// ── a read view has no write half ──────────────────────────────────────────
 
-type ReadK = keyof TypedReadDatabaseClient<typeof Movies>;
-type WriteK = keyof TypedWriteDatabaseClient<typeof Movies>;
-type RW = TypedReadWriteDatabaseClient<typeof Movies>;
+type ReadK = keyof ReadDb<typeof Movies>;
+type DbK = keyof Db<typeof Movies>;
 
 type _readNoTx = Expect<Equal<"transact" extends ReadK ? true : false, false>>;
-type _writeHasTx = Expect<Equal<"transact" extends WriteK ? true : false, true>>;
-type _writeNoQ = Expect<
-  Equal<"q" extends WriteK ? true : false, false>
+type _readNoInstall = Expect<
+  Equal<"install" extends ReadK ? true : false, false>
 >;
-type _rwHasBoth = Expect<
+type _dbHasBoth = Expect<
   Equal<
-    "transact" extends keyof RW
-      ? "q" extends keyof RW
-        ? true
-        : false
-      : false,
+    "transact" extends DbK ? ("install" extends DbK ? true : false) : false,
     true
   >
 >;
+type _dbStillReads = Expect<Equal<"q" extends DbK ? true : false, true>>;
 
-const readOnly = unsafeReadDatabase(Movies);
-const writeOnly = unsafeWriteDatabase(Movies);
-void readOnly.q;
-void writeOnly.transact;
-// @ts-expect-error read client has no transact
-readOnly.transact;
-// @ts-expect-error write client has no q
-writeOnly.q;
+declare const view: ReadDb<typeof Movies>;
+void view.q;
+// @ts-expect-error a read view has no transact
+view.transact;
+// @ts-expect-error a read view has no install
+view.install;
 
-const writeTx = writeOnly.transact(function* (tx) {
-  const e = yield* tx.entity();
-  yield* e.add(User.name, "Ada");
-});
-type _writeTx = Expect<Equal<Effect.Success<typeof writeTx>, TxAck>>;
+// ── install is an ordinary transaction that reports the same way ───────────
 
-// ── callback errors / context union into transact ──────────────────────────
+const installed = db.install();
+type _installReport = Expect<
+  Equal<Effect.Success<typeof installed>, TxReport<typeof Movies>>
+>;
+type _installErr = Expect<Equal<Effect.Error<typeof installed>, DbError>>;
+
+// ── callback errors union into transact ────────────────────────────────────
 
 class ExtraLoad extends Data.TaggedError("ExtraLoad")<{}> {}
 
@@ -144,9 +142,7 @@ const withExtra = db.transact(function* (tx) {
   yield* e.add(User.name, "Ada");
   return yield* Effect.fail(new ExtraLoad());
 });
-type _extraErr = Expect<
-  Extends<ExtraLoad, Effect.Error<typeof withExtra>>
->;
+type _extraErr = Expect<Extends<ExtraLoad, Effect.Error<typeof withExtra>>>;
 type _stillDb = Expect<Extends<DbError, Effect.Error<typeof withExtra>>>;
 
 // ── builder types are catalog-generic ──────────────────────────────────────

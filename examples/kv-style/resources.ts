@@ -4,8 +4,8 @@
  * Effect-native client.
  *
  * The resource is the *peer* (a Ripple system). A database is a *name* on it —
- * nothing is provisioned, so there is no resource per database: you `create`
- * (≡ `connect`) a name with a catalog and the typed wrap ensures it.
+ * nothing is provisioned, so there is no resource per database: you call
+ * `ripple.db(name, catalog)` (pure, no request) and install the catalog once.
  *
  * This directory is a *type-checked* example, not part of the deployed stack —
  * it is compiled by `bun run typecheck` so the public API can never drift from
@@ -51,10 +51,9 @@ export const Peer = Cloudflare.Worker("Peer", {
  * `url`, carries the shared `token`, and proves the peer answers `/health`
  * before anything downstream binds to it.
  *
- * Databases come later and per use: wrap the bound system
- * (`Ripple.fromReadWrite`) and `create("movies", Movies)` hands back a
- * typed client for `/db/movies/…` and ensures the catalog (a schema tx).
- * The untyped `create("movies")` is still the zero-network name upsert.
- * The Transactor DO is `idFromName("movies")`.
+ * Databases come later and per use: the bound capability *is* the client, so
+ * `ripple.db("movies", Movies)` hands back a typed `Db` for `/db/movies/…`
+ * with no request at all. `db.install()` (or `Alchemy.Action` at deploy) is
+ * the one place the catalog lands. The Transactor DO is `idFromName("movies")`.
  */
 export const Sys = Ripple.System("Sys", { peer: Peer });

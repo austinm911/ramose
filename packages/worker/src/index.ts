@@ -30,7 +30,8 @@
  * (analytics.ts) — a no-op when the `ANALYTICS` binding is absent.
  */
 
-import { DEFAULT_QUERY_MAX_CELLS, Histogram, type Principal, type QueryStats, RateMeter, allows, componentLogger, fromJson, isAdmin, pull, query, setTelemetryLevel, toJson } from "@ripple/core";
+import { DEFAULT_QUERY_MAX_CELLS, Histogram, type Principal, type PullPattern, type QueryStats, RateMeter, allows, componentLogger, fromJson, isAdmin, normalizePullPattern, pull, query, setTelemetryLevel, toJson } from "@ripple/core";
+import type { Db as CoreDb } from "@ripple/core";
 import { type RippleEnv, envInt, internalHeaders } from "@ripple/transactor";
 import { TransactorDO } from "@ripple/transactor/transactor-do.ts";
 import { QueryReplicaDO } from "@ripple/replica";
@@ -56,6 +57,25 @@ const peerMetrics = {
   aeWrites: 0,
 };
 let levelApplied = false;
+
+/**
+ * Every attribute a pull pattern names that this database's schema does not
+ * declare (recursing through nested `sub` patterns).
+ *
+ * `pull` itself skips unknown attributes — Datomic throws, we were lenient —
+ * which made a pull against an uninstalled database silently return a subset
+ * instead of failing like `query` does. The API contract is that both are
+ * `InvalidRequest`, so the check lives here, one layer above the engine.
+ */
+function unknownPullAttrs(db: CoreDb, pattern: PullPattern, seen: string[] = []): string[] {
+  for (const spec of pattern) {
+    if (spec.kind !== "attr") continue;
+    if (spec.attr === ":db/id") continue;
+    if (db.attr(spec.attr) === undefined && !seen.includes(spec.attr)) seen.push(spec.attr);
+    if (spec.sub !== undefined) unknownPullAttrs(db, spec.sub, seen);
+  }
+  return seen;
+}
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify(toJson(body)), {
@@ -247,9 +267,14 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
     const bf = await fetchBasisWithStats(env, db, request);
     const basis = bf.basis;
     const dbv = await viewDb(env, principal, segmentSource(env, db), basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
+    // an attribute this database has never installed is a bad request, not a
+    // silently missing key — the pull engine is lenient, the API is not
+    const pattern = normalizePullPattern(body.pattern);
+    const unknown = unknownPullAttrs(dbv, pattern);
+    if (unknown.length > 0) throw new BadRequest({ message: `unknown attribute${unknown.length > 1 ? "s" : ""} in pull pattern: ${unknown.join(", ")}` });
     const eid = typeof body.eid === "number" ? body.eid : await dbv.entid(body.eid as any);
     if (eid === undefined) return json({ t: basis.t, result: null }, 200, { "x-ripple-ms": String(Date.now() - t0), ...basisHeaders(request, env, bf) });
-    return json({ t: basis.t, result: await pull(dbv, eid, body.pattern as any) }, 200, { "x-ripple-ms": String(Date.now() - t0), ...basisHeaders(request, env, bf) });
+    return json({ t: basis.t, result: await pull(dbv, eid, pattern) }, 200, { "x-ripple-ms": String(Date.now() - t0), ...basisHeaders(request, env, bf) });
   }
   const em = /^\/entity\/(\d+)$/.exec(rest);
   if (em && request.method === "GET") {
