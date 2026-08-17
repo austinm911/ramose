@@ -86,10 +86,20 @@ distributed transactions across partitions.
 | `RIPPLE_RETAIN_ROOTS` / `RIPPLE_GC_EVERY_N_INDEXES` | 20 / 50 | root retention for `as-of`; GC cadence (mark & sweep against retained roots) |
 | `RIPPLE_LOG_LEVEL` | info | telemetry level |
 | `RIPPLE_TOKEN` | unset (auth off) | one bearer token, checked for every database name |
+| `RIPPLE_POLICY` | unset | compiled policy (`SchemaFx.Policy.compile`); set = enforcement is armed and fails closed |
+| `RIPPLE_JWKS_URL` (or `RIPPLE_JWKS_JSON`) | unset | the issuer's public keys; required once `RIPPLE_POLICY` is set |
+| `RIPPLE_JWT_ISS` / `RIPPLE_JWT_AUD` | unset | accepted issuers (comma-separated) and the audience every token must carry |
+| `RIPPLE_JWT_MAX_TTL` | 900 | cap on a token's `exp - iat`, in seconds |
+| `RIPPLE_ALLOWED_ORIGINS` | unset | once a policy is set, CORS narrows to this list (empty = no CORS header) |
+| `RIPPLE_INTERNAL_SECRET` | unset (no gate) | Worker→DO shared secret; every internal fetch carries it, `/subscribe` included |
 
-Checked per request in `authorized()` (`packages/worker/src/index.ts`) against
-`Authorization: Bearer <token>` (or `?token=`). A `Ripple.System` resource's `token` is
-that same peer token for every name it opens.
+`principalOf()` (`packages/worker/src/auth.ts`) resolves the caller per request from
+`Authorization: Bearer <token>` (or `?token=`, since a browser cannot set headers on a
+WebSocket upgrade). With no `RIPPLE_POLICY` that is today's shared-token mode —
+`RIPPLE_TOKEN` unset is open, set is one service principal — and a `Ripple.System`
+resource's `token` is that same peer token for every name it opens. With `RIPPLE_POLICY`
+set, a JWT is the only data-plane principal: it is bound to exactly one database by
+`ripple.db`, and `RIPPLE_TOKEN` reaches `/health` and an already-deployed `ensure` only.
 
 ## Recovery notes
 
