@@ -144,17 +144,11 @@ function httpErrorMessage(
 export function isTransientCf(e: unknown): boolean {
   if (!(e instanceof HttpError)) return false;
   if (e.status === 503 || e.status === 429) return true;
-  // Platform errors (not application JSON). Fresh workers.dev hosts and
-  // concurrent account load can surface these mid-suite.
-  if (
-    /Worker not found|Cloudflare error 1\d{3}|error code:\s*1\d{3}|workers\.dev edge/i.test(
-      e.message,
-    )
-  ) {
-    return true;
-  }
-  if (e.status === 404 && /HTML 404|transient/i.test(e.message)) return true;
-  return false;
+  // Platform errors, as normalized by httpErrorMessage (plus the JSON
+  // "Worker not found." a not-yet-bound DO namespace answers with).
+  return /Worker not found|Cloudflare error 1\d{3}|workers\.dev edge/i.test(
+    e.message,
+  );
 }
 
 /** The read fence, as the header the peer reads it from. */

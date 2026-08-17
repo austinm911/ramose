@@ -357,6 +357,32 @@ describe("failures arrive tagged, not thrown", () => {
     await c.dispose();
   });
 
+  test("a platform 500 is retried over a fresh connection, then succeeds", async () => {
+    // A workers.dev host that has not learned the route answers 500
+    // "Worker not found." — often pinned to one pooled socket, so the retry
+    // must carry `Connection: close` to dial a different edge server.
+    let n = 0;
+    const peer = fakePeer({
+      http: () => {
+        n++;
+        return n === 1
+          ? { status: 500, body: { error: "Worker not found." } }
+          : { body: ack() };
+      },
+    });
+    const c = client(peer);
+    await run(
+      c.ripple.db("movies", Movies).transact(function* (tx) {
+        const ada = yield* tx.entity();
+        yield* ada.add(User.name, "Ada");
+      }),
+    );
+    expect(n).toBe(2);
+    expect(peer.calls[0].headers.connection).toBeUndefined();
+    expect(peer.calls[1].headers.connection).toBe("close");
+    await c.dispose();
+  });
+
   test("a dead transactor is Unavailable with its retry hint", async () => {
     const peer = failing(503, {
       error: "transactor aborted",
