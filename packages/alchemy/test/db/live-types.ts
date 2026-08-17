@@ -45,7 +45,7 @@ const friends = db.live((q) =>
   q
     .where("?e", User.name, "?n")
     .find("?e")
-    .pull({ friends: User.friends.with({ name: User.name }) }),
+    .pull({ friends: User.friends.select({ name: User.name }) }),
 );
 type Friends = Stream.Success<typeof friends>;
 type _friends = Expect<

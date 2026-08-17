@@ -66,7 +66,7 @@ type _identRefEid = Expect<
 const pattern = {
   name: User.name,
   age: User.age.optional,
-  friends: User.friends.with({ name: User.name }),
+  friends: User.friends.select({ name: User.name }),
 };
 const pulledRows = db.q((q) =>
   q.where("?e", User.name, "_").find("?e").pull(pattern),

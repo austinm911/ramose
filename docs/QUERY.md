@@ -187,7 +187,7 @@ Status of the navigational surface relative to the intended design.
 | Build | `Ripple.query(N)`, `.where`, `.select`, `.orderBy`, `.limit`, `.offset`, `.build` | `Ripple.params`, `.one` / `.oneOrFail`, `.groupBy`, `.after(cursor)` |
 | Predicates | `eq` `ne` `lt` `lte` `gt` `gte` `startsWith` `includes` `exists` `missing` | `in`, card-many `some` / `every` / `none`, ref `is`, `endsWith` / `matches` |
 | Combinators | — | `Ripple.or` `Ripple.not` `Ripple.when` |
-| Shape | nested `ref.select`, `.optional` | `.reverse`, nested `where` / `orderBy` / `limit` on collections, `.expand`, `.orDefault`, `Ripple.all(N)` |
+| Shape | nested `ref.select`, `.optional` (same grammar for `db.pull`) | `.reverse`, nested `where` / `orderBy` / `limit` on collections, `.expand`, `.orDefault`, `Ripple.all(N)` |
 | Aggregates | — | `count` `sum` `avg` `min` `max` `countDistinct`, `having` |
 | Graph | — | `.traverse` `.paths` `attr.reaches` `Ripple.either` |
 | Runners | `db.q` / `db.live` on query values; find-pull lowering; legacy builder | identical-result suppression; `db.changes`; `Ripple.explain` / `withBasis` |

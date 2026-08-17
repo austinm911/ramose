@@ -48,6 +48,7 @@ export interface Predicate {
 
 export type ShapeField =
   | AnyAttribute
+  | PathCarrier
   | { readonly _tag: "optional"; readonly field: unknown }
   | { readonly _tag: "nested"; readonly attr: unknown; readonly pattern: unknown }
   | { readonly _tag: "select"; readonly attr: unknown; readonly shape: Shape };
@@ -302,10 +303,14 @@ type SelectFieldResult<F> = F extends {
             readonly schema: infer S;
             readonly cardinality: infer Card;
           }
-        ? Card extends "many"
-          ? readonly SchemaType<F>[]
-          : SchemaType<F>
-        : never;
+        ? F extends { readonly ident: ":db/id" }
+          ? number
+          : Card extends "many"
+            ? readonly SchemaType<F>[]
+            : SchemaType<F>
+        : F extends { readonly ident: ":db/id" }
+          ? number
+          : never;
 
 export interface NavQueryBuilder<N extends AnyNamespace, R = unknown> {
   readonly ns: N;

@@ -214,11 +214,11 @@ describe("install → transact → q → pull", () => {
         name: User.name,
         age: User.age.optional,
         source: Meta.source,
-        bestFriend: User.bestFriend.optional.with({
+        bestFriend: User.bestFriend.optional.select({
           name: User.name,
           age: User.age.optional,
         }),
-        friends: User.friends.with({ name: User.name }),
+        friends: User.friends.select({ name: User.name }),
       }),
     );
     expect(pulled).not.toBeNull();
@@ -451,7 +451,7 @@ describe("failures", () => {
     const friends = await run(
       dbAfter.pull(ada, {
         name: User.name,
-        friends: User.friends.with({ name: User.name }),
+        friends: User.friends.select({ name: User.name }),
       }),
     );
     expect(friends!.friends.map((f) => f.name)).toEqual(["Alonzo"]);
@@ -460,7 +460,7 @@ describe("failures", () => {
       await run(
         dbAfter.pull(ada, {
           name: User.name,
-          bestFriend: User.bestFriend.with({ name: User.name }),
+          bestFriend: User.bestFriend.select({ name: User.name }),
         }),
       ),
     ).toBeNull();
@@ -468,7 +468,7 @@ describe("failures", () => {
       await run(
         dbAfter.pull(ada, {
           name: User.name,
-          bestFriend: User.bestFriend.optional.with({ name: User.name }),
+          bestFriend: User.bestFriend.optional.select({ name: User.name }),
         }),
       ),
     ).toEqual({ name: "Ada", bestFriend: undefined });

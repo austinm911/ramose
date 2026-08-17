@@ -219,11 +219,11 @@ describe("masked attributes in pull patterns", () => {
 
   test("nested patterns are walked", () => {
     expect(() =>
-      P.compile(specPolicy, { pulls: [{ org: Project.org.with({ members: Org.members }) }] }),
+      P.compile(specPolicy, { pulls: [{ org: Project.org.select({ members: Org.members }) }] }),
     ).not.toThrow();
     const Wrapper = Namespace("wrap", { doc: Attr(Ref) });
     expect(() =>
-      P.compile(specPolicy, { pulls: [{ doc: Wrapper.doc.with({ audit: Doc.audit }) }] }),
+      P.compile(specPolicy, { pulls: [{ doc: Wrapper.doc.select({ audit: Doc.audit }) }] }),
     ).toThrow(/:doc\/audit/);
   });
 

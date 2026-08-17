@@ -1,4 +1,4 @@
-/** Literate pull map: keys are result names, values are attr refs / `.optional` / `.with`. */
+/** Literate pull map: keys are result names, values are attr refs / `.optional` / `.select`. */
 
 import type * as Schema from "effect/Schema";
 import type { AnyAttribute } from "./Attribute.ts";
@@ -14,9 +14,9 @@ export interface PullOptional<F = unknown> {
   readonly field: F;
   /**
    * Nested pull, then maybe. Only on refs
-   * (`valueType: ":db.type/ref"`). Non-refs type this as `never`.
+   * (`valueType: ":db.type/ref"`). Prefer `attr.select(shape).optional`.
    */
-  readonly with: F extends { readonly valueType: ":db.type/ref" }
+  readonly select: F extends { readonly valueType: ":db.type/ref" }
     ? <const P extends Record<string, unknown>>(
         pattern: P,
       ) => PullOptional<PullNested<F, P>>
@@ -33,27 +33,24 @@ export interface PullNested<A = unknown, P = unknown> {
 
 /**
  * Literate pull methods stamped onto every attr ref (`User.name`).
- * `.with` is only callable on `:db.type/ref` attrs.
+ * Nested shapes use {@link AttrNav.select} from NavQuery (same grammar as
+ * `Ripple.query(…).select`); this type only carries `.optional`.
  */
 export type AttrPull<A> = {
   readonly optional: PullOptional<A>;
-  readonly with: A extends { readonly valueType: ":db.type/ref" }
-    ? <const P extends Record<string, unknown>>(pattern: P) => PullNested<A, P>
-    : never;
 };
 
 /** Internal: implements `attr.optional`. The result type is `T | undefined`. */
 export const optional = <const F>(field: F): PullOptional<F> => ({
   _tag: "optional",
   field,
-  with: ((pattern: Record<string, unknown>) =>
-    optional(nested(field as never, pattern))) as unknown as PullOptional<F>["with"],
+  select: ((pattern: Record<string, unknown>) =>
+    optional(nested(field as never, pattern))) as unknown as PullOptional<F>["select"],
 });
 
 /**
- * Internal: implements `attr.with({ ... })`. Follow a ref (or
- * cardinality-many refs) and pull a nested map. The attr must be a
- * `:db.type/ref`. Card-one → object; card-many → `readonly T[]`.
+ * Internal: nested pull field. Prefer `attr.select({ … })` on stamped attrs;
+ * that returns a select-marker which {@link inspectPullField} understands.
  */
 export const nested = <
   const A extends { readonly valueType: ":db.type/ref" },
@@ -128,7 +125,15 @@ type FieldResult<F> = F extends PullOptional<infer Inner>
   ? FieldResult<Inner> | undefined
   : F extends PullNested<infer A, infer P>
     ? NestedResult<A, P>
-    : ScalarResult<F>;
+    : F extends {
+          readonly _tag: "select";
+          readonly attr: infer A;
+          readonly shape: infer P;
+        }
+      ? NestedResult<A, P>
+      : F extends { readonly ident: ":db/id" }
+        ? number
+        : ScalarResult<F>;
 
 /** Result shape of a fields object. */
 export type StructPullResult<P> = FieldsResult<P>;
@@ -189,13 +194,21 @@ type IdentsIn<P> = [P] extends [PullOptional<infer I>]
   ? IdentsIn<I>
   : [P] extends [PullNested<infer A, infer Inner>]
     ? IdentsIn<A> | IdentsIn<Inner>
-    : [P] extends [{ readonly ident: infer I extends string }]
-      ? I
-      : [P] extends [readonly unknown[]]
-        ? IdentsInArray<P[number]>
-        : [P] extends [object]
-          ? IdentsInFields<P>
-          : never;
+    : [P] extends [
+          {
+            readonly _tag: "select";
+            readonly attr: infer A;
+            readonly shape: infer Inner;
+          },
+        ]
+      ? IdentsIn<A> | IdentsIn<Inner>
+      : [P] extends [{ readonly ident: infer I extends string }]
+        ? I
+        : [P] extends [readonly unknown[]]
+          ? IdentsInArray<P[number]>
+          : [P] extends [object]
+            ? IdentsInFields<P>
+            : never;
 
 /** Ident strings are only idents in the array escape, not on attr objects. */
 type IdentsInArray<E> = [E] extends [string] ? E : IdentsIn<E>;
@@ -246,6 +259,15 @@ const cardinalityOf = (field: unknown): "one" | "many" => {
   return card === "many" ? "many" : "one";
 };
 
+const isSelectNestedField = (
+  value: unknown,
+): value is { readonly _tag: "select"; readonly attr: unknown; readonly shape: unknown } =>
+  typeof value === "object" &&
+  value !== null &&
+  (value as { _tag?: unknown })._tag === "select" &&
+  "attr" in value &&
+  "shape" in value;
+
 /** Inspect a literate pull field: optional / many / nested pattern. */
 export const inspectPullField = (
   field: unknown,
@@ -266,6 +288,14 @@ export const inspectPullField = (
       optional,
       many: cardinalityOf(current.attr) === "many",
       nestedPattern: current.pattern,
+      attr: current.attr,
+    };
+  }
+  if (isSelectNestedField(current)) {
+    return {
+      optional,
+      many: cardinalityOf(current.attr) === "many",
+      nestedPattern: current.shape,
       attr: current.attr,
     };
   }

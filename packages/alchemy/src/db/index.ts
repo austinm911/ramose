@@ -48,7 +48,6 @@ export type { Db, ReadDb, TxReport } from "./Db.ts";
 export type { Eid } from "./Eid.ts";
 export type { LookupRef } from "./idents.ts";
 export type { Pull } from "./Pull.ts";
-export type { Query, QueryBuilder } from "./Query.ts";
 export type { Entity, Tx } from "./Tx.ts";
 
 // ── errors ─────────────────────────────────────────────────────────────────

@@ -120,13 +120,13 @@ type _overrideVt = Expect<
   Equal<(typeof Typed)["override"]["valueType"], ":db.type/uuid">
 >;
 
-// .with is callable on inferred refs; a non-ref is a type error
-const _refWith = Typed.r.with({ s: Typed.s });
-void _refWith;
-// @ts-expect-error Schema.String / non-ref .with is never
-Typed.s.with({ s: Typed.s });
-// @ts-expect-error Schema.Number / non-ref .with is never
-Typed.n.with({ s: Typed.s });
+// .select is callable on inferred refs; a non-ref is a type error
+const _refSelect = Typed.r.select({ s: Typed.s });
+void _refSelect;
+// @ts-expect-error Schema.String / non-ref .select is never
+Typed.s.select({ s: Typed.s });
+// @ts-expect-error Schema.Number / non-ref .select is never
+Typed.n.select({ s: Typed.s });
 
 // ── layer / Databases / db(name, catalog) ──────────────────────────────────
 

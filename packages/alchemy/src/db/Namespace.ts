@@ -7,7 +7,7 @@ import {
   type AttrNav,
   type PathCarrier,
 } from "./NavQuery.ts";
-import { nested, optional, type AttrPull } from "./Pull.ts";
+import { optional, type AttrPull } from "./Pull.ts";
 import {
   isSelfRefSchema,
   refTargetOf,
@@ -103,6 +103,18 @@ export type Namespace<
   readonly _tag: "Namespace";
   readonly ns: Name;
   readonly attributes: StampedMap<Name, Attrs>;
+  /**
+   * Pseudo-attribute `:db/id`, usable in `where` / `select` / `orderBy`.
+   * Typed as a stamped attr so it is a valid {@link ShapeField}.
+   */
+  readonly id: AttrNav<
+    AnyAttribute & {
+      readonly attrName: "id";
+      readonly ident: ":db/id";
+      readonly valueType: ":db.type/ref";
+      readonly cardinality: "one";
+    } & PathCarrier
+  >;
 } & StampedMap<Name, Attrs>;
 
 export type AnyNamespace = {
@@ -123,7 +135,6 @@ const OWN_ATTR_KEYS = new Set([
   "doc",
   "valueType",
   "optional",
-  "with",
   "select",
   "eq",
   "ne",
@@ -152,12 +163,6 @@ const stampOne = (
   const withPull = {
     ...base,
     optional: optional(base),
-    with: ((pattern: Record<string, unknown>) =>
-      nested(base as never, pattern)) as StampedAttribute<
-      string,
-      string,
-      AnyAttribute
-    >["with"],
   };
 
   const isRef = a.valueType === ":db.type/ref";
@@ -230,7 +235,7 @@ export const Namespace = <
     isComponent: false,
     doc: undefined,
     valueType: ":db.type/ref" as const,
-    attrName: "id",
+    attrName: "id" as const,
     ident: ":db/id" as const,
   });
   return {
@@ -239,7 +244,7 @@ export const Namespace = <
     attributes: stamped,
     id: idAttr,
     ...stamped,
-  } as Namespace<Name, Attrs> & { readonly id: typeof idAttr };
+  } as Namespace<Name, Attrs>;
 };
 
 export type AttrOf<

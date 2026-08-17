@@ -48,16 +48,15 @@ Static token: `Effect.succeed(Redacted.make(t))`. The layer is scoped, the socke
 |---|---|
 | `Db<C>` | `ReadDb<C> & { transact; install }` |
 | `ReadDb<C>` | `{ name; catalog; q; pull; live; asOf; history }` |
-| `db.q` | `<R>(build: (q: QueryBuilder<C>) => Query<C, R>) => Effect<R, DbError>` |
-| `db.live` | `<R>(build: (q: QueryBuilder<C>) => Query<C, R>) => Stream<R, DbError>` |
-| `db.pull` | `<const P>(subject: Eid<C> \| LookupRef<C>, pattern: P) => Effect<Pull<C, P> \| null, DbError>` |
+| `db.q` | `<R>(query: NavQuery\<R\> \| NavQueryBuilder \| legacy callback) => Effect<R, DbError>` — prefer `Ripple.query(N)` (see `docs/QUERY.md`) |
+| `db.live` | same input as `db.q` → `Stream<R, DbError>` |
+| `db.pull` | `<const P>(subject: Eid<C> \| LookupRef<C>, shape: P) => Effect<Pull<C, P> \| null, DbError>` |
 | `db.transact` | `<A, E, R>(body: (tx: Tx<C>) => Generator<Effect<unknown, E, R>, A>) => Effect<TxReport<C>, DbError \| E, R>` |
 | `db.install` | `() => Effect<TxReport<C>, DbError>` — idempotent catalog upsert |
 | `db.asOf` | `(t: number) => ReadDb<C>` |
 | `db.history` | `ReadDb<C>` |
-| `QueryBuilder<C, B>` | `.where(e, a, v)` accumulates bindings `B`; `.find(...vars)` and `.explain(...vars)` are terminals |
-| `Query<C, R>` | a built query. `db.q` runs it once, `db.live` stands it up. `.pull(pattern)` after a one-eid `find` |
-| `Pull<C, P>` | result of pattern `P` — so a React prop is `Pull<typeof Todos, typeof pattern>`. Patterns nest (`Todo.author.with({...})`) and go maybe (`Todo.due.optional`) |
+| `query` | `Ripple.query(N)` — navigational query builder (`.where` `.select` `.orderBy` `.limit`) |
+| `Pull<C, P>` | result of shape `P`. Nest with `attr.select({…})`, maybe with `.optional` |
 | `Eid<C>` | `{ readonly id: number }`, catalog-branded. Data — no methods, no I/O |
 | `LookupRef<C>` | `[AttrRef, value]` on a unique attribute |
 | `Tx<C>` | `.entity()` `.add(e, a, v)` `.retract(e, a, v?)` `.retractEntity(e)`; `Entity<C>` is the handle `.entity()` returns |
@@ -124,8 +123,10 @@ export default Cloudflare.Worker("App", { main: import.meta.url },
           yield* todo.add(Todo.title, "ship it");
           yield* todo.add(Todo.done, false);
         });
-        const rows = yield* dbAfter.q((q) => q.where("?e", Todo.title, "?t").find("?t"));
-        return yield* HttpServerResponse.json(rows);           // readonly [string][]
+        const rows = yield* dbAfter.q(
+          Ripple.query(Todo).select({ title: Todo.title }),
+        );
+        return yield* HttpServerResponse.json(rows);           // readonly { title: string }[]
       }),
     };
   }).pipe(Effect.provide(Ripple.ServerBinding)));
@@ -148,11 +149,15 @@ export const db = runtime.runSync(Ripple.Databases).db("todos", Todos);
 ```
 
 ```tsx
-// App.tsx
-const pattern = { title: Todo.title, done: Todo.done, createdAt: Todo.createdAt };
-type Row = readonly [Ripple.Eid<typeof Todos>, Ripple.Pull<typeof Todos, typeof pattern>];
-const todos = db.live((q) => q.where("?e", Todo.title, "_").find("?e").pull(pattern));
-//    Stream<readonly Row[], Ripple.DbError>   — hoisted, so the hook's dep is stable
+// App.tsx — query value hoisted so the hook's dep is stable
+const todoQuery = Ripple.query(Todo).select({
+  id: Todo.id,
+  title: Todo.title,
+  done: Todo.done,
+  createdAt: Todo.createdAt,
+});
+const todos = db.live(todoQuery);
+//    Stream<readonly { id; title; done; createdAt }[], Ripple.DbError>
 
 const add = (title: string) =>
   run(db.transact(function* (tx) {
@@ -161,7 +166,8 @@ const add = (title: string) =>
     yield* todo.add(Todo.createdAt, new Date());
   }));
 
-const one = (e: Ripple.Eid<typeof Todos>) => run(db.pull(e, pattern));
+const one = (e: Ripple.Eid<typeof Todos>) =>
+  run(db.pull(e, { title: Todo.title, done: Todo.done, createdAt: Todo.createdAt }));
 ```
 
 ```tsx
