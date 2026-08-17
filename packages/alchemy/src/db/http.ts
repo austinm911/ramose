@@ -87,35 +87,40 @@ export const send = (
   options: SendOptions,
   attempt = 0,
 ): Effect.Effect<RawResult, DbError> =>
-  sendOnce(options).pipe(
+  sendOnce(options, attempt > 0).pipe(
     Effect.catch((e: DbError) => {
       if (attempt + 1 >= 6 || !isTransientPlatform(e)) {
         return Effect.fail(e);
       }
-      const ms = Math.min(2000, 150 * 2 ** attempt);
+      // Jittered so concurrent callers do not retry in lockstep.
+      const ms = Math.round(
+        Math.min(2000, 150 * 2 ** attempt) * (0.5 + Math.random()),
+      );
       return Effect.sleep(`${ms} millis`).pipe(
         Effect.andThen(() => send(options, attempt + 1)),
       );
     }),
   );
 
-const isTransientPlatform = (e: DbError): boolean => {
-  if (e._tag === "Unavailable") return true;
-  if (e._tag === "NetworkError") return true;
-  if (e._tag === "InternalError") {
-    return /Worker not found|error code: 1042/i.test(e.message);
-  }
-  return false;
-};
+// Platform errors arrive classified: Errors.ts maps workers.dev HTML 404s,
+// Cloudflare 1xxx pages and "Worker not found" onto Unavailable.
+const isTransientPlatform = (e: DbError): boolean =>
+  e._tag === "Unavailable" || e._tag === "NetworkError";
 
 const sendOnce = (
   options: SendOptions,
+  fresh = false,
 ): Effect.Effect<RawResult, DbError> =>
   Effect.gen(function* () {
     const headers: Record<string, string> = {
       "content-type": "application/json",
       ...(options.headers ?? {}),
     };
+    // A transient platform error is often pinned to one pooled socket (one
+    // edge server keeps serving it). Retries send `Connection: close` so the
+    // next attempt dials a fresh server. Ignored where it has no meaning
+    // (browsers strip it; service bindings have no connection).
+    if (fresh) headers.connection = "close";
     if (options.token !== undefined && options.token.length > 0) {
       headers.authorization = `Bearer ${options.token}`;
     }

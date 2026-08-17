@@ -22,11 +22,13 @@ export interface PeerOptions {
   /** Extra request headers, e.g. `x-ripple-replica-hint: enam`, `x-ripple-cache-basis: 1`, `x-ripple-cache-mode: peer` (read-path knobs). */
   headers?: Record<string, string>;
   /**
-   * Extra attempts after a transient Cloudflare platform error (HTML 404 /
-   * "Worker not found" / 503). Fresh workers.dev hosts flake under concurrent
-   * bursts; e2e sets this. Default 0 = no retry.
+   * How long (ms) to keep retrying transient Cloudflare platform errors
+   * (workers.dev HTML 404, 1042/1104, "Worker not found", 503). A fresh
+   * workers.dev hostname is eventually consistent across the edge, so a colo
+   * can serve the placeholder well after /health passes; this is the budget
+   * for waiting that out. Application errors never retry. Default 0.
    */
-  retryTransient?: number;
+  retryTransientMs?: number;
 }
 
 export interface Ack {
@@ -74,24 +76,27 @@ export class Peer {
   }
 
   async request<T>(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
-    const retries = Math.max(0, this.opts.retryTransient ?? 0);
-    let last: unknown;
-    for (let attempt = 0; attempt <= retries; attempt++) {
+    const deadline = Date.now() + Math.max(0, this.opts.retryTransientMs ?? 0);
+    for (let attempt = 0; ; attempt++) {
       try {
-        return await this.requestOnce<T>(method, path, body, extraHeaders);
+        return await this.requestOnce<T>(method, path, body, extraHeaders, attempt > 0);
       } catch (e) {
-        last = e;
-        if (attempt >= retries || !isTransientCf(e)) throw e;
-        // Exponential backoff: concurrent stages can miss the edge for >1s.
-        await Bun.sleep(Math.min(2000, 150 * 2 ** attempt));
+        if (!isTransientCf(e) || Date.now() >= deadline) throw e;
+        // Jittered backoff so a concurrent burst does not retry in lockstep.
+        const base = Math.min(2000, 150 * 2 ** attempt);
+        await Bun.sleep(Math.round(base * (0.5 + Math.random())));
       }
     }
-    throw last;
   }
 
-  private async requestOnce<T>(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
+  private async requestOnce<T>(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>, fresh = false): Promise<T> {
     const headers: Record<string, string> = { "content-type": "application/json", ...(this.opts.headers ?? {}), ...(extraHeaders ?? {}) };
     if (this.opts.token) headers.authorization = `Bearer ${this.opts.token}`;
+    // A platform 404/1042 is often pinned to one pooled socket (one edge
+    // server behind the anycast IP keeps serving the placeholder). Retries
+    // send `Connection: close`, which evicts that socket from Bun's pool so
+    // the attempt after it dials a fresh server. Verified: Bun honors this.
+    if (fresh) headers.connection = "close";
     const res = await this.f(this.base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(toJson(body)) });
     const text = await res.text();
     let parsed: any;
@@ -100,7 +105,10 @@ export class Peer {
     } catch {
       parsed = { error: text };
     }
-    if (!res.ok) throw new HttpError(parsed?.error ?? `HTTP ${res.status}`, res.status, parsed?.code);
+    if (!res.ok) {
+      const { message, code } = httpErrorMessage(res.status, text, parsed);
+      throw new HttpError(message, res.status, code);
+    }
     const out = fromJson(parsed) as any;
     if (out && typeof out === "object" && !Array.isArray(out)) {
       out.meta = { ms: num(res.headers.get("x-ripple-ms")), r2Gets: num(res.headers.get("x-ripple-r2-gets")), cacheHits: num(res.headers.get("x-ripple-cache-hits")), colo: res.headers.get("x-ripple-colo") ?? undefined, replicaHint: res.headers.get("x-ripple-replica-hint") ?? undefined, basisT: num(res.headers.get("x-ripple-basis-t")), basisHit: res.headers.get("x-ripple-basis-hit") === "1", basisReason: res.headers.get("x-ripple-basis-reason") ?? undefined, basisBehind: res.headers.get("x-ripple-basis-behind") === "1" };
@@ -109,19 +117,39 @@ export class Peer {
   }
 }
 
-function isTransientCf(e: unknown): boolean {
-  if (!(e instanceof HttpError)) return false;
-  if (e.status === 503) return true;
-  // Platform errors (not application JSON). Fresh workers.dev hosts and
-  // concurrent account load can surface these mid-suite.
-  if (/Worker not found|error code: 1042/i.test(e.message)) return true;
-  if (
-    e.status === 404 &&
-    /<!DOCTYPE html>|Page not found/i.test(e.message)
-  ) {
-    return true;
+/** Cloudflare edge / DO-binding misses — not application JSON. */
+export function isCfPlatformText(s: string): boolean {
+  return /<!DOCTYPE html>|Page not found|There is nothing here yet|error code:\s*1\d{3}/i.test(s);
+}
+
+function httpErrorMessage(
+  status: number,
+  text: string,
+  parsed: { error?: unknown; code?: unknown } | null,
+): { message: string; code?: string } {
+  const code = typeof parsed?.code === "string" ? parsed.code : undefined;
+  const raw = typeof parsed?.error === "string" ? parsed.error : text;
+  if (isCfPlatformText(raw) || isCfPlatformText(text)) {
+    const cf = `${raw}\n${text}`.match(/error code:\s*(\d+)/i)?.[1];
+    return {
+      message: cf
+        ? `Cloudflare error ${cf} (HTTP ${status})`
+        : `workers.dev edge returned HTML ${status} (transient)`,
+      code,
+    };
   }
-  return false;
+  return { message: typeof parsed?.error === "string" ? parsed.error : `HTTP ${status}`, code };
+}
+
+export function isTransientCf(e: unknown): boolean {
+  if (!(e instanceof HttpError)) return false;
+  if (e.status === 503 || e.status === 429) return true;
+  // Platform errors, as normalized by httpErrorMessage, plus the JSON errors
+  // a not-yet-converged deploy answers with ("Worker not found." and
+  // "Handler does not export a fetch() function." both clear within seconds).
+  return /Worker not found|Handler does not export a fetch|Cloudflare error 1\d{3}|workers\.dev edge/i.test(
+    e.message,
+  );
 }
 
 /** The read fence, as the header the peer reads it from. */
