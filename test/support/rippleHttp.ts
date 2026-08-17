@@ -21,6 +21,12 @@ export interface PeerOptions {
   fetch?: typeof fetch;
   /** Extra request headers, e.g. `x-ripple-replica-hint: enam`, `x-ripple-cache-basis: 1`, `x-ripple-cache-mode: peer` (read-path knobs). */
   headers?: Record<string, string>;
+  /**
+   * Extra attempts after a transient Cloudflare platform error (HTML 404 /
+   * "Worker not found" / 503). Fresh workers.dev hosts flake under concurrent
+   * bursts; e2e sets this. Default 0 = no retry.
+   */
+  retryTransient?: number;
 }
 
 export interface Ack {
@@ -68,6 +74,21 @@ export class Peer {
   }
 
   async request<T>(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
+    const retries = Math.max(0, this.opts.retryTransient ?? 0);
+    let last: unknown;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await this.requestOnce<T>(method, path, body, extraHeaders);
+      } catch (e) {
+        last = e;
+        if (attempt >= retries || !isTransientCf(e)) throw e;
+        await Bun.sleep(100 * (attempt + 1));
+      }
+    }
+    throw last;
+  }
+
+  private async requestOnce<T>(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
     const headers: Record<string, string> = { "content-type": "application/json", ...(this.opts.headers ?? {}), ...(extraHeaders ?? {}) };
     if (this.opts.token) headers.authorization = `Bearer ${this.opts.token}`;
     const res = await this.f(this.base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(toJson(body)) });
@@ -85,6 +106,13 @@ export class Peer {
     }
     return out as T;
   }
+}
+
+function isTransientCf(e: unknown): boolean {
+  if (!(e instanceof HttpError)) return false;
+  if (e.status === 503) return true;
+  // Cloudflare edge HTML / platform errors — not application JSON 4xx/5xx.
+  return /Worker not found|error code: 1042|<!DOCTYPE html>/i.test(e.message);
 }
 
 /** The read fence, as the header the peer reads it from. */

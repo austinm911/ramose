@@ -24,7 +24,7 @@ const d = URL_ ? describe : describe.skip;
 const dbName = `e2e-${Date.now().toString(36)}`;
 
 d("ripple e2e", () => {
-  const client = new Peer(URL_ ?? "http://invalid", { token });
+  const client = new Peer(URL_ ?? "http://invalid", { token, retryTransient: 5 });
   const db = client.db(dbName);
   let alice = 0, bob = 0, tSchema = 0, tAge30 = 0;
 
@@ -153,26 +153,7 @@ d("ripple e2e", () => {
   test("write throughput smoke (group commit)", async () => {
     const N = 300;
     const t0 = performance.now();
-    // Fresh workers.dev hosts occasionally 404/500 individual requests under a
-    // concurrent burst ("Worker not found" / error 1042). Retry those only.
-    const once = async (i: number) => {
-      for (let attempt = 0; ; attempt++) {
-        try {
-          return await db.transact([{ ":user/name": `w${i}`, ":user/email": `w${i}@example.com` }]);
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          const status = (e as { status?: number }).status;
-          const transient =
-            status === 404 ||
-            status === 500 ||
-            status === 503 ||
-            /Worker not found|error code: 1042/i.test(msg);
-          if (!transient || attempt >= 5) throw e;
-          await Bun.sleep(100 * (attempt + 1));
-        }
-      }
-    };
-    await Promise.all(Array.from({ length: N }, (_, i) => once(i)));
+    await Promise.all(Array.from({ length: N }, (_, i) => db.transact([{ ":user/name": `w${i}`, ":user/email": `w${i}@example.com` }])));
     const ms = performance.now() - t0;
     const info = await db.info();
     console.log(`e2e write smoke: ${N} tx in ${ms.toFixed(0)} ms → ${((N / ms) * 1000).toFixed(0)} tx/s; max batch ${info.transactor.stats.maxBatch}`);
@@ -251,7 +232,9 @@ d("ripple session socket e2e", () => {
             yield* bob.add(Session.n, 2);
           }),
         );
-        for (let i = 0; i < 60 && (seen.at(-1) ?? 0) < 2; i++) await Bun.sleep(250);
+        // Cross-connection novelty over a fresh workers.dev peer can take longer
+        // than a local miniflare hop; wait up to ~45s for the standing live.
+        for (let i = 0; i < 90 && (seen.at(-1) ?? 0) < 2; i++) await Bun.sleep(500);
         await Effect.runPromise(Fiber.interrupt(fiber));
 
         expect(seen.at(-1)).toBeGreaterThanOrEqual(2);
@@ -260,6 +243,6 @@ d("ripple session socket e2e", () => {
         await b.dispose();
       }
     },
-    60_000,
+    90_000,
   );
 });
