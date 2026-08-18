@@ -73,10 +73,12 @@ export interface SessionOptions {
   authenticate?: (token: string) => Promise<Principal>;
   /** reads the current basis `t` (isolate-local, cache-bypassing) — omit to disable polling */
   pollBasis?: () => Promise<number>;
-  /** sessions sharing this key share one poller (the read path's `db|hint`) */
+  /** sessions sharing this key share one basis reading (the read path's `db|hint`) */
   watchKey?: string;
   pollIntervalMs?: number;
   schedule?: Scheduler;
+  /** clock seam for tests */
+  now?: () => number;
 }
 
 export interface Session {
@@ -173,75 +175,42 @@ export function planOf(frame: unknown): SessionPlan | PlanError {
   }
 }
 
-// ---- basis watchers (one per db|hint per isolate, refcounted) ---------------
+// ---- shared basis readings (one per db|hint per isolate, refcounted) --------
+//
+// Every session runs its own poll timer, created inside `openSession` — that
+// is, inside the session's own WS-upgrade request context — so the poll's
+// sub-request and the `socket.send` it triggers are always I/O this session is
+// allowed to perform. A single shared timer fanning `{op:"t"}` out to every
+// subscribed socket runs in whichever request context created it, and workerd
+// forbids touching another request's socket from there ("Cannot perform I/O on
+// behalf of a different request"); the send throws, and the session it was
+// meant for dies. It also ties every session's ticks to the lifetime of the
+// owning request: when that session closes, the timer dies with its context
+// and the survivors silently stop hearing about the basis.
+//
+// What sessions on one key *do* share is the reading: a context-free
+// `{ t, at }` snapshot of the basis, so N sessions on one db still cost about
+// one replica poll per interval, not N. A session whose timer fires while the
+// reading is fresh (or while another session's poll is in flight) reads the
+// snapshot instead of polling, at the price of learning about movement up to
+// one interval later than the session that polled.
 
-interface Watcher {
-  readonly subs: Set<(t: number) => void>;
-  cancel: () => void;
-  /** last basis `t` this watcher observed */
+interface BasisReading {
+  /** highest basis `t` any session on this key has observed */
   t: number;
-  /** the first poll only seeds `t` — a watcher reports movement, not the current value */
-  seeded: boolean;
-  /** a poll is in flight; overlapping ticks are dropped rather than queued */
-  inflight: boolean;
+  /** when `t` was last confirmed by a poll (0: never) */
+  at: number;
+  /** a poll started then is in flight (0: none) — a stale mark self-heals after one interval */
+  pollingSince: number;
+  /** sessions currently subscribed; the last one out deletes the entry */
+  refs: number;
 }
 
-const watchers = new Map<string, Watcher>();
+const readings = new Map<string, BasisReading>();
 
-/** Test hook: the live watcher keys (a session that closed must not leave one behind). */
+/** Test hook: the live watch keys (a session that closed must not leave one behind). */
 export function watcherKeys(): string[] {
-  return [...watchers.keys()];
-}
-
-async function tick(key: string, w: Watcher, poll: () => Promise<number>): Promise<void> {
-  if (w.inflight) return;
-  w.inflight = true;
-  try {
-    const t = await poll();
-    if (watchers.get(key) !== w) return; // unsubscribed while the poll was in flight
-    if (typeof t !== "number" || !Number.isFinite(t)) return;
-    if (!w.seeded) {
-      w.seeded = true;
-      w.t = t;
-      return;
-    }
-    if (t <= w.t) return;
-    w.t = t;
-    for (const cb of [...w.subs]) {
-      try {
-        cb(t);
-      } catch {
-        /* one dead socket must not stop the fan-out */
-      }
-    }
-  } catch {
-    /* a transient replica error just means no news this tick */
-  } finally {
-    w.inflight = false;
-  }
-}
-
-/** Join (or start) the watcher for `key`; the returned unsubscribe stops it when the last session leaves. */
-function subscribe(key: string, poll: () => Promise<number>, intervalMs: number, schedule: Scheduler, cb: (t: number) => void): () => void {
-  let w = watchers.get(key);
-  if (!w) {
-    w = { subs: new Set(), cancel: () => {}, t: 0, seeded: false, inflight: false };
-    watchers.set(key, w);
-    const entry = w;
-    entry.cancel = schedule(() => void tick(key, entry, poll), intervalMs);
-  }
-  const entry = w;
-  entry.subs.add(cb);
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    entry.subs.delete(cb);
-    if (entry.subs.size === 0 && watchers.get(key) === entry) {
-      watchers.delete(key);
-      entry.cancel();
-    }
-  };
+  return [...readings.keys()];
 }
 
 // ---- the session ------------------------------------------------------------
@@ -277,7 +246,15 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     try {
       socket.send(JSON.stringify(frame));
     } catch {
-      die(); // the socket went away between the check and the send
+      // the socket went away between the check and the send, or the runtime
+      // refused the write — never leave a zombie: close so the client sees the
+      // session end and reconnects instead of waiting forever on dropped frames
+      die();
+      try {
+        socket.close(1011, "session send failed");
+      } catch {
+        /* already gone */
+      }
     }
   };
 
@@ -368,7 +345,68 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
   socket.addEventListener("error", die);
 
   if (options.pollBasis && options.watchKey !== undefined) {
-    unsubscribe = subscribe(options.watchKey, options.pollBasis, options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS, options.schedule ?? defaultSchedule, notifyT);
+    const key = options.watchKey;
+    const poll = options.pollBasis;
+    const intervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    const now = options.now ?? Date.now;
+
+    let entry = readings.get(key);
+    if (!entry) {
+      entry = { t: 0, at: 0, pollingSince: 0, refs: 0 };
+      readings.set(key, entry);
+    }
+    const shared = entry;
+    shared.refs++;
+
+    // the first value only seeds — a watcher reports movement, not the current
+    // value; a warm reading seeds right away so the very next move ticks
+    let seeded = shared.at > 0;
+    if (seeded && shared.t > lastT) lastT = shared.t;
+    const observe = (t: number) => {
+      if (!seeded) {
+        seeded = true;
+        if (t > lastT) lastT = t;
+        return;
+      }
+      notifyT(t);
+    };
+
+    // this session's own poll is in flight; overlapping ticks are dropped rather than queued
+    let inflight = false;
+    const tick = async (): Promise<void> => {
+      if (dead || inflight) return;
+      const ts = now();
+      if (shared.at > 0 && ts - shared.at < intervalMs) {
+        observe(shared.t);
+        return;
+      }
+      if (shared.pollingSince > 0 && ts - shared.pollingSince < intervalMs) {
+        // another session is polling this key; read what is already known
+        if (shared.at > 0) observe(shared.t);
+        return;
+      }
+      inflight = true;
+      shared.pollingSince = ts;
+      try {
+        const t = await poll();
+        if (typeof t !== "number" || !Number.isFinite(t)) return;
+        if (t > shared.t) shared.t = t;
+        shared.at = now();
+        observe(shared.t);
+      } catch {
+        /* a transient replica error just means no news this tick */
+      } finally {
+        shared.pollingSince = 0;
+        inflight = false;
+      }
+    };
+
+    const cancel = (options.schedule ?? defaultSchedule)(() => void tick(), intervalMs);
+    unsubscribe = () => {
+      cancel();
+      shared.refs--;
+      if (shared.refs === 0 && readings.get(key) === shared) readings.delete(key);
+    };
   }
 
   return {

@@ -6,13 +6,18 @@ import { META_HEADERS, type Scheduler, type SessionDispatch, type SocketLike, op
 class FakeSocket implements SocketLike {
   readonly frames: any[] = [];
   closed = false;
+  closeCode: number | undefined;
+  /** simulate a runtime that refuses the write (a gone socket, a foreign IoContext) */
+  failSends = false;
   private readonly listeners = new Map<string, ((ev: any) => void)[]>();
   send(data: string): void {
     if (this.closed) throw new Error("socket closed");
+    if (this.failSends) throw new Error("Cannot perform I/O on behalf of a different request.");
     this.frames.push(JSON.parse(data));
   }
-  close(): void {
+  close(code?: number): void {
     this.closed = true;
+    this.closeCode = code;
   }
   addEventListener(type: "message" | "close" | "error", cb: (ev: any) => void): void {
     const list = this.listeners.get(type) ?? [];
@@ -57,24 +62,42 @@ function fakeDispatch(reply: (call: Call) => Response = () => json({ ok: true })
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 
-/** A scheduler whose tick only fires when the test says so. */
+/** A scheduler and clock the test drives by hand (pass `now` to the session so freshness follows the fake clock). */
 function manualScheduler() {
-  const state = { fns: [] as (() => void)[], ms: [] as number[], cancels: 0 };
+  const state = { timers: [] as { fn: () => void; canceled: boolean }[], ms: [] as number[], cancels: 0, now: 10_000 };
   const schedule: Scheduler = (fn, ms) => {
-    state.fns.push(fn);
+    const timer = { fn, canceled: false };
+    state.timers.push(timer);
     state.ms.push(ms);
     return () => {
+      if (timer.canceled) return;
+      timer.canceled = true;
       state.cancels++;
     };
   };
-  /** fire every live interval and let the poll promise settle */
-  const tick = async () => {
-    for (const fn of state.fns) fn();
+  const now = () => state.now;
+  const settle = async () => {
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
   };
-  return { schedule, tick, state };
+  /** move the clock past every session's freshness window */
+  const advance = () => {
+    state.now += Math.max(0, ...state.ms);
+  };
+  /** one interval elapses: advance the clock, fire every live timer, let the poll promises settle */
+  const tick = async () => {
+    advance();
+    for (const t of state.timers) if (!t.canceled) t.fn();
+    await settle();
+  };
+  /** fire one session's timer alone, without touching the clock */
+  const fire = async (i: number) => {
+    const t = state.timers[i];
+    if (t && !t.canceled) t.fn();
+    await settle();
+  };
+  return { schedule, tick, fire, advance, state, now };
 }
 
 let open: { close(): void }[] = [];
@@ -235,8 +258,8 @@ describe("t frames", () => {
     const { dispatch } = fakeDispatch();
     const seen = [5, 5, 6, 6];
     let i = 0;
-    const { schedule, tick, state } = manualScheduler();
-    session(socket, { dispatch, schedule, watchKey: "demo|enam", pollBasis: async () => seen[i++] ?? 6, pollIntervalMs: 250 });
+    const { schedule, tick, state, now } = manualScheduler();
+    session(socket, { dispatch, schedule, now, watchKey: "demo|enam", pollBasis: async () => seen[i++] ?? 6, pollIntervalMs: 250 });
     expect(state.ms).toEqual([250]);
     expect(watcherKeys()).toEqual(["demo|enam"]);
     for (let n = 0; n < 4; n++) await tick();
@@ -254,8 +277,8 @@ describe("t frames", () => {
       () => 4,
     ];
     let i = 0;
-    const { schedule, tick } = manualScheduler();
-    session(socket, { dispatch, schedule, watchKey: "demo|enam", pollBasis: async () => (answers[i++] ?? (() => 4))() });
+    const { schedule, tick, now } = manualScheduler();
+    session(socket, { dispatch, schedule, now, watchKey: "demo|enam", pollBasis: async () => (answers[i++] ?? (() => 4))() });
     for (let n = 0; n < 3; n++) await tick();
     expect(socket.ticks()).toEqual([{ op: "t", t: 4 }]);
   });
@@ -265,10 +288,11 @@ describe("t frames", () => {
     const { dispatch } = fakeDispatch();
     let polls = 0;
     let release!: (t: number) => void;
-    const { schedule, tick } = manualScheduler();
+    const { schedule, tick, now } = manualScheduler();
     session(socket, {
       dispatch,
       schedule,
+      now,
       watchKey: "demo|enam",
       pollBasis: () => {
         polls++;
@@ -291,8 +315,8 @@ describe("t frames", () => {
   test("a poll never re-sends a t the socket already learned from its own ack", async () => {
     const socket = new FakeSocket();
     const { dispatch } = fakeDispatch(() => json({ t: 9 }));
-    const { schedule, tick } = manualScheduler();
-    const s = session(socket, { dispatch, schedule, watchKey: "demo|enam", pollBasis: async () => 9 });
+    const { schedule, tick, now } = manualScheduler();
+    const s = session(socket, { dispatch, schedule, now, watchKey: "demo|enam", pollBasis: async () => 9 });
     await s.onMessage(JSON.stringify({ id: 1, op: "transact", tx: [] }));
     await tick();
     await tick();
@@ -300,42 +324,136 @@ describe("t frames", () => {
   });
 });
 
-describe("the shared basis watcher", () => {
-  test("sessions on one key share a poller; the last one out cancels it", async () => {
+describe("per-session watchers over a shared basis reading", () => {
+  // Regression for issue #28: one shared timer fanning out to every session's
+  // socket runs in the first session's request context, and workerd forbids
+  // touching another request's socket from there — every other session died on
+  // the first fan-out. Each session must drive its own socket from its own
+  // timer; what is shared is only the polled value.
+
+  test("two sessions on one db keep receiving ticks across successive writes; one poll per interval", async () => {
     const a = new FakeSocket();
     const b = new FakeSocket();
-    const c = new FakeSocket();
     const { dispatch } = fakeDispatch();
     let t = 1;
-    const { schedule, tick, state } = manualScheduler();
-    const opts = { dispatch, schedule, watchKey: "demo|enam", pollBasis: async () => t };
+    let polls = 0;
+    const { schedule, tick, state, now } = manualScheduler();
+    const opts = {
+      dispatch,
+      schedule,
+      now,
+      watchKey: "demo|enam",
+      pollBasis: async () => {
+        polls++;
+        return t;
+      },
+    };
     const sa = session(a, opts);
     const sb = session(b, opts);
-    const sc = session(c, { ...opts, watchKey: "demo|wnam" });
-    expect(state.fns.length).toBe(2); // one per key, not one per session
-    expect(watcherKeys().sort()).toEqual(["demo|enam", "demo|wnam"]);
+    expect(state.timers.length).toBe(2); // one timer per session, each in its own request context
+    expect(watcherKeys()).toEqual(["demo|enam"]); // ...but one shared reading per key
 
-    await tick(); // seed at 1
-    t = 2;
+    await tick(); // the first session polls and seeds; the second sees nothing known yet
+    await tick(); // the second seeds from the shared reading
+    expect(polls).toBe(2); // one poll per interval for the key, not one per session
+    expect(a.ticks()).toEqual([]);
+    expect(b.ticks()).toEqual([]);
+
+    t = 2; // a write moves the basis
     await tick();
+    await tick(); // the non-polling session learns from the reading one interval later
     expect(a.ticks()).toEqual([{ op: "t", t: 2 }]);
     expect(b.ticks()).toEqual([{ op: "t", t: 2 }]);
-    expect(c.ticks()).toEqual([{ op: "t", t: 2 }]);
+
+    t = 3; // the second write still reaches both — the sessions must not have died on the first
+    await tick();
+    await tick();
+    expect(a.ticks()).toEqual([{ op: "t", t: 2 }, { op: "t", t: 3 }]);
+    expect(b.ticks()).toEqual([{ op: "t", t: 2 }, { op: "t", t: 3 }]);
+    expect(polls).toBe(6);
 
     sa.close();
-    expect(state.cancels).toBe(0); // b still holds demo|enam
-    expect(watcherKeys()).toContain("demo|enam");
-    t = 3;
-    await tick();
-    expect(a.ticks().length).toBe(1); // closed: no further sends
-    expect(b.ticks()).toEqual([{ op: "t", t: 2 }, { op: "t", t: 3 }]);
-
+    expect(state.cancels).toBe(1); // its own timer, canceled at once
+    expect(watcherKeys()).toEqual(["demo|enam"]); // b still holds the reading
     sb.close();
-    expect(state.cancels).toBe(1);
-    expect(watcherKeys()).toEqual(["demo|wnam"]);
-    sc.close();
     expect(state.cancels).toBe(2);
     expect(watcherKeys()).toEqual([]);
+  });
+
+  test("a session's timer only ever writes to its own socket", async () => {
+    const a = new FakeSocket();
+    const b = new FakeSocket();
+    const { dispatch } = fakeDispatch();
+    let t = 1;
+    const { schedule, fire, advance, now } = manualScheduler();
+    const opts = { dispatch, schedule, now, watchKey: "demo|enam", pollBasis: async () => t };
+    session(a, opts);
+    session(b, opts);
+    advance();
+    await fire(0); // a polls and seeds the reading
+    await fire(1); // b seeds from it
+    t = 2;
+    advance();
+    await fire(0); // a's timer alone: only a's socket may be written
+    expect(a.ticks()).toEqual([{ op: "t", t: 2 }]);
+    expect(b.frames).toEqual([]);
+    await fire(1); // b hears about it from its own timer
+    expect(b.ticks()).toEqual([{ op: "t", t: 2 }]);
+    expect(a.ticks()).toEqual([{ op: "t", t: 2 }]);
+  });
+
+  test("the polling session closing does not strand the others", async () => {
+    const a = new FakeSocket();
+    const b = new FakeSocket();
+    const { dispatch } = fakeDispatch();
+    let t = 1;
+    const { schedule, tick, now } = manualScheduler();
+    const opts = { dispatch, schedule, now, watchKey: "demo|enam", pollBasis: async () => t };
+    const sa = session(a, opts);
+    session(b, opts);
+    await tick();
+    await tick(); // both seeded; a has been doing the polling
+    sa.close();
+    t = 2;
+    await tick(); // b takes over the poll on its own timer
+    expect(b.ticks()).toEqual([{ op: "t", t: 2 }]);
+    expect(a.ticks()).toEqual([]);
+  });
+
+  test("a late joiner is seeded from the warm reading; the next move ticks, the current value does not", async () => {
+    const a = new FakeSocket();
+    const { dispatch } = fakeDispatch();
+    let t = 5;
+    const { schedule, tick, now } = manualScheduler();
+    const opts = { dispatch, schedule, now, watchKey: "demo|enam", pollBasis: async () => t };
+    session(a, opts);
+    await tick(); // the reading is warm at 5
+    const c = new FakeSocket();
+    const sc = session(c, opts);
+    expect(sc.lastT).toBe(5); // seeded silently at subscribe
+    t = 6;
+    await tick();
+    await tick();
+    expect(c.ticks()).toEqual([{ op: "t", t: 6 }]);
+  });
+
+  test("a send that throws closes the socket instead of zombieing the session", async () => {
+    const socket = new FakeSocket();
+    const { dispatch, calls } = fakeDispatch();
+    const s = session(socket, { dispatch });
+    let done = false;
+    void s.closed.then(() => {
+      done = true;
+    });
+    socket.failSends = true;
+    await s.onMessage(JSON.stringify({ id: 1, op: "info" })); // the reply send throws
+    expect(calls.length).toBe(1);
+    expect(socket.closed).toBe(true); // closed, so the client can reconnect
+    expect(socket.closeCode).toBe(1011);
+    await Promise.resolve();
+    expect(done).toBe(true);
+    await s.onMessage(JSON.stringify({ id: 2, op: "info" })); // dead: frames are dropped
+    expect(calls.length).toBe(1);
   });
 
   test("a client-side close unsubscribes and resolves closed", async () => {
@@ -376,7 +494,7 @@ describe("the shared basis watcher", () => {
     const { dispatch } = fakeDispatch();
     const { schedule, state } = manualScheduler();
     session(socket, { dispatch, schedule });
-    expect(state.fns.length).toBe(0);
+    expect(state.timers.length).toBe(0);
     expect(watcherKeys()).toEqual([]);
   });
 });
