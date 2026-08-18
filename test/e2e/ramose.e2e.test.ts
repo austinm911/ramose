@@ -1,11 +1,11 @@
 /**
- * End-to-end tests against a running Ripple deployment (dev stage via
+ * End-to-end tests against a running Ramose deployment (dev stage via
  * `bun alchemy dev`, or a deployed URL).
  *
- *   RIPPLE_URL=http://localhost:8787 bun test test/e2e
- *   RIPPLE_URL=https://ripple-<stage>.<acct>.workers.dev RIPPLE_TOKEN=... bun test test/e2e
+ *   RAMOSE_URL=http://localhost:8787 bun test test/e2e
+ *   RAMOSE_URL=https://ramose-<stage>.<acct>.workers.dev RAMOSE_TOKEN=... bun test test/e2e
  *
- * Skipped when RIPPLE_URL is not set.
+ * Skipped when RAMOSE_URL is not set.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import * as Effect from "effect/Effect";
@@ -15,11 +15,11 @@ import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import * as Ripple from "../../packages/alchemy/src/db/index.ts";
-import { attrMap, Peer } from "../support/rippleHttp.ts";
+import * as Ramose from "../../packages/alchemy/src/db/index.ts";
+import { attrMap, Peer } from "../support/ramoseHttp.ts";
 
-const URL_ = process.env.RIPPLE_URL;
-const token = process.env.RIPPLE_TOKEN;
+const URL_ = process.env.RAMOSE_URL;
+const token = process.env.RAMOSE_TOKEN;
 const d = URL_ ? describe : describe.skip;
 
 // Real Cloudflare (workers.dev) is slower than local miniflare, and Peer
@@ -28,7 +28,7 @@ setDefaultTimeout(60_000);
 
 const dbName = `e2e-${Date.now().toString(36)}`;
 
-d("ripple e2e", () => {
+d("ramose e2e", () => {
   const client = new Peer(URL_ ?? "http://invalid", {
     token,
     // A fresh workers.dev hostname is eventually consistent across the edge:
@@ -176,17 +176,17 @@ d("ripple e2e", () => {
 /**
  * The session socket (`GET /db/:name/session`), over a real WebSocket.
  *
- * `Ripple.layer` is the whole client: reads and `t` ticks ride the socket,
+ * `Ramose.layer` is the whole client: reads and `t` ticks ride the socket,
  * `transact` is HTTPS, and a write on *another* connection shows up here as a
  * standing `db.live` re-running.
  */
-const Session = Ripple.Namespace("s", {
-  name: Ripple.Attr(Schema.String, { unique: "identity" }),
-  n: Ripple.Attr(Ripple.Long),
+const Session = Ramose.Namespace("s", {
+  name: Ramose.Attr(Schema.String, { unique: "identity" }),
+  n: Ramose.Attr(Ramose.Long),
 });
-const SessionCatalog = Ripple.Catalog({ s: Session });
+const SessionCatalog = Ramose.Catalog({ s: Session });
 
-d("ripple session socket e2e", () => {
+d("ramose session socket e2e", () => {
   const url = URL_ ?? "http://invalid";
   const sessionDb = `${dbName}-session`;
 
@@ -213,11 +213,11 @@ d("ripple session socket e2e", () => {
         url,
         token: token === undefined ? undefined : Effect.succeed(Redacted.make(token)),
       };
-      const a = ManagedRuntime.make(Ripple.layer(options));
-      const b = ManagedRuntime.make(Ripple.layer(options));
+      const a = ManagedRuntime.make(Ramose.layer(options));
+      const b = ManagedRuntime.make(Ramose.layer(options));
       try {
-        const dbA = a.runSync(Ripple.Databases).db(sessionDb, SessionCatalog);
-        const dbB = b.runSync(Ripple.Databases).db(sessionDb, SessionCatalog);
+        const dbA = a.runSync(Ramose.Databases).db(sessionDb, SessionCatalog);
+        const dbB = b.runSync(Ramose.Databases).db(sessionDb, SessionCatalog);
 
         await a.runPromise(absorb(dbA.install()));
         const report = await a.runPromise(
@@ -235,7 +235,7 @@ d("ripple session socket e2e", () => {
         const names = await a.runPromise(
           absorb(
             report.dbAfter.q(
-              Ripple.query(Session).select({ name: Session.name }),
+              Ramose.query(Session).select({ name: Session.name }),
             ),
           ),
         );
@@ -256,7 +256,7 @@ d("ripple session socket e2e", () => {
         const fiber = a.runFork(
           Stream.runForEach(
             dbA.live(
-              Ripple.query(Session).select({ name: Session.name }),
+              Ramose.query(Session).select({ name: Session.name }),
             ),
             (rows) => Effect.sync(() => seen.push(rows.length)),
           ),
@@ -278,7 +278,7 @@ d("ripple session socket e2e", () => {
           count = (
             await a.runPromise(
               absorb(
-                dbA.q(Ripple.query(Session).select({ name: Session.name })),
+                dbA.q(Ramose.query(Session).select({ name: Session.name })),
               ),
             )
           ).length;

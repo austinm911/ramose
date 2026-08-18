@@ -3,14 +3,14 @@
  * what it refuses to do.
  *
  * The load-bearing claims here are the ones the design rests on:
- * `ripple.db(name, catalog)` is pure, writes are HTTPS and reads are not,
+ * `ramose.db(name, catalog)` is pure, writes are HTTPS and reads are not,
  * `dbAfter` carries the min-`t` floor with no second round trip, the token is
  * re-read per transact, and a provisioning mistake is a defect rather than a
  * `DbError`.
  */
 
 import { describe, expect, test } from "bun:test";
-import { ValueTag } from "@ripple/core/datom.ts";
+import { ValueTag } from "@ramose/core/datom.ts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -54,13 +54,13 @@ const ack = (t = 7, txEid = 13194139533319, datoms = 3) => ({
   datoms,
 });
 
-describe("ripple.db(name, catalog) is pure", () => {
+describe("ramose.db(name, catalog) is pure", () => {
   test("naming a database costs no request and opens no socket", async () => {
     const peer = fakePeer();
     const c = client(peer);
 
-    const db = c.ripple.db("movies", Movies);
-    const other = c.ripple.db("other", Movies);
+    const db = c.ramose.db("movies", Movies);
+    const other = c.ramose.db("other", Movies);
     void db.asOf(3);
     void db.history;
 
@@ -77,7 +77,7 @@ describe("ripple.db(name, catalog) is pure", () => {
     const c = client(peer);
 
     await run(
-      c.ripple.db("movies", Movies).transact(function* (tx) {
+      c.ramose.db("movies", Movies).transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
       }),
@@ -99,7 +99,7 @@ describe("ripple.db(name, catalog) is pure", () => {
       test(label, async () => {
         const peer = fakePeer();
         const c = client(peer);
-        const db = c.ripple.db(name, Movies);
+        const db = c.ramose.db(name, Movies);
 
         const operations: Effect.Effect<unknown, DbError>[] = [
           db.q(names),
@@ -129,7 +129,7 @@ describe("writes are HTTPS, reads are not", () => {
     const c = client(peer);
 
     const report = await run(
-      c.ripple.db("movies", Movies).transact(function* (tx) {
+      c.ramose.db("movies", Movies).transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
         yield* ada.add(User.age, 36);
@@ -157,7 +157,7 @@ describe("writes are HTTPS, reads are not", () => {
     const c = client(peer);
 
     expect(
-      await run(c.ripple.db("movies", Movies).q(names)),
+      await run(c.ramose.db("movies", Movies).q(names)),
     ).toEqual([{ name: "Ada" }]);
 
     expect(peer.calls).toEqual([]);
@@ -195,13 +195,13 @@ describe("writes are HTTPS, reads are not", () => {
 });
 
 describe("dbAfter is the read fence", () => {
-  test("reads through it carry x-ripple-min-t / the frame's minT; the original does not", async () => {
+  test("reads through it carry x-ramose-min-t / the frame's minT; the original does not", async () => {
     const peer = fakePeer({
       http: () => ({ body: ack(30) }),
       answer: () => ({ body: { t: 30, root: 30, result: [] } }),
     });
     const c = client(peer);
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
 
     const { dbAfter } = await run(
       db.transact(function* (tx) {
@@ -235,8 +235,8 @@ describe("dbAfter is the read fence", () => {
     await run(dbAfter.q(names));
     await run(db.q(names));
 
-    expect(peer.calls[1].headers["x-ripple-min-t"]).toBe("30");
-    expect(peer.calls[2].headers["x-ripple-min-t"]).toBeUndefined();
+    expect(peer.calls[1].headers["x-ramose-min-t"]).toBe("30");
+    expect(peer.calls[2].headers["x-ramose-min-t"]).toBeUndefined();
     close();
   });
 
@@ -244,7 +244,7 @@ describe("dbAfter is the read fence", () => {
     const peer = fakePeer({ http: () => ({ body: ack(11) }) });
     const c = client(peer);
     const { dbAfter } = await run(
-      c.ripple.db("movies", Movies).transact(function* (tx) {
+      c.ramose.db("movies", Movies).transact(function* (tx) {
         yield* tx.retractEntity(1);
       }),
     );
@@ -261,7 +261,7 @@ describe("install", () => {
   test("is the catalog as one ordinary transaction, and is idempotent", async () => {
     const peer = fakePeer({ http: () => ({ body: ack(2) }) });
     const c = client(peer);
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
 
     const first = await run(db.install());
     const second = await run(db.install());
@@ -289,7 +289,7 @@ describe("the token", () => {
     const c = client(peer, {
       token: Effect.sync(() => Redacted.make(`token-${++issued}`)),
     });
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
 
     await run(db.transact(function* (tx) { yield* tx.retractEntity(1); }));
     await run(db.transact(function* (tx) { yield* tx.retractEntity(2); }));
@@ -310,7 +310,7 @@ describe("the token", () => {
     const peer = fakePeer({ http: () => ({ body: ack() }) });
     const c = client(peer, { token: Effect.succeed(Redacted.make("")) });
     await run(
-      c.ripple.db("movies", Movies).transact(function* (tx) {
+      c.ramose.db("movies", Movies).transact(function* (tx) {
         yield* tx.retractEntity(1);
       }),
     );
@@ -339,7 +339,7 @@ describe("provisioning mistakes are defects", () => {
     const peer = fakePeer({ http: () => ({ body: ack() }) });
     const c = client(peer, { url: "https://peer.example.com/" });
     await run(
-      c.ripple.db("movies", Movies).transact(function* (tx) {
+      c.ramose.db("movies", Movies).transact(function* (tx) {
         yield* tx.retractEntity(1);
       }),
     );
@@ -362,7 +362,7 @@ describe("failures arrive tagged, not thrown", () => {
     });
     const c = client(peer);
     const e = await runFail(
-      c.ripple.db("movies", Movies).transact(function* (tx) {
+      c.ramose.db("movies", Movies).transact(function* (tx) {
         yield* tx.retractEntity(1);
       }),
     );
@@ -386,7 +386,7 @@ describe("failures arrive tagged, not thrown", () => {
     });
     const c = client(peer);
     await run(
-      c.ripple.db("movies", Movies).transact(function* (tx) {
+      c.ramose.db("movies", Movies).transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
       }),
@@ -411,7 +411,7 @@ describe("failures arrive tagged, not thrown", () => {
       },
     });
     const c = client(peer);
-    expect(await run(c.ripple.db("movies", Movies).q(names))).toEqual([
+    expect(await run(c.ramose.db("movies", Movies).q(names))).toEqual([
       { name: "Ada" },
     ]);
     expect(n).toBe(2);
@@ -434,7 +434,7 @@ describe("failures arrive tagged, not thrown", () => {
         retryAfterMs: 500,
       });
       const c = client(peer);
-      const e = await runFail(c.ripple.db("movies", Movies).install());
+      const e = await runFail(c.ramose.db("movies", Movies).install());
       expect(e._tag).toBe("Unavailable");
       if (e._tag === "Unavailable") expect(e.retryAfterMs).toBe(500);
       await c.dispose();
@@ -450,7 +450,7 @@ describe("failures arrive tagged, not thrown", () => {
       const c = client(peer, {
         fetch: (() => Promise.reject(boom)) as unknown as typeof fetch,
       });
-      const e = await runFail(c.ripple.db("movies", Movies).install());
+      const e = await runFail(c.ramose.db("movies", Movies).install());
       expect(e._tag).toBe("NetworkError");
       if (e._tag === "NetworkError") expect(e.cause).toBe(boom);
       await c.dispose();
@@ -466,7 +466,7 @@ describe("failures arrive tagged, not thrown", () => {
           status: 502,
         })) as unknown as typeof fetch,
     });
-    const e = await runFail(c.ripple.db("movies", Movies).install());
+    const e = await runFail(c.ramose.db("movies", Movies).install());
     expect(e._tag).toBe("InternalError");
     expect(e.message).toBe("<html>502 Bad Gateway</html>");
     await c.dispose();
@@ -476,7 +476,7 @@ describe("failures arrive tagged, not thrown", () => {
     const peer = fakePeer({ http: () => ({ body: ack() }) });
     const c = client(peer);
     const e = await runFail(
-      c.ripple.db("movies", Movies).transact(function* (tx) {
+      c.ramose.db("movies", Movies).transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
         return yield* Effect.fail("nope" as const);
@@ -508,7 +508,7 @@ describe("the JSON transport", () => {
     const c = client(peer);
 
     const rows: readonly unknown[] = await run(
-      c.ripple.db("movies", Movies).q(query(Movie).where(Movie.released.eq(when))),
+      c.ramose.db("movies", Movies).q(query(Movie).where(Movie.released.eq(when))),
     );
 
     // on the wire: tagged, JSON-safe

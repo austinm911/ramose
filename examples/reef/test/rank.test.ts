@@ -36,7 +36,7 @@ describe("fractional ranks", () => {
 });
 
 describe("workspace slugs", () => {
-  test("slugify produces valid Ripple database names", () => {
+  test("slugify produces valid Ramose database names", () => {
     for (const name of ["Coral Team", "  Deep  Sea!  ", "Ops/2026", "élan vital"]) {
       const slug = slugify(name);
       expect(isWorkspaceSlug(slug)).toBe(true);

@@ -1,5 +1,5 @@
 /**
- * Shared bench helpers: build a 1M-datom in-memory Ripple database.
+ * Shared bench helpers: build a 1M-datom in-memory Ramose database.
  */
 import {
   Connection,

@@ -8,7 +8,7 @@
  * write-denied below `admin`.
  */
 
-import { errorMessage, useLive, usePull, useTransact } from "@ripple/react";
+import { errorMessage, useLive, usePull, useTransact } from "@ramose/react";
 import * as stylex from "@stylexjs/stylex";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -20,7 +20,7 @@ import {
   type Person,
   type ReefDb,
 } from "../../domain/queries.ts";
-import type { RippleClass } from "../../domain/shared.ts";
+import type { RamoseClass } from "../../domain/shared.ts";
 import {
   addComment,
   deleteComment,
@@ -236,7 +236,7 @@ export const IssueDetail = ({
   /** The live board row — already re-rendering on every basis tick. */
   row: BoardRow;
   myEid: number | undefined;
-  cls: RippleClass;
+  cls: RamoseClass;
   labels: readonly LabelRow[];
   people: readonly Person[];
   onClose: () => void;

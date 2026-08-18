@@ -1,10 +1,10 @@
 {
-  "name": "@ripple/transactor",
+  "name": "@ramose/transactor",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Ripple Transactor Durable Object: single writer per database, group commit, novelty WebSocket hub, alarm-driven incremental indexer + GC.",
+  "description": "Ramose Transactor Durable Object: single writer per database, group commit, novelty WebSocket hub, alarm-driven incremental indexer + GC.",
   "main": "src/index.ts",
   "exports": { ".": "./src/index.ts", "./*": "./src/*" },
-  "dependencies": { "@ripple/core": "workspace:*", "@ripple/storage": "workspace:*", "effect": ">=4.0.0-beta.105" }
+  "dependencies": { "@ramose/core": "workspace:*", "@ramose/storage": "workspace:*", "effect": ">=4.0.0-beta.105" }
 }

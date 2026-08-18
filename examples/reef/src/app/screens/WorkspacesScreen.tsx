@@ -263,7 +263,7 @@ export const WorkspacesScreen = ({
             <h1 {...stylex.props(styles.hello)}>Hi, {firstName}</h1>
             <p {...stylex.props(styles.sub)}>
               Pick a workspace to open its board. Every workspace is its own
-              Ripple database — <Code>ripple.db(slug)</Code> — created on the
+              Ramose database — <Code>ramose.db(slug)</Code> — created on the
               spot, no deploy.
             </p>
           </div>
@@ -382,7 +382,7 @@ export const WorkspacesScreen = ({
                   {slug !== "" ? (
                     <>
                       <Icon name="arrowRight" size={11} />
-                      <Code>ripple.db(&quot;{slug}&quot;).install()</Code>
+                      <Code>ramose.db(&quot;{slug}&quot;).install()</Code>
                     </>
                   ) : (
                     "the name becomes the database"

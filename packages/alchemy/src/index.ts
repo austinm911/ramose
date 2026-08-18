@@ -1,28 +1,28 @@
 /**
- * `@ripple/alchemy` — the Alchemy 2 + Effect interface to Ripple.
+ * `@ramose/alchemy` — the Alchemy 2 + Effect interface to Ramose.
  *
- * Everything on `@ripple/alchemy/db` (schema, `Databases`, `Db<C>`, the eight
+ * Everything on `@ramose/alchemy/db` (schema, `Databases`, `Db<C>`, the eight
  * errors), plus the deploy-time half: the `Server` and `Database` resources,
  * the two capabilities and the two transport layers.
  *
  * ```typescript
  * import * as Alchemy from "alchemy";
  * import * as Cloudflare from "alchemy/Cloudflare";
- * import * as Ripple from "@ripple/alchemy";
+ * import * as Ramose from "@ramose/alchemy";
  * import * as Schema from "effect/Schema";
  * import * as Layer from "effect/Layer";
  *
- * export const User = Ripple.Namespace("user", {
- *   name: Ripple.Attr(Schema.String, { unique: "identity" }),
+ * export const User = Ramose.Namespace("user", {
+ *   name: Ramose.Attr(Schema.String, { unique: "identity" }),
  * });
- * export const Movies = Ripple.Catalog({ user: User });
+ * export const Movies = Ramose.Catalog({ user: User });
  *
- * const RippleWorker = Cloudflare.Worker("RippleWorker", { main: "@ripple/worker" });
- * export const Server = Ripple.Server("Ripple", { worker: RippleWorker });
- * export const MoviesDb = Ripple.Database("movies", { server: Server, catalog: Movies });
+ * const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: "@ramose/worker" });
+ * export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
+ * export const MoviesDb = Ramose.Database("movies", { server: Server, catalog: Movies });
  *
  * export default Alchemy.Stack("app", {
- *   providers: Layer.mergeAll(Cloudflare.providers(), Ripple.providers()),
+ *   providers: Layer.mergeAll(Cloudflare.providers(), Ramose.providers()),
  *   state: Cloudflare.state(),
  * }, Effect.gen(function* () {
  *   yield* MoviesDb;

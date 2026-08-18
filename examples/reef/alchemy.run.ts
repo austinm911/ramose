@@ -1,6 +1,6 @@
 /**
- * Reef — the flagship Ripple demo. A multi-tenant, real-time issue tracker:
- * every workspace is its own Ripple database, Better Auth (organizations +
+ * Reef — the flagship Ramose demo. A multi-tenant, real-time issue tracker:
+ * every workspace is its own Ramose database, Better Auth (organizations +
  * JWKS-published JWTs) is the identity plane, and the compiled policy on the
  * peer enforces admin / member / viewer per datom.
  *
@@ -17,11 +17,11 @@
  * auth Worker so cookies stay same-origin.
  *
  * Deploy: `bun alchemy deploy examples/reef/alchemy.run.ts`, then
- * `VITE_RIPPLE_URL=<peerUrl> bunx vite build examples/reef` and deploy once
+ * `VITE_RAMOSE_URL=<peerUrl> bunx vite build examples/reef` and deploy once
  * more so the built SPA ships as the auth Worker's assets.
  */
 
-import * as Ripple from "@ripple/alchemy";
+import * as Ramose from "@ramose/alchemy";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
@@ -40,7 +40,7 @@ import { DEV_API_PORT, DEV_UI_ORIGIN } from "./src/domain/shared.ts";
  * triggers when a Worker source changes.
  *
  * `--strictPort` matters: `DEV_UI_ORIGIN` is pinned in the auth Worker's
- * `trustedOrigins` and the peer's `RIPPLE_ALLOWED_ORIGINS`, so silently
+ * `trustedOrigins` and the peer's `RAMOSE_ALLOWED_ORIGINS`, so silently
  * drifting to :5174 would break cookies and CORS. Better to fail loudly.
  *
  * The env keys are what order the graph — the UI starts after both Workers
@@ -63,18 +63,20 @@ export const Ui = Command.Dev(
           api.url,
           (url) => url ?? `http://localhost:${DEV_API_PORT}`,
         ),
-        VITE_RIPPLE_URL: server.url,
+        VITE_RAMOSE_URL: server.url,
       },
     };
   }),
 );
 
 export default Alchemy.Stack(
+  // physical name pinned; product is Ramose — the app id keys deployed state
+  // (and the Worker names derived from it), so renaming it would orphan it.
   "ripple-reef",
   {
     providers: Layer.mergeAll(
       Cloudflare.providers(),
-      Ripple.providers(),
+      Ramose.providers(),
       Command.providers(),
     ),
     state:

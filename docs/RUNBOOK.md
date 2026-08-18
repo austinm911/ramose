@@ -1,6 +1,6 @@
-# Ripple runbook
+# Ramose runbook
 
-Operational notes for one Ripple deployment (one Worker, one Transactor DO per
+Operational notes for one Ramose deployment (one Worker, one Transactor DO per
 logical database, N QueryReplica DOs per database, one R2 bucket). Numbers
 quoted below come from `bench/RESULTS.md`; re-measure on your hardware.
 
@@ -8,7 +8,7 @@ quoted below come from `bench/RESULTS.md`; re-measure on your hardware.
 
 Every component emits one JSON object per line (`{ ts, level, component,
 event, db, … }`); read them with `wrangler tail`, Logpush, or the `alchemy dev`
-console. Set `RIPPLE_LOG_LEVEL=debug` to also see per-batch / per-query events.
+console. Set `RAMOSE_LOG_LEVEL=debug` to also see per-batch / per-query events.
 
 | question | where |
 |---|---|
@@ -17,7 +17,7 @@ console. Set `RIPPLE_LOG_LEVEL=debug` to also see per-batch / per-query events.
 | is the transactor rejecting or dead? | events `transactor/tx.rejected` (schema/unique errors, per tx) and `transactor/tx.aborted` (storage write failed → the DO resets and reboots from durable state; clients get 503 + `retry-after`) |
 | index lag / run cost | `/info` → `transactor.txsSinceIndex`, `indexer.lastRun`; events `indexer/index.run` (`txs`, `datoms`, `ms`, `r2Puts`, `remainingTxs`) |
 | replica health / novelty size | `/info` → `replica.novelty`, `replica.connected`, `replica.stats.gaps`; events `replica/replica.connect`, `replica.root` (novelty before/after a flip), `replica.gap` |
-| read latency at the edge | `/info` → `peerMetrics.queryMs`; events `peer/query` (`ms`, `rows`, `r2Gets`, `cacheHits`, `peakCells`); response header `x-ripple-ms` |
+| read latency at the edge | `/info` → `peerMetrics.queryMs`; events `peer/query` (`ms`, `rows`, `r2Gets`, `cacheHits`, `peakCells`); response header `x-ramose-ms` |
 | queries hitting the memory guardrail | events `peer/query.budget-exceeded` (413, `code: query/budget-exceeded`, names the clause and the cell count) |
 
 ## The write ceiling (and the answer: split the logical database)
@@ -48,7 +48,7 @@ is fixed: **low thousands of tx/s per logical database, full stop.**
 - Do **not** add a second writer, shard `t`, or let two DOs accept writes for
   the same database. Multi-writer breaks the invariants above; there is no
   supported configuration for it and none is planned.
-- Do not raise `RIPPLE_MAX_BATCH` hoping for more throughput — 0 (unbounded)
+- Do not raise `RAMOSE_MAX_BATCH` hoping for more throughput — 0 (unbounded)
   already batches everything in flight; a cap only trades throughput for
   latency fairness.
 
@@ -79,28 +79,28 @@ distributed transactions across partitions.
 
 | var | default | effect |
 |---|---|---|
-| `RIPPLE_MAX_BATCH` | 0 (unbounded) | cap txs per storage write; `1` disables group commit (bench/testing only) |
-| `RIPPLE_INDEX_TX_THRESHOLD` / `RIPPLE_INDEX_INTERVAL_MS` | 500 / 5000 | when the indexer runs; lower both to keep novelty (and replica memory) small |
-| `RIPPLE_INDEX_MAX_TXS_PER_RUN` | 5000 | bound one run (DO CPU/memory limits); the run re-arms until caught up |
-| `RIPPLE_LOG_KEEP_TXS` | 20000 | SQLite log tail kept for WebSocket catch-up; older → replicas read `log/` chunks from R2 (`gap` frame) |
-| `RIPPLE_QUERY_MAX_CELLS` | 1,572,864 (~48 MB) | planner memory guardrail per query; over-budget queries get 413 `query/budget-exceeded` |
-| `RIPPLE_RETAIN_ROOTS` / `RIPPLE_GC_EVERY_N_INDEXES` | 20 / 50 | root retention for `as-of`; GC cadence (mark & sweep against retained roots) |
-| `RIPPLE_LOG_LEVEL` | info | telemetry level |
-| `RIPPLE_TOKEN` | unset (auth off) | one bearer token, checked for every database name |
-| `RIPPLE_POLICY` | unset | compiled policy (`Ripple.Policy.compile`); set = enforcement is armed and fails closed |
-| `RIPPLE_JWKS_URL` (or `RIPPLE_JWKS_JSON`) | unset | the issuer's public keys; required once `RIPPLE_POLICY` is set |
-| `RIPPLE_JWT_ISS` / `RIPPLE_JWT_AUD` | unset | accepted issuers (comma-separated) and the audience every token must carry |
-| `RIPPLE_JWT_MAX_TTL` | 900 | cap on a token's `exp - iat`, in seconds |
-| `RIPPLE_ALLOWED_ORIGINS` | unset | once a policy is set, CORS narrows to this list (empty = no CORS header) |
-| `RIPPLE_INTERNAL_SECRET` | unset (no gate) | Worker→DO shared secret; every internal fetch carries it, `/subscribe` included |
+| `RAMOSE_MAX_BATCH` | 0 (unbounded) | cap txs per storage write; `1` disables group commit (bench/testing only) |
+| `RAMOSE_INDEX_TX_THRESHOLD` / `RAMOSE_INDEX_INTERVAL_MS` | 500 / 5000 | when the indexer runs; lower both to keep novelty (and replica memory) small |
+| `RAMOSE_INDEX_MAX_TXS_PER_RUN` | 5000 | bound one run (DO CPU/memory limits); the run re-arms until caught up |
+| `RAMOSE_LOG_KEEP_TXS` | 20000 | SQLite log tail kept for WebSocket catch-up; older → replicas read `log/` chunks from R2 (`gap` frame) |
+| `RAMOSE_QUERY_MAX_CELLS` | 1,572,864 (~48 MB) | planner memory guardrail per query; over-budget queries get 413 `query/budget-exceeded` |
+| `RAMOSE_RETAIN_ROOTS` / `RAMOSE_GC_EVERY_N_INDEXES` | 20 / 50 | root retention for `as-of`; GC cadence (mark & sweep against retained roots) |
+| `RAMOSE_LOG_LEVEL` | info | telemetry level |
+| `RAMOSE_TOKEN` | unset (auth off) | one bearer token, checked for every database name |
+| `RAMOSE_POLICY` | unset | compiled policy (`Ramose.Policy.compile`); set = enforcement is armed and fails closed |
+| `RAMOSE_JWKS_URL` (or `RAMOSE_JWKS_JSON`) | unset | the issuer's public keys; required once `RAMOSE_POLICY` is set |
+| `RAMOSE_JWT_ISS` / `RAMOSE_JWT_AUD` | unset | accepted issuers (comma-separated) and the audience every token must carry |
+| `RAMOSE_JWT_MAX_TTL` | 900 | cap on a token's `exp - iat`, in seconds |
+| `RAMOSE_ALLOWED_ORIGINS` | unset | once a policy is set, CORS narrows to this list (empty = no CORS header) |
+| `RAMOSE_INTERNAL_SECRET` | unset (no gate) | Worker→DO shared secret; every internal fetch carries it, `/subscribe` included |
 
 `principalOf()` (`packages/worker/src/auth.ts`) resolves the caller per request from
 `Authorization: Bearer <token>` (or `?token=`, since a browser cannot set headers on a
-WebSocket upgrade). With no `RIPPLE_POLICY` that is today's shared-token mode —
-`RIPPLE_TOKEN` unset is open, set is one service principal — and a `Ripple.Server`
-resource's `token` is that same peer token for every name it opens. With `RIPPLE_POLICY`
+WebSocket upgrade). With no `RAMOSE_POLICY` that is today's shared-token mode —
+`RAMOSE_TOKEN` unset is open, set is one service principal — and a `Ramose.Server`
+resource's `token` is that same peer token for every name it opens. With `RAMOSE_POLICY`
 set, a JWT is the only data-plane principal: it is bound to exactly one database by
-`ripple.db`, and `RIPPLE_TOKEN` reaches `/health` and an already-deployed `ensure` only.
+`ramose.db`, and `RAMOSE_TOKEN` reaches `/health` and an already-deployed `ensure` only.
 
 ## Recovery notes
 
@@ -113,7 +113,7 @@ set, a JWT is the only data-plane principal: it is bound to exactly one database
   (`resume` from its watermark, `gap` → `log/` chunks in R2). Force it with
   `POST /db/:name/admin/replica/reconnect`.
 - **Indexer stuck** (`remainingTxs` never drops): lower
-  `RIPPLE_INDEX_MAX_TXS_PER_RUN`, or trigger `POST /db/:name/admin/index`
+  `RAMOSE_INDEX_MAX_TXS_PER_RUN`, or trigger `POST /db/:name/admin/index`
   and read the `index.error` event.
 - **Bucket bloat**: `POST /db/:name/admin/gc` sweeps `seg/` and `n/` objects
   unreachable from retained roots (keys are namespaced per database, so a

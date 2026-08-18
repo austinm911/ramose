@@ -1,21 +1,21 @@
-/** `useRipple` and `useDb` — the two hooks every other hook here builds on. */
+/** `useRamose` and `useDb` — the two hooks every other hook here builds on. */
 
-import type { Catalog, Client, Db } from "@ripple/alchemy/db";
+import type { Catalog, Client, Db } from "@ramose/alchemy/db";
 import { useContext, useMemo } from "react";
-import { RippleContext } from "./context.ts";
+import { RamoseContext } from "./context.ts";
 
 /**
- * The `Client` the nearest `<RippleProvider>` owns.
+ * The `Client` the nearest `<RamoseProvider>` owns.
  *
  * Throws outside a provider: a missing provider is a wiring mistake, not a
  * state to render around.
  */
-export const useRipple = (): Client => {
-  const client = useContext(RippleContext);
+export const useRamose = (): Client => {
+  const client = useContext(RamoseContext);
   if (client === null) {
     throw new Error(
-      "useRipple: no <RippleProvider> above this component. " +
-        'Wrap your tree in <RippleProvider url={…}> from "@ripple/react" ' +
+      "useRamose: no <RamoseProvider> above this component. " +
+        'Wrap your tree in <RamoseProvider url={…}> from "@ramose/react" ' +
         "and call the hook inside it.",
     );
   }
@@ -32,6 +32,6 @@ export const useRipple = (): Client => {
  * worthless.
  */
 export const useDb = <C extends Catalog.Any>(name: string, catalog: C): Db<C> => {
-  const client = useRipple();
+  const client = useRamose();
   return useMemo(() => client.db(name, catalog), [client, name, catalog]);
 };

@@ -1,7 +1,7 @@
 /**
  * Session-gated shell: Better Auth session → workspace picker → board.
- * Plain state routing (SPA, no RSC). The active workspace's Ripple client is
- * owned by `<RippleProvider key={slug}>`: switching workspaces changes the
+ * Plain state routing (SPA, no RSC). The active workspace's Ramose client is
+ * owned by `<RamoseProvider key={slug}>`: switching workspaces changes the
  * key, which closes the old client and connects the next one.
  *
  * Theme: the StyleX theme class goes on `<html>` (not the app root) so the
@@ -10,7 +10,7 @@
  * match. The choice is persisted; first visit follows the OS.
  */
 
-import { errorMessage, RippleProvider } from "@ripple/react";
+import { errorMessage, RamoseProvider } from "@ramose/react";
 import * as stylex from "@stylexjs/stylex";
 import {
   createContext,
@@ -20,7 +20,7 @@ import {
   useState,
 } from "react";
 import { authClient, type SessionUser } from "./auth.ts";
-import { openWorkspace, RIPPLE_URL, type Workspace } from "./ripple.ts";
+import { openWorkspace, RAMOSE_URL, type Workspace } from "./ramose.ts";
 import { AuthScreen } from "./screens/AuthScreen.tsx";
 import { BoardScreen } from "./screens/BoardScreen.tsx";
 import { WorkspacesScreen } from "./screens/WorkspacesScreen.tsx";
@@ -143,9 +143,9 @@ const Root = () => {
 
   if (open !== null) {
     return (
-      <RippleProvider
+      <RamoseProvider
         key={open.workspace.slug}
-        url={RIPPLE_URL}
+        url={RAMOSE_URL}
         token={open.workspace.token}
       >
         <BoardScreen
@@ -154,7 +154,7 @@ const Root = () => {
           user={me}
           onLeave={() => setOpen(null)}
         />
-      </RippleProvider>
+      </RamoseProvider>
     );
   }
   return (

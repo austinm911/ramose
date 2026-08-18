@@ -13,8 +13,8 @@
  * receiving new roots back — nothing else here needs to change.
  */
 
-import { type LogEntry, type RootRecord, componentLogger, gzipCodec, txFrame } from "@ripple/core";
-import { gcSweep, publishRoot, putLogChunk, retainNewest, rootsToRecord } from "@ripple/storage";
+import { type LogEntry, type RootRecord, componentLogger, gzipCodec, txFrame } from "@ramose/core";
+import { gcSweep, publishRoot, putLogChunk, retainNewest, rootsToRecord } from "@ramose/storage";
 import type { Transactor } from "./transactor.ts";
 
 export interface IndexerOptions {

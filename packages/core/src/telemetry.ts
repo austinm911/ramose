@@ -1,5 +1,5 @@
 /**
- * Structured logs / metrics for every Ripple component.
+ * Structured logs / metrics for every Ramose component.
  *
  * One JSON object per line on the default sink (`console.log`), which is what
  * Workers/DO observability ingests, so `wrangler tail`, Logpush or the local

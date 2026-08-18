@@ -217,7 +217,7 @@ export const fakePeer = (options: PeerOptions = {}): FakePeer => {
 };
 
 export interface Client {
-  readonly ripple: DatabasesShape;
+  readonly ramose: DatabasesShape;
   readonly runtime: ManagedRuntime.ManagedRuntime<Databases, never>;
   dispose(): Promise<void>;
 }
@@ -236,7 +236,7 @@ export const client = (
     }),
   );
   return {
-    ripple: runtime.runSync(Databases),
+    ramose: runtime.runSync(Databases),
     runtime,
     dispose: () => runtime.dispose(),
   };

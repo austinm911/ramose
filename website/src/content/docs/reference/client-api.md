@@ -1,11 +1,11 @@
 ---
 title: Client API
-description: Every name @ripple/alchemy/db exports — schema constructors, connect and the layer, the Db value, queries, transactions, and errors.
+description: Every name @ramose/alchemy/db exports — schema constructors, connect and the layer, the Db value, queries, transactions, and errors.
 ---
 
-`@ripple/alchemy/db` is the portable client: browser, Node/Bun, tests. It is a
+`@ramose/alchemy/db` is the portable client: browser, Node/Bun, tests. It is a
 real `exports` entry and nothing it reaches imports the deploy engine, so a
-Vite app needs no alias. Import it as `* as Ripple`.
+Vite app needs no alias. Import it as `* as Ramose`.
 
 ## Schema
 
@@ -30,7 +30,7 @@ Vite app needs no alias. Import it as `* as Ripple`.
 | `token.jwt` | `(mint: () => Promise<string \| { token: string }>, options?: { refreshMargin?: Duration.Input }) => TokenSource` — lazy first mint, cached, single-flight; re-mints inside `refreshMargin` (default 2 minutes) of the JWT's `exp`. A mint route's JSON body (`{ token, … }`) passes through unwrapped |
 | `token.static` | `(value: string) => TokenSource` — a fixed credential |
 | `TokenSource` | `{ token: Effect<Redacted<string>, DbError>; claims(): Promise<Claims>; invalidate(): void }` |
-| `Claims` | the JWT payload, decoded (base64url), **not** verified — UI hints only (`sub`, `exp`, `ripple.class`, …) |
+| `Claims` | the JWT payload, decoded (base64url), **not** verified — UI hints only (`sub`, `exp`, `ramose.class`, …) |
 | `DATABASE_NAME_RE` | `RegExp` — the peer's database-name rule: `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$` |
 | `isDatabaseName` | `(name: string) => boolean` — the same rule as a predicate |
 
@@ -46,7 +46,7 @@ Effect users take `layer`: the same client as a scoped `Layer<Databases>`,
 whose finalizer is the session socket — `connect` is a thin wrapper over the
 same factory, not a second client. Getting a `Databases` cannot fail.
 
-A static token is `Ripple.token.static(t)` or, spelled out,
+A static token is `Ramose.token.static(t)` or, spelled out,
 `Effect.succeed(Redacted.make(t))`. The token Effect is re-read on every
 (re)connect and every `/transact`, so token refresh needs no client surface —
 return the current token from the Effect. `token.jwt(mint)` is the shipped
@@ -70,7 +70,7 @@ business.
 | --- | --- |
 | `Db<C>` | `ReadDb<C> & { principal; transact; install }` |
 | `ReadDb<C>` | `{ name; catalog; q; pull; live; livePull; basis; asOf; history }` |
-| `db.q` | `(query) => Effect<R, DbError>` — takes a navigational query value (`Ripple.query(N)…`); with no `.select`, `R` is `readonly Eid<C>[]` |
+| `db.q` | `(query) => Effect<R, DbError>` — takes a navigational query value (`Ramose.query(N)…`); with no `.select`, `R` is `readonly Eid<C>[]` |
 | `db.live` | same input as `db.q` → `Stream<R, DbError>` |
 | `db.pull` | `<const P>(subject: Eid<C> \| LookupRef<C>, shape: P) => Effect<Pull<C, P> \| null, DbError>` |
 | `db.livePull` | same input as `db.pull` → `Stream<Pull<C, P> \| null, DbError>` — `live`'s contract over one entity; `null` (entity retracted) is an emission, not an end |
@@ -85,9 +85,9 @@ business.
 
 | name | signature |
 | --- | --- |
-| `query` | `Ripple.query(N)` — the navigational builder: `.where(...predicates)` `.orderBy(attr, dir?, opts?)` `.limit(n)` `.offset(n)` `.select(shape)`. Order and paging run on the peer. A query is a value; see [Query and pull](/guides/queries/) |
+| `query` | `Ramose.query(N)` — the navigational builder: `.where(...predicates)` `.orderBy(attr, dir?, opts?)` `.limit(n)` `.offset(n)` `.select(shape)`. Order and paging run on the peer. A query is a value; see [Query and pull](/guides/queries/) |
 | predicates | on attributes: `eq` `ne` `lt` `lte` `gt` `gte` `exists` `missing`; strings add `startsWith` `includes`; paths join through targeted refs (`Todo.owner.name.startsWith("A")`) |
-| `Row<Q>` | the row a query yields: `type BoardRow = Ripple.Row<typeof boardQuery>`. Takes the builder or its `.build()` value; with no `.select` the row is the entity id. `Row` names a query's result the way `Pull<C, P>` names a shape's |
+| `Row<Q>` | the row a query yields: `type BoardRow = Ramose.Row<typeof boardQuery>`. Takes the builder or its `.build()` value; with no `.select` the row is the entity id. `Row` names a query's result the way `Pull<C, P>` names a shape's |
 | `Rows<Q>` | `readonly Row<Q>[]` — what `db.q` resolves to and `db.live` emits (with no `.select` it is unbranded `readonly Eid[]`; `db.q` brands the ids to the db's catalog, `Eid<C>`) |
 | `Pull<C, P>` | result of shape `P`. Shapes nest (`Todo.owner.select({…})`) and go optional (`Todo.due.optional`) — the same grammar for `select` and `db.pull` |
 | `Eid<C>` | `{ readonly id: number }`, catalog-branded. Data — no methods, no I/O |
@@ -121,8 +121,8 @@ the union `DbError`. See [Errors](/reference/errors/).
 - **`live` and `livePull` require nothing** (`R = never`) and survive the
   network — retried with backoff, failing only on terminal `InvalidRequest`,
   `Unauthorized`, or `DatabaseNotFound`.
-- **Install is explicit and once.** `Ripple.Database(...)` at deploy or
-  `db.install()` at tenant creation; `ripple.db(name, catalog)` is pure.
+- **Install is explicit and once.** `Ramose.Database(...)` at deploy or
+  `db.install()` at tenant creation; `ramose.db(name, catalog)` is pure.
 - **Provisioning mistakes are defects.** A missing binding or malformed URL
   is `Effect.die`, not a `DbError` — every signature's `R` is `never`.
   `connect` surfaces the same defects as synchronous throws.

@@ -1,7 +1,7 @@
 /**
  * Navigational query values — the read surface from docs/QUERY.md.
  *
- * `Ripple.query(Todo).where(...).select(...).orderBy(...).limit(n)` builds a
+ * `Ramose.query(Todo).where(...).select(...).orderBy(...).limit(n)` builds a
  * {@link NavQuery} value. `db.q` / `db.live` run it. Datalog is the IR: we
  * lower to `{ find: [["pull", "?e", pattern]], where, order, limit, offset }`
  * so the peer does pull-in-query (no client N+1) and sorts and pages the row
@@ -17,7 +17,7 @@ import type {
   PullElemOp,
   PullElemOrder,
   PullElemPred,
-} from "@ripple/core/query/ast.ts";
+} from "@ramose/core/query/ast.ts";
 import { lowerAttr } from "./attrRef.ts";
 import type { AnyAttribute, Cardinality } from "./Attribute.ts";
 import { type Eid, makeEid } from "./Eid.ts";
@@ -138,7 +138,7 @@ export type WhereNode<E = never> = Predicate<E> | Or<E> | Not<E> | Quantified;
 export type AnyWhereNode = WhereNode<unknown>;
 
 /**
- * `Ripple.or(a, b, …)` — a row matches when **any** branch does. Lowers to
+ * `Ramose.or(a, b, …)` — a row matches when **any** branch does. Lowers to
  * `or-join` on the root entity variable, so branches need not bind the same
  * variables. `or()` with no branches matches nothing.
  */
@@ -148,7 +148,7 @@ export const or = <E = never>(...preds: readonly WhereNode<E>[]): Or<E> => ({
 });
 
 /**
- * `Ripple.not(pred)` — a row matches when `pred` does **not**. Lowers to
+ * `Ramose.not(pred)` — a row matches when `pred` does **not**. Lowers to
  * `not-join` on the root entity variable, so `not(or(…))` and
  * `not(Todo.due.missing())` nest the way they read.
  */
@@ -515,7 +515,7 @@ const regexSource = (re: RegExp | string): string => {
   if (typeof re === "string") return re;
   if (re.flags !== "") {
     throw new Error(
-      `ripple/query: matches(/${re.source}/${re.flags}) — the peer compiles the pattern with no flags, so \`${re.flags}\` cannot be lowered. Express it in the pattern instead (e.g. \`[aA]da\` for case-insensitivity).`,
+      `ramose/query: matches(/${re.source}/${re.flags}) — the peer compiles the pattern with no flags, so \`${re.flags}\` cannot be lowered. Express it in the pattern instead (e.g. \`[aA]da\` for case-insensitivity).`,
     );
   }
   return re.source;
@@ -532,7 +532,7 @@ const eidValue = (ref: unknown): number => {
     return (ref as { id: number }).id;
   }
   throw new Error(
-    `ripple/query: is(...) takes an entity id or an Eid, got ${String(ref)}`,
+    `ramose/query: is(...) takes an entity id or an Eid, got ${String(ref)}`,
   );
 };
 
@@ -562,7 +562,7 @@ const eachNode = (attr: PathCarrier): PathCarrier => {
   const cards = cardsOf(attr);
   if (cards[cards.length - 1] !== "many") {
     throw new Error(
-      `ripple/query: ${path.join(" → ")}.each — only a cardinality-many attribute has elements; a cardinality-one attribute is its value already`,
+      `ramose/query: ${path.join(" → ")}.each — only a cardinality-many attribute has elements; a cardinality-one attribute is its value already`,
     );
   }
   return attachAttrNav({
@@ -603,13 +603,13 @@ const checkElemScope = (
     return;
   }
   if (node.each !== undefined && node.each !== ident) {
-    throw new Error(`ripple/query: in ${where}: ${eachScopeHint(node.each)}`);
+    throw new Error(`ramose/query: in ${where}: ${eachScopeHint(node.each)}`);
   }
   if (scalar && node.each === undefined) throw new Error(elemOnlyError(ident, where));
 };
 
 const elemOnlyError = (ident: string, where: string): string =>
-  `ripple/query: in ${where}: the elements of a cardinality-many scalar are values, not entities — write the inner predicate against the element, e.g. ${spellIdent(ident)}.each.eq(…)`;
+  `ramose/query: in ${where}: the elements of a cardinality-many scalar are values, not entities — write the inner predicate against the element, e.g. ${spellIdent(ident)}.each.eq(…)`;
 
 /**
  * Build a quantified node, rejecting the shape that cannot mean anything: a
@@ -625,7 +625,7 @@ const quantified = (
   const cards = cardsOf(attr);
   if (cards[cards.length - 1] !== "many") {
     throw new Error(
-      `ripple/query: ${quant}(...) on ${path.join(" → ")} — only a cardinality-many attribute has elements to quantify over`,
+      `ramose/query: ${quant}(...) on ${path.join(" → ")} — only a cardinality-many attribute has elements to quantify over`,
     );
   }
   const ident = path[path.length - 1]!;
@@ -664,7 +664,7 @@ const assertNoLooseElem = (node: AnyWhereNode): void => {
     return;
   }
   if (node.each !== undefined) {
-    throw new Error(`ripple/query: ${eachScopeHint(node.each)}`);
+    throw new Error(`ramose/query: ${eachScopeHint(node.each)}`);
   }
 };
 
@@ -812,14 +812,14 @@ const checkElementRoot = (
   if (each !== undefined) {
     if (each !== scope.ident) {
       throw new Error(
-        `ripple/query: in nested ${what} on ${collection}: ${eachScopeHint(each)}`,
+        `ramose/query: in nested ${what} on ${collection}: ${eachScopeHint(each)}`,
       );
     }
     return;
   }
   if (scope.scalar) {
     throw new Error(
-      `ripple/query: nested ${what}(${path.join(" → ")}) on ${collection} is rooted at the collection's element, which is a value, not an entity — name it with ${spellIdent(scope.ident)}.each`,
+      `ramose/query: nested ${what}(${path.join(" → ")}) on ${collection} is rooted at the collection's element, which is a value, not an entity — name it with ${spellIdent(scope.ident)}.each`,
     );
   }
   const first = path[0];
@@ -828,7 +828,7 @@ const checkElementRoot = (
   const ns = nsOfIdent(first);
   if (ns !== undefined && ns !== scope.ns) {
     throw new Error(
-      `ripple/query: nested ${what}(${path.join(" → ")}) on ${collection} is rooted at the collection's element, which is a :${scope.ns}/… entity — ${first} is not one of its attributes`,
+      `ramose/query: nested ${what}(${path.join(" → ")}) on ${collection} is rooted at the collection's element, which is a :${scope.ns}/… entity — ${first} is not one of its attributes`,
     );
   }
 };
@@ -934,7 +934,7 @@ const lowerElemCmp = (
   const op = PULL_OPS[p.op];
   if (op === undefined) {
     throw new Error(
-      `ripple/query: ${p.op} has no nested-where spelling on ${collection.join(" → ")}`,
+      `ramose/query: ${p.op} has no nested-where spelling on ${collection.join(" → ")}`,
     );
   }
   const reverse = [...prefixRevs, ...revs];
@@ -955,7 +955,7 @@ const lowerElemOrder = (
   const path = pathOf(key);
   if (cardsOf(key).includes("many")) {
     throw new Error(
-      `ripple/query: orderBy(${path.join(" → ")}) crosses a cardinality-many attribute — the sort key would be a set, not a value`,
+      `ramose/query: orderBy(${path.join(" → ")}) crosses a cardinality-many attribute — the sort key would be a set, not a value`,
     );
   }
   const revs = revsOf(key);
@@ -999,7 +999,7 @@ const collectionNav = <A extends PathCarrier>(
     select: ((shape: Shape) => {
       if (!isRefNav(attr)) {
         throw new Error(
-          `ripple/query: ${collection.join(" → ")} is a cardinality-many scalar — its elements are values, which have no shape. The constrained collection is the field itself: \`.select({ ${spellIdent(scope.ident).split(".")[1] ?? "values"}: ${spellIdent(scope.ident)}.where(…) })\``,
+          `ramose/query: ${collection.join(" → ")} is a cardinality-many scalar — its elements are values, which have no shape. The constrained collection is the field itself: \`.select({ ${spellIdent(scope.ident).split(".")[1] ?? "values"}: ${spellIdent(scope.ident)}.where(…) })\``,
         );
       }
       return makeSelectNested(attr, shape, constraints);
@@ -1018,7 +1018,7 @@ const collectionOf = (attr: PathCarrier, method: string): CollectionNav => {
   const cards = cardsOf(attr);
   if (cards[cards.length - 1] !== "many") {
     throw new Error(
-      `ripple/query: ${method}(...) on ${pathOf(attr).join(" → ")} — nested where / orderBy / limit / offset constrain a cardinality-many collection (a many ref, a backlink, or a many scalar), which is what has elements to filter`,
+      `ramose/query: ${method}(...) on ${pathOf(attr).join(" → ")} — nested where / orderBy / limit / offset constrain a cardinality-many collection (a many ref, a backlink, or a many scalar), which is what has elements to filter`,
     );
   }
   return collectionNav(attr, {});
@@ -1112,7 +1112,7 @@ export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
     in(this: PathCarrier, values: readonly unknown[]) {
       if (!Array.isArray(values)) {
         throw new Error(
-          `ripple/query: in(...) takes an array of values, got ${String(values)}`,
+          `ramose/query: in(...) takes an array of values, got ${String(values)}`,
         );
       }
       return pred("in", this, values.map(inValue));
@@ -1333,9 +1333,9 @@ export interface NavQueryBuilder<
  * instead of restating the shape by hand:
  *
  * ```ts
- * const boardQuery = Ripple.query(Issue).select({ id: Issue.id, ... });
- * type BoardRow = Ripple.Row<typeof boardQuery>;   // one row
- * type BoardRows = Ripple.Rows<typeof boardQuery>; // the readonly array
+ * const boardQuery = Ramose.query(Issue).select({ id: Issue.id, ... });
+ * type BoardRow = Ramose.Row<typeof boardQuery>;   // one row
+ * type BoardRows = Ramose.Rows<typeof boardQuery>; // the readonly array
  * ```
  *
  * Takes the builder or the frozen {@link NavQuery} — the same inputs `db.q`
@@ -1383,11 +1383,11 @@ const builder = <N extends AnyNamespace, R>(
     orderBy: (attr, dir = "asc", opts) => {
       const path = pathOf(attr);
       if (attr.__each !== undefined) {
-        throw new Error(`ripple/query: ${eachScopeHint(attr.__each)}`);
+        throw new Error(`ramose/query: ${eachScopeHint(attr.__each)}`);
       }
       if (cardsOf(attr).includes("many")) {
         throw new Error(
-          `ripple/query: orderBy(${path.join(" → ")}) crosses a cardinality-many attribute — the sort key would be a set, not a value`,
+          `ramose/query: orderBy(${path.join(" → ")}) crosses a cardinality-many attribute — the sort key would be a set, not a value`,
         );
       }
       return builder(ns, {
@@ -1410,7 +1410,7 @@ const builder = <N extends AnyNamespace, R>(
  *
  * Calling `.where` / `.select` / … returns a builder; pass the builder (or
  * `.build()`) to `db.q` / `db.live`. Builders are accepted directly so
- * `db.q(Ripple.query(Todo).where(...).select(...))` works without `.build()`.
+ * `db.q(Ramose.query(Todo).where(...).select(...))` works without `.build()`.
  */
 export const query = <N extends AnyNamespace>(ns: N): NavQueryBuilder<N> => {
   const nsIdents = Object.values(ns.attributes).map(
@@ -1840,7 +1840,7 @@ const lowerIdPredicate = (
       break;
     default:
       throw new Error(
-        `ripple/query: ${p.op} is not defined on :db/id — an entity id is a number`,
+        `ramose/query: ${p.op} is not defined on :db/id — an entity id is a number`,
       );
   }
   return clauses;

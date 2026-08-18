@@ -11,7 +11,7 @@ site has to announce the change, and there is no cache to invalidate.
 The query is a value, and it lives with your other queries:
 
 ```ts title="src/todos.ts"
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
 import { Todo } from "../schema.ts";
 
 export const todoShape = {
@@ -21,7 +21,7 @@ export const todoShape = {
   createdAt: Todo.createdAt,
 } as const;
 
-export const todoQuery = Ripple.query(Todo)
+export const todoQuery = Ramose.query(Todo)
   .orderBy(Todo.createdAt, "asc")
   .select(todoShape);
 ```
@@ -29,10 +29,10 @@ export const todoQuery = Ripple.query(Todo)
 ## In React
 
 The hook is shipped — `useLive` from
-[`@ripple/react`](/reference/react/):
+[`@ramose/react`](/reference/react/):
 
 ```tsx title="src/App.tsx"
-import { useLive } from "@ripple/react";
+import { useLive } from "@ramose/react";
 import { db } from "./db.ts";
 import { todoQuery } from "./todos.ts";
 
@@ -116,9 +116,9 @@ tells the client it moved.
 
 | environment | live queries |
 | --- | --- |
-| a browser, through `Ripple.connect` (or `Ripple.layer` for Effect users) | yes — this is the intended home |
-| a Worker binding another Worker (`Ripple.ServerBinding`) | **no.** There is no socket on that hop; calling `db.live` fails the fiber outright rather than returning an error you can catch |
-| Node or Bun | only where a global `WebSocket` exists, or one you pass to `Ripple.connect` / `Ripple.layer` |
+| a browser, through `Ramose.connect` (or `Ramose.layer` for Effect users) | yes — this is the intended home |
+| a Worker binding another Worker (`Ramose.ServerBinding`) | **no.** There is no socket on that hop; calling `db.live` fails the fiber outright rather than returning an error you can catch |
+| Node or Bun | only where a global `WebSocket` exists, or one you pass to `Ramose.connect` / `Ramose.layer` |
 
 :::note[Two tabs, locally]
 On the local emulator writes do not propagate between isolates, so a second

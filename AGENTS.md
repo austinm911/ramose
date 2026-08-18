@@ -1,4 +1,4 @@
-# Ripple
+# Ramose
 
 An immutable, Datomic-inspired graph database for Cloudflare (Workers + Durable
 Objects + R2), built on the Effect runtime. It is a Bun monorepo with one product

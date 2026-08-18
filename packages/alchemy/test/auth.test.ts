@@ -12,7 +12,7 @@ import { AUTH_ENV_KEYS, authEnv } from "../src/Server.ts";
 
 const AUTH: AuthConfig = {
   issuer: "https://auth.acme.example",
-  audience: "ripple:peer:prod",
+  audience: "ramose:peer:prod",
   ttl: 900,
 };
 
@@ -31,11 +31,11 @@ describe("claims", () => {
     const payload = claims(AUTH, { sub: "user_01HQ8ZK", db: "acme", class: "member", now });
     expect(payload).toEqual({
       iss: "https://auth.acme.example",
-      aud: "ripple:peer:prod",
+      aud: "ramose:peer:prod",
       sub: "user_01HQ8ZK",
       iat: Math.floor(now.getTime() / 1000),
       exp: Math.floor(now.getTime() / 1000) + 900,
-      ripple: { db: "acme", class: "member" },
+      ramose: { db: "acme", class: "member" },
     });
     expect(payload.exp - payload.iat).toBe(AUTH.ttl);
   });
@@ -50,16 +50,16 @@ describe("claims", () => {
     expect(payload.exp - payload.iat).toBe(AUTH.ttl);
   });
 
-  test("attrs ride under ripple.attrs, and are absent when not given", () => {
+  test("attrs ride under ramose.attrs, and are absent when not given", () => {
     const withAttrs = claims(AUTH, {
       sub: "u",
       db: "acme",
       class: "member",
       attrs: { org: "org_42" },
     });
-    expect(withAttrs.ripple.attrs).toEqual({ org: "org_42" });
+    expect(withAttrs.ramose.attrs).toEqual({ org: "org_42" });
     const without = claims(AUTH, { sub: "u", db: "acme", class: "member" });
-    expect("attrs" in without.ripple).toBe(false);
+    expect("attrs" in without.ramose).toBe(false);
   });
 
   test("an invalid database name throws — the peer would reject it anyway", () => {
@@ -81,11 +81,11 @@ describe("claims", () => {
   });
 
   test("…and passes without one; a declared class always passes", () => {
-    expect(claims(AUTH, { sub: "u", db: "acme", class: "superuser" }).ripple.class).toBe(
+    expect(claims(AUTH, { sub: "u", db: "acme", class: "superuser" }).ramose.class).toBe(
       "superuser",
     );
     expect(
-      claims(AUTH, { sub: "u", db: "acme", class: "viewer" }, POLICY).ripple.class,
+      claims(AUTH, { sub: "u", db: "acme", class: "viewer" }, POLICY).ramose.class,
     ).toBe("viewer");
   });
 
@@ -129,12 +129,12 @@ describe("authEnv accepts the AuthConfig", () => {
       internalSecret: loose.internalSecret,
     });
     expect(env).toEqual({
-      RIPPLE_POLICY: POLICY,
-      RIPPLE_JWKS_URL: "https://auth.acme.example/.well-known/jwks.json",
-      RIPPLE_JWT_ISS: "https://auth.acme.example",
-      RIPPLE_JWT_AUD: "ripple:peer:prod",
-      RIPPLE_JWT_MAX_TTL: "900",
-      RIPPLE_ALLOWED_ORIGINS: "https://app.acme.example",
+      RAMOSE_POLICY: POLICY,
+      RAMOSE_JWKS_URL: "https://auth.acme.example/.well-known/jwks.json",
+      RAMOSE_JWT_ISS: "https://auth.acme.example",
+      RAMOSE_JWT_AUD: "ramose:peer:prod",
+      RAMOSE_JWT_MAX_TTL: "900",
+      RAMOSE_ALLOWED_ORIGINS: "https://app.acme.example",
     });
     expect(Redacted.value(secret as Redacted.Redacted<string>)).toBe("sh4red");
   });
@@ -148,9 +148,9 @@ describe("authEnv accepts the AuthConfig", () => {
 
   test("a config alone binds the three keys and nothing else", () => {
     expect(authEnv({ auth: AUTH })).toEqual({
-      RIPPLE_JWT_ISS: "https://auth.acme.example",
-      RIPPLE_JWT_AUD: "ripple:peer:prod",
-      RIPPLE_JWT_MAX_TTL: "900",
+      RAMOSE_JWT_ISS: "https://auth.acme.example",
+      RAMOSE_JWT_AUD: "ramose:peer:prod",
+      RAMOSE_JWT_MAX_TTL: "900",
     });
   });
 });

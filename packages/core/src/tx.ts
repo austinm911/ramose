@@ -96,7 +96,7 @@ export interface ExpandOptions {
 }
 
 /** Prefix of tempids generated for map forms without an explicit `:db/id`. */
-export const GENERATED_TEMPID_PREFIX = "__ripple.tmp/";
+export const GENERATED_TEMPID_PREFIX = "__ramose.tmp/";
 
 const TX_TEMPID = new Set([":db/tx", "datomic.tx", "db.tx"]);
 

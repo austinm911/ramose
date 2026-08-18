@@ -1,12 +1,12 @@
 /**
- * Ripple peer Worker — the HTTP API and the edge datalog executor.
+ * Ramose peer Worker — the HTTP API and the edge datalog executor.
  *
  * Read-path knobs (per request by header, default by env — see peer.ts):
- * `x-ripple-replica-hint: wnam|enam|…|auto|continent` picks the replica DO placement
- * (hint is part of the DO id; default `auto` = colo→hint); `x-ripple-cache-basis: 0|1`
+ * `x-ramose-replica-hint: wnam|enam|…|auto|continent` picks the replica DO placement
+ * (hint is part of the DO id; default `auto` = colo→hint); `x-ramose-cache-basis: 0|1`
  * (default 1) reuses an isolate-cached basis instead of calling the replica each read;
- * `x-ripple-cache-mode: ttl|peer` (default ttl = 5 s) picks the cache's consistency story;
- * `x-ripple-min-t: <t>` makes a read refetch if the cached basis is older than t.
+ * `x-ramose-cache-mode: ttl|peer` (default ttl = 5 s) picks the cache's consistency story;
+ * `x-ramose-min-t: <t>` makes a read refetch if the cached basis is older than t.
  *
  *   GET  /                                  demo app (CRUD + as-of history view)
  *   GET  /health
@@ -21,8 +21,8 @@
  * Reads: basis (root + novelty) from the nearest QueryReplica DO → Db over
  * cached segments → datalog here in the Worker. Writes: forwarded to the
  * Transactor DO. Auth: a bearer token resolved to a `Principal` per request
- * (auth.ts) — a verified JWT under `RIPPLE_POLICY`, else the legacy shared
- * `RIPPLE_TOKEN`; the policy filters reads and checks writes.
+ * (auth.ts) — a verified JWT under `RAMOSE_POLICY`, else the legacy shared
+ * `RAMOSE_TOKEN`; the policy filters reads and checks writes.
  *
  * The request is one Effect: routing failures are `Data.TaggedError`s
  * (errors.ts) mapped back to responses with `Effect.catchTags`, and every
@@ -30,15 +30,15 @@
  * (analytics.ts) — a no-op when the `ANALYTICS` binding is absent.
  */
 
-import { DEFAULT_QUERY_MAX_CELLS, Histogram, type Principal, type PullElemPred, type PullPattern, type QueryStats, RateMeter, allows, componentLogger, fromJson, isAdmin, normalizePullPattern, pull, query, setTelemetryLevel, toJson } from "@ripple/core";
-import type { Db as CoreDb } from "@ripple/core";
-import { type RippleEnv, envInt, internalHeaders } from "@ripple/transactor";
-import { TransactorDO } from "@ripple/transactor/transactor-do.ts";
-import { QueryReplicaDO } from "@ripple/replica";
+import { DEFAULT_QUERY_MAX_CELLS, Histogram, type Principal, type PullElemPred, type PullPattern, type QueryStats, RateMeter, allows, componentLogger, fromJson, isAdmin, normalizePullPattern, pull, query, setTelemetryLevel, toJson } from "@ramose/core";
+import type { Db as CoreDb } from "@ramose/core";
+import { type RamoseEnv, envInt, internalHeaders } from "@ramose/transactor";
+import { TransactorDO } from "@ramose/transactor/transactor-do.ts";
+import { QueryReplicaDO } from "@ramose/replica";
 import * as Effect from "effect/Effect";
 import { Analytics, type Route, bindingOf, fromBinding, httpPoint, routeOf } from "./analytics.ts";
 import { allowedOrigin, authState, checkWrite, describePrincipal, isTokenOnly, principalForToken, principalOf, viewDb } from "./auth.ts";
-import { BadRequest, type Internal, NotFound, type QueryBudgetExceeded, type RippleError, Unauthorized, UpstreamError, fromThrown, toHttp } from "./errors.ts";
+import { BadRequest, type Internal, NotFound, type QueryBudgetExceeded, type RamoseError, Unauthorized, UpstreamError, fromThrown, toHttp } from "./errors.ts";
 import { basisHeaders, coloHeader, fetchBasisWithStats, hintOf, invalidateBasis, regionOf, replicaId, segmentSource } from "./peer.ts";
 import { type SocketLike, openSession } from "./session.ts";
 import { DEMO_HTML } from "./demo.ts";
@@ -109,12 +109,12 @@ const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =
 const CORS = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET,POST,OPTIONS",
-  "access-control-allow-headers": "content-type,authorization,upgrade,x-ripple-replica-hint,x-ripple-cache-basis,x-ripple-cache-mode,x-ripple-min-t",
-  "access-control-expose-headers": "x-ripple-ms,x-ripple-r2-gets,x-ripple-cache-hits,x-ripple-basis-t,x-ripple-basis-hit,x-ripple-basis-reason,x-ripple-basis-calls,x-ripple-basis-behind,x-ripple-replica-hint,x-ripple-cache-basis,x-ripple-cache-mode,x-ripple-colo",
+  "access-control-allow-headers": "content-type,authorization,upgrade,x-ramose-replica-hint,x-ramose-cache-basis,x-ramose-cache-mode,x-ramose-min-t",
+  "access-control-expose-headers": "x-ramose-ms,x-ramose-r2-gets,x-ramose-cache-hits,x-ramose-basis-t,x-ramose-basis-hit,x-ramose-basis-reason,x-ramose-basis-calls,x-ramose-basis-behind,x-ramose-replica-hint,x-ramose-cache-basis,x-ramose-cache-mode,x-ramose-colo",
 };
 
-/** Narrow `access-control-allow-origin` to `RIPPLE_ALLOWED_ORIGINS` once a policy is configured. */
-function withCors(env: RippleEnv, request: Request, res: Response): Response {
+/** Narrow `access-control-allow-origin` to `RAMOSE_ALLOWED_ORIGINS` once a policy is configured. */
+function withCors(env: RamoseEnv, request: Request, res: Response): Response {
   const origin = allowedOrigin(env, request);
   if (origin === undefined || res.status === 101) return res;
   const headers = new Headers(res.headers);
@@ -135,7 +135,7 @@ interface RequestInfo {
 }
 
 /** Tagged failure → the response this Worker has always returned for it. */
-function respond(err: RippleError): Response {
+function respond(err: RamoseError): Response {
   const h = toHttp(err);
   if (h.raw !== undefined) return new Response(h.raw, { status: h.status, headers: h.headers ?? { "content-type": "application/json", ...CORS } });
   return json(h.body ?? {}, h.status);
@@ -172,11 +172,11 @@ const recordHttp = (request: Request, info: RequestInfo, status: number, ms: num
   }).pipe(Effect.ignoreCause);
 
 /** Session frame as a sub-request: inherit cf + replica hint from the upgrade. */
-function subRequest(request: Request, env: RippleEnv, db: string, rest: string, init: { method: string; headers: Record<string, string>; body?: string }): Request {
+function subRequest(request: Request, env: RamoseEnv, db: string, rest: string, init: { method: string; headers: Record<string, string>; body?: string }): Request {
   const headers = new Headers();
   const hint = hintOf(request, env);
-  if (hint) headers.set("x-ripple-replica-hint", hint);
-  for (const k of ["x-ripple-cache-basis", "x-ripple-cache-mode"]) {
+  if (hint) headers.set("x-ramose-replica-hint", hint);
+  for (const k of ["x-ramose-cache-basis", "x-ramose-cache-mode"]) {
     const v = request.headers.get(k);
     if (v !== null) headers.set(k, v);
   }
@@ -185,8 +185,8 @@ function subRequest(request: Request, env: RippleEnv, db: string, rest: string, 
 }
 
 /** GET /basis poll with the isolate cache off, so movement is visible. */
-function pollRequest(request: Request, env: RippleEnv, db: string): Request {
-  return subRequest(request, env, db, "/basis", { method: "GET", headers: { "x-ripple-cache-basis": "0" } });
+function pollRequest(request: Request, env: RamoseEnv, db: string): Request {
+  return subRequest(request, env, db, "/basis", { method: "GET", headers: { "x-ramose-cache-basis": "0" } });
 }
 
 /**
@@ -194,7 +194,7 @@ function pollRequest(request: Request, env: RippleEnv, db: string): Request {
  * Transactor DO will trust. Best effort — anything but a denial falls through
  * to the writer, which checks authoritatively anyway.
  */
-async function ingress(request: Request, env: RippleEnv, db: string, principal: Principal, text: string, t0: number): Promise<{ body: string; done?: undefined } | { done: Response }> {
+async function ingress(request: Request, env: RamoseEnv, db: string, principal: Principal, text: string, t0: number): Promise<{ body: string; done?: undefined } | { done: Response }> {
   let raw: { tx?: unknown };
   try {
     raw = JSON.parse(text) as { tx?: unknown };
@@ -208,7 +208,7 @@ async function ingress(request: Request, env: RippleEnv, db: string, principal: 
     const bf = await fetchBasisWithStats(env, db, request);
     const checked = await checkWrite(env, principal, segmentSource(env, db), bf.basis, tx);
     // a no-op `ensure`: the idents are already deployed, so there is nothing to transact
-    if (checked.kind === "skip") return { done: json({ t: bf.basis.t, txEid: 0, tempids: {}, datoms: 0 }, 200, { "x-ripple-ms": String(Date.now() - t0) }) };
+    if (checked.kind === "skip") return { done: json({ t: bf.basis.t, txEid: 0, tempids: {}, datoms: 0 }, 200, { "x-ramose-ms": String(Date.now() - t0) }) };
     return forward(checked.tx, checked.principal);
   } catch (err) {
     if ((err as { _tag?: string })?._tag === "Unauthorized") throw err;
@@ -217,7 +217,7 @@ async function ingress(request: Request, env: RippleEnv, db: string, principal: 
 }
 
 /** Everything that used to live inside the Worker's try/…/catch; throws tagged failures. */
-async function route(request: Request, env: RippleEnv, url: URL, db: string, rest: string, principal: Principal, t0: number, ctx?: ExecutionContext): Promise<Response> {
+async function route(request: Request, env: RamoseEnv, url: URL, db: string, rest: string, principal: Principal, t0: number, ctx?: ExecutionContext): Promise<Response> {
   const transactor = () => env.TRANSACTOR.get(env.TRANSACTOR.idFromName(db));
   const txUrl = (path: string) => `https://transactor${path}${path.includes("?") ? "&" : "?"}db=${encodeURIComponent(db)}`;
   const policy = authState(env).policy;
@@ -242,7 +242,7 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
     peerMetrics.transacts.mark(1);
     peerMetrics.transactMs.observe(ms);
     plog.debug("transact", { db, status: res.status, ms });
-    const headers = { "content-type": "application/json", ...CORS, "x-ripple-ms": String(Date.now() - t0) };
+    const headers = { "content-type": "application/json", ...CORS, "x-ramose-ms": String(Date.now() - t0) };
     if (!res.ok) throw new UpstreamError({ status: res.status, body: await res.text(), headers });
     return new Response(res.body, { status: res.status, headers });
   }
@@ -273,7 +273,7 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
     const dbv = await viewDb(env, principal, store, basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
     const stats: QueryStats = { clauses: [] };
     const before = { ...store.stats };
-    const result = await query(dbv, body.query as any, body.inputs ?? [], { stats, maxCells: envInt(env.RIPPLE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS) });
+    const result = await query(dbv, body.query as any, body.inputs ?? [], { stats, maxCells: envInt(env.RAMOSE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS) });
     const after = store.stats;
     const ms = Date.now() - t0;
     peerMetrics.queries.mark(1);
@@ -282,7 +282,7 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
     return json(
       { t: basis.t, root: basis.root.t, result, ...(body.explain ? { explain: stats.clauses, budget: stats.budget } : {}) },
       200,
-      { "x-ripple-ms": String(Date.now() - t0), "x-ripple-r2-gets": String(after.r2Gets - before.r2Gets), "x-ripple-cache-hits": String(after.cacheHits - before.cacheHits), ...basisHeaders(request, env, bf) },
+      { "x-ramose-ms": String(Date.now() - t0), "x-ramose-r2-gets": String(after.r2Gets - before.r2Gets), "x-ramose-cache-hits": String(after.cacheHits - before.cacheHits), ...basisHeaders(request, env, bf) },
     );
   }
   if (rest === "/pull" && request.method === "POST") {
@@ -296,8 +296,8 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
     const unknown = unknownPullAttrs(dbv, pattern);
     if (unknown.length > 0) throw new BadRequest({ message: `unknown attribute${unknown.length > 1 ? "s" : ""} in pull pattern: ${unknown.join(", ")}` });
     const eid = typeof body.eid === "number" ? body.eid : await dbv.entid(body.eid as any);
-    if (eid === undefined) return json({ t: basis.t, result: null }, 200, { "x-ripple-ms": String(Date.now() - t0), ...basisHeaders(request, env, bf) });
-    return json({ t: basis.t, result: await pull(dbv, eid, pattern) }, 200, { "x-ripple-ms": String(Date.now() - t0), ...basisHeaders(request, env, bf) });
+    if (eid === undefined) return json({ t: basis.t, result: null }, 200, { "x-ramose-ms": String(Date.now() - t0), ...basisHeaders(request, env, bf) });
+    return json({ t: basis.t, result: await pull(dbv, eid, pattern) }, 200, { "x-ramose-ms": String(Date.now() - t0), ...basisHeaders(request, env, bf) });
   }
   const em = /^\/entity\/(\d+)$/.exec(rest);
   if (em && request.method === "GET") {
@@ -305,7 +305,7 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
     const basis = bf.basis;
     const asOf = url.searchParams.has("asOf") ? Number(url.searchParams.get("asOf")) : undefined;
     const dbv = await viewDb(env, principal, segmentSource(env, db), basis, { asOf });
-    return json({ t: basis.t, entity: await dbv.entity(Number(em[1])) }, 200, { "x-ripple-ms": String(Date.now() - t0), ...basisHeaders(request, env, bf) });
+    return json({ t: basis.t, entity: await dbv.entity(Number(em[1])) }, 200, { "x-ramose-ms": String(Date.now() - t0), ...basisHeaders(request, env, bf) });
   }
   if (rest === "/info" && request.method === "GET") {
     // every principal may ask where the basis is; only admin sees the peer's internals.
@@ -316,7 +316,7 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
     const basisT = basis.t;
     const who = await describePrincipal(env, principal, segmentSource(env, db), basis);
     if (policy !== undefined && !isAdmin(principal)) {
-      return json({ db, t: basisT, principal: who }, 200, { "x-ripple-ms": String(Date.now() - t0) });
+      return json({ db, t: basisT, principal: who }, 200, { "x-ramose-ms": String(Date.now() - t0) });
     }
     const [tx, rep] = await Promise.all([
       transactor().fetch(txUrl("/info"), { headers: { ...coloHeader(request), ...internalHeaders(env) } }).then((r) => r.json()),
@@ -350,7 +350,7 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
           // route matches on path; query string stays on the URL
           return await route(sub, env, new URL(sub.url), db, r.split("?")[0], p ?? principal, Date.now());
         } catch (err) {
-          return respond(fromThrown(err, { stacks: env.RIPPLE_STAGE !== "prod" }));
+          return respond(fromThrown(err, { stacks: env.RAMOSE_STAGE !== "prod" }));
         }
       },
       watchKey: `${db}|${hintOf(request, env) ?? ""}`,
@@ -365,11 +365,11 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
 }
 
 /** The request, as one Effect: `Response` on success, a tagged failure otherwise. */
-const handle = (request: Request, env: RippleEnv, t0: number, info: RequestInfo, ctx?: ExecutionContext): Effect.Effect<Response, RippleError> =>
+const handle = (request: Request, env: RamoseEnv, t0: number, info: RequestInfo, ctx?: ExecutionContext): Effect.Effect<Response, RamoseError> =>
   Effect.gen(function* () {
     if (!levelApplied) {
       levelApplied = true;
-      const lvl = env.RIPPLE_LOG_LEVEL;
+      const lvl = env.RAMOSE_LOG_LEVEL;
       if (lvl === "debug" || lvl === "info" || lvl === "warn" || lvl === "error") setTelemetryLevel(lvl);
     }
     const url = new URL(request.url);
@@ -382,7 +382,7 @@ const handle = (request: Request, env: RippleEnv, t0: number, info: RequestInfo,
     }
     if (url.pathname === "/health") {
       info.route = "health";
-      return json({ ok: true, service: "ripple", stage: env.RIPPLE_STAGE ?? "dev", time: Date.now() });
+      return json({ ok: true, service: "ramose", stage: env.RAMOSE_STAGE ?? "dev", time: Date.now() });
     }
 
     const m = /^\/db\/([^/]+)(\/.*)?$/.exec(url.pathname);
@@ -396,17 +396,17 @@ const handle = (request: Request, env: RippleEnv, t0: number, info: RequestInfo,
     // the verified caller is a positional argument of `route`: no header sniffing downstream
     const principal = yield* Effect.tryPromise({
       try: () => principalOf(env, request, db),
-      catch: (err) => fromThrown(err, { stacks: env.RIPPLE_STAGE !== "prod" }),
+      catch: (err) => fromThrown(err, { stacks: env.RAMOSE_STAGE !== "prod" }),
     });
 
     return yield* Effect.tryPromise({
       try: () => route(request, env, url, db, rest, principal, t0, ctx),
-      catch: (err) => fromThrown(err, { stacks: env.RIPPLE_STAGE !== "prod" }),
+      catch: (err) => fromThrown(err, { stacks: env.RAMOSE_STAGE !== "prod" }),
     });
   });
 
 export default {
-  async fetch(request: Request, env: RippleEnv, ctx?: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: RamoseEnv, ctx?: ExecutionContext): Promise<Response> {
     const t0 = Date.now();
     const info: RequestInfo = { db: "-", path: "-", route: "other" };
     return Effect.runPromise(

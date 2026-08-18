@@ -2,7 +2,7 @@
  * The resources through the real engine: plan → apply → attributes, with an
  * in-memory state store and a local HTTP server standing in for the peer.
  *
- * No cloud, no credentials — `Ripple.providers()` talks to nothing but the
+ * No cloud, no credentials — `Ramose.providers()` talks to nothing but the
  * peer's `/health` and, for a `Database`, one `POST /db/:name/transact`. That
  * is the point: `Server` only proves the peer is up, and `Database` is not a
  * cloud object at all — it is "install this catalog on this name".
@@ -36,7 +36,7 @@ const peer = Bun.serve({
     const { pathname } = new URL(request.url);
     if (pathname === "/health") {
       probes++;
-      return Response.json({ ok: true, service: "ripple", stage: "test", time: Date.now() });
+      return Response.json({ ok: true, service: "ramose", stage: "test", time: Date.now() });
     }
     const write = /^\/db\/([^/]+)\/transact$/.exec(pathname);
     if (write !== null) {
@@ -75,12 +75,12 @@ const { test } = Test.make({
   stage: "test",
 });
 
-describe("Ripple.Server", () => {
+describe("Ramose.Server", () => {
   test.provider("resolves the url and token — and pins no database name", (stack) =>
     Effect.gen(function* () {
       const before = probes;
       const server = yield* stack.deploy(
-        Server("Ripple", { worker: peerUrl, token: Redacted.make("s3cret") }),
+        Server("Ramose", { worker: peerUrl, token: Redacted.make("s3cret") }),
       );
 
       expect(server.url).toBe(peerUrl);
@@ -101,10 +101,10 @@ describe("Ripple.Server", () => {
   test.provider("takes the url and script name from a Worker-shaped value", (stack) =>
     Effect.gen(function* () {
       const server = yield* stack.deploy(
-        Server("Ripple", { worker: { url: `${peerUrl}/`, workerName: "ripple-peer" } }),
+        Server("Ramose", { worker: { url: `${peerUrl}/`, workerName: "ramose-peer" } }),
       );
       expect(server.url).toBe(peerUrl);
-      expect(server.workerName).toBe("ripple-peer");
+      expect(server.workerName).toBe("ramose-peer");
       expect(server.token).toBeUndefined();
       yield* stack.destroy();
     }),
@@ -113,8 +113,8 @@ describe("Ripple.Server", () => {
   test.provider("a redeploy of the same peer is a no-op", (stack) =>
     Effect.gen(function* () {
       const props = { worker: peerUrl, probe: false } as const;
-      yield* stack.deploy(Server("Ripple", props));
-      const plan = yield* stack.plan(Server("Ripple", props));
+      yield* stack.deploy(Server("Ramose", props));
+      const plan = yield* stack.plan(Server("Ramose", props));
       expect(actions(plan)).toEqual(["noop"]);
       yield* stack.destroy();
     }),
@@ -124,21 +124,21 @@ describe("Ripple.Server", () => {
     Effect.gen(function* () {
       const result = yield* Effect.result(
         stack.deploy(
-          Server("Ripple", { worker: peerUrl, probe: false, auth: { policy: '{"v":1}' } }),
+          Server("Ramose", { worker: peerUrl, probe: false, auth: { policy: '{"v":1}' } }),
         ),
       );
       expect(result._tag).toBe("Failure");
 
       // the same policy with a complete verifier deploys
       const server = yield* stack.deploy(
-        Server("Ripple", {
+        Server("Ramose", {
           worker: peerUrl,
           probe: false,
           auth: {
             policy: '{"v":1}',
             jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
             issuers: "https://auth.acme.example",
-            aud: "ripple:peer:test",
+            aud: "ramose:peer:test",
           },
         }),
       );
@@ -151,7 +151,7 @@ describe("Ripple.Server", () => {
     Effect.gen(function* () {
       const result = yield* Effect.result(
         stack.deploy(
-          Server("Ripple", {
+          Server("Ramose", {
             // loopback port 1: nothing listens, so connect() refuses immediately
             worker: "http://127.0.0.1:1",
             probe: { attempts: 2, delayMs: 1 },
@@ -164,8 +164,8 @@ describe("Ripple.Server", () => {
   );
 });
 
-describe("Ripple.Database", () => {
-  const server = () => Server("Ripple", { worker: peerUrl, probe: false });
+describe("Ramose.Database", () => {
+  const server = () => Server("Ramose", { worker: peerUrl, probe: false });
 
   test.provider("installs the catalog on the name, at deploy", (stack) =>
     Effect.gen(function* () {
@@ -199,11 +199,11 @@ describe("Ripple.Database", () => {
     }),
   );
 
-  test.provider("carries the server's token, so a peer with RIPPLE_TOKEN accepts it", (stack) =>
+  test.provider("carries the server's token, so a peer with RAMOSE_TOKEN accepts it", (stack) =>
     Effect.gen(function* () {
       yield* stack.deploy(
         Database("movies", {
-          server: Server("Ripple", {
+          server: Server("Ramose", {
             worker: peerUrl,
             probe: false,
             token: Redacted.make("s3cret"),

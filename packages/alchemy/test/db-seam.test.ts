@@ -1,5 +1,5 @@
 /**
- * The `DB_SEAM` contract `@ripple/react` rides (`DbSeam` in `Db.ts`,
+ * The `DB_SEAM` contract `@ramose/react` rides (`DbSeam` in `Db.ts`,
  * `packages/react/src/seam.ts` the reader): a structural view key, the
  * pinned `asOf` coordinate, and the session's wake. Not public API, but a
  * contract all the same.
@@ -22,10 +22,10 @@ const seamOf = (db: ReadDb): DbSeam =>
 describe("the view key is structural", () => {
   test("same coordinates, same key — across calls and across view spellings", async () => {
     const c = client(fakePeer());
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
 
     expect(seamOf(db.asOf(3)).key).toBe(seamOf(db.asOf(3)).key);
-    expect(seamOf(db).key).toBe(seamOf(c.ripple.db("movies", Movies)).key);
+    expect(seamOf(db).key).toBe(seamOf(c.ramose.db("movies", Movies)).key);
     expect(seamOf(db.history).key).toBe(seamOf(db.history).key);
     await c.dispose();
   });
@@ -33,7 +33,7 @@ describe("the view key is structural", () => {
   test("a different coordinate, name, or client is a different key", async () => {
     const a = client(fakePeer());
     const b = client(fakePeer());
-    const db = a.ripple.db("movies", Movies);
+    const db = a.ramose.db("movies", Movies);
     const report = await Effect.runPromise(
       db.transact(function* () {}),
     );
@@ -44,8 +44,8 @@ describe("the view key is structural", () => {
       seamOf(db.asOf(4)).key,
       seamOf(db.history).key,
       seamOf(report.dbAfter).key, // the minT floor is a coordinate too
-      seamOf(a.ripple.db("other", Movies)).key,
-      seamOf(b.ripple.db("movies", Movies)).key,
+      seamOf(a.ramose.db("other", Movies)).key,
+      seamOf(b.ramose.db("movies", Movies)).key,
     ];
     expect(new Set(keys).size).toBe(keys.length);
     await a.dispose();
@@ -56,7 +56,7 @@ describe("the view key is structural", () => {
 describe("the pinned coordinate", () => {
   test("asOf carries its t; live and history carry undefined", async () => {
     const c = client(fakePeer());
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
     expect(seamOf(db.asOf(3)).asOf).toBe(3);
     expect(seamOf(db).asOf).toBeUndefined();
     expect(seamOf(db.history).asOf).toBeUndefined();
@@ -68,7 +68,7 @@ describe("the wake", () => {
   test("a basis tick calls the subscriber; unsubscribe stops it", async () => {
     const peer = fakePeer();
     const c = client(peer);
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
 
     let wakes = 0;
     const off = seamOf(db).onWake(() => {

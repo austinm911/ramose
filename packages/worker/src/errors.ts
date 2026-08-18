@@ -5,7 +5,7 @@
  * is not a 2xx is a `Data.TaggedError` in its error channel, mapped back to a
  * response with `Effect.catchTags`. The status codes and body fields here are
  * exactly the ones the Worker has always returned (the client parses
- * `error`/`code`, benches parse the `x-ripple-*` headers) — see `toHttp`:
+ * `error`/`code`, benches parse the `x-ramose-*` headers) — see `toHttp`:
  *
  *   NotFound            404  { error }
  *   BadRequest          400  { error, stack? }        stack (`trace`) only off-prod
@@ -15,7 +15,7 @@
  *   Internal            500  { error, stack? }        stack (`trace`) only off-prod
  */
 
-import { QueryBudgetError } from "@ripple/core";
+import { QueryBudgetError } from "@ramose/core";
 import * as Data from "effect/Data";
 
 export class NotFound extends Data.TaggedError("NotFound")<{ readonly message?: string }> {}
@@ -32,19 +32,19 @@ export class UpstreamError extends Data.TaggedError("UpstreamError")<{ readonly 
 export class QueryBudgetExceeded extends Data.TaggedError("QueryBudgetExceeded")<{ readonly message: string; readonly code: string; readonly clause: string; readonly cells: number; readonly limit: number }> {}
 export class Internal extends Data.TaggedError("Internal")<{ readonly message: string; readonly trace?: string }> {}
 
-export type RippleError = NotFound | BadRequest | Unauthorized | UpstreamError | QueryBudgetExceeded | Internal;
+export type RamoseError = NotFound | BadRequest | Unauthorized | UpstreamError | QueryBudgetExceeded | Internal;
 
 const TAGS = new Set(["NotFound", "BadRequest", "Unauthorized", "UpstreamError", "QueryBudgetExceeded", "Internal"]);
 
 /** A tagged failure that was `throw`n inside an async route body. */
-export const isRippleError = (e: unknown): e is RippleError => typeof e === "object" && e !== null && TAGS.has((e as { _tag?: string })._tag ?? "");
+export const isRamoseError = (e: unknown): e is RamoseError => typeof e === "object" && e !== null && TAGS.has((e as { _tag?: string })._tag ?? "");
 
 /** Message shapes that have always been the caller's fault (400), not ours (500). */
 export const CLIENT_ERROR_RE = /unknown attribute|not bound|insufficient|parse|EDN|QueryError/i;
 
 /** Classify anything thrown by a route body into a tagged failure (same 413/400/500 split as before). */
-export function fromThrown(err: unknown, opts: { readonly stacks: boolean } = { stacks: false }): RippleError {
-  if (isRippleError(err)) return err;
+export function fromThrown(err: unknown, opts: { readonly stacks: boolean } = { stacks: false }): RamoseError {
+  if (isRamoseError(err)) return err;
   if (err instanceof QueryBudgetError) {
     return new QueryBudgetExceeded({ message: err.message, code: err.code, clause: err.clause, cells: err.cells, limit: err.limit });
   }
@@ -78,7 +78,7 @@ export interface HttpError {
 }
 
 /** Tagged failure → status + body fields. Pure; index.ts turns it into a `Response`. */
-export function toHttp(err: RippleError): HttpError {
+export function toHttp(err: RamoseError): HttpError {
   switch (err._tag) {
     case "NotFound":
       return { status: 404, body: { error: text(err.message, "not found") } };

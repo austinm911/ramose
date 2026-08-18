@@ -11,9 +11,9 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
-import { toJson } from "@ripple/core";
-import { dbPrefix, prefixedBucket } from "@ripple/storage";
-import { type RippleEnv, envInt } from "./env.ts";
+import { toJson } from "@ramose/core";
+import { dbPrefix, prefixedBucket } from "@ramose/storage";
+import { type RamoseEnv, envInt } from "./env.ts";
 import { DEFAULT_CONFIG, type SocketLike, type TransactorConfig, type TransactorHost } from "./host.ts";
 import { internalGate } from "./internal.ts";
 import { enforcedPolicy } from "./policy.ts";
@@ -21,25 +21,25 @@ import { Transactor, type TxAck } from "./transactor.ts";
 
 export type { TxAck };
 
-export function configFromEnv(env: RippleEnv): TransactorConfig {
+export function configFromEnv(env: RamoseEnv): TransactorConfig {
   return {
     ...DEFAULT_CONFIG,
-    indexIntervalMs: envInt(env.RIPPLE_INDEX_INTERVAL_MS, DEFAULT_CONFIG.indexIntervalMs),
-    indexTxThreshold: envInt(env.RIPPLE_INDEX_TX_THRESHOLD, DEFAULT_CONFIG.indexTxThreshold),
-    indexMaxTxsPerRun: envInt(env.RIPPLE_INDEX_MAX_TXS_PER_RUN, DEFAULT_CONFIG.indexMaxTxsPerRun),
-    logKeepTxs: envInt(env.RIPPLE_LOG_KEEP_TXS, DEFAULT_CONFIG.logKeepTxs),
-    gcEveryNIndexes: envInt(env.RIPPLE_GC_EVERY_N_INDEXES, DEFAULT_CONFIG.gcEveryNIndexes),
-    retainRoots: envInt(env.RIPPLE_RETAIN_ROOTS, DEFAULT_CONFIG.retainRoots),
-    maxBatch: envInt(env.RIPPLE_MAX_BATCH, DEFAULT_CONFIG.maxBatch),
-    timingYields: env.RIPPLE_TIMING_YIELDS === "1",
+    indexIntervalMs: envInt(env.RAMOSE_INDEX_INTERVAL_MS, DEFAULT_CONFIG.indexIntervalMs),
+    indexTxThreshold: envInt(env.RAMOSE_INDEX_TX_THRESHOLD, DEFAULT_CONFIG.indexTxThreshold),
+    indexMaxTxsPerRun: envInt(env.RAMOSE_INDEX_MAX_TXS_PER_RUN, DEFAULT_CONFIG.indexMaxTxsPerRun),
+    logKeepTxs: envInt(env.RAMOSE_LOG_KEEP_TXS, DEFAULT_CONFIG.logKeepTxs),
+    gcEveryNIndexes: envInt(env.RAMOSE_GC_EVERY_N_INDEXES, DEFAULT_CONFIG.gcEveryNIndexes),
+    retainRoots: envInt(env.RAMOSE_RETAIN_ROOTS, DEFAULT_CONFIG.retainRoots),
+    maxBatch: envInt(env.RAMOSE_MAX_BATCH, DEFAULT_CONFIG.maxBatch),
+    timingYields: env.RAMOSE_TIMING_YIELDS === "1",
   };
 }
 
-export class TransactorDO extends DurableObject<RippleEnv> {
+export class TransactorDO extends DurableObject<RamoseEnv> {
   private readonly core: Transactor;
   private dbName: string | undefined;
 
-  constructor(ctx: DurableObjectState, env: RippleEnv) {
+  constructor(ctx: DurableObjectState, env: RamoseEnv) {
     super(ctx, env);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
     const row = ctx.storage.sql.exec(`SELECT v FROM meta WHERE k = 'db'`).toArray()[0];

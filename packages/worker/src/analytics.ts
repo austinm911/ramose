@@ -2,7 +2,9 @@
  * Workers Analytics Engine, as an Effect service.
  *
  * `alchemy.run.ts` binds the `ripple_tx` dataset to the Worker under the env
- * name `ANALYTICS` (binding type `analytics_engine`), so both this Worker and
+ * name `ANALYTICS` (binding type `analytics_engine`) — physical dataset name
+ * pinned so existing telemetry keeps flowing; the product is Ramose — so both
+ * this Worker and
  * the two Durable Object classes it exports see `env.ANALYTICS`. The service
  * has the same shape as Alchemy's `Cloudflare.AnalyticsEngine.WriteDataset`
  * client (`writeDataPoint(dp) => Effect<void, DatasetError>`) and is a no-op
@@ -31,7 +33,7 @@ export interface DataPoint {
 }
 
 /** Runtime shape of an `analytics_engine` binding (structurally the same as
- *  `RippleEnv["ANALYTICS"]`; kept local so this module needs no workers-types). */
+ *  `RamoseEnv["ANALYTICS"]`; kept local so this module needs no workers-types). */
 export interface AnalyticsEngineDatasetLike {
   writeDataPoint(point: DataPoint): void;
 }
@@ -44,7 +46,7 @@ export interface AnalyticsClient {
   writeDataPoint(point: DataPoint): Effect.Effect<void, DatasetError>;
 }
 
-export class Analytics extends Context.Service<Analytics, AnalyticsClient>()("ripple/worker/Analytics") {}
+export class Analytics extends Context.Service<Analytics, AnalyticsClient>()("ramose/worker/Analytics") {}
 
 /** Client over an `analytics_engine` binding; a no-op client when it is unbound. */
 export const fromBinding = (binding: AnalyticsEngineDatasetLike | undefined): AnalyticsClient => ({
@@ -58,7 +60,7 @@ export const fromBinding = (binding: AnalyticsEngineDatasetLike | undefined): An
       : Effect.void,
 });
 
-/** The `ANALYTICS` binding, if `alchemy.run.ts` bound one (RippleEnv gains `ANALYTICS?` separately). */
+/** The `ANALYTICS` binding, if `alchemy.run.ts` bound one (RamoseEnv gains `ANALYTICS?` separately). */
 export const bindingOf = (env: unknown): AnalyticsEngineDatasetLike | undefined => {
   const b = (env as { ANALYTICS?: AnalyticsEngineDatasetLike } | undefined)?.ANALYTICS;
   return typeof b?.writeDataPoint === "function" ? b : undefined;
