@@ -166,8 +166,9 @@ export interface NavQuerySpec {
 }
 
 /**
- * A navigational query value. Phantom `R` is the row element type inferred
- * from `.select`.
+ * A navigational query value. Phantom `R` is the **rows array** the query
+ * resolves to (`readonly SelectResult<S>[]` after `.select`, `readonly Eid[]`
+ * without) — {@link Row} unwraps it to the element.
  */
 export interface NavQuery<R = unknown> {
   readonly _tag: "NavQuery";
@@ -606,6 +607,37 @@ export interface NavQueryBuilder<
   /** Freeze into a runnable query value. */
   build(): NavQuery<R>;
 }
+
+/**
+ * The row type a query yields — so an app names it once, from the query,
+ * instead of restating the shape by hand:
+ *
+ * ```ts
+ * const boardQuery = Ripple.query(Issue).select({ id: Issue.id, ... });
+ * type BoardRow = Ripple.Row<typeof boardQuery>;   // one row
+ * type BoardRows = Ripple.Rows<typeof boardQuery>; // the readonly array
+ * ```
+ *
+ * Takes the builder or the frozen {@link NavQuery} — the same inputs `db.q`
+ * takes. With no `.select`, the row is the matched entity id.
+ */
+export type Row<Q> = Q extends NavQuery<infer R>
+  ? RowOf<R>
+  : Q extends NavQueryBuilder<AnyNamespace, infer R>
+    ? RowOf<R>
+    : never;
+
+/**
+ * The readonly array of {@link Row}. For a `.select` query this is exactly
+ * what `db.q` resolves to. With no `.select` it is `readonly Eid[]`, one
+ * shade looser than `db.q`: a catalog-typed db re-brands the ids to
+ * `Eid<C>`, which a query — scoped to a namespace, not a catalog — cannot
+ * know.
+ */
+export type Rows<Q> = readonly Row<Q>[];
+
+/** The phantom result is the rows array; the row is its element. */
+type RowOf<R> = R extends readonly (infer E)[] ? E : never;
 
 const freeze = <R>(spec: NavQuerySpec): NavQuery<R> => ({
   _tag: "NavQuery",

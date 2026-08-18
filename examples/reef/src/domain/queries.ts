@@ -87,29 +87,9 @@ export const everyIssueEverQuery = Ripple.query(Issue).select({
   title: Issue.title,
 });
 
-/** One row of {@link boardQuery}. */
-export type BoardRow = {
-  readonly id: number;
-  readonly title: string;
-  readonly status: string;
-  readonly priority: number;
-  readonly rank: number;
-  readonly createdAt: Date;
-  readonly creator: Person;
-  readonly assignee?: Person | undefined;
-  readonly labels: readonly LabelRow[];
-};
+/** One row of {@link boardQuery} — inferred from the query, never restated. */
+export type BoardRow = Ripple.Row<typeof boardQuery>;
 
-export type Person = { readonly id: number; readonly name: string };
-export type LabelRow = {
-  readonly id: number;
-  readonly name: string;
-  readonly color: string;
-};
-
-export type CommentRow = {
-  readonly id: number;
-  readonly body: string;
-  readonly at: Date;
-  readonly author: Person;
-};
+export type Person = BoardRow["creator"];
+export type LabelRow = Ripple.Row<typeof labelsQuery>;
+export type CommentRow = Ripple.Row<ReturnType<typeof commentsQuery>>;

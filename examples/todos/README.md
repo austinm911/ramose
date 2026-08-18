@@ -47,7 +47,8 @@ const todoQuery = Ripple.query(Todo)
   .orderBy(Todo.createdAt, "asc")
   .select({ id: Todo.id, title: Todo.title, done: Todo.done, createdAt: Todo.createdAt });
 
-const todos = db.live(todoQuery);   // Stream<readonly TodoRow[], Ripple.DbError>
+const todos = db.live(todoQuery);   // Stream<Ripple.Rows<typeof todoQuery>, Ripple.DbError>
+type TodoRow = Ripple.Row<typeof todoQuery>;  // one row, named from the query
 ```
 
 Teardown is fiber interruption — `useLive`'s cleanup is one
