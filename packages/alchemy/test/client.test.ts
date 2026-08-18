@@ -397,30 +397,43 @@ describe("failures arrive tagged, not thrown", () => {
     await c.dispose();
   });
 
-  test("a dead transactor is Unavailable with its retry hint", async () => {
-    const peer = failing(503, {
-      error: "transactor aborted",
-      tag: "TransactorDead",
-      retryAfterMs: 500,
-    });
-    const c = client(peer);
-    const e = await runFail(c.ripple.db("movies", Movies).install());
-    expect(e._tag).toBe("Unavailable");
-    if (e._tag === "Unavailable") expect(e.retryAfterMs).toBe(500);
-    await c.dispose();
-  });
+  // Unavailable and NetworkError are transient: `send` walks its whole
+  // jittered retry ladder (up to ~6.4s) before the failure surfaces, which is
+  // longer than bun's default 5s test timeout.
+  const RETRY_LADDER_MS = 15_000;
 
-  test("a transport failure is NetworkError and keeps its cause", async () => {
-    const boom = new Error("connect ECONNREFUSED");
-    const peer = fakePeer();
-    const c = client(peer, {
-      fetch: (() => Promise.reject(boom)) as unknown as typeof fetch,
-    });
-    const e = await runFail(c.ripple.db("movies", Movies).install());
-    expect(e._tag).toBe("NetworkError");
-    if (e._tag === "NetworkError") expect(e.cause).toBe(boom);
-    await c.dispose();
-  });
+  test(
+    "a dead transactor is Unavailable with its retry hint",
+    async () => {
+      const peer = failing(503, {
+        error: "transactor aborted",
+        tag: "TransactorDead",
+        retryAfterMs: 500,
+      });
+      const c = client(peer);
+      const e = await runFail(c.ripple.db("movies", Movies).install());
+      expect(e._tag).toBe("Unavailable");
+      if (e._tag === "Unavailable") expect(e.retryAfterMs).toBe(500);
+      await c.dispose();
+    },
+    RETRY_LADDER_MS,
+  );
+
+  test(
+    "a transport failure is NetworkError and keeps its cause",
+    async () => {
+      const boom = new Error("connect ECONNREFUSED");
+      const peer = fakePeer();
+      const c = client(peer, {
+        fetch: (() => Promise.reject(boom)) as unknown as typeof fetch,
+      });
+      const e = await runFail(c.ripple.db("movies", Movies).install());
+      expect(e._tag).toBe("NetworkError");
+      if (e._tag === "NetworkError") expect(e.cause).toBe(boom);
+      await c.dispose();
+    },
+    RETRY_LADDER_MS,
+  );
 
   test("a non-JSON error body still classifies by status", async () => {
     const peer = fakePeer();
