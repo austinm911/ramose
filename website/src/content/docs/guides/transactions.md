@@ -14,8 +14,9 @@ const report = yield* db.transact(function* (tx) {
 });
 ```
 
-From the browser, wrap it in your runtime's `runPromise`
-(`await run(db.transact(…))`). From a Worker it is an ordinary Effect.
+From the browser, run it with `Effect.runPromise`
+(`await Effect.runPromise(db.transact(…))` — no environment is needed). From
+a Worker it is an ordinary Effect.
 
 ## The builder
 
