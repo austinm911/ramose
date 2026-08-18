@@ -48,6 +48,9 @@ import {
 } from "../ui.tsx";
 import { useLive } from "../useLive.ts";
 
+/** Every `Db` method needs no environment; the hooks port (#44) removes this. */
+const run = Effect.runPromise;
+
 const pulse = stylex.keyframes({
   "0%": { boxShadow: "0 0 0 0 rgba(63, 185, 112, 0.6)" },
   "100%": { boxShadow: "0 0 0 8px rgba(63, 185, 112, 0)" },
@@ -255,7 +258,7 @@ export const BoardScreen = ({
   /** Run a write; a policy denial (or any DbError) becomes a toast. */
   const attempt = useCallback(
     (effect: Effect.Effect<unknown, unknown>) => {
-      void workspace.run(
+      void run(
         Effect.catch(effect, (error: unknown) =>
           Effect.sync(() => {
             const e = error as { _tag?: string; message?: string };
@@ -264,29 +267,28 @@ export const BoardScreen = ({
         ),
       );
     },
-    [workspace, toast],
+    [toast],
   );
 
   const scrub = useCallback(
     (t: number) => {
       setPast((p) => (p === null ? p : { ...p, t }));
-      void workspace
-        .run(db.asOf(t).q(boardQuery))
+      void run(db.asOf(t).q(boardQuery))
         .then((rows) =>
           setPast((p) => (p === null || p.t !== t ? p : { ...p, rows })),
         )
         .catch(() => {});
     },
-    [db, workspace],
+    [db],
   );
 
   const enterTimeTravel = useCallback(() => {
     void (async () => {
       try {
-        const { t } = await workspace.info();
+        const { t } = await run(db.basis());
         const [rows, everything] = await Promise.all([
-          workspace.run(db.asOf(t).q(boardQuery)),
-          workspace.run(db.history.q(everyIssueEverQuery)),
+          run(db.asOf(t).q(boardQuery)),
+          run(db.history.q(everyIssueEverQuery)),
         ]);
         const live = new Set((board.rows ?? []).map((r) => r.id));
         const deleted = (everything as readonly { id: number; title: string }[]).filter(
@@ -298,7 +300,7 @@ export const BoardScreen = ({
         toast("error", err instanceof Error ? err.message : String(err));
       }
     })();
-  }, [workspace, db, board.rows, toast]);
+  }, [db, board.rows, toast]);
 
   useEscape(
     useCallback(() => {

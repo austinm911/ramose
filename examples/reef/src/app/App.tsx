@@ -1,7 +1,7 @@
 /**
  * Session-gated shell: Better Auth session → workspace picker → board.
  * Plain state routing (SPA, no RSC). The active workspace owns a Ripple
- * runtime; switching disposes it and builds the next one.
+ * client; switching closes it and connects the next one.
  *
  * Theme: the StyleX theme class goes on `<html>` (not the app root) so the
  * token overrides also reach UI portaled to `document.body` — dialogs and
@@ -10,6 +10,7 @@
  */
 
 import * as stylex from "@stylexjs/stylex";
+import * as Effect from "effect/Effect";
 import {
   createContext,
   useCallback,
@@ -131,12 +132,12 @@ const Root = () => {
       try {
         const workspace = await openWorkspace(slug);
         if (provision) {
-          await workspace.run(provisionWorkspace(workspace.db, user));
+          await Effect.runPromise(provisionWorkspace(workspace.db, user));
         }
-        const myEid = await workspace.run(
+        const myEid = await Effect.runPromise(
           ensureSelf(workspace.db, user, workspace.cls !== "viewer"),
         );
-        await current.current?.dispose();
+        await current.current?.close();
         current.current = workspace;
         setOpen({ workspace, name, myEid });
       } catch (err) {
@@ -150,7 +151,7 @@ const Root = () => {
 
   const leave = useCallback(async () => {
     setOpen(null);
-    await current.current?.dispose();
+    await current.current?.close();
     current.current = null;
   }, []);
 
