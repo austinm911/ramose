@@ -123,4 +123,17 @@ describe("provisioning mistakes throw synchronously", () => {
     expect(peer.calls).toEqual([]);
     expect(peer.sockets).toEqual([]);
   });
+
+  test("no fetch at all throws, and the message names connect", () => {
+    const ambient = globalThis.fetch;
+    // `typeof fetch` is "undefined" when the binding holds undefined
+    globalThis.fetch = undefined as unknown as typeof fetch;
+    try {
+      expect(() => connect({ url: "https://peer.example.com" })).toThrow(
+        /no global fetch.*Ripple\.connect/,
+      );
+    } finally {
+      globalThis.fetch = ambient;
+    }
+  });
 });

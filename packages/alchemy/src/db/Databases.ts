@@ -268,7 +268,9 @@ const configure = (
     const chosen = options.fetch ?? ambient;
     if (chosen === undefined) {
       return Effect.die(
-        new Error("ripple: no global fetch — pass `fetch` to Ripple.layer({ … })"),
+        new Error(
+          "ripple: no global fetch — pass `fetch` to Ripple.connect({ … }) or Ripple.layer({ … })",
+        ),
       );
     }
     const socket: SocketFactory | undefined =
