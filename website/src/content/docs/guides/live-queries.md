@@ -24,51 +24,18 @@ export const todoQuery = Ripple.query(Todo)
   });
 ```
 
-The stream is built once, where the component that reads it lives:
+## In React
+
+The hook is shipped — `useLive` from
+[`@ripple/react`](/reference/react/):
 
 ```tsx title="src/App.tsx"
+import { useLive } from "@ripple/react";
 import { db } from "./db.ts";
 import { todoQuery } from "./todos.ts";
 
-// built once, outside render — see the caution below
-export const todos = db.live(todoQuery);
-// Stream<readonly { id: number; title: string; done: boolean; createdAt: Date }[], DbError>
-```
-
-## In React
-
-Ripple ships no React package. A stream becomes state in about a dozen lines,
-and the todos example keeps them in one file you can copy:
-
-```ts title="src/useLive.ts"
-import type * as Cause from "effect/Cause";
-import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
-import * as Stream from "effect/Stream";
-import { useEffect, useState } from "react";
-
-export const useLive = <A, E>(stream: Stream.Stream<A, E>) => {
-  const [s, set] = useState<{ rows?: A; error?: Cause.Cause<E> }>({});
-  useEffect(() => {
-    const fiber = Effect.runFork(
-      Stream.runForEach(stream, (rows) => Effect.sync(() => set({ rows }))).pipe(
-        Effect.catchCause((error) =>
-          Effect.sync(() => set((p) => ({ ...p, error }))),
-        ),
-      ),
-    );
-    return () => void Effect.runFork(Fiber.interrupt(fiber));
-  }, [stream]);
-  return s;
-};
-```
-
-```tsx title="src/App.tsx"
-import { todos } from "./todos.ts";
-import { useLive } from "./useLive.ts";
-
 export const TodoList = () => {
-  const { rows, error } = useLive(todos);
+  const { rows, error } = useLive(db, todoQuery);
   if (error !== undefined) return <p>offline…</p>;
   if (rows === undefined) return <p>loading…</p>;
   return (
@@ -81,10 +48,43 @@ export const TodoList = () => {
 };
 ```
 
-:::caution[Build the stream outside render]
-`db.live(query)` creates a new stream every time it is called, and the hook
-resubscribes whenever its dependency changes. Call it once at module scope (or
-in a `useMemo` with stable inputs) — never in the body of a component.
+It owns the memoisation (keyed on `[db, query]`, so nothing re-subscribes per
+render), resets when the inputs change, and exposes `ticks` — the number of
+emissions after the first, i.e. how many times the basis moved under this
+subscription. Effect users who built the stream themselves pass it directly:
+`useLive(stream)` re-subscribes when the stream's identity changes.
+
+<details>
+<summary>What the hook does</summary>
+
+Drain the stream on its own fiber; interrupt the fiber on cleanup — that is
+the whole lifecycle, because `live` requires nothing and teardown is fiber
+interruption:
+
+```tsx
+useEffect(() => {
+  setState(INITIAL); // new inputs, blank slate
+  const fiber = Effect.runFork(
+    Stream.runForEach(stream, (rows) => Effect.sync(() => setState({ rows, … }))).pipe(
+      Effect.catchCause((error) => Effect.sync(() => setState((p) => ({ ...p, error })))),
+    ),
+  );
+  return () => void Effect.runFork(Fiber.interrupt(fiber));
+}, [stream]);
+```
+
+Only a terminal failure reaches the `catchCause`: interruption skips
+recovery, and completion (a pinned `asOf` / `history` view emitted its one
+pass) is not a `Cause` — the last `rows` stay.
+
+</details>
+
+:::caution[The stream form builds its stream outside render]
+`db.live(query)` creates a new stream every time it is called, and
+`useLive(stream)` re-subscribes whenever the stream's identity changes. When
+you pass a stream, build it once at module scope (or in a `useMemo` with
+stable inputs) — never in the body of a component. The `useLive(db, query)`
+form has no such caveat.
 :::
 
 ## Where live queries work
