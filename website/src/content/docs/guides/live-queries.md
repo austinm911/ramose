@@ -14,14 +14,16 @@ The query is a value, and it lives with your other queries:
 import * as Ripple from "@ripple/alchemy/db";
 import { Todo } from "../schema.ts";
 
+export const todoShape = {
+  id: Todo.id,
+  title: Todo.title,
+  done: Todo.done,
+  createdAt: Todo.createdAt,
+} as const;
+
 export const todoQuery = Ripple.query(Todo)
   .orderBy(Todo.createdAt, "asc")
-  .select({
-    id: Todo.id,
-    title: Todo.title,
-    done: Todo.done,
-    createdAt: Todo.createdAt,
-  });
+  .select(todoShape);
 ```
 
 ## In React
@@ -34,19 +36,22 @@ import { useLive } from "@ripple/react";
 import { db } from "./db.ts";
 import { todoQuery } from "./todos.ts";
 
-export const TodoList = () => {
+const TodoList = () => {
   const { rows, error } = useLive(db, todoQuery);
   if (error !== undefined) return <p>offline…</p>;
   if (rows === undefined) return <p>loading…</p>;
   return (
     <ul>
       {rows.map((row) => (
-        <li key={row.id}>{row.title}</li>
+        <TodoRowView key={row.id} row={row} />
       ))}
     </ul>
   );
 };
 ```
+
+This is `examples/todos/src/App.tsx` as shipped (`TodoRowView` is the row —
+a checkbox and a delete button, each write run with `useTransact`).
 
 It owns the memoisation (keyed on the view's structural key and `query`, so
 nothing re-subscribes per render — an inline `db.asOf(t)` included), resets
