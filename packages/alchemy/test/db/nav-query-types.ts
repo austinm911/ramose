@@ -316,13 +316,85 @@ query(User).select({ best: User.bestFriend.limit(1).select({ name: User.name }) 
 // @ts-expect-error a scalar attribute is not a collection
 query(User).select({ name: User.name.where(User.name.eq("Ada")) });
 
-/** a card-many *scalar* has no element entity to root a predicate at */
+// ── `.each`: the element of a card-many scalar ─────────────────────────────
+
+/**
+ * A cardinality-many scalar has elements too — its values — and `.each` is
+ * how they are named. It keeps the attribute's value type, so the predicates
+ * stay typed, and it is in scope only inside that attribute's own
+ * `every` / `none` / `some` / `where` / `orderBy`.
+ */
 const Post = Namespace("post", {
+  title: Attr(Schema.String),
   tags: Attr(Schema.String, { cardinality: "many" }),
+  scores: Attr(Schema.Number, { cardinality: "many" }),
 });
-query(Post).select({
-  // @ts-expect-error … so it is not a collection either, for now
-  tags: Post.tags.where(Post.tags.eq("x")),
+const Blog = Catalog({ post: Post });
+declare const blog: Db<typeof Blog>;
+
+query(Post).where(
+  Post.tags.every(Post.tags.each.startsWith("a")),
+  Post.tags.none(Post.tags.each.eq("spam")),
+  Post.tags.some(Post.tags.each.in(["a", "b"])),
+  Post.scores.every(Post.scores.each.gt(3)),
+  // combinators nest around them as usual
+  or(
+    Post.tags.some(Post.tags.each.matches(/^a/)),
+    not(Post.scores.none(Post.scores.each.lte(0))),
+  ),
+);
+
+/** a constrained card-many scalar is a select field of its own: the array */
+const scalarCollection = blog.q(
+  query(Post).select({
+    title: Post.title,
+    all: Post.tags,
+    tags: Post.tags
+      .where(Post.tags.each.startsWith("a"))
+      .orderBy(Post.tags.each, "desc")
+      .offset(1)
+      .limit(3),
+  }),
+);
+type _scalarCollection = Expect<
+  Equal<
+    Effect.Success<typeof scalarCollection>,
+    readonly {
+      readonly title: string;
+      readonly all: readonly string[];
+      readonly tags: readonly string[];
+    }[]
+  >
+>;
+
+// @ts-expect-error `:post/tags` holds strings, `.each` is one of them
+query(Post).where(Post.tags.every(Post.tags.each.eq(42)));
+
+// @ts-expect-error a cardinality-one attribute is its value already
+query(Post).where(Post.title.each.eq("x"));
+
+// @ts-expect-error the element of another collection is not in scope here
+query(Post).where(Post.tags.every(Post.scores.each.gt(3)));
+
+// @ts-expect-error … nor inside another collection's nested where
+Post.tags.where(Post.scores.each.gt(3));
+
+// @ts-expect-error … nor as another collection's sort key
+Post.tags.orderBy(Post.scores.each);
+
+// @ts-expect-error an element cursor means nothing in the query's own where
+query(Post).where(Post.tags.each.eq("a"));
+
+// @ts-expect-error … or in its orderBy: a row has the collection, not a value
+query(Post).orderBy(Post.tags.each);
+
+// @ts-expect-error … or as a select field: the field is the attribute
+query(Post).select({ tags: Post.tags.each });
+
+/** a card-many *ref* still needs its shape — a scalar one has none to ask for */
+query(User).select({
+  // @ts-expect-error a filtered ref collection is not a field until it is shaped
+  friends: User.friends.where(User.name.eq("Ada")),
 });
 
 // @ts-expect-error `:author/name` is not a ref, so it has no backlink
@@ -374,6 +446,35 @@ query(Person).where(Person.boss.boss.name.eq(3));
 
 // @ts-expect-error a self-ref exposes only the namespace's attributes
 Person.boss.nope;
+
+// ── a select field is a direct attribute, not a flattened path ─────────────
+
+/**
+ * A path is what a predicate and a sort key take; a *select field* names one
+ * attribute of the entity being pulled, so the shape of a hop is the nested
+ * select — `{ author: Book.author.select({ name: Author.name }) }`, never
+ * `{ authorName: Book.author.name }`, which would ask the book for
+ * `:author/name`.
+ */
+library.q(
+  query(Book).select({
+    title: Book.title,
+    author: Book.author.select({ name: Author.name }),
+  }),
+);
+query(Person).select({ boss: Person.boss.select({ name: Person.name }) });
+
+// @ts-expect-error `:author/name` is a hop away — use a nested select
+query(Book).select({ authorName: Book.author.name });
+
+// @ts-expect-error `.optional` does not make a hop a direct attribute
+query(Book).select({ authorName: Book.author.name.optional });
+
+// @ts-expect-error a nested select rooted two hops in is a path too
+query(Org).select({ friends: Org.lead.friends.select({ name: Person.name }) });
+
+// @ts-expect-error a backlink walked one hop further is a path as well
+query(Author).select({ authorName: Book.author.reverse.author.name });
 
 // ── `Row` / `Rows` name the inferred row type ───────────────────────────────
 
