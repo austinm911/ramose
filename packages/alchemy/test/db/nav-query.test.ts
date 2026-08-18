@@ -24,6 +24,7 @@ import {
   Instant,
   Namespace,
   Ref,
+  all,
   cardsOf,
   finalizeNavResult,
   pathOf,
@@ -2673,6 +2674,172 @@ describe("paging end to end: the peer pages, the client keeps what it gets", () 
     expect(titles.map((r) => r.title)).toEqual(["a-alice", "b-nameless", "c-bob", "d-nobody"]);
     const page = await run(db.q(query(Todo).orderBy(Todo.title, "desc").offset(1).limit(2)));
     expect(page).toEqual([all[2]!, all[1]!]);
+    await peer.dispose();
+  });
+});
+
+describe("lowering: `all(N)` is the peer's wildcard, not a client-side map", () => {
+  test("it lowers to the pull pattern `[\"*\"]`, and to no required clause", () => {
+    const { query: q, pullMap } = lowerNavQuery(
+      query(Todo).select(all(Todo)).build(),
+    );
+    // the scope clause and nothing else: every key of a wildcard row is
+    // optional, so there is no field whose absence could drop the row
+    expect(q).toEqual({ find: [["pull", "?e", ["*"]]], where: [todoScope] });
+    // what travels is the peer's own pattern — the client never expands the
+    // wildcard into a map of the namespace's attributes
+    expect(pullMap).toEqual(["*"]);
+  });
+
+  test("where / orderBy / offset / limit compose with it", () => {
+    const { query: q } = lowerNavQuery(
+      query(Todo)
+        .where(Todo.done.eq(false))
+        .orderBy(Todo.title)
+        .offset(1)
+        .limit(2)
+        .select(all(Todo))
+        .build(),
+    );
+    expect(q.find).toEqual([["pull", "?e", ["*"]]]);
+    expect(q.where).toEqual([
+      todoScope,
+      ["?e", ":todo/done", false],
+      [
+        "or-join",
+        ["?e", "?o0"],
+        ["and", ["?e", ":todo/title", "?o0"]],
+        [
+          "and",
+          ["not", ["?e", ":todo/title", "_"]],
+          [["ground", [null]], ["?o0", "..."]],
+        ],
+      ],
+    ]);
+    expect(q.order).toEqual([{ var: "?o0", dir: "asc", empty: "last" }]);
+    expect(q.offset).toBe(1);
+    expect(q.limit).toBe(2);
+  });
+
+  /**
+   * The engine does answer a nested `{:todo/owner [*]}`, but the row it makes
+   * is keyed by the *target's* idents inside a row keyed by the caller's
+   * names. Rejected at the type level (see nav-query-types.ts) and here, where
+   * the cast defeats the type.
+   */
+  test("`all(N)` as a field of a shape is rejected, top-level and nested", () => {
+    expect(() =>
+      lowerNavQuery(
+        query(Todo).select({ everything: all(Todo) as never }).build(),
+      ),
+    ).toThrow(/all\(N\) is the whole shape of a query/);
+    expect(() =>
+      lowerNavQuery(
+        query(Todo)
+          .select({ owner: Todo.owner.select(all(User) as never) })
+          .build(),
+      ),
+    ).toThrow(/all\(N\) is the whole shape of a query/);
+  });
+});
+
+describe("`all(N)` end to end: the peer's wildcard row", () => {
+  const seed = async (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
+    const db = peer.ripple.db("todos", Todos);
+    await run(db.install());
+    await run(
+      db.transact(function* (tx) {
+        const bob = yield* tx.entity();
+        yield* bob.add(User.name, "Bob");
+        const alice = yield* tx.entity();
+        yield* alice.add(User.name, "Alice");
+        yield* alice.add(User.tags, "admin");
+        yield* alice.add(User.tags, "eng");
+        yield* alice.add(User.friends, bob.eid as never);
+        const ship = yield* tx.entity();
+        yield* ship.add(Todo.title, "ship");
+        yield* ship.add(Todo.done, false);
+        yield* ship.add(Todo.owner, alice.eid as never);
+        // no `:todo/done`, no `:todo/owner`, no `:todo/due`
+        const bare = yield* tx.entity();
+        yield* bare.add(Todo.title, "bare");
+      }),
+    );
+    return db;
+  };
+
+  test("rows are ident-keyed maps: `:db/id`, refs as `{\":db/id\"}`", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+
+    const rows = await run(
+      db.q(query(Todo).orderBy(Todo.title).select(all(Todo))),
+    );
+    expect(rows.map((r) => r[":todo/title"])).toEqual(["bare", "ship"]);
+
+    const ship = rows[1]!;
+    expect(typeof ship[":db/id"]).toBe("number");
+    expect(ship[":todo/done"]).toBe(false);
+    expect(ship[":todo/owner"]).toEqual({ ":db/id": expect.any(Number) });
+
+    // the bare todo carries neither datom, so the map carries neither key —
+    // and it is a row all the same
+    const bare = rows[0]!;
+    expect(bare[":todo/done"]).toBeUndefined();
+    expect(":todo/owner" in bare).toBe(false);
+    expect(Object.keys(bare)).toEqual([":db/id", ":todo/title"]);
+
+    await peer.dispose();
+  });
+
+  test("a cardinality-many attribute is an array, scalars and refs alike", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+
+    const rows = await run(
+      db.q(query(User).orderBy(User.name).select(all(User))),
+    );
+    const [alice, bob] = rows;
+    expect(alice?.[":user/name"]).toBe("Alice");
+    expect(alice?.[":user/tags"]).toEqual(["admin", "eng"]);
+    expect(alice?.[":user/friends"]).toEqual([{ ":db/id": bob![":db/id"] }]);
+    // Bob has neither: the keys are absent, not empty arrays
+    expect(bob?.[":user/tags"]).toBeUndefined();
+    expect(bob?.[":user/friends"]).toBeUndefined();
+
+    await peer.dispose();
+  });
+
+  test("the row is exactly what `db.pull(eid, [\"*\"])` answers", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+
+    const rows = await run(
+      db.q(query(Todo).orderBy(Todo.title).select(all(Todo))),
+    );
+    for (const row of rows) {
+      const eid = row[":db/id"] as never;
+      // the ident-array escape: the same wildcard, asked of one entity
+      expect(await run(db.pull(eid, ["*"] as const))).toEqual(row as never);
+      // …and the marker as a pull pattern lowers to that same `["*"]`
+      expect(await run(db.pull(eid, all(Todo)))).toEqual(row as never);
+    }
+
+    await peer.dispose();
+  });
+
+  test("`.limit` counts rows: the peer pages the wildcard like any select", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    peer.seen.length = 0;
+
+    const rows = await run(
+      db.q(query(Todo).orderBy(Todo.title).limit(1).select(all(Todo))),
+    );
+    expect(rows.map((r) => r[":todo/title"])).toEqual(["bare"]);
+    expect(peer.seen[0]?.op).toBe("q");
+    expect(peer.seen[0]?.rows).toBe(1);
+
     await peer.dispose();
   });
 });

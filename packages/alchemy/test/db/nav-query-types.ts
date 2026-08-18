@@ -17,6 +17,7 @@ import {
   type Expect,
   Instant,
   Namespace,
+  all,
   not,
   or,
   query,
@@ -659,3 +660,50 @@ const histEids = hist.q(query(User));
 type _histEids = Expect<
   Equal<Effect.Success<typeof histEids>, readonly Eid<typeof Movies>[]>
 >;
+
+// ── `all(N)`: the wildcard row, keyed by the namespace's idents ────────────
+
+const everything = db.q(query(User).select(all(User)));
+type Everything = Effect.Success<typeof everything>[number];
+
+/** the wildcard always carries `:db/id` — it is the entity, not a datom */
+type _allId = Expect<Equal<Everything[":db/id"], number>>;
+/**
+ * Every attribute is optional: a datom the entity does not have is a key the
+ * map does not have. (The runtime map is a *superset* of these keys — the
+ * entity may carry other namespaces' datoms too — so this is a lower bound.)
+ */
+type _allName = Expect<Equal<Everything[":user/name"], string | undefined>>;
+type _allAge = Expect<Equal<Everything[":user/age"], number | undefined>>;
+/** a ref reads as the entity the peer answers with, not as its id */
+type _allBest = Expect<
+  Equal<Everything[":user/bestFriend"], { readonly ":db/id": number } | undefined>
+>;
+/** cardinality-many is an array of those */
+type _allFriends = Expect<
+  Equal<
+    Everything[":user/friends"],
+    readonly { readonly ":db/id": number }[] | undefined
+  >
+>;
+/** the row is selected, so `db.q` does not re-brand it as `readonly Eid[]` */
+type _allNotEids = Expect<
+  Equal<
+    Effect.Success<typeof everything> extends readonly Eid<typeof Movies>[]
+      ? true
+      : false,
+    false
+  >
+>;
+/** `Row` / `Rows` name it like any other selected row */
+const allQuery = query(User).select(all(User));
+type _allRow = Expect<Equal<Row<typeof allQuery>, Everything>>;
+type _allRows = Expect<Equal<Rows<typeof allQuery>, readonly Everything[]>>;
+
+// @ts-expect-error a wildcard of another namespace is not this query's row
+query(User).select(all(Movie));
+
+query(User).select({
+  // @ts-expect-error `all(N)` is the whole shape of a query, never one field
+  everything: all(User),
+});
