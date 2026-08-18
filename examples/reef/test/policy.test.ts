@@ -7,10 +7,11 @@
 import { describe, expect, test } from "bun:test";
 import { parsePolicy } from "@ripple/core/policy/ast.ts";
 import * as Ripple from "@ripple/alchemy";
+import { classOfRole } from "@ripple/better-auth";
 import { compiledPolicy, policy } from "../src/domain/policy.ts";
 import { allShapes, boardShape } from "../src/domain/queries.ts";
 import { Issue, Reef } from "../src/domain/schema.ts";
-import { CLASSES, classOfRole } from "../src/domain/shared.ts";
+import { CLASSES } from "../src/domain/shared.ts";
 
 describe("reef policy", () => {
   test("compiles to wire JSON that core accepts", () => {
@@ -75,6 +76,8 @@ describe("reef policy", () => {
   });
 });
 
+// The mapping lives in `@ripple/better-auth` now (the mint plugin's
+// default); pinned here so it stays in step with what the policy declares.
 describe("role → class mapping", () => {
   test("owner and admin mint the admin class", () => {
     expect(classOfRole("owner")).toBe("admin");
