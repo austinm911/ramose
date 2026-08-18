@@ -43,11 +43,11 @@ the PR closes. Merges to `master` / `main` publish the `prod` stage.
 The Cloudflare Worker keeps its original physical name, `ripple-docs`, so the
 existing deployment is updated rather than orphaned; its workers.dev hostname
 [ripple-docs.tvanhens.workers.dev](https://ripple-docs.tvanhens.workers.dev)
-stays live. The public site is **https://ramose.ai**, attached as a custom
-domain: set `RAMOSE_DOCS_DOMAIN=ramose.ai` as a variable on the Development
-environment once the `ramose.ai` zone exists in the Cloudflare account. Until
-that variable is set, no custom domain is attached (a missing zone would fail
-the deploy). See `.github/workflows/docs-preview.yml`,
+stays live. The public site is **https://ramose.ai** — the default custom
+domain in `alchemy.run.ts` (the zone is onboarded in the Cloudflare account;
+Alchemy manages the DNS record and certificate). Set `RAMOSE_DOCS_DOMAIN` on
+the Development environment to override the hostname. See
+`.github/workflows/docs-preview.yml`,
 `.github/workflows/docs-publish.yml`, and the "Docs previews" / "Docs
 production" sections of `CONTRIBUTING.md`.
 

@@ -18,15 +18,12 @@
  *
  * `--stage prod` pins the Worker name to `ripple-docs` so the URL
  * https://ripple-docs.tvanhens.workers.dev stays stable across deploys
- * (and after CI cache eviction). Merges to master publish this stage via
+ * (and after CI cache eviction), and serves the site at https://ramose.ai:
+ * the zone is onboarded in the Cloudflare account, and Alchemy manages the
+ * DNS record and edge certificate. `RAMOSE_DOCS_DOMAIN` overrides the
+ * hostname — on any stage, which is also how the domain-attach path is
+ * tested without touching prod. Merges to master publish this stage via
  * `.github/workflows/docs-publish.yml`.
- *
- * Custom domain: set `RAMOSE_DOCS_DOMAIN=ramose.ai` to attach it. This stays
- * opt-in rather than defaulting to "ramose.ai" on prod, because Cloudflare
- * only accepts a custom domain whose zone already exists in the account —
- * defaulting it would break every production deploy until the zone is
- * onboarded. Once `ramose.ai` is in the account, set the variable (see
- * website/README.md) and the site is served from it.
  *
  * No `main` is provided, so no Worker script is uploaded: Cloudflare's asset
  * layer answers every request, with Starlight's built 404.html serving misses.
@@ -45,9 +42,10 @@ export const Website = Cloudflare.Website.StaticSite(
   "Website",
   Effect.gen(function* () {
     const stage = yield* Alchemy.Stage;
-    // Opt-in: attaching a domain whose zone is not in the account fails the
-    // deploy, so ramose.ai is not defaulted here. See the header comment.
-    const domain = process.env.RAMOSE_DOCS_DOMAIN;
+    // `||` (not `??`): CI passes the variable through unconditionally, so an
+    // unset GitHub variable arrives as "" and must still mean "the default".
+    const domain =
+      process.env.RAMOSE_DOCS_DOMAIN || (stage === "prod" ? "ramose.ai" : undefined);
     return {
       cwd: here,
       command: "bun run build",
@@ -59,7 +57,7 @@ export const Website = Cloudflare.Website.StaticSite(
       // per-stage name so `pr-<n>` Workers never collide with production.
       // `ripple-docs` is pinned pre-rebrand infrastructure; do not rename.
       ...(stage === "prod" ? { name: "ripple-docs" } : {}),
-      ...(stage === "prod" && domain ? { domain } : {}),
+      ...(domain ? { domain } : {}),
     };
   }),
 );
