@@ -160,6 +160,34 @@ describe("the basis is the wake", () => {
     await c.dispose();
   });
 
+  test("a tick the rows did not notice is not an emission", async () => {
+    const state = { t: 5, rows: [row("Ada")] };
+    const peer = peerAt(state);
+    const c = client(peer);
+    const live = collect(c.ripple.db("movies", Movies).live(names));
+    await settle();
+    expect(live.seen).toHaveLength(1);
+
+    // the basis moves (some other write), the relation does not
+    state.t = 9;
+    peer.push({ op: "t", t: 9 });
+    await settle();
+    // ...so the query re-ran at the new fence but nothing was re-emitted
+    expect(peer.frameOps("q").map((f) => f.minT)).toEqual([undefined, 9]);
+    expect(live.seen).toHaveLength(1);
+
+    // the next tick that changes the rows is news again
+    state.t = 12;
+    state.rows = [row("Ada"), row("Bob")];
+    peer.push({ op: "t", t: 12 });
+    await settle();
+    expect(live.seen).toHaveLength(2);
+    expect(live.seen[1]).toEqual([{ name: "Ada" }, { name: "Bob" }]);
+
+    await live.stop();
+    await c.dispose();
+  });
+
   test("a local transact bumps the basis, so a standing live re-runs", async () => {
     const state = { t: 5, rows: [row("Ada")], ackT: 30 };
     const peer = peerAt(state);
