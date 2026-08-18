@@ -7,10 +7,12 @@
 # website/alchemy.run.ts, so a cache miss still adopts the existing Worker
 # (`--adopt`) instead of minting a new workers.dev hostname.
 #
-# Optional: set RIPPLE_DOCS_DOMAIN as a variable on the Development
-# environment to attach a custom domain. The zone must already exist in
-# the Cloudflare account. Until then the site is
-# https://ripple-docs.tvanhens.workers.dev.
+# Custom domain: the public site is https://ramose.ai. Set RAMOSE_DOCS_DOMAIN
+# (= ramose.ai) as a variable on the Development environment to attach it —
+# the zone must already exist in the Cloudflare account, which is why the
+# stack does not default it. Until then the site is
+# https://ripple-docs.tvanhens.workers.dev. RIPPLE_DOCS_DOMAIN is still read
+# as a fallback so an already-configured repo variable keeps working.
 #
 # Credentials come from the GitHub Environment "Development" — same as
 # docs-preview.yml and e2e-cloudflare.yml; see CONTRIBUTING.md.
@@ -52,7 +54,7 @@ jobs:
           CI: "1"
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          RIPPLE_DOCS_DOMAIN: ${{ vars.RIPPLE_DOCS_DOMAIN }}
+          RAMOSE_DOCS_DOMAIN: ${{ vars.RAMOSE_DOCS_DOMAIN || vars.RIPPLE_DOCS_DOMAIN }}
           ALCHEMY_STATE: local
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
@@ -60,7 +62,7 @@ jobs:
             exit 1
           fi
           bun alchemy deploy website/alchemy.run.ts --stage prod --yes --adopt | tee deploy.log
-          URL=$(grep -oE 'https://[^" ]+' deploy.log | grep -E 'ripplegraph\.ai|workers\.dev' | tail -1)
+          URL=$(grep -oE 'https://[^" ]+' deploy.log | grep -E 'ramose\.ai|workers\.dev' | tail -1)
           if [ -z "$URL" ]; then
             echo "::error::Deploy finished but no site URL found in the output."
             exit 1

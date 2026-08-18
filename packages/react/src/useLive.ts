@@ -19,7 +19,7 @@ import type {
   DbError,
   QueryInput,
   ReadDb,
-} from "@ripple/alchemy/db";
+} from "@ramose/alchemy/db";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";

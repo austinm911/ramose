@@ -31,9 +31,9 @@ import {
   query as runQuery,
   pull as runPull,
   toJson,
-} from "@ripple/core";
-import { type R2Like, R2NodeStore, dbPrefix, prefixedBucket, readCurrentRoot, readLogSince, type ByteTier } from "@ripple/storage";
-import { type RippleEnv, envInt, internalGate, internalHeaders } from "@ripple/transactor";
+} from "@ramose/core";
+import { type R2Like, R2NodeStore, dbPrefix, prefixedBucket, readCurrentRoot, readLogSince, type ByteTier } from "@ramose/storage";
+import { type RamoseEnv, envInt, internalGate, internalHeaders } from "@ramose/transactor";
 import * as Effect from "effect/Effect";
 import { type Basis, dbFromBasis, makeBasis } from "./basis.ts";
 import { replicaErrorResponse, toReplicaError } from "./errors.ts";
@@ -59,7 +59,7 @@ class SqliteTier implements ByteTier {
   }
 }
 
-export class QueryReplicaDO extends DurableObject<RippleEnv> {
+export class QueryReplicaDO extends DurableObject<RamoseEnv> {
   private readonly sql: SqlStorage;
   private ready: Promise<void> | undefined;
   private store!: R2NodeStore;
@@ -72,7 +72,7 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
   readonly stats = { frames: 0, gaps: 0, reconnects: 0, rootFlips: 0, basisServed: 0, queries: 0, budgetAborts: 0 };
   private readonly log = componentLogger("replica");
 
-  constructor(ctx: DurableObjectState, env: RippleEnv) {
+  constructor(ctx: DurableObjectState, env: RamoseEnv) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
   }
@@ -330,9 +330,9 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
         const db = await dbFromBasis(this.store, basis, { asOf: typeof body.asOf === "number" ? body.asOf : undefined, history: !!body.history });
         this.stats.queries++;
         const hdrs = () => ({
-          "x-ripple-basis-t": String(basis.t),
-          "x-ripple-r2-gets": String(this.store.stats.r2Gets - before.r2Gets),
-          "x-ripple-cache-hits": String(this.store.stats.cacheHits + this.store.stats.tierHits + this.store.stats.memHits - before.cacheHits - before.tierHits - before.memHits),
+          "x-ramose-basis-t": String(basis.t),
+          "x-ramose-r2-gets": String(this.store.stats.r2Gets - before.r2Gets),
+          "x-ramose-cache-hits": String(this.store.stats.cacheHits + this.store.stats.tierHits + this.store.stats.memHits - before.cacheHits - before.tierHits - before.memHits),
         });
         if (typeof body.entity === "number") return json({ t: basis.t, entity: await db.entity(body.entity) }, 200, hdrs());
         if (body.pull) {
@@ -341,7 +341,7 @@ export class QueryReplicaDO extends DurableObject<RippleEnv> {
           return json({ t: basis.t, result: await runPull(db, eid, body.pull.pattern as any) }, 200, hdrs());
         }
         const stats: QueryStats = { clauses: [] };
-        const result = await runQuery(db, body.query as any, body.inputs ?? [], { stats, maxCells: envInt(this.env.RIPPLE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS) });
+        const result = await runQuery(db, body.query as any, body.inputs ?? [], { stats, maxCells: envInt(this.env.RAMOSE_QUERY_MAX_CELLS, DEFAULT_QUERY_MAX_CELLS) });
         if (this.stats.queries % 100 === 1) this.log.debug("replica.query", { db: this.dbName, t: basis.t, rows: Array.isArray(result) ? result.length : 1, novelty: this.entries.length, peakCells: stats.budget?.peakCells });
         return json({ t: basis.t, root: basis.root.t, result, ...(body.explain ? { explain: stats.clauses, budget: stats.budget } : {}) }, 200, hdrs());
       }

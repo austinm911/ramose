@@ -1,8 +1,8 @@
 /**
  * The ops HTTP harness — **not** a client SDK and not a package.
  *
- * `docs/API.md` deletes `@ripple/client`: the typed surface is
- * `@ripple/alchemy/db` (`Ripple.layer` + `Databases` + `Db<C>`), and HTTP is
+ * `docs/API.md` deletes `@ramose/client`: the typed surface is
+ * `@ramose/alchemy/db` (`Ramose.layer` + `Databases` + `Db<C>`), and HTTP is
  * Worker internals. What is left here is the *ops* half that no public API
  * names — raw datalog strings, the metrics response headers, and the admin
  * routes `docs/RUNBOOK.md` documents (`/info`, `/admin/index`, `/admin/gc`,
@@ -13,13 +13,13 @@
  * `packages/**` imports it.
  */
 
-import { fromJson, toJson } from "@ripple/core";
-import type { TxData } from "@ripple/core";
+import { fromJson, toJson } from "@ramose/core";
+import type { TxData } from "@ramose/core";
 
 export interface PeerOptions {
   token?: string;
   fetch?: typeof fetch;
-  /** Extra request headers, e.g. `x-ripple-replica-hint: enam`, `x-ripple-cache-basis: 1`, `x-ripple-cache-mode: peer` (read-path knobs). */
+  /** Extra request headers, e.g. `x-ramose-replica-hint: enam`, `x-ramose-cache-basis: 1`, `x-ramose-cache-mode: peer` (read-path knobs). */
   headers?: Record<string, string>;
   /**
    * How long (ms) to keep retrying transient Cloudflare platform errors
@@ -111,7 +111,7 @@ export class Peer {
     }
     const out = fromJson(parsed) as any;
     if (out && typeof out === "object" && !Array.isArray(out)) {
-      out.meta = { ms: num(res.headers.get("x-ripple-ms")), r2Gets: num(res.headers.get("x-ripple-r2-gets")), cacheHits: num(res.headers.get("x-ripple-cache-hits")), colo: res.headers.get("x-ripple-colo") ?? undefined, replicaHint: res.headers.get("x-ripple-replica-hint") ?? undefined, basisT: num(res.headers.get("x-ripple-basis-t")), basisHit: res.headers.get("x-ripple-basis-hit") === "1", basisReason: res.headers.get("x-ripple-basis-reason") ?? undefined, basisBehind: res.headers.get("x-ripple-basis-behind") === "1" };
+      out.meta = { ms: num(res.headers.get("x-ramose-ms")), r2Gets: num(res.headers.get("x-ramose-r2-gets")), cacheHits: num(res.headers.get("x-ramose-cache-hits")), colo: res.headers.get("x-ramose-colo") ?? undefined, replicaHint: res.headers.get("x-ramose-replica-hint") ?? undefined, basisT: num(res.headers.get("x-ramose-basis-t")), basisHit: res.headers.get("x-ramose-basis-hit") === "1", basisReason: res.headers.get("x-ramose-basis-reason") ?? undefined, basisBehind: res.headers.get("x-ramose-basis-behind") === "1" };
     }
     return out as T;
   }
@@ -154,7 +154,7 @@ export function isTransientCf(e: unknown): boolean {
 
 /** The read fence, as the header the peer reads it from. */
 function minTHeader(opts: { minT?: number }): Record<string, string> | undefined {
-  return opts.minT !== undefined ? { "x-ripple-min-t": String(opts.minT) } : undefined;
+  return opts.minT !== undefined ? { "x-ramose-min-t": String(opts.minT) } : undefined;
 }
 
 function num(s: string | null): number | null {

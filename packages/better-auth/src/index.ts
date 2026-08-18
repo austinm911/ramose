@@ -1,15 +1,15 @@
 /**
- * `@ripple/better-auth` — the Better Auth server plugin that mints the
- * workspace-scoped JWTs a Ripple peer verifies (docs/AUTH_LAYER.md §1).
+ * `@ramose/better-auth` — the Better Auth server plugin that mints the
+ * workspace-scoped JWTs a Ramose peer verifies (docs/AUTH_LAYER.md §1).
  *
- * Ripple verifies tokens and never issues them, so every app repeats the
+ * Ramose verifies tokens and never issues them, so every app repeats the
  * same mint route: read the Better Auth session, decide the caller's policy
- * class for the requested database, build the payload with `Ripple.claims`,
- * sign it with `signJWT`. {@link rippleToken} is that route as a plugin —
+ * class for the requested database, build the payload with `Ramose.claims`,
+ * sign it with `signJWT`. {@link ramoseToken} is that route as a plugin —
  * the app keeps exactly one decision, {@link ClassOf}.
  *
  * It requires Better Auth's `jwt` plugin and signs with the same JWKS key,
- * so the peer's `RIPPLE_JWKS_URL` (the jwt plugin's `/jwks` endpoint) reads
+ * so the peer's `RAMOSE_JWKS_URL` (the jwt plugin's `/jwks` endpoint) reads
  * the matching public half with no extra key management.
  *
  * ```typescript
@@ -18,19 +18,19 @@
  *     organization(),
  *     jwt({ jwt: { issuer: AUTH.issuer, audience: AUTH.audience,
  *                  expirationTime: `${AUTH.ttl}s` } }),
- *     rippleToken({ auth: AUTH, policy: compiledPolicy, classOf: orgClassOf() }),
+ *     ramoseToken({ auth: AUTH, policy: compiledPolicy, classOf: orgClassOf() }),
  *   ],
  * });
  * ```
  *
- * The route is `POST {basePath}/ripple/token { db } → { token, class, exp }`
- * — the shape `Ripple.token.jwt` accepts unchanged. The paired browser
- * plugin lives on `@ripple/better-auth/client`.
+ * The route is `POST {basePath}/ramose/token { db } → { token, class, exp }`
+ * — the shape `Ramose.token.jwt` accepts unchanged. The paired browser
+ * plugin lives on `@ramose/better-auth/client`.
  */
 
-import { type AuthConfig, claims } from "@ripple/alchemy";
-import { isDatabaseName } from "@ripple/alchemy/db";
-import type { CompiledPolicy } from "@ripple/core/policy/ast.ts";
+import { type AuthConfig, claims } from "@ramose/alchemy";
+import { isDatabaseName } from "@ramose/alchemy/db";
+import type { CompiledPolicy } from "@ramose/core/policy/ast.ts";
 import {
   BetterAuthError,
   type BetterAuthPlugin,
@@ -48,11 +48,11 @@ export interface SessionInfo {
   readonly user: User & Record<string, unknown>;
 }
 
-/** What {@link ClassOf} decides: a class, optionally with `ripple.attrs`. */
+/** What {@link ClassOf} decides: a class, optionally with `ramose.attrs`. */
 export interface ClassGrant {
-  /** The policy class the token selects (`ripple.class`). */
+  /** The policy class the token selects (`ramose.class`). */
   readonly class: string;
-  /** App claims (`ripple.attrs`), decoded by the policy's `claims` struct. */
+  /** App claims (`ramose.attrs`), decoded by the policy's `claims` struct. */
   readonly attrs?: Readonly<Record<string, unknown>>;
 }
 
@@ -73,31 +73,31 @@ export interface ClassOfInput {
  * The one decision the app owns: the caller's policy class for `db`, or
  * `null` for no access (a 403 that leaks nothing — "no org with that slug"
  * and "not a member of it" are the same answer). Return a {@link ClassGrant}
- * to also carry `ripple.attrs`.
+ * to also carry `ramose.attrs`.
  */
 export type ClassOf = (
   input: ClassOfInput,
 ) => string | ClassGrant | null | Promise<string | ClassGrant | null>;
 
-export interface RippleTokenOptions {
+export interface RamoseTokenOptions {
   /**
    * The verifier/minter contract — the same `AuthConfig` the peer's
-   * `Ripple.authEnv({ auth })` pins, so a minted lifetime can never exceed
+   * `Ramose.authEnv({ auth })` pins, so a minted lifetime can never exceed
    * the verifier's cap.
    */
   readonly auth: AuthConfig;
   /** Resolves the caller's class for the requested database; see {@link ClassOf}. */
   readonly classOf: ClassOf;
   /**
-   * The compiled policy (`Ripple.Policy.compile(policy)` JSON, or parsed).
+   * The compiled policy (`Ramose.Policy.compile(policy)` JSON, or parsed).
    * Optional; when given, a class the policy does not declare fails the mint
    * instead of minting a token that grants nothing.
    */
   readonly policy?: CompiledPolicy | string;
   /**
    * Where the route lives under Better Auth's `basePath`.
-   * @default "/ripple/token" — which Better Auth's client proxy exposes as
-   * `authClient.ripple.token`.
+   * @default "/ramose/token" — which Better Auth's client proxy exposes as
+   * `authClient.ramose.token`.
    */
   readonly path?: string;
 }
@@ -108,34 +108,34 @@ export interface RippleTokenOptions {
  * missing session a 401. Requires the `jwt` plugin (checked at init) and
  * signs with its JWKS via the same server-only path as `auth.api.signJWT`.
  */
-export const rippleToken = (options: RippleTokenOptions) => {
+export const ramoseToken = (options: RamoseTokenOptions) => {
   return {
-    id: "ripple-token",
+    id: "ramose-token",
     init: (ctx) => {
       if (!(ctx.options.plugins ?? []).some((plugin) => plugin.id === "jwt")) {
         throw new BetterAuthError(
-          "ripple: the rippleToken plugin requires Better Auth's jwt plugin — " +
-            "it signs with the same JWKS the peer's RIPPLE_JWKS_URL reads. " +
+          "ramose: the ramoseToken plugin requires Better Auth's jwt plugin — " +
+            "it signs with the same JWKS the peer's RAMOSE_JWKS_URL reads. " +
             "Add jwt() to the plugins array.",
         );
       }
     },
     endpoints: {
-      rippleToken: createAuthEndpoint(
-        options.path ?? "/ripple/token",
+      ramoseToken: createAuthEndpoint(
+        options.path ?? "/ramose/token",
         {
           method: "POST",
           body: z.object({
             db: z.string().meta({
-              description: "The Ripple database this token is to be bound to",
+              description: "The Ramose database this token is to be bound to",
             }),
           }),
           use: [sessionMiddleware],
           metadata: {
             openapi: {
-              operationId: "mintRippleToken",
+              operationId: "mintRamoseToken",
               description:
-                "Mint a Ripple JWT bound to one database, signed with the jwt plugin's JWKS",
+                "Mint a Ramose JWT bound to one database, signed with the jwt plugin's JWKS",
               responses: {
                 "200": {
                   description: "The minted token",
@@ -164,7 +164,7 @@ export const rippleToken = (options: RippleTokenOptions) => {
           // near its cause. `claims` re-checks, but after `classOf` ran.
           if (!isDatabaseName(db)) {
             throw new APIError("BAD_REQUEST", {
-              message: `ripple: ${JSON.stringify(db)} is not a valid database name`,
+              message: `ramose: ${JSON.stringify(db)} is not a valid database name`,
             });
           }
           const granted = await options.classOf({ session, db, ctx });
@@ -173,7 +173,7 @@ export const rippleToken = (options: RippleTokenOptions) => {
           if (grant === null) {
             // One answer for "no such database" and "not a member of it".
             throw new APIError("FORBIDDEN", {
-              message: "ripple: no access to this database",
+              message: "ramose: no access to this database",
             });
           }
           let payload: ReturnType<typeof claims>;
@@ -244,7 +244,7 @@ export interface OrgClassOfOptions {
 
 /**
  * A {@link ClassOf} for the `organization` plugin's tables, for apps where
- * an organization's slug *is* the Ripple database name: the caller's member
+ * an organization's slug *is* the Ramose database name: the caller's member
  * row in the org whose slug is `db` decides the class ({@link classOfRole}
  * by default); no such org or no membership is `null` → 403.
  */

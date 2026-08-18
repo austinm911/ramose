@@ -1,5 +1,5 @@
 /**
- * The typed surface against a real `@ripple/core` `Connection`.
+ * The typed surface against a real `@ramose/core` `Connection`.
  *
  * The fake peer here is the whole peer: `POST /db/:name/transact|query|pull`
  * over `fetch`, and the same reads as session frames over a fake socket. That
@@ -21,7 +21,7 @@ import {
   pull,
   query,
   toJson,
-} from "@ripple/core";
+} from "@ramose/core";
 import * as Effect from "effect/Effect";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import { Databases, layer, query as navQuery } from "../../src/db/internal.ts";
@@ -46,7 +46,7 @@ interface Reply {
  * One database, one `Connection`, both wires.
  *
  * `staleT` pins reads to a past basis unless the request carries an
- * `x-ripple-min-t` / `minT` past it — which is exactly what
+ * `x-ramose-min-t` / `minT` past it — which is exactly what
  * `fetchBasisWithStats` in `packages/worker/src/peer.ts` does with the fence.
  */
 const inProcessPeer = async (options: { staleT?: number } = {}) => {
@@ -122,7 +122,7 @@ const inProcessPeer = async (options: { staleT?: number } = {}) => {
     const body = init.body === undefined ? {} : fromJson(JSON.parse(String(init.body)));
     calls.push({ url: String(url), body, headers });
     const op = path.endsWith("/transact") ? "transact" : path.endsWith("/query") ? "q" : "pull";
-    const reply = await answer(op, body, Number(headers["x-ripple-min-t"] ?? 0));
+    const reply = await answer(op, body, Number(headers["x-ramose-min-t"] ?? 0));
     return new Response(JSON.stringify(toJson(reply.body)), {
       status: reply.status,
       headers: { "content-type": "application/json" },
@@ -171,7 +171,7 @@ const inProcessPeer = async (options: { staleT?: number } = {}) => {
     get sockets() {
       return sockets;
     },
-    ripple: runtime.runSync(Databases),
+    ramose: runtime.runSync(Databases),
     dispose: () => runtime.dispose(),
   };
 };
@@ -179,7 +179,7 @@ const inProcessPeer = async (options: { staleT?: number } = {}) => {
 describe("install → transact → q → pull", () => {
   test("the whole happy path, on one Connection", async () => {
     const peer = await inProcessPeer();
-    const db = peer.ripple.db("movies", Movies);
+    const db = peer.ramose.db("movies", Movies);
 
     const installed = await run(db.install());
     expect(installed.t).toBeGreaterThan(0);
@@ -248,7 +248,7 @@ describe("install → transact → q → pull", () => {
 
   test("install is idempotent — the second one is the same upsert", async () => {
     const peer = await inProcessPeer();
-    const db = peer.ripple.db("movies", Movies);
+    const db = peer.ramose.db("movies", Movies);
     const first = await run(db.install());
     const second = await run(db.install());
     expect(second.t).toBeGreaterThan(first.t);
@@ -267,7 +267,7 @@ describe("install → transact → q → pull", () => {
 
   test("`.select` pulls in the query — one round trip, one row per entity", async () => {
     const peer = await inProcessPeer();
-    const db = peer.ripple.db("movies", Movies);
+    const db = peer.ramose.db("movies", Movies);
     await run(db.install());
     const { dbAfter } = await run(
       db.transact(function* (tx) {
@@ -292,7 +292,7 @@ describe("install → transact → q → pull", () => {
 describe("views", () => {
   test("asOf pins the past, history sees the retraction, and neither can write", async () => {
     const peer = await inProcessPeer();
-    const db = peer.ripple.db("movies", Movies);
+    const db = peer.ramose.db("movies", Movies);
     await run(db.install());
     const first = await run(
       db.transact(function* (tx) {
@@ -317,7 +317,7 @@ describe("views", () => {
 
   test("a view does not mutate the db it came from", async () => {
     const peer = await inProcessPeer();
-    const db = peer.ripple.db("movies", Movies);
+    const db = peer.ramose.db("movies", Movies);
     await run(db.install());
     const past = db.asOf(1);
     await run(db.q(names));
@@ -330,7 +330,7 @@ describe("views", () => {
 describe("the read fence is what dbAfter carries", () => {
   test("a stale basis misses the write; the floor sees it", async () => {
     const peer = await inProcessPeer({ staleT: 1 });
-    const db = peer.ripple.db("movies", Movies);
+    const db = peer.ramose.db("movies", Movies);
     await run(db.install());
     const report = await run(
       db.transact(function* (tx) {
@@ -350,7 +350,7 @@ describe("the read fence is what dbAfter carries", () => {
 describe("failures", () => {
   test("pull against an uninstalled database fails InvalidRequest, like q", async () => {
     const peer = await inProcessPeer();
-    const db = peer.ripple.db("movies", Movies);
+    const db = peer.ramose.db("movies", Movies);
     // note: no install()
 
     const pulled = await runFail(db.pull({ id: 1 }, { name: User.name }));
@@ -364,7 +364,7 @@ describe("failures", () => {
 
   test("a rejected transaction is TxRejected, and catchTags is total", async () => {
     const peer = await inProcessPeer();
-    const db = peer.ripple.db("movies", Movies);
+    const db = peer.ramose.db("movies", Movies);
     await run(db.install());
 
     const caught = await run(
@@ -391,7 +391,7 @@ describe("failures", () => {
 
   test("a generator body that fails does not submit", async () => {
     const peer = await inProcessPeer();
-    const db = peer.ripple.db("movies", Movies);
+    const db = peer.ramose.db("movies", Movies);
     await run(db.install());
     const writes = peer.calls.length;
 
@@ -410,7 +410,7 @@ describe("failures", () => {
 
   test("required vs optional: missing required is null, optional is undefined", async () => {
     const peer = await inProcessPeer();
-    const db = peer.ripple.db("movies", Movies);
+    const db = peer.ramose.db("movies", Movies);
     await run(db.install());
     const { dbAfter } = await run(
       db.transact(function* (tx) {
@@ -461,7 +461,7 @@ describe("failures", () => {
 
   test("a lookup ref resolves, and a miss is null", async () => {
     const peer = await inProcessPeer();
-    const db = peer.ripple.db("movies", Movies);
+    const db = peer.ramose.db("movies", Movies);
     await run(db.install());
     const { dbAfter } = await run(
       db.transact(function* (tx) {

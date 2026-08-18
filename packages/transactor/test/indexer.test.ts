@@ -25,9 +25,9 @@ import {
   query,
   reachable,
   treeDepth,
-} from "@ripple/core";
-import { R2NodeStore, dbPrefix, prefixedBucket, publishRoot, readRootAt, recordToRoots, rootsToRecord } from "@ripple/storage";
-import { MemoryBucket } from "@ripple/storage/memory.ts";
+} from "@ramose/core";
+import { R2NodeStore, dbPrefix, prefixedBucket, publishRoot, readRootAt, recordToRoots, rootsToRecord } from "@ramose/storage";
+import { MemoryBucket } from "@ramose/storage/memory.ts";
 import { Harness } from "./harness.ts";
 
 const NAME = FIRST_USER_EID, AGE = FIRST_USER_EID + 1, CITY = FIRST_USER_EID + 2;

@@ -32,7 +32,7 @@ import type { Server } from "./Server.ts";
  * Binding / env-var names a server contributes to its consumer.
  *
  * There is no `_DB` key: a server pins no database name. The name is chosen
- * per call by `ripple.db(name, catalog)`, so nothing about it can be lowered
+ * per call by `ramose.db(name, catalog)`, so nothing about it can be lowered
  * at deploy time.
  */
 export const envKeys = (server: Pick<Server, "LogicalId">) => ({
@@ -89,7 +89,7 @@ export const required = (
       value === undefined || value === null || value === ""
         ? Effect.die(
             new Error(
-              `ripple: no value bound under "${key}" — the capability must be provided on a host that takes bindings (a Cloudflare.Worker, or an Alchemy.Action via Ripple.ServerHttp)`,
+              `ramose: no value bound under "${key}" — the capability must be provided on a host that takes bindings (a Cloudflare.Worker, or an Alchemy.Action via Ramose.ServerHttp)`,
             ),
           )
         : Effect.succeed(value),

@@ -76,7 +76,7 @@ export interface SessionOptions {
    * because a deploy-time Alchemy Output resolves as an Effect.
    */
   readonly url: () => Promise<string>;
-  /** Ripple database name — the `:name` in `/db/:name/session`. */
+  /** Ramose database name — the `:name` in `/db/:name/session`. */
   readonly name: string;
   /**
    * Re-read on every (re)connect and every re-auth. A rejection is the token
@@ -213,7 +213,7 @@ export const openSession = (options: SessionOptions): Session => {
 
   const connect = (): Promise<void> => {
     if (closed) {
-      return Promise.reject(new SocketGone("ripple: the client is closed"));
+      return Promise.reject(new SocketGone("ramose: the client is closed"));
     }
     if (socket !== undefined) return Promise.resolve();
     if (opening !== undefined) return opening;
@@ -226,7 +226,7 @@ export const openSession = (options: SessionOptions): Session => {
       // a close that landed while the token/url resolved wins: a socket
       // opened for a closed session would leak, because `close()` has no
       // handle on it yet
-      if (closed) throw new SocketGone("ripple: the client is closed");
+      if (closed) throw new SocketGone("ramose: the client is closed");
       const ws = options.connect(target);
       connects += 1;
       let settle!: (e?: unknown) => void;
@@ -235,12 +235,12 @@ export const openSession = (options: SessionOptions): Session => {
       });
       ws.addEventListener("open", () => settle());
       ws.addEventListener("close", () => {
-        settle(new SocketGone("ripple: session socket closed"));
-        if (socket === ws) drop("ripple: session socket closed");
+        settle(new SocketGone("ramose: session socket closed"));
+        if (socket === ws) drop("ramose: session socket closed");
       });
       ws.addEventListener("error", () => {
-        settle(new SocketGone("ripple: session socket failed"));
-        if (socket === ws) drop("ripple: session socket failed");
+        settle(new SocketGone("ramose: session socket failed"));
+        if (socket === ws) drop("ramose: session socket failed");
       });
       ws.addEventListener("message", onMessage);
       socket = ws;
@@ -258,7 +258,7 @@ export const openSession = (options: SessionOptions): Session => {
   const dispatch = (frame: Record<string, unknown>): Promise<Reply> => {
     const ws = socket;
     if (ws === undefined) {
-      return Promise.reject(new SocketGone("ripple: session socket closed"));
+      return Promise.reject(new SocketGone("ramose: session socket closed"));
     }
     const id = nextId++;
     return new Promise<Reply>((resolve, reject) => {
@@ -317,7 +317,7 @@ export const openSession = (options: SessionOptions): Session => {
       if (closed) return;
       closed = true;
       const ws = socket;
-      drop("ripple: the client is closed");
+      drop("ramose: the client is closed");
       generation += 1;
       wake();
       try {

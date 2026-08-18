@@ -1,5 +1,5 @@
 /**
- * The database-name rule, public on `@ripple/alchemy/db` (issue #37).
+ * The database-name rule, public on `@ramose/alchemy/db` (issue #37).
  *
  * The regex is the peer Worker's `validDbName`; `isDatabaseName` is the
  * function form an app calls before letting a user-minted name reach the

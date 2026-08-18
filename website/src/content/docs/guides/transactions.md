@@ -8,8 +8,8 @@ all. Nothing partial ever reaches the database, and the reply tells you the
 exact version of the database your write produced, so the next read can see it.
 
 ```ts title="src/todos.ts"
-import * as Ripple from "@ripple/alchemy/db";
-import type { Db } from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
+import type { Db } from "@ramose/alchemy/db";
 import { Todo, type Todos } from "../schema.ts";
 
 export const addTodo = (db: Db<typeof Todos>, title: string) =>
@@ -68,7 +68,7 @@ already exists attaches your facts to the entity that has it, instead of
 creating a duplicate:
 
 ```ts title="src/users.ts"
-import type { Db } from "@ripple/alchemy/db";
+import type { Db } from "@ramose/alchemy/db";
 import { User, type Todos } from "../schema.ts";
 
 export const upsertUser = (db: Db<typeof Todos>, email: string, name: string) =>
@@ -103,7 +103,7 @@ const { t, txEid, datomCount, dbAfter } = yield* addTodo(db, "buy milk");
 ```ts title="src/todos.ts"
 const { dbAfter } = yield* addTodo(db, "buy milk");
 const rows = yield* dbAfter.q(
-  Ripple.query(Todo).select({ id: Todo.id, title: Todo.title }),
+  Ramose.query(Todo).select({ id: Todo.id, title: Todo.title }),
 );
 ```
 

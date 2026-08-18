@@ -1,7 +1,7 @@
 /** The app's queries and writes, in one place so the test can drive them. */
 
-import * as Ripple from "@ripple/alchemy/db";
-import type { Db, Eid } from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
+import type { Db, Eid } from "@ramose/alchemy/db";
 import { Todo, type Todos } from "../schema.ts";
 
 export type TodosDb = Db<typeof Todos>;
@@ -15,12 +15,12 @@ export const todoShape = {
 } as const;
 
 /** Standing list query — a value, not a callback builder. */
-export const todoQuery = Ripple.query(Todo)
+export const todoQuery = Ramose.query(Todo)
   .orderBy(Todo.createdAt, "asc")
   .select(todoShape);
 
 /** One row from {@link todoQuery} — inferred from the query, never restated. */
-export type TodoRow = Ripple.Row<typeof todoQuery>;
+export type TodoRow = Ramose.Row<typeof todoQuery>;
 
 /** One row, straight from its eid — the same shape, no query. */
 export const pullTodo = (db: TodosDb, eid: TodoEid) =>

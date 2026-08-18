@@ -18,7 +18,7 @@ import {
   type LabelRow,
   type Person,
 } from "../../domain/queries.ts";
-import type { RippleClass } from "../../domain/shared.ts";
+import type { RamoseClass } from "../../domain/shared.ts";
 import {
   addComment,
   deleteComment,
@@ -31,7 +31,7 @@ import {
   setTitle,
   toggleLabel,
 } from "../mutations.ts";
-import type { Workspace } from "../ripple.ts";
+import type { Workspace } from "../ramose.ts";
 import { PRIORITIES, STATUSES, STATUS_LABELS, type Status } from "../../domain/schema.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
 import {
@@ -247,7 +247,7 @@ export const IssueDetail = ({
   /** The live board row — already re-rendering on every basis tick. */
   row: BoardRow;
   myEid: number | undefined;
-  cls: RippleClass;
+  cls: RamoseClass;
   labels: readonly LabelRow[];
   people: readonly Person[];
   onClose: () => void;

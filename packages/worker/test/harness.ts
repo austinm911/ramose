@@ -12,10 +12,10 @@
 
 import { Database } from "bun:sqlite";
 import { mock } from "bun:test";
-import type { RippleEnv, SqlLike } from "@ripple/transactor";
-import { internalGate } from "@ripple/transactor";
-import { makeBasis } from "@ripple/replica/basis.ts";
-import { MemoryBucket } from "@ripple/storage/memory.ts";
+import type { RamoseEnv, SqlLike } from "@ramose/transactor";
+import { internalGate } from "@ramose/transactor";
+import { makeBasis } from "@ramose/replica/basis.ts";
+import { MemoryBucket } from "@ramose/storage/memory.ts";
 import { sqliteLike } from "../../transactor/test/harness.ts";
 import { clearAuthCache } from "../src/auth.ts";
 import { clearBasisCache, clearSegmentSources } from "../src/peer.ts";
@@ -29,7 +29,7 @@ mock.module("cloudflare:workers", () => ({
   },
 }));
 
-const { TransactorDO } = await import("@ripple/transactor/transactor-do.ts");
+const { TransactorDO } = await import("@ramose/transactor/transactor-do.ts");
 const worker = (await import("../src/index.ts")).default;
 
 /** `DurableObjectState`, as much of it as the Transactor shell touches. */
@@ -53,12 +53,12 @@ function fakeState(db: Database) {
 }
 
 export interface PeerOptions {
-  /** every extra env var the peer reads (RIPPLE_POLICY, RIPPLE_TOKEN, …) */
+  /** every extra env var the peer reads (RAMOSE_POLICY, RAMOSE_TOKEN, …) */
   env?: Record<string, string | undefined>;
 }
 
 export interface Peer {
-  readonly env: RippleEnv;
+  readonly env: RamoseEnv;
   /** One request against the peer, exactly as Cloudflare would deliver it. */
   fetch(path: string, init?: RequestInit & { token?: string; colo?: string }): Promise<Response>;
   /** `fetch`, with the JSON body parsed. */
@@ -82,7 +82,7 @@ export function makePeer(dbName: string, options: PeerOptions = {}): Peer {
   const sqlite = new Database(":memory:");
   sqlite.exec("PRAGMA synchronous = OFF;");
 
-  const env = { STORE: bucket, ...options.env } as unknown as RippleEnv;
+  const env = { STORE: bucket, ...options.env } as unknown as RamoseEnv;
 
   let transactorDO: any;
   const transactor = () => {

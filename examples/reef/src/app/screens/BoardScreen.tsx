@@ -23,7 +23,7 @@ import { Board, COLUMN_TINTS } from "../components/Board.tsx";
 import { IssueDetail } from "../components/IssueDetail.tsx";
 import { TimeTravelBar } from "../components/TimeTravel.tsx";
 import { createIssue, moveIssue, seedSampleIssues, type NewIssue } from "../mutations.ts";
-import type { Workspace } from "../ripple.ts";
+import type { Workspace } from "../ramose.ts";
 import { INVITABLE_ROLES } from "../../domain/roles.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
 import {
@@ -336,7 +336,7 @@ export const BoardScreen = ({
         <span {...stylex.props(styles.wsSlug, styles.wide)}>db/{slug}</span>
         <Tag
           tone={cls === "admin" ? "accent" : cls === "member" ? "ok" : "neutral"}
-          title="your ripple.class in this workspace"
+          title="your ramose.class in this workspace"
         >
           {cls}
         </Tag>

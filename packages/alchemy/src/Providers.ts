@@ -1,16 +1,16 @@
 /**
- * The Ripple provider collection. Merge it into the stack alongside the
+ * The Ramose provider collection. Merge it into the stack alongside the
  * cloud provider layers.
  *
  * @example
  * ```typescript
  * import * as Alchemy from "alchemy";
  * import * as Cloudflare from "alchemy/Cloudflare";
- * import * as Ripple from "@ripple/alchemy";
+ * import * as Ramose from "@ramose/alchemy";
  * import * as Layer from "effect/Layer";
  *
- * export default Alchemy.Stack("ripple", {
- *   providers: Layer.mergeAll(Cloudflare.providers(), Ripple.providers()),
+ * export default Alchemy.Stack("ramose", {
+ *   providers: Layer.mergeAll(Cloudflare.providers(), Ramose.providers()),
  *   state: Cloudflare.state(),
  * }, Effect.gen(function* () { … }));
  * ```
@@ -22,7 +22,7 @@ import { Database, DatabaseProvider } from "./Database.ts";
 import { Server, ServerProvider } from "./Server.ts";
 
 export class Providers extends Provider.ProviderCollection<Providers>()(
-  "Ripple",
+  "Ramose",
 ) {}
 
 export const providers = () =>

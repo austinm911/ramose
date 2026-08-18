@@ -1,32 +1,32 @@
 /**
  * Constants shared by the auth Worker (infra/api.ts), the peer wiring
  * (infra/resources.ts) and the SPA (app/). Import-light on purpose: this module ends up in
- * the auth Worker bundle (`@ripple/alchemy/db` is the portable barrel, and
+ * the auth Worker bundle (`@ramose/alchemy/db` is the portable barrel, and
  * the `AuthConfig` import is type-only, so it erases).
  */
 
-import type { AuthConfig } from "@ripple/alchemy";
-import { isDatabaseName } from "@ripple/alchemy/db";
+import type { AuthConfig } from "@ramose/alchemy";
+import { isDatabaseName } from "@ramose/alchemy/db";
 
 /**
  * The one verifier/minter contract (docs/AUTH_LAYER.md §1):
  *
  * - `issuer` — the `iss` every Reef JWT carries and the peer pins
- *   (`RIPPLE_JWT_ISS`). An opaque agreed string — verification keys come
+ *   (`RAMOSE_JWT_ISS`). An opaque agreed string — verification keys come
  *   from the JWKS URL, not from resolving this.
  * - `audience` — the `aud` every Reef JWT carries and the peer pins
- *   (`RIPPLE_JWT_AUD`).
+ *   (`RAMOSE_JWT_AUD`).
  * - `ttl` — token lifetime in seconds. Better Auth signs `exp - iat` of
  *   exactly this and the peer caps accepted lifetimes at the same value
- *   (`RIPPLE_JWT_MAX_TTL`); the SPA re-mints slightly earlier.
+ *   (`RAMOSE_JWT_MAX_TTL`); the SPA re-mints slightly earlier.
  *
- * The jwt plugin's config, the mint route's payload (`Ripple.claims`) and the
- * peer's env (`Ripple.authEnv({ auth })`) all read this one value, so they
+ * The jwt plugin's config, the mint route's payload (`Ramose.claims`) and the
+ * peer's env (`Ramose.authEnv({ auth })`) all read this one value, so they
  * cannot drift.
  */
 export const REEF_AUTH: AuthConfig = {
   issuer: "reef-demo-auth",
-  audience: "ripple:reef",
+  audience: "ramose:reef",
   ttl: 900,
 };
 
@@ -41,16 +41,16 @@ export const DEV_UI_ORIGIN = "http://localhost:5173";
 /**
  * The policy classes, in the order the policy declares them. The role →
  * class mapping (owner|admin → admin, member → member, else viewer) is
- * `classOfRole` from `@ripple/better-auth` — the mint plugin's default —
+ * `classOfRole` from `@ramose/better-auth` — the mint plugin's default —
  * so Reef no longer spells it itself.
  */
 export const CLASSES = ["admin", "member", "viewer"] as const;
-export type RippleClass = (typeof CLASSES)[number];
+export type RamoseClass = (typeof CLASSES)[number];
 
 /**
- * Workspace slug = Ripple database name. `SLUG_RE` is Reef's friendlier
+ * Workspace slug = Ramose database name. `SLUG_RE` is Reef's friendlier
  * subset (lowercase, hyphens, at least two characters); `isDatabaseName` —
- * the peer's own rule, exported by `@ripple/alchemy/db` — is the outer
+ * the peer's own rule, exported by `@ramose/alchemy/db` — is the outer
  * guard, so a slug that passes here can never be rejected as a database
  * name.
  */

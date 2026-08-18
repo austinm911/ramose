@@ -17,7 +17,7 @@ const seconds = Number(process.argv[3] ?? 5);
 /** optional: comma-separated concurrency sweep for the write-ceiling table, e.g. "1,8,64,256" */
 const sweep = process.argv[4] ? process.argv[4].split(",").map(Number) : [conc];
 
-const dir = mkdtempSync(join(tmpdir(), "ripple-tx-"));
+const dir = mkdtempSync(join(tmpdir(), "ramose-tx-"));
 const file = join(dir, "transactor.sqlite");
 
 async function run(label: string, groupCommit: boolean, conc: number) {

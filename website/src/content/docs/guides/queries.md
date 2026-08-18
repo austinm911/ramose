@@ -13,35 +13,35 @@ Every example on this page uses the todos catalog from [Define your
 data](/guides/catalog/#growing-the-catalog):
 
 ```ts title="schema.ts"
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
 import * as Schema from "effect/Schema";
 
-export const User = Ripple.Namespace("user", {
-  sub: Ripple.Attr(Schema.String, { unique: "identity" }),
-  name: Ripple.Attr(Schema.String),
-  email: Ripple.Attr(Schema.String, { unique: "identity" }),
+export const User = Ramose.Namespace("user", {
+  sub: Ramose.Attr(Schema.String, { unique: "identity" }),
+  name: Ramose.Attr(Schema.String),
+  email: Ramose.Attr(Schema.String, { unique: "identity" }),
 });
 
-export const Todo = Ripple.Namespace("todo", {
-  title: Ripple.Attr(Schema.String),
-  done: Ripple.Attr(Schema.Boolean),
-  createdAt: Ripple.Attr(Ripple.Instant),
-  due: Ripple.Attr(Ripple.Instant),
-  owner: Ripple.Attr(Ripple.Ref(() => User)),
+export const Todo = Ramose.Namespace("todo", {
+  title: Ramose.Attr(Schema.String),
+  done: Ramose.Attr(Schema.Boolean),
+  createdAt: Ramose.Attr(Ramose.Instant),
+  due: Ramose.Attr(Ramose.Instant),
+  owner: Ramose.Attr(Ramose.Ref(() => User)),
 });
 
-export const Todos = Ripple.Catalog({ user: User, todo: Todo });
+export const Todos = Ramose.Catalog({ user: User, todo: Todo });
 ```
 
 ## One query, three runners
 
 ```ts title="src/todos.ts"
 import * as Effect from "effect/Effect";
-import * as Ripple from "@ripple/alchemy/db";
-import type { Db } from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
+import type { Db } from "@ramose/alchemy/db";
 import { Todo, Todos, User } from "../schema.ts";
 
-export const openTodos = Ripple.query(Todo)
+export const openTodos = Ramose.query(Todo)
   .where(Todo.done.eq(false), Todo.owner.name.startsWith("A"))
   .select({
     id: Todo.id,
@@ -61,7 +61,7 @@ export const report = (db: Db<typeof Todos>) =>
 export const liveOpenTodos = (db: Db<typeof Todos>) => db.live(openTodos);
 ```
 
-`Ripple.query(Todo)` means "entities that carry at least one `todo` attribute".
+`Ramose.query(Todo)` means "entities that carry at least one `todo` attribute".
 Everything after it narrows or shapes that set.
 
 ## Filtering
@@ -88,20 +88,20 @@ Several predicates in one `where` are all required to hold. Absence is not a
 value: `eq` and the comparisons need the fact to be there, so ask with
 `exists` or `missing` when absence is the question.
 
-`Ripple.or` and `Ripple.not` say anything `where` cannot on its own, and a
+`Ramose.or` and `Ramose.not` say anything `where` cannot on its own, and a
 reference reads backwards with `.reverse` — from a `User`, `Todo.owner.reverse`
 is "the todos that point at me", a many-valued hop you can quantify over or
 select as an array:
 
 ```ts title="src/todos.ts"
 // … same imports as above
-Ripple.query(Todo).where(
+Ramose.query(Todo).where(
   Todo.done.eq(false),
-  Ripple.or(Todo.owner.name.eq("Ada"), Todo.due.missing()),
-  Ripple.not(Todo.title.startsWith("draft")),
+  Ramose.or(Todo.owner.name.eq("Ada"), Todo.due.missing()),
+  Ramose.not(Todo.title.startsWith("draft")),
 );
 
-Ripple.query(User)
+Ramose.query(User)
   .where(Todo.owner.reverse.some(Todo.done.eq(false))) // users with an open todo
   .select({
     name: User.name,
@@ -116,7 +116,7 @@ key and it is in the type; omit it and it is not there at all.
 
 ```ts title="src/todos.ts"
 // … same imports as above
-Ripple.query(Todo).select({
+Ramose.query(Todo).select({
   id: Todo.id, // the entity id, as a number
   title: Todo.title, // required: a todo with no title is dropped from the results
   due: Todo.due.optional, // Date | undefined — keeps the row
@@ -136,7 +136,7 @@ the limit too, so the page you get is the page you keep.
 
 ```ts title="src/todos.ts"
 // … same imports as above
-Ripple.query(Todo)
+Ramose.query(Todo)
   .orderBy(Todo.due, "asc", { empty: "last" })
   .limit(20)
   .offset(0)
@@ -173,7 +173,7 @@ const rows = await Effect.runPromise(db.q(openTodos)); // from the app you have 
 Inside a Worker, or inside another Effect, you `yield*` it instead. The [Quickstart](/getting-started/quickstart/#what-you-just-ran) has the
 short version of why the API is shaped this way.
 
-Values decode on the way out, so a `Ripple.Instant` attribute arrives as a
+Values decode on the way out, so a `Ramose.Instant` attribute arrives as a
 `Date`.
 
 `db.live` re-runs the query as the database advances and after a local
@@ -182,18 +182,18 @@ does not see is not a re-render.
 
 ## Naming a row type
 
-The query already carries its row type; `Ripple.Row` names it so a React prop
-or a helper never restates the shape by hand, and `Ripple.Rows` is the array
+The query already carries its row type; `Ramose.Row` names it so a React prop
+or a helper never restates the shape by hand, and `Ramose.Rows` is the array
 `db.q` resolves to and `db.live` emits:
 
 ```ts title="src/queries.ts"
 // … same imports as above
-export type OpenTodo = Ripple.Row<typeof openTodos>;
+export type OpenTodo = Ramose.Row<typeof openTodos>;
 // { readonly id: number; readonly title: string;
 //   readonly due: Date | undefined;
 //   readonly owner: { readonly name: string } }
 
-export type OpenTodos = Ripple.Rows<typeof openTodos>;
+export type OpenTodos = Ramose.Rows<typeof openTodos>;
 // readonly OpenTodo[]
 ```
 
@@ -209,7 +209,7 @@ When you already know which entity you want, skip the query:
 
 ```ts title="src/todos.ts"
 import * as Effect from "effect/Effect";
-import type { Db } from "@ripple/alchemy/db";
+import type { Db } from "@ramose/alchemy/db";
 import { Todo, Todos, User } from "../schema.ts";
 
 export const todoDetail = {
@@ -222,7 +222,7 @@ export const todoDetail = {
 export const detail = (db: Db<typeof Todos>, id: number) =>
   Effect.gen(function* () {
     const todo = yield* db.pull({ id }, todoDetail);
-    // Ripple.Pull<typeof Todos, typeof todoDetail> | null
+    // Ramose.Pull<typeof Todos, typeof todoDetail> | null
     return todo;
   });
 ```
@@ -257,7 +257,7 @@ export const past = (db: Db<typeof Todos>, t: number) =>
 
 ## Budgets
 
-Each query runs under a memory guardrail (`RIPPLE_QUERY_MAX_CELLS`, about
+Each query runs under a memory guardrail (`RAMOSE_QUERY_MAX_CELLS`, about
 48 MB of intermediate results by default). Exceeding it fails the query with
 `QueryBudgetExceeded` (HTTP 413) naming the clause that blew up. Narrow the
 query rather than raising the ceiling by reflex — and note that a standing
@@ -269,8 +269,8 @@ way.
 Queries execute at the edge, in the Worker nearest the caller. It reads
 immutable data from object storage through a cache and merges in the newest
 writes from a replica, so a read never queues behind the writer. Response
-headers report what it cost: `x-ripple-ms`, `x-ripple-r2-gets`, and
-`x-ripple-cache-hits` — all listed in `access-control-expose-headers`, so a
+headers report what it cost: `x-ramose-ms`, `x-ramose-r2-gets`, and
+`x-ramose-cache-hits` — all listed in `access-control-expose-headers`, so a
 browser can read them.
 
 **Checkpoint.** `bun test examples/todos` — four passing tests, driving the

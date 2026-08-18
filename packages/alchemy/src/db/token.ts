@@ -1,5 +1,5 @@
 /**
- * `token` — shipped token sources for `Ripple.layer({ token })`.
+ * `token` — shipped token sources for `Ramose.layer({ token })`.
  *
  * The layer re-reads its `token` Effect on every (re)connect and every
  * `/transact`, so refresh needs no client API: a source only has to *return
@@ -29,7 +29,7 @@ export interface Claims {
   readonly aud?: string | readonly string[];
   readonly exp?: number;
   readonly iat?: number;
-  readonly ripple?: {
+  readonly ramose?: {
     readonly db: string;
     readonly class: string;
     readonly attrs?: Record<string, unknown>;
@@ -37,13 +37,13 @@ export interface Claims {
   readonly [claim: string]: unknown;
 }
 
-/** A credential `Ripple.layer({ token })` accepts in place of a bare Effect. */
+/** A credential `Ramose.layer({ token })` accepts in place of a bare Effect. */
 export interface TokenSource {
   /** What the layer reads — on every (re)connect and every `/transact`. */
   readonly token: Effect.Effect<Redacted.Redacted<string>, DbError>;
   /**
    * The current payload, decoded, NOT verified — UI hints only
-   * (`ripple.class`, `sub`, `exp`). Mints if nothing is cached; otherwise it
+   * (`ramose.class`, `sub`, `exp`). Mints if nothing is cached; otherwise it
    * answers from the cache as-is, even when the cached token is due for a
    * refresh — this is a peek, never a refresh.
    */
@@ -69,7 +69,7 @@ const base64UrlBytes = (input: string): Uint8Array => {
   let at = 0;
   for (const char of cleaned) {
     const six = B64URL.indexOf(char);
-    if (six < 0) throw new Error("ripple: invalid base64url");
+    if (six < 0) throw new Error("ramose: invalid base64url");
     buffer = (buffer << 6) | six;
     bits += 6;
     if (bits >= 8) {
@@ -105,7 +105,7 @@ const wrap = (cause: unknown): DbError =>
   isDatabaseError(cause)
     ? cause
     : new NetworkError({
-        message: `ripple: token mint failed: ${
+        message: `ramose: token mint failed: ${
           cause instanceof Error ? cause.message : String(cause)
         }`,
         cause,
@@ -222,10 +222,10 @@ const staticSource = (value: string): TokenSource => ({
  * The shipped token sources.
  *
  * ```typescript
- * const source = Ripple.token.jwt(() =>
- *   fetch("/api/ripple-token", { method: "POST" }).then((r) => r.json()),
+ * const source = Ramose.token.jwt(() =>
+ *   fetch("/api/ramose-token", { method: "POST" }).then((r) => r.json()),
  * );
- * const runtime = ManagedRuntime.make(Ripple.layer({ url, token: source }));
+ * const runtime = ManagedRuntime.make(Ramose.layer({ url, token: source }));
  * ```
  */
 export const token: {

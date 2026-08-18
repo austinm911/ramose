@@ -3,7 +3,7 @@ title: Time travel
 description: asOf and history are views, not dumps — pure functions from a Db to a ReadDb.
 ---
 
-A Ripple database is immutable: a transaction adds facts (datoms), it never
+A Ramose database is immutable: a transaction adds facts (datoms), it never
 overwrites them. Time travel is therefore a *view*, not an export job.
 
 ```ts
@@ -21,7 +21,7 @@ you cannot write into the past.
 const report = yield* db.transact(function* (tx) { /* … */ });
 
 // later: what did the world look like just before that write?
-const titles = Ripple.query(Todo).select({ title: Todo.title });
+const titles = Ramose.query(Todo).select({ title: Todo.title });
 const rows = yield* db.asOf(report.t - 1).q(titles);
 ```
 
@@ -36,7 +36,7 @@ time-travel slider two hooks — the max is the basis, the value is `asOf`
 ([React reference](/reference/react/)):
 
 ```tsx
-import { useBasis, useDb, useQuery } from "@ripple/react";
+import { useBasis, useDb, useQuery } from "@ramose/react";
 
 const Scrubber = () => {
   const db = useDb("todos", Todos);
@@ -78,7 +78,7 @@ has no news.
 
 The indexer periodically folds recent writes into fresh immutable segment
 trees in R2 and flips `root/current`. Old roots are retained
-(`RIPPLE_RETAIN_ROOTS`, default 20), so an `asOf` inside the retention window
+(`RAMOSE_RETAIN_ROOTS`, default 20), so an `asOf` inside the retention window
 is just a read against an older root — same engine, same cache.
 
 :::caution[History is bounded, and not by time]
@@ -86,8 +86,8 @@ Retention keeps the newest 20 roots and garbage-collects everything unreachable
 from them, so `asOf` at an older `t` no longer resolves — that history is
 deleted, not archived. A root is published per index run, so the window is
 roughly "the last 20 index runs", which depends on how much you write
-(`RIPPLE_INDEX_TX_THRESHOLD`, 500 transactions) and how often the indexer runs
-(`RIPPLE_INDEX_INTERVAL_MS`, 5 s). It is not a number of days. Raise it
+(`RAMOSE_INDEX_TX_THRESHOLD`, 500 transactions) and how often the indexer runs
+(`RAMOSE_INDEX_INTERVAL_MS`, 5 s). It is not a number of days. Raise it
 deliberately if you are relying on an audit trail — see [Before
 production](/guides/before-production/#decide-what-you-keep).
 :::

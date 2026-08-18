@@ -1,5 +1,5 @@
 /**
- * Ripple infrastructure — Alchemy (Effect-based API, alchemy 2.x).
+ * Ramose infrastructure — Alchemy (Effect-based API, alchemy 2.x).
  *
  * One Worker (the peer; it also exports both Durable Object classes —
  * single-script pattern), two SQLite-backed Durable Object namespaces, one R2
@@ -19,7 +19,7 @@
  * and /cloudflare/compute/durable-objects for alchemy 2.0.0-beta.72.
  */
 
-import * as Ripple from "@ripple/alchemy";
+import * as Ramose from "@ramose/alchemy";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
@@ -48,19 +48,21 @@ export const Store = Cloudflare.R2.Bucket("Store");
  * `env.ANALYTICS.writeDataPoint`. The Effect-shaped client lives in the Worker
  * instead (packages/worker/src/analytics.ts).
  */
+// `dataset: "ripple_tx"` — physical name pinned; product is Ramose. Renaming it
+// would start a fresh dataset and orphan every point already written.
 export const Analytics = Cloudflare.AnalyticsEngine.Dataset("Analytics", { dataset: "ripple_tx" });
 
 /** Server auth (docs/AUTH_LAYER.md), all opt-in: nothing set deploys today's peer. */
-const auth: Ripple.PeerAuth = {
-  policy: process.env.RIPPLE_POLICY,
-  jwksUrl: process.env.RIPPLE_JWKS_URL,
-  issuers: process.env.RIPPLE_JWT_ISS,
-  aud: process.env.RIPPLE_JWT_AUD,
-  maxTtl: process.env.RIPPLE_JWT_MAX_TTL === undefined ? undefined : Number(process.env.RIPPLE_JWT_MAX_TTL),
-  allowedOrigins: process.env.RIPPLE_ALLOWED_ORIGINS,
+const auth: Ramose.PeerAuth = {
+  policy: process.env.RAMOSE_POLICY,
+  jwksUrl: process.env.RAMOSE_JWKS_URL,
+  issuers: process.env.RAMOSE_JWT_ISS,
+  aud: process.env.RAMOSE_JWT_AUD,
+  maxTtl: process.env.RAMOSE_JWT_MAX_TTL === undefined ? undefined : Number(process.env.RAMOSE_JWT_MAX_TTL),
+  allowedOrigins: process.env.RAMOSE_ALLOWED_ORIGINS,
   // Worker→DO secret. Unset = a fresh one per deploy, which is fine: the Worker
   // and both DO classes are one script and rotate together.
-  internalSecret: process.env.RIPPLE_POLICY === undefined ? undefined : Ripple.internalSecret(process.env.RIPPLE_INTERNAL_SECRET),
+  internalSecret: process.env.RAMOSE_POLICY === undefined ? undefined : Ramose.internalSecret(process.env.RAMOSE_INTERNAL_SECRET),
 };
 
 /** One Transactor per logical database (single writer); N QueryReplicas per database. */
@@ -75,48 +77,54 @@ export const Worker = Cloudflare.Worker("Worker", {
     TRANSACTOR: Transactor,
     REPLICA: Replica,
     ANALYTICS: Analytics,
-    RIPPLE_STAGE: stage,
+    RAMOSE_STAGE: stage,
     // tuning knobs (see packages/transactor/src/env.ts); only bound when set
-    ...tuning("RIPPLE_MAX_BATCH", "RIPPLE_QUERY_MAX_CELLS", "RIPPLE_LOG_LEVEL", "RIPPLE_INDEX_TX_THRESHOLD", "RIPPLE_INDEX_INTERVAL_MS", "RIPPLE_LOG_KEEP_TXS", "RIPPLE_REPLICA_HINT", "RIPPLE_CACHE_BASIS", "RIPPLE_CACHE_MODE", "RIPPLE_TIMING_YIELDS"),
-    // RIPPLE_TOKEN: Config.redacted("RIPPLE_TOKEN")  ← the peer's one bearer token for prod
-    // RIPPLE_POLICY / _JWKS_URL / _JWT_ISS / _JWT_AUD / _JWT_MAX_TTL / _ALLOWED_ORIGINS / _INTERNAL_SECRET
-    ...Ripple.authEnv(auth),
+    ...tuning("RAMOSE_MAX_BATCH", "RAMOSE_QUERY_MAX_CELLS", "RAMOSE_LOG_LEVEL", "RAMOSE_INDEX_TX_THRESHOLD", "RAMOSE_INDEX_INTERVAL_MS", "RAMOSE_LOG_KEEP_TXS", "RAMOSE_REPLICA_HINT", "RAMOSE_CACHE_BASIS", "RAMOSE_CACHE_MODE", "RAMOSE_TIMING_YIELDS"),
+    // RAMOSE_TOKEN: Config.redacted("RAMOSE_TOKEN")  ← the peer's one bearer token for prod
+    // RAMOSE_POLICY / _JWKS_URL / _JWT_ISS / _JWT_AUD / _JWT_MAX_TTL / _ALLOWED_ORIGINS / _INTERNAL_SECRET
+    ...Ramose.authEnv(auth),
   },
 });
 
-/** Typed `env` for the Worker entrypoint (mirrors packages/transactor/src/env.ts#RippleEnv). */
+/** Typed `env` for the Worker entrypoint (mirrors packages/transactor/src/env.ts#RamoseEnv). */
 export type WorkerEnv = Cloudflare.InferEnv<typeof Worker>;
 
 /**
- * The Ripple server on this peer Worker (`@ripple/alchemy`).
+ * The Ramose server on this peer Worker (`@ramose/alchemy`).
  *
- * Nothing is provisioned and no database name is pinned here: a Ripple
+ * Nothing is provisioned and no database name is pinned here: a Ramose
  * database is a *name*, the Transactor DO is `idFromName(name)` and the
  * log/segments live under `db/<name>/…` in the bucket, so the first
  * transaction materializes it. What the resource buys is the deployment —
  * the resolved `url`, the shared bearer `token`, and a deploy-time proof
  * that the server is actually serving (`GET /health`) before anything
  * binds to it. Installing a catalog on one of its names is
- * `Ripple.Database("name", { server: Server, catalog })`.
+ * `Ramose.Database("name", { server: Server, catalog })`.
  *
- * Consumers get an Effect-native client — `yield* Ripple.ReadWriteDatabases(Server)`,
- * then `ripple.db("movies", Movies)` (pure) — over a Worker service binding
- * (`Ripple.ServerBinding`) or plain HTTPS (`Ripple.ServerHttp`).
+ * Consumers get an Effect-native client — `yield* Ramose.ReadWriteDatabases(Server)`,
+ * then `ramose.db("movies", Movies)` (pure) — over a Worker service binding
+ * (`Ramose.ServerBinding`) or plain HTTPS (`Ramose.ServerHttp`).
  * See examples/kv-style/ (resources.ts + app.ts + alchemy.run.ts).
  *
  * Note the same async-env limitation as `Analytics` above: a custom resource
  * cannot be declared in a Worker's `env: {}` (the classifier chain in
  * alchemy/src/Cloudflare/Workers/WorkerAsyncBindings.ts is closed over
  * Cloudflare's own resource types). Attribute Outputs still work —
- * `env: { RIPPLE_URL: Server.url }` lowers to a `plain_text` binding — and the
- * `Ripple.*Databases` capabilities bind themselves.
+ * `env: { RAMOSE_URL: Server.url }` lowers to a `plain_text` binding — and the
+ * `Ramose.*Databases` capabilities bind themselves.
  */
-export const Server = Ripple.Server("Ripple", { worker: Worker, auth });
+// The `"Ramose"` argument is the resource's *logical* id only: `Ramose.Server`
+// provisions nothing (it resolves the Worker's URL and probes `/health`) and its
+// `delete` is a no-op, so re-keying the state row orphans no Cloudflare object.
+export const Server = Ramose.Server("Ramose", { worker: Worker, auth });
 
 export default Alchemy.Stack(
+  // App name "ripple": physical name pinned; product is Ramose. It prefixes the
+  // deployed Worker / DO / R2 names (`ripple-worker-<stage>-…`), so renaming it
+  // would orphan every already-deployed stage.
   "ripple",
   {
-    providers: Layer.mergeAll(Cloudflare.providers(), Ripple.providers()),
+    providers: Layer.mergeAll(Cloudflare.providers(), Ramose.providers()),
     // State lives in Cloudflare by default; ALCHEMY_STATE=local keeps a file
     // store instead (offline `bun alchemy dev` against the local emulation).
     state: process.env.ALCHEMY_STATE === "local" ? Alchemy.localState() : Cloudflare.state(),

@@ -2,7 +2,7 @@
 #
 # Run the e2e suite (test/e2e) against a REAL Cloudflare deployment.
 #
-# Deploys the Ripple stack to a throwaway, uniquely-named stage, waits for the
+# Deploys the Ramose stack to a throwaway, uniquely-named stage, waits for the
 # peer's /health to answer, runs `bun run test:e2e` against the deployed URL,
 # then destroys the stage — even if the tests fail.
 #
@@ -15,7 +15,7 @@
 # Optional:
 #   ALCHEMY_STAGE / E2E_STAGE  Override the throwaway stage name
 #                              (default: e2e-<epoch>-<rand>).
-#   RIPPLE_TOKEN               Bearer token if you deploy an authenticated peer.
+#   RAMOSE_TOKEN               Bearer token if you deploy an authenticated peer.
 #                              The default deploy is an open peer.
 #   KEEP_STAGE=1               Do not destroy the stage on exit (debug).
 #
@@ -34,7 +34,7 @@ command -v bun >/dev/null 2>&1 || fail "bun is not on PATH."
 
 # Unique DNS-safe stage so concurrent runs never share Worker/DO/R2 resources.
 STAGE="${ALCHEMY_STAGE:-${E2E_STAGE:-e2e-$(date +%s)-${RANDOM}}}"
-DEPLOY_LOG="$(mktemp "${TMPDIR:-/tmp}/ripple-e2e-deploy.XXXXXX.log")"
+DEPLOY_LOG="$(mktemp "${TMPDIR:-/tmp}/ramose-e2e-deploy.XXXXXX.log")"
 STATUS=0
 
 # Local state store: this run's state lives in ./.alchemy, so destroy
@@ -81,7 +81,7 @@ fi
 if [ -z "$URL" ]; then
   URL="$(grep -oE 'https://[a-zA-Z0-9._-]+\.workers\.dev' "$DEPLOY_LOG" | head -n1 || true)"
 fi
-[ -n "$URL" ] || fail "could not find a Worker URL in the deploy output. If you use a custom domain, set RIPPLE_URL and run 'bun run test:e2e' directly."
+[ -n "$URL" ] || fail "could not find a Worker URL in the deploy output. If you use a custom domain, set RAMOSE_URL and run 'bun run test:e2e' directly."
 
 echo ">> Deployed peer: $URL"
 
@@ -100,7 +100,7 @@ echo ">> Peer is healthy."
 echo ">> Waiting for Durable Objects (GET /db/e2e-warmup/info) ..."
 ok=""
 for _ in $(seq 1 45); do
-  body="$(mktemp "${TMPDIR:-/tmp}/ripple-e2e-warmup.XXXXXX")"
+  body="$(mktemp "${TMPDIR:-/tmp}/ramose-e2e-warmup.XXXXXX")"
   code="$(curl -sS -o "$body" -w '%{http_code}' "$URL/db/e2e-warmup/info" || echo 000)"
   if [ "$code" = "200" ]; then
     ok=1
@@ -118,7 +118,7 @@ echo ">> Durable Objects ready."
 
 echo ">> Running e2e suite against $URL ..."
 set +e
-RIPPLE_URL="$URL" RIPPLE_TOKEN="${RIPPLE_TOKEN:-}" bun run test:e2e
+RAMOSE_URL="$URL" RAMOSE_TOKEN="${RAMOSE_TOKEN:-}" bun run test:e2e
 STATUS=$?
 set -e
 

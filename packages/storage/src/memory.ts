@@ -1,6 +1,6 @@
 /**
  * In-memory `R2Like` for tests and benches (same semantics as the R2 binding
- * as far as Ripple uses it: get/put/head/delete/list with prefix + cursor).
+ * as far as Ramose uses it: get/put/head/delete/list with prefix + cursor).
  */
 import type { R2Like } from "./index.ts";
 

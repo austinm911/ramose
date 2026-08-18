@@ -1,7 +1,7 @@
 /**
  * The provider contract:
  *
- * - `useRipple` outside a provider throws, and the message says what to do.
+ * - `useRamose` outside a provider throws, and the message says what to do.
  * - `useDb` identity is stable across renders and changes with `name`.
  * - A provider prop change closes the old client (the fake peer records the
  *   close on the session socket the old client had opened).
@@ -10,13 +10,13 @@
 
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, describe, expect, test } from "bun:test";
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { type ReactNode, StrictMode, useEffect } from "react";
 import { render, renderHook, waitFor } from "@testing-library/react";
 import { fakePeer, type FakePeer } from "./peer.ts";
-import { RippleProvider, useDb, useRipple } from "../src/index.ts";
+import { RamoseProvider, useDb, useRamose } from "../src/index.ts";
 
 // imports are hoisted, so this runs after them but before any test renders —
 // which is enough: nothing above touches `document` at import time. The
@@ -28,11 +28,11 @@ afterAll(() => {
   if (GlobalRegistrator.isRegistered) GlobalRegistrator.unregister();
 });
 
-const Todo = Ripple.Namespace("todo", {
-  title: Ripple.Attr(Schema.String),
+const Todo = Ramose.Namespace("todo", {
+  title: Ramose.Attr(Schema.String),
 });
-const Todos = Ripple.Catalog({ todo: Todo });
-const titles = Ripple.query(Todo).select({ title: Todo.title });
+const Todos = Ramose.Catalog({ todo: Todo });
+const titles = Ramose.query(Todo).select({ title: Todo.title });
 
 const providerProps = (peer: FakePeer, url = "https://peer.example.com") => ({
   url,
@@ -51,13 +51,13 @@ const ReadOnce = () => {
   return null;
 };
 
-describe("useRipple", () => {
-  test("outside a provider it throws, and the message names RippleProvider", () => {
+describe("useRamose", () => {
+  test("outside a provider it throws, and the message names RamoseProvider", () => {
     const noisy = console.error;
     console.error = () => {};
     try {
-      expect(() => renderHook(() => useRipple())).toThrow(/RippleProvider/);
-      expect(() => renderHook(() => useRipple())).toThrow(/useRipple/);
+      expect(() => renderHook(() => useRamose())).toThrow(/RamoseProvider/);
+      expect(() => renderHook(() => useRamose())).toThrow(/useRamose/);
     } finally {
       console.error = noisy;
     }
@@ -68,7 +68,7 @@ describe("useDb", () => {
   test("identity is stable across renders, and changes with name", () => {
     const peer = fakePeer();
     const wrapper = ({ children }: { children?: ReactNode }) => (
-      <RippleProvider {...providerProps(peer)}>{children}</RippleProvider>
+      <RamoseProvider {...providerProps(peer)}>{children}</RamoseProvider>
     );
 
     const { result, rerender } = renderHook(
@@ -85,13 +85,13 @@ describe("useDb", () => {
   });
 });
 
-describe("RippleProvider", () => {
+describe("RamoseProvider", () => {
   test("a prop change closes the old client and connects the new one", async () => {
     const peer = fakePeer();
     const ui = (url: string) => (
-      <RippleProvider {...providerProps(peer, url)}>
+      <RamoseProvider {...providerProps(peer, url)}>
         <ReadOnce />
-      </RippleProvider>
+      </RamoseProvider>
     );
 
     const { rerender } = render(ui("https://a.example.com"));
@@ -108,17 +108,17 @@ describe("RippleProvider", () => {
 
   test("a token identity change closes the old client too", async () => {
     const peer = fakePeer();
-    const ui = (source: Ripple.TokenSource) => (
-      <RippleProvider {...providerProps(peer)} token={source}>
+    const ui = (source: Ramose.TokenSource) => (
+      <RamoseProvider {...providerProps(peer)} token={source}>
         <ReadOnce />
-      </RippleProvider>
+      </RamoseProvider>
     );
 
-    const { rerender } = render(ui(Ripple.token.static("a")));
+    const { rerender } = render(ui(Ramose.token.static("a")));
     await waitFor(() => expect(peer.sockets.length).toBe(1));
     expect(peer.sockets[0]!.url).toContain("token=a");
 
-    rerender(ui(Ripple.token.static("b")));
+    rerender(ui(Ramose.token.static("b")));
     await waitFor(() => expect(peer.sockets[0]!.closed).toBe(true));
     await waitFor(() => expect(peer.sockets.length).toBe(2));
     expect(peer.sockets[1]!.url).toContain("token=b");
@@ -128,9 +128,9 @@ describe("RippleProvider", () => {
   test("unmount closes the client", async () => {
     const peer = fakePeer();
     const { unmount } = render(
-      <RippleProvider {...providerProps(peer)}>
+      <RamoseProvider {...providerProps(peer)}>
         <ReadOnce />
-      </RippleProvider>,
+      </RamoseProvider>,
     );
     await waitFor(() => expect(peer.sockets.length).toBe(1));
 
@@ -140,18 +140,18 @@ describe("RippleProvider", () => {
 
   test("StrictMode double-mount ends with an open client", async () => {
     const peer = fakePeer();
-    const seen: Ripple.Client[] = [];
+    const seen: Ramose.Client[] = [];
     const Probe = () => {
-      const client = useRipple();
+      const client = useRamose();
       if (seen[seen.length - 1] !== client) seen.push(client);
       return <ReadOnce />;
     };
 
     render(
       <StrictMode>
-        <RippleProvider {...providerProps(peer)}>
+        <RamoseProvider {...providerProps(peer)}>
           <Probe />
-        </RippleProvider>
+        </RamoseProvider>
       </StrictMode>,
     );
 

@@ -1,15 +1,15 @@
 # Query
 
-Ripple’s read surface is a **typed navigational query value**. You build it
+Ramose’s read surface is a **typed navigational query value**. You build it
 from catalog attributes (`Todo.done.eq(false)`, `Todo.owner.name`), run it with
 `db.q` / `db.live`, and the client lowers it to the datalog + pull IR the engine
 already evaluates — filters, shape, order and paging all run on the peer, in one
 round trip.
 
 ```ts
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
 
-const openTodos = Ripple.query(Todo)
+const openTodos = Ramose.query(Todo)
   .where(Todo.done.eq(false), Todo.owner.name.startsWith("A"))
   .orderBy(Todo.due, "asc", { empty: "last" })
   .limit(20)
@@ -35,25 +35,25 @@ in the past, and can live at module scope (stable dependency for `useLive`).
 
 ## Schema: targeted refs
 
-Navigation needs a typed ref target. Use `Ripple.Ref(() => Namespace)` or
-`Ripple.Ref.self` for self-edges. Untargeted `Ripple.Ref` still works for
+Navigation needs a typed ref target. Use `Ramose.Ref(() => Namespace)` or
+`Ramose.Ref.self` for self-edges. Untargeted `Ramose.Ref` still works for
 `:db.type/ref` storage, but paths like `Todo.owner.name` require a target.
 
 ```ts
-export const User = Ripple.Namespace("user", {
-  name: Ripple.Attr(Schema.String),
-  email: Ripple.Attr(Schema.String, { unique: "identity" }),
-  friends: Ripple.Attr(Ripple.Ref.self, { cardinality: "many" }),
+export const User = Ramose.Namespace("user", {
+  name: Ramose.Attr(Schema.String),
+  email: Ramose.Attr(Schema.String, { unique: "identity" }),
+  friends: Ramose.Attr(Ramose.Ref.self, { cardinality: "many" }),
 });
 
-export const Todo = Ripple.Namespace("todo", {
-  title: Ripple.Attr(Schema.String),
-  done: Ripple.Attr(Schema.Boolean),
-  due: Ripple.Attr(Ripple.Instant),
-  owner: Ripple.Attr(Ripple.Ref(() => User)),
+export const Todo = Ramose.Namespace("todo", {
+  title: Ramose.Attr(Schema.String),
+  done: Ramose.Attr(Schema.Boolean),
+  due: Ramose.Attr(Ramose.Instant),
+  owner: Ramose.Attr(Ramose.Ref(() => User)),
 });
 
-export const Todos = Ripple.Catalog({ user: User, todo: Todo });
+export const Todos = Ramose.Catalog({ user: User, todo: Todo });
 ```
 
 Attribute metadata for navigation uses `attrName` (not `.name`) so a path like
@@ -67,7 +67,7 @@ instantiation.
 ## Building a query
 
 ```ts
-Ripple.query(Todo)           // scope: entities that carry at least one :todo/* datom
+Ramose.query(Todo)           // scope: entities that carry at least one :todo/* datom
   .where(...predicates)      // conjunctive filters
   .orderBy(attr, dir?, opts?)
   .limit(n)
@@ -81,7 +81,7 @@ comparable (`Todo.id.eq(eid)`, `Todo.id.gt(n)`).
 
 ### Scope
 
-`Ripple.query(N)` denotes entities that carry **at least one** `:n/*` datom. The
+`Ramose.query(N)` denotes entities that carry **at least one** `:n/*` datom. The
 lowerer emits an `or` over the namespace’s attributes so membership does not
 require a `:db/ns` marker.
 
@@ -161,7 +161,7 @@ User.scores.each.gt(3)
 - Only a cardinality-many attribute has one; `.each` on a card-one attr is a
   type error (and throws if forced).
 - It is in scope **only inside its own collection**: `attr.every` / `.none` /
-  `.some` / `.where` / `.orderBy`, and inside `Ripple.or` / `Ripple.not` within
+  `.some` / `.where` / `.orderBy`, and inside `Ramose.or` / `Ramose.not` within
   them. `User.tags.each` in the query's own `.where`, in `User.friends.every(…)`,
   as a sort key of another collection, or as a select field is a type error and
   a runtime error — the element of a collection means nothing where there is no
@@ -173,19 +173,19 @@ loud.
 
 ### Combinators
 
-`.where(...)` is conjunctive; `Ripple.or` and `Ripple.not` are how a query says
+`.where(...)` is conjunctive; `Ramose.or` and `Ramose.not` are how a query says
 anything else. Both nest, and both take predicates, quantifiers, or each other:
 
 ```ts
-Ripple.query(Todo).where(
+Ramose.query(Todo).where(
   Todo.done.eq(false),
-  Ripple.or(Todo.owner.name.eq("Ada"), Todo.due.missing()),
-  Ripple.not(Todo.title.startsWith("draft")),
+  Ramose.or(Todo.owner.name.eq("Ada"), Todo.due.missing()),
+  Ramose.not(Todo.title.startsWith("draft")),
 );
 ```
 
 Each is scoped to the query's root entity, so branches need not bind the same
-variables and a row matched by two branches still comes back once. `Ripple.or()`
+variables and a row matched by two branches still comes back once. `Ramose.or()`
 with no branches matches nothing — again, a clause the peer evaluates, not a
 client-side short-circuit.
 
@@ -196,7 +196,7 @@ client-side short-circuit.
 works in `where` and in `select`:
 
 ```ts
-Ripple.query(User)
+Ramose.query(User)
   .where(Todo.owner.reverse.some(Todo.done.eq(false)))
   .select({
     name: User.name,
@@ -267,7 +267,7 @@ a many scalar — and `.where` / `.orderBy` / `.limit` / `.offset` chain onto th
 nav to constrain it:
 
 ```ts
-Ripple.query(User)
+Ramose.query(User)
   .orderBy(User.name).limit(20)
   .select({
     name: User.name,
@@ -307,7 +307,7 @@ the pull, *after* the outer `:order` / `:offset` / `:limit` slice. So:
   not an entity — so the constrained nav *is* the select field, and the row
   type is unchanged: still `readonly string[]`, with fewer values in it. A bare
   `User.tags` is still the whole collection.
-- `Ripple.or` / `Ripple.not` nest as usual, and `some(…)` on a many hop inside
+- `Ramose.or` / `Ramose.not` nest as usual, and `some(…)` on a many hop inside
   the predicate is just a longer path (fan-out is existential); `none(…)` is
   its negation.
 - `every(…)` works here too, and so does a negation *underneath* a `some(…)`
@@ -378,7 +378,7 @@ a write the query does not see is not a re-render.
 query when you need filters, live, or `asOf` on the same artifact:
 
 ```ts
-Ripple.query(Todo).where(/* … */).select(shape)
+Ramose.query(Todo).where(/* … */).select(shape)
 ```
 
 ---
@@ -449,15 +449,15 @@ Status of the navigational surface relative to the intended design.
 | Area | Shipped | Not yet |
 |---|---|---|
 | Schema | `Ref(() => N)`, `Ref.self`, navigable attrs | namespace-branded `Eid<N>` cleanup |
-| Build | `Ripple.query(N)`, `.where`, `.select`, `.orderBy`, `.limit`, `.offset`, `.build` | `Ripple.params`, `.one` / `.oneOrFail`, `.groupBy`, `.after(cursor)` |
+| Build | `Ramose.query(N)`, `.where`, `.select`, `.orderBy`, `.limit`, `.offset`, `.build` | `Ramose.params`, `.one` / `.oneOrFail`, `.groupBy`, `.after(cursor)` |
 | Predicates | `eq` `ne` `lt` `lte` `gt` `gte` `in` `startsWith` `endsWith` `includes` `matches` `exists` `missing`, ref `is`, card-many `some` / `every` / `none` on refs **and scalars** (`attr.each` names the element) | — |
-| Combinators | `Ripple.or` `Ripple.not`, nestable | `Ripple.when` (waits on `Ripple.params`) |
-| Shape | nested `ref.select`, `.optional`, backlink `.reverse.select` (same grammar for `db.pull`), nested `where` / `orderBy` / `limit` / `offset` on every card-many collection — refs, backlinks and *scalars* (via `attr.each`) — including `every` and `not` under `some` inside one | `.expand`, `.orDefault`, `Ripple.all(N)`, `.reverse` on `:db/isComponent` refs. Rejected by design: a **flattened path** as a select field (`{ ownerName: Todo.owner.name }` — write the nested select), constraints on a card-one ref select (one entity, not a collection), and an element cursor outside its collection |
+| Combinators | `Ramose.or` `Ramose.not`, nestable | `Ramose.when` (waits on `Ramose.params`) |
+| Shape | nested `ref.select`, `.optional`, backlink `.reverse.select` (same grammar for `db.pull`), nested `where` / `orderBy` / `limit` / `offset` on every card-many collection — refs, backlinks and *scalars* (via `attr.each`) — including `every` and `not` under `some` inside one | `.expand`, `.orDefault`, `Ramose.all(N)`, `.reverse` on `:db/isComponent` refs. Rejected by design: a **flattened path** as a select field (`{ ownerName: Todo.owner.name }` — write the nested select), constraints on a card-one ref select (one entity, not a collection), and an element cursor outside its collection |
 | Aggregates | — | `count` `sum` `avg` `min` `max` `countDistinct`, `having` |
-| Graph | — | `.traverse` `.paths` `attr.reaches` `Ripple.either` |
-| Runners | `db.q` / `db.live` on query values; find-pull lowering; identical-result suppression on `live` | `db.changes`; `Ripple.explain` / `withBasis` |
+| Graph | — | `.traverse` `.paths` `attr.reaches` `Ramose.either` |
+| Runners | `db.q` / `db.live` on query values; find-pull lowering; identical-result suppression on `live` | `db.changes`; `Ramose.explain` / `withBasis` |
 | Order/limit | AST + engine `order` / `limit` / `offset`; required-field filtering on the peer, before `limit`; card-many and backlink `orderBy` rejected | — |
-| IR hatch | — (the string-var callback builder is retired) | `@ripple/alchemy/db/datalog` typed IR, rules |
+| IR hatch | — (the string-var callback builder is retired) | `@ramose/alchemy/db/datalog` typed IR, rules |
 
 ---
 
@@ -471,7 +471,7 @@ cut.
 - **`.orDefault`** in a shape, so a missing scalar reads as a value rather than
   `undefined` — the pull spec's `default` is already there, the client has no
   spelling for it.
-- **`Ripple.all(N)`** / a default `select`: a query with no shape yields ids
+- **`Ramose.all(N)`** / a default `select`: a query with no shape yields ids
   today, and the wildcard pull the peer already answers has no client term.
 - **`.reverse` on a `:db/isComponent` ref**, whose backlink is single-valued:
   it throws rather than typing an array the peer will not send.
@@ -480,13 +480,13 @@ cut.
 
 ### Later
 
-- **`Ripple.params` + `Ripple.when`** for stable, serializable parameterized
+- **`Ramose.params` + `Ramose.when`** for stable, serializable parameterized
   queries. `when` is deliberately not a build-time boolean today: the doc files
   it under parameterization, and that design comes first.
 - **Aggregates / `groupBy`**, `.one()` / `.oneOrFail()`, cursors (`.after`).
 - **`.expand`** for bounded recursive trees in shapes; then **`.traverse` /
   `.paths` / `reaches`** for graph walks.
-- Typed **`@ripple/alchemy/db/datalog`** escape hatch (logic vars as values,
+- Typed **`@ramose/alchemy/db/datalog`** escape hatch (logic vars as values,
   rules as P1).
 - Live **footprint invalidation**, **`db.changes`**, shape-hash multiplexing.
 - Optional **`:db/ns` marker** instead of or-join scope; `db.asOf(date)` /
@@ -497,7 +497,7 @@ cut.
 - Attribute values + lexical shadowing vs lambdas-everywhere for scope.
 - Whether `/db/datalog` is promised public API or an unpromised hatch.
 - Unbounded `.expand` typing vs literal-`max` type unrolling.
-- Default `select` (eids only today) vs implicit `Ripple.all(N)`.
+- Default `select` (eids only today) vs implicit `Ramose.all(N)`.
 - Named error for schema-drift decode failures on long-lived clients.
 
 ---

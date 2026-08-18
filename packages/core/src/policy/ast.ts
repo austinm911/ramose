@@ -42,7 +42,7 @@ export interface CompiledPolicy {
   /** attribute ident whose value is the JWT `sub`, e.g. ":user/sub" */
   readonly principal: string;
   readonly classes: readonly string[];
-  /** shape of `ripple.attrs`; opaque to core (Effect Schema JSON in alchemy) */
+  /** shape of `ramose.attrs`; opaque to core (Effect Schema JSON in alchemy) */
   readonly claims?: unknown;
   readonly attrs: Readonly<Record<string, AttrRules>>;
   /** namespace prefix (no leading ':') → fallback rules */

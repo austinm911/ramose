@@ -1,7 +1,7 @@
 /**
  * `Databases` — the client, as a Context service.
  *
- * The key *is* the client: `yield* Ripple.Databases` hands back something with
+ * The key *is* the client: `yield* Ramose.Databases` hands back something with
  * one method, `db(name, catalog)`, and that call is pure — no network, no
  * ensure, no socket. A Worker binding therefore does zero network per request,
  * and a browser never installs schema.
@@ -12,7 +12,7 @@
  * `fetch` is a provisioning mistake, so it is a defect, not a `DbError`.
  */
 
-import { fromJson, toJson } from "@ripple/core/json.ts";
+import { fromJson, toJson } from "@ramose/core/json.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -54,12 +54,12 @@ export interface DatabasesShape {
  * The capability. Yield it to get the client:
  *
  * ```typescript
- * const ripple = yield* Ripple.Databases;
- * const db = ripple.db("todos", Todos);
+ * const ramose = yield* Ramose.Databases;
+ * const db = ramose.db("todos", Todos);
  * ```
  */
 export class Databases extends Context.Service<Databases, DatabasesShape>()(
-  "Ripple.Databases",
+  "Ramose.Databases",
 ) {}
 
 export interface ClientOptions {
@@ -99,7 +99,7 @@ export interface DatabasesConfig {
   readonly fetch: FetchLike;
   /** Omit for an HTTPS-only client: reads fall back to POST, `live` is unavailable. */
   readonly webSocket?: SocketFactory | undefined;
-  /** Extra headers on every HTTPS request (`x-ripple-replica-hint`, …). */
+  /** Extra headers on every HTTPS request (`x-ramose-replica-hint`, …). */
   readonly headers?: Record<string, string> | undefined;
 }
 
@@ -293,7 +293,7 @@ export const makeDatabases = (
             return Effect.fail<DbError>(
               new InternalError({
                 message:
-                  "ripple: the peer's /info reported no principal — it predates db.principal()",
+                  "ramose: the peer's /info reported no principal — it predates db.principal()",
               }),
             );
           }
@@ -356,7 +356,7 @@ const configure = (
       new URL(options.url);
     } catch {
       return Effect.die(
-        new Error(`ripple: malformed url ${JSON.stringify(options.url)}`),
+        new Error(`ramose: malformed url ${JSON.stringify(options.url)}`),
       );
     }
     const ambient = typeof fetch === "undefined" ? undefined : fetch;
@@ -364,7 +364,7 @@ const configure = (
     if (chosen === undefined) {
       return Effect.die(
         new Error(
-          "ripple: no global fetch — pass `fetch` to Ripple.connect({ … }) or Ripple.layer({ … })",
+          "ramose: no global fetch — pass `fetch` to Ramose.connect({ … }) or Ramose.layer({ … })",
         ),
       );
     }

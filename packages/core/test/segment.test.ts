@@ -21,7 +21,7 @@ describe("bytes", () => {
   });
 
   test("gzip round trip + sha256", async () => {
-    const data = new TextEncoder().encode("ripple ".repeat(1000));
+    const data = new TextEncoder().encode("ramose ".repeat(1000));
     const z = await gzip(data);
     expect(z.length).toBeLessThan(data.length);
     expect(await gunzip(z)).toEqual(data);

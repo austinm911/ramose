@@ -68,7 +68,7 @@ whole "Older notes… say 8787" paragraph). Replace with:
    ```
 
    Alchemy brings up the peer on **:1337**, then starts Vite on **:5173** and
-   hands it `VITE_RIPPLE_URL` — you never set it yourself. You will see:
+   hands it `VITE_RAMOSE_URL` — you never set it yourself. You will see:
 
    ```
    [Peer] ready at http://localhost:1337
@@ -107,7 +107,7 @@ whole "Older notes… say 8787" paragraph). Replace with:
 
    ```sh title="Terminal 2 — checkpoint"
    curl http://localhost:1337/health
-   # {"ok":true,"service":"ripple","stage":"dev","time":1755500000000}
+   # {"ok":true,"service":"ramose","stage":"dev","time":1755500000000}
    ```
 
    Optional, and four seconds: `bun test examples/todos` — four passing tests
@@ -139,14 +139,14 @@ Add as the last line inside the `<Steps>` block, after the deploy step:
 - **`examples/todos/src/db.ts` snippet (`:137-158`)**: print the file **as it
   actually reads** — the fallback is `"http://localhost:8787"`. Then delete the
   apologetic parenthetical at `:160-162` entirely. No commentary is needed:
-  `bun run dev:todos` always injects `VITE_RIPPLE_URL`, so the fallback is
+  `bun run dev:todos` always injects `VITE_RAMOSE_URL`, so the fallback is
   unreachable. (Do **not** edit `examples/todos/src/db.ts` — it is outside your
   ownership.)
 - Add an orientation note immediately **above** that snippet, because
   `ManagedRuntime`, `Redacted` and `yield*` currently arrive with no warning and
   the Introduction never mentions Effect:
 
-  > Ripple is built on [Effect](https://effect.website). Its API returns Effect
+  > Ramose is built on [Effect](https://effect.website). Its API returns Effect
   > values — descriptions of work — so one `ManagedRuntime` per page holds the
   > connection and is disposed with it, `run(…)` executes one of those values
   > from the browser, and `yield*` inside `db.transact` sequences the steps of a
@@ -188,7 +188,7 @@ Add as the last line inside the `<Steps>` block, after the deploy step:
   goes unanswered on the page where it is asked). Every claim in it is verified
   elsewhere on this branch:
 
-  > **If you are comparing:** Ripple is closest to Convex and Instant in feel —
+  > **If you are comparing:** Ramose is closest to Convex and Instant in feel —
   > queries that re-run themselves — and closest to Supabase in that
   > authorization is part of the database rather than middleware. The difference
   > is that it deploys into your own Cloudflare account, and a per-customer
@@ -215,12 +215,12 @@ Replace the checklist item with:
 >       and paging run on the peer, before pulls, so `limit(20)` pulls only
 >       twenty entities and the client never sees the rest — but the `where`
 >       clauses still build the full intermediate relation, so a broad query can
->       still exceed `RIPPLE_QUERY_MAX_CELLS`. Narrow with `where`, not with
+>       still exceed `RAMOSE_QUERY_MAX_CELLS`. Narrow with `where`, not with
 >       `limit`.
 
 ### 3.2 `concepts/for-datomic-users.md:28`
 
-> | Datalog query | a typed navigational builder — `Ripple.query(Todo).where(…).orderBy(…).limit(n).select(…)`, run by `db.q` / `db.live`; there is no string-variable escape hatch today |
+> | Datalog query | a typed navigational builder — `Ramose.query(Todo).where(…).orderBy(…).limit(n).select(…)`, run by `db.q` / `db.live`; there is no string-variable escape hatch today |
 
 ### 3.3 `concepts/for-datomic-users.md:44`
 
@@ -248,20 +248,20 @@ roots are published to R2 afterwards by the indexer, and never rewritten.`
 
 ### 4.2 `guides/catalog.md:85-91`
 
-"or the call throws when the module loads" is wrong: `Ripple.Attr` uses
+"or the call throws when the module loads" is wrong: `Ramose.Attr` uses
 `tryInferDbValueType`, which returns `undefined`; the throw is `inferDbValueType`,
 reached from `ensure.ts` at catalog install. Replace the last clause with:
 
-> …or installing the catalog fails with `ripple/schema: cannot infer
+> …or installing the catalog fails with `ramose/schema: cannot infer
 > :db.type/* from this Schema`. The check runs when the catalog is installed — at
-> deploy (`Ripple.Database`) or at `db.install()` — not when the module loads, so
+> deploy (`Ramose.Database`) or at `db.install()` — not when the module loads, so
 > pass `valueType` as you write the attribute.
 
 ### 4.3 `guides/queries.md:206` and `reference/http-api.md:50-52`
 
 The wire names carry the prefix (`packages/replica/src/replica-do.ts`;
 `packages/worker/src/index.ts` `access-control-expose-headers`). Write all three
-as `x-ripple-ms`, `x-ripple-r2-gets`, `x-ripple-cache-hits`, and add the clause
+as `x-ramose-ms`, `x-ramose-r2-gets`, `x-ramose-cache-hits`, and add the clause
 "all listed in `access-control-expose-headers`, so a browser can read them."
 
 ### 4.4 `guides/live-queries.md:32`
@@ -323,12 +323,12 @@ instead of calling run.` Cross-link the Effect orientation note in the quickstar
   `import { todoDetail } from "./src/queries.ts";` → import from the module that
   exists (`examples/todos/src/todos.ts`) or from the query you defined earlier on
   this page. `examples/todos` has no `src/queries.ts`.
-- Keep the manual two-terminal run command (peer + `VITE_RIPPLE_TOKEN=… bunx vite
+- Keep the manual two-terminal run command (peer + `VITE_RAMOSE_TOKEN=… bunx vite
   examples/todos`) and label it as the manual form, because the token has to be
-  injected into Vite yourself. **Do not** write `VITE_RIPPLE_TOKEN=… bun run
+  injected into Vite yourself. **Do not** write `VITE_RAMOSE_TOKEN=… bun run
   dev:todos`: that script starts its own Vite on `--port 5173 --strictPort`, so
   it would collide, and env passthrough into `Command.Dev` is unverified.
-- `Ripple.authEnv` is real (`packages/alchemy/src/index.ts`) — leave it.
+- `Ramose.authEnv` is real (`packages/alchemy/src/index.ts`) — leave it.
 
 ---
 

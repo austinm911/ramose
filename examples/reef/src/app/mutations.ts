@@ -6,7 +6,7 @@
  */
 
 import * as Effect from "effect/Effect";
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
 import type { ReefDb } from "../domain/queries.ts";
 import { rankAfter } from "../domain/rank.ts";
 import { Comment, Issue, Label, User, type Status } from "../domain/schema.ts";
@@ -58,7 +58,7 @@ export const ensureSelf = (
   canWrite: boolean,
 ) =>
   Effect.gen(function* () {
-    const mineQuery = Ripple.query(User)
+    const mineQuery = Ramose.query(User)
       .where(User.sub.eq(me.id))
       .select({ id: User.id });
     const existing = yield* db.q(mineQuery);

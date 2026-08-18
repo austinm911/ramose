@@ -1,6 +1,6 @@
 /**
  * Session-gated shell: Better Auth session → workspace picker → board.
- * Plain state routing (SPA, no RSC). The active workspace owns a Ripple
+ * Plain state routing (SPA, no RSC). The active workspace owns a Ramose
  * client; switching closes it and connects the next one.
  *
  * Theme: the StyleX theme class goes on `<html>` (not the app root) so the
@@ -21,7 +21,7 @@ import {
 } from "react";
 import { authClient, type SessionUser } from "./auth.ts";
 import { ensureSelf, provisionWorkspace } from "./mutations.ts";
-import { openWorkspace, type Workspace } from "./ripple.ts";
+import { openWorkspace, type Workspace } from "./ramose.ts";
 import { AuthScreen } from "./screens/AuthScreen.tsx";
 import { BoardScreen } from "./screens/BoardScreen.tsx";
 import { WorkspacesScreen } from "./screens/WorkspacesScreen.tsx";

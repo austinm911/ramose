@@ -1,6 +1,6 @@
 /** Literate pull map: keys are result names, values are attr refs / `.optional` / `.select`. */
 
-import type { PullElemOrder, PullElemPred } from "@ripple/core/query/ast.ts";
+import type { PullElemOrder, PullElemPred } from "@ramose/core/query/ast.ts";
 import type * as Schema from "effect/Schema";
 import type { AnyAttribute } from "./Attribute.ts";
 import { isAttrRef } from "./attrRef.ts";
@@ -54,7 +54,7 @@ export interface PullNested<A = unknown, P = unknown> {
 /**
  * Literate pull methods stamped onto every attr ref (`User.name`).
  * Nested shapes use {@link AttrNav.select} from NavQuery (same grammar as
- * `Ripple.query(…).select`); this type only carries `.optional`.
+ * `Ramose.query(…).select`); this type only carries `.optional`.
  */
 export type AttrPull<A> = {
   readonly optional: PullOptional<A>;
@@ -266,7 +266,7 @@ export type Pull<C extends AnyCatalog, P> = [P] extends [
 const identOf = (field: unknown): string => {
   if (typeof field === "string") return field;
   if (isAttrRef(field)) return field.ident;
-  throw new Error(`ripple/schema: pull field is not an attr ref: ${String(field)}`);
+  throw new Error(`ramose/schema: pull field is not an attr ref: ${String(field)}`);
 };
 
 const fieldsOf = (pattern: unknown): Record<string, unknown> => {
@@ -383,7 +383,7 @@ export const assertDirectField = (
   const { path, revs } = hopsOf(attr);
   if (path.length < 2) return;
   throw new Error(
-    `ripple/query: select field "${as}": ${spellPath(path, revs)} is a multi-hop path (${path.join(" → ")}) — a select field must be a direct attribute of the queried namespace. Use a nested select: ${spellNested(path, revs, leafSelects)}`,
+    `ramose/query: select field "${as}": ${spellPath(path, revs)} is a multi-hop path (${path.join(" → ")}) — a select field must be a direct attribute of the queried namespace. Use a nested select: ${spellNested(path, revs, leafSelects)}`,
   );
 };
 
@@ -432,7 +432,7 @@ export const inspectPullField = (
   }
   if (isElementCarrier(current)) {
     throw new Error(
-      `ripple/query: ${identOf(current)}.each is an element cursor, not a select field — it names one value of the collection inside its own every / none / some / where / orderBy. Select the attribute itself.`,
+      `ramose/query: ${identOf(current)}.each is an element cursor, not a select field — it names one value of the collection inside its own every / none / some / where / orderBy. Select the attribute itself.`,
     );
   }
   if (isCollectionCarrier(current)) {
@@ -440,7 +440,7 @@ export const inspectPullField = (
     // value has no shape to ask for. A ref one still needs its `.select`.
     if ((current.attr as { valueType?: unknown })?.valueType === ":db.type/ref") {
       throw new Error(
-        "ripple/schema: a filtered collection needs a shape — write `.where(…).select({ … })`",
+        "ramose/schema: a filtered collection needs a shape — write `.where(…).select({ … })`",
       );
     }
     return {
@@ -512,7 +512,7 @@ const lowerField = (as: string, field: unknown): unknown => {
     // the peer answers a bare backlink with `{":db/id": n}` objects, which is
     // neither a scalar nor the selected shape — ask for the shape you want
     throw new Error(
-      `ripple/schema: ${identOf(info.attr)} backlinks need a shape — write \`.reverse.select({ … })\` for the key \`${as}\``,
+      `ramose/schema: ${identOf(info.attr)} backlinks need a shape — write \`.reverse.select({ … })\` for the key \`${as}\``,
     );
   }
   // a card-many scalar carries its own `where` / `order` / `offset` / `limit`

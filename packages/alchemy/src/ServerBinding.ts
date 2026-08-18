@@ -1,16 +1,16 @@
 /**
- * `Ripple.ServerBinding` — the Worker service-binding transport.
+ * `Ramose.ServerBinding` — the Worker service-binding transport.
  *
- * A Ripple server is reached over HTTP, and the cheapest, most private way for
+ * A Ramose server is reached over HTTP, and the cheapest, most private way for
  * one Worker to reach another on Cloudflare is a **service binding**:
- * `env.Ripple.fetch(...)` dispatches to the server Worker inside the same
+ * `env.Ramose.fetch(...)` dispatches to the server Worker inside the same
  * colo, with no DNS, no TLS handshake, and no public hop. So the deploy-time
  * half lowers a `service` binding onto the host Worker (plus, when configured,
  * the bearer token as an env value), and the runtime half issues ordinary
  * requests through that Fetcher against the synthetic origin
- * `https://ripple.internal` — the server routes on the path, never the host.
+ * `https://ramose.internal` — the server routes on the path, never the host.
  *
- * No database name is lowered: a server pins none. `ripple.db(name, catalog)`
+ * No database name is lowered: a server pins none. `ramose.db(name, catalog)`
  * picks it per call, which is what lets one binding serve a database per
  * tenant.
  *
@@ -32,7 +32,7 @@ import type { Server } from "./Server.ts";
 import { bindToken, envKeys } from "./ServerRuntime.ts";
 
 /** The origin the server never looks at — service-binding dispatch ignores the host. */
-export const SERVICE_ORIGIN = "https://ripple.internal";
+export const SERVICE_ORIGIN = "https://ramose.internal";
 
 /** @internal The shared deploy-time + runtime half of both capabilities. */
 export const makeServerBinding = <Client>(options: {
@@ -55,7 +55,7 @@ export const makeServerBinding = <Client>(options: {
           if (typeof server.Props?.worker === "string") {
             return yield* Effect.die(
               new Error(
-                `Ripple.ServerBinding needs a script name, and '${server.LogicalId}' was declared with a bare URL worker. Pass a Cloudflare.Worker as \`worker\`, or use Ripple.ServerHttp.`,
+                `Ramose.ServerBinding needs a script name, and '${server.LogicalId}' was declared with a bare URL worker. Pass a Cloudflare.Worker as \`worker\`, or use Ramose.ServerHttp.`,
               ),
             );
           }
@@ -71,7 +71,7 @@ export const makeServerBinding = <Client>(options: {
         } else if (host !== undefined) {
           return yield* Effect.die(
             new Error(
-              `Ripple.ServerBinding binds a Cloudflare Worker service binding, and the host is a '${host.Type}'. Use Ripple.ServerHttp instead.`,
+              `Ramose.ServerBinding binds a Cloudflare Worker service binding, and the host is a '${host.Type}'. Use Ramose.ServerHttp instead.`,
             ),
           );
         }
@@ -90,7 +90,7 @@ export const makeBindingSource = (
     const token = yield* bindToken(server);
     const missing = () =>
       new Error(
-        `ripple: no service binding "${keys.service}" on this Worker — the server's \`worker\` must be a Cloudflare.Worker, or use Ripple.ServerHttp`,
+        `ramose: no service binding "${keys.service}" on this Worker — the server's \`worker\` must be a Cloudflare.Worker, or use Ramose.ServerHttp`,
       );
     return {
       // Read per request, so the check sees the runtime env rather than the

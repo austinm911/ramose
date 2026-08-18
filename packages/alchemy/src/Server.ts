@@ -1,7 +1,7 @@
 /**
- * `Ripple.Server` — a Ripple peer Worker, and every database it serves.
+ * `Ramose.Server` — a Ramose peer Worker, and every database it serves.
  *
- * A Ripple database is not a cloud object you create with an API call: it is
+ * A Ramose database is not a cloud object you create with an API call: it is
  * a *name*. The server Worker routes `/db/:name/*` to a Transactor Durable
  * Object (`idFromName(name)`) and to region-local QueryReplicas, and the log
  * and segments live under `db/<name>/…` in R2. The first transaction
@@ -10,40 +10,40 @@
  * So the resource is not a database — it is the server that serves them all.
  * It creates nothing: it resolves the Worker's URL and, on a live deploy,
  * proves the Worker is actually up before anything downstream binds to it.
- * Naming a database is a function call (`ripple.db(name, catalog)`), which is
+ * Naming a database is a function call (`ramose.db(name, catalog)`), which is
  * why one deploy can serve a database per tenant without a resource per
  * tenant. Installing a catalog on one of those names is
  * {@link import("./Database.ts").Database}.
  *
  * @resource
- * @product Ripple
+ * @product Ramose
  * @category Storage & Databases
  * @section Creating a Server
  * @example Declaring the server on its Worker
  * ```typescript
  * import * as Cloudflare from "alchemy/Cloudflare";
- * import * as Ripple from "@ripple/alchemy";
+ * import * as Ramose from "@ramose/alchemy";
  *
- * const RippleWorker = Cloudflare.Worker("RippleWorker", { main: "./src/index.ts" });
- * export const Server = Ripple.Server("Ripple", { worker: RippleWorker });
- * export const TodosDb = Ripple.Database("todos", { server: Server, catalog: Todos });
+ * const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: "./src/index.ts" });
+ * export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
+ * export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
  * ```
  *
  * @section Using it from a Worker
  * @example Open a database, then transact and query
  * ```typescript
- * const ripple = yield* Ripple.ReadWriteDatabases(Server);
- * const movies = ripple.db("movies", Movies);
+ * const ramose = yield* Ramose.ReadWriteDatabases(Server);
+ * const movies = ramose.db("movies", Movies);
  * const { dbAfter } = yield* movies.transact(function* (tx) {
  *   const ada = yield* tx.entity();
  *   yield* ada.add(User.name, "Ada");
  * });
- * const rows = yield* dbAfter.q(Ripple.query(User).select({ name: User.name }));
+ * const rows = yield* dbAfter.q(Ramose.query(User).select({ name: User.name }));
  * ```
  *
- * Provide `Ripple.ServerBinding` (a Worker service binding to the server) or
- * `Ripple.ServerHttp` (plain HTTPS — also what an `Alchemy.Action` and
- * `alchemy dev` use) in the Worker's runtime layer. `Ripple.ReadDatabases` is
+ * Provide `Ramose.ServerBinding` (a Worker service binding to the server) or
+ * `Ramose.ServerHttp` (plain HTTPS — also what an `Alchemy.Action` and
+ * `alchemy dev` use) in the Worker's runtime layer. `Ramose.ReadDatabases` is
  * the least-privilege half of `ReadWriteDatabases`: the `db()` it hands back
  * has no `transact` and no `install`.
  */
@@ -62,7 +62,7 @@ import type { Providers } from "./Providers.ts";
 
 /** @internal */
 export const isServer = (value: unknown): value is Server =>
-  isResourceOfType(value, "Ripple.Server");
+  isResourceOfType(value, "Ramose.Server");
 
 /**
  * @internal The Worker that serves this server: a `Cloudflare.Worker` (the
@@ -96,11 +96,11 @@ export interface ServerProbe {
  * into the Worker's own `env`, and pass the same value here for the
  * deploy-time fail-closed check.
  *
- * With `policy` unset the server runs today's mode: `RIPPLE_TOKEN` if set,
+ * With `policy` unset the server runs today's mode: `RAMOSE_TOKEN` if set,
  * otherwise open.
  */
 export interface PeerAuth {
-  /** Compiled policy JSON (`Ripple.Policy.compile(policy)`). Its presence is what arms enforcement. */
+  /** Compiled policy JSON (`Ramose.Policy.compile(policy)`). Its presence is what arms enforcement. */
   readonly policy?: string | undefined;
   /** Where the issuer's public keys live. Required once `policy` is set. */
   readonly jwksUrl?: string | undefined;
@@ -130,11 +130,11 @@ export type ServerProps = {
   /** Override the URL resolved from `worker` — a custom domain, say. */
   url?: string;
   /**
-   * Bearer token for this server, when it is deployed with `RIPPLE_TOKEN`.
+   * Bearer token for this server, when it is deployed with `RAMOSE_TOKEN`.
    * Stored as a `Redacted` attribute and lowered onto consumers as a
    * `secret_text` binding. This is the server's one token: it covers every
    * database name it serves, and is ignored when the Worker has
-   * `RIPPLE_TOKEN` unset. It is *not* a data-plane principal on a named
+   * `RAMOSE_TOKEN` unset. It is *not* a data-plane principal on a named
    * database once a policy is configured — a JWT is the only way to be one.
    */
   token?: Redacted.Redacted<string> | string;
@@ -146,17 +146,17 @@ export type ServerProps = {
 
 /** The env keys the server Worker reads its auth configuration from. */
 export const AUTH_ENV_KEYS = {
-  policy: "RIPPLE_POLICY",
-  jwksUrl: "RIPPLE_JWKS_URL",
-  issuers: "RIPPLE_JWT_ISS",
-  aud: "RIPPLE_JWT_AUD",
-  maxTtl: "RIPPLE_JWT_MAX_TTL",
-  allowedOrigins: "RIPPLE_ALLOWED_ORIGINS",
-  internalSecret: "RIPPLE_INTERNAL_SECRET",
+  policy: "RAMOSE_POLICY",
+  jwksUrl: "RAMOSE_JWKS_URL",
+  issuers: "RAMOSE_JWT_ISS",
+  aud: "RAMOSE_JWT_AUD",
+  maxTtl: "RAMOSE_JWT_MAX_TTL",
+  allowedOrigins: "RAMOSE_ALLOWED_ORIGINS",
+  internalSecret: "RAMOSE_INTERNAL_SECRET",
   // `auth` is not a key: it lowers onto issuers / aud / maxTtl.
 } as const satisfies Record<Exclude<keyof PeerAuth, "auth">, string>;
 
-/** Cap on a token's lifetime when `RIPPLE_JWT_MAX_TTL` is unset, in seconds. */
+/** Cap on a token's lifetime when `RAMOSE_JWT_MAX_TTL` is unset, in seconds. */
 export const DEFAULT_JWT_MAX_TTL = 900;
 
 /**
@@ -185,7 +185,7 @@ const list = (value: readonly string[] | string | undefined): string | undefined
  *
  * The Worker and both Durable Object classes are one script, so one env key
  * covers all three and they rotate together. Pin it by passing a value or
- * setting `RIPPLE_INTERNAL_SECRET`; otherwise every deploy gets a fresh one.
+ * setting `RAMOSE_INTERNAL_SECRET`; otherwise every deploy gets a fresh one.
  */
 export const internalSecret = (
   value?: Redacted.Redacted<string> | string | undefined,
@@ -211,9 +211,9 @@ export const internalSecret = (
  *
  * @example
  * ```typescript
- * export const RippleWorker = Cloudflare.Worker("RippleWorker", {
+ * export const RamoseWorker = Cloudflare.Worker("RamoseWorker", {
  *   main: "./packages/worker/src/index.ts",
- *   env: { STORE: Store, ...Ripple.authEnv({ policy, jwksUrl, auth: AUTH }) },
+ *   env: { STORE: Store, ...Ramose.authEnv({ policy, jwksUrl, auth: AUTH }) },
  * });
  * ```
  */
@@ -258,16 +258,16 @@ const checkAuth = (peerAuth: PeerAuth | undefined): string | undefined => {
   if (list(auth.issuers) === undefined) missing.push(AUTH_ENV_KEYS.issuers);
   if (auth.aud === undefined || auth.aud === "") missing.push(AUTH_ENV_KEYS.aud);
   if (missing.length > 0) {
-    return `ripple: auth.policy is set but ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not — a configured policy makes JWT verification mandatory, and an incomplete verifier denies every /db/*`;
+    return `ramose: auth.policy is set but ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not — a configured policy makes JWT verification mandatory, and an incomplete verifier denies every /db/*`;
   }
   if (auth.maxTtl !== undefined && (!Number.isFinite(auth.maxTtl) || auth.maxTtl <= 0)) {
-    return `ripple: auth.maxTtl must be a positive number of seconds (default ${DEFAULT_JWT_MAX_TTL})`;
+    return `ramose: auth.maxTtl must be a positive number of seconds (default ${DEFAULT_JWT_MAX_TTL})`;
   }
   return undefined;
 };
 
 export type Server = Resource<
-  "Ripple.Server",
+  "Ramose.Server",
   ServerProps,
   {
     /** Base URL, no trailing slash. */
@@ -281,10 +281,10 @@ export type Server = Resource<
   Providers
 >;
 
-const ServerResource = Resource<Server>("Ripple.Server");
+const ServerResource = Resource<Server>("Ramose.Server");
 
 /**
- * Declare a Ripple server.
+ * Declare a Ramose server.
  *
  * The Worker may be given as a `Cloudflare.Worker` *declaration* — the value
  * `Cloudflare.Worker("Worker", …)` returns, which is a yieldable Effect, not
@@ -346,7 +346,7 @@ const healthOnce = (url: string) =>
     try: () => fetch(`${trimSlashes(url)}/health`, { method: "GET" }),
     catch: (cause) =>
       new NetworkError({
-        message: `ripple: server at ${url} is unreachable: ${
+        message: `ramose: server at ${url} is unreachable: ${
           cause instanceof Error ? cause.message : String(cause)
         }`,
         cause,
@@ -357,7 +357,7 @@ const healthOnce = (url: string) =>
         ? Effect.void
         : Effect.fail(
             new NetworkError({
-              message: `ripple: server at ${url} answered /health with ${response.status}`,
+              message: `ramose: server at ${url} answered /health with ${response.status}`,
             }),
           ),
     ),
@@ -388,7 +388,7 @@ const attributes = Effect.fn(function* (props: ServerProps, probe: boolean) {
     return yield* Effect.fail(
       new InvalidRequest({
         message:
-          "ripple: the server has no URL — pass a deployed Cloudflare.Worker (workers.dev or a custom domain) or an explicit `url`",
+          "ramose: the server has no URL — pass a deployed Cloudflare.Worker (workers.dev or a custom domain) or an explicit `url`",
       }),
     );
   }
@@ -418,7 +418,7 @@ const ProviderLive = () =>
       return output ?? undefined;
     }),
     delete: Effect.fn(function* () {
-      // Ripple databases are append-only and immutable; destroying the
+      // Ramose databases are append-only and immutable; destroying the
       // resource forgets the *server*, it does not erase any log, the segments
       // in R2, or the Durable Objects. Deleting the data is a separate,
       // deliberate act (empty the bucket, delete the DO namespaces).

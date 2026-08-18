@@ -11,16 +11,16 @@ browser, and any server code all import the same one.
 The Quickstart's app ships this catalog:
 
 ```ts title="examples/todos/schema.ts"
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
 import * as Schema from "effect/Schema";
 
-export const Todo = Ripple.Namespace("todo", {
-  title: Ripple.Attr(Schema.String),
-  done: Ripple.Attr(Schema.Boolean),
-  createdAt: Ripple.Attr(Ripple.Instant),
+export const Todo = Ramose.Namespace("todo", {
+  title: Ramose.Attr(Schema.String),
+  done: Ramose.Attr(Schema.Boolean),
+  createdAt: Ramose.Attr(Ramose.Instant),
 });
 
-export const Todos = Ripple.Catalog({ todo: Todo });
+export const Todos = Ramose.Catalog({ todo: Todo });
 ```
 
 Three pieces, and that is the whole vocabulary:
@@ -31,9 +31,9 @@ Three pieces, and that is the whole vocabulary:
 - **`Catalog`** collects namespaces into the thing a database installs.
 
 The value types come from [Effect Schema](https://effect.website), a runtime
-type library — `Schema.String`, `Schema.Boolean`, and so on. Ripple adds a few
+type library — `Schema.String`, `Schema.Boolean`, and so on. Ramose adds a few
 of its own for values TypeScript cannot describe on its own, such as
-`Ripple.Instant` for a point in time.
+`Ramose.Instant` for a point in time.
 
 ## Growing the catalog
 
@@ -43,53 +43,53 @@ own. This is the version every later page assumes — read it here rather than
 editing the shipped example, whose tests use the smaller catalog:
 
 ```ts title="schema.ts — the grown catalog (not the file in examples/todos)"
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
 import * as Schema from "effect/Schema";
 
-export const User = Ripple.Namespace("user", {
+export const User = Ramose.Namespace("user", {
   /** the `sub` claim of your identity provider's token */
-  sub: Ripple.Attr(Schema.String, { unique: "identity" }),
-  name: Ripple.Attr(Schema.String),
-  email: Ripple.Attr(Schema.String, { unique: "identity" }),
+  sub: Ramose.Attr(Schema.String, { unique: "identity" }),
+  name: Ramose.Attr(Schema.String),
+  email: Ramose.Attr(Schema.String, { unique: "identity" }),
 });
 
-export const Todo = Ripple.Namespace("todo", {
-  title: Ripple.Attr(Schema.String),
-  done: Ripple.Attr(Schema.Boolean),
-  createdAt: Ripple.Attr(Ripple.Instant),
-  due: Ripple.Attr(Ripple.Instant),
-  owner: Ripple.Attr(Ripple.Ref(() => User)),
+export const Todo = Ramose.Namespace("todo", {
+  title: Ramose.Attr(Schema.String),
+  done: Ramose.Attr(Schema.Boolean),
+  createdAt: Ramose.Attr(Ramose.Instant),
+  due: Ramose.Attr(Ramose.Instant),
+  owner: Ramose.Attr(Ramose.Ref(() => User)),
 });
 
-export const Todos = Ripple.Catalog({ user: User, todo: Todo });
+export const Todos = Ramose.Catalog({ user: User, todo: Todo });
 ```
 
-`Ripple.Ref(() => User)` is a reference: `Todo.owner` holds another entity, and
+`Ramose.Ref(() => User)` is a reference: `Todo.owner` holds another entity, and
 naming the target is what lets a query walk `Todo.owner.name` in one hop. The
 arrow function is there so two namespaces can point at each other.
 
 ## Value types
 
-Most attributes are ordinary Effect `Schema` values. Ripple ships branded ones
+Most attributes are ordinary Effect `Schema` values. Ramose ships branded ones
 for the database types that cannot be inferred from TypeScript alone:
 
 | schema | stores |
 | --- | --- |
-| `Ripple.Instant` | a point in time — you pass and receive `Date` |
-| `Ripple.Long` | a 64-bit integer (plain `Schema.Number` is a double) |
-| `Ripple.Uuid` / `Ripple.UuidString` | a UUID, as bytes or as a string |
-| `Ripple.Ref(() => Namespace)` | a reference to an entity of that namespace |
-| `Ripple.Ref.self` | a reference to the enclosing namespace (friends of a user) |
-| `Ripple.Ref` | an untargeted reference — it stores fine, but queries cannot navigate through it |
-| `Ripple.Bytes` | binary data |
+| `Ramose.Instant` | a point in time — you pass and receive `Date` |
+| `Ramose.Long` | a 64-bit integer (plain `Schema.Number` is a double) |
+| `Ramose.Uuid` / `Ramose.UuidString` | a UUID, as bytes or as a string |
+| `Ramose.Ref(() => Namespace)` | a reference to an entity of that namespace |
+| `Ramose.Ref.self` | a reference to the enclosing namespace (friends of a user) |
+| `Ramose.Ref` | an untargeted reference — it stores fine, but queries cannot navigate through it |
+| `Ramose.Bytes` | binary data |
 
 :::caution
 `String`, `Number`, and `Boolean` are inferred; everything else is not. If you
-declare an attribute with a schema Ripple cannot map — a `Schema.Struct`, say —
+declare an attribute with a schema Ramose cannot map — a `Schema.Struct`, say —
 pass the database type yourself with
-`Ripple.Attr(mySchema, { valueType: ":db.type/string" })`, or installing the
-catalog fails with `ripple/schema: cannot infer :db.type/* from this Schema`.
-The check runs when the catalog is installed — at deploy (`Ripple.Database`) or
+`Ramose.Attr(mySchema, { valueType: ":db.type/string" })`, or installing the
+catalog fails with `ramose/schema: cannot infer :db.type/* from this Schema`.
+The check runs when the catalog is installed — at deploy (`Ramose.Database`) or
 at `db.install()` — not when the module loads, so pass `valueType` as you write
 the attribute.
 :::
@@ -97,10 +97,10 @@ the attribute.
 ## Options
 
 ```ts title="schema.ts"
-export const Todo = Ripple.Namespace("todo", {
+export const Todo = Ramose.Namespace("todo", {
   // …
-  tags: Ripple.Attr(Schema.String, { cardinality: "many" }),
-  notes: Ripple.Attr(Schema.String, { doc: "visible to admins only" }),
+  tags: Ramose.Attr(Schema.String, { cardinality: "many" }),
+  notes: Ramose.Attr(Schema.String, { doc: "visible to admins only" }),
 });
 ```
 
@@ -118,7 +118,7 @@ export const Todo = Ripple.Namespace("todo", {
 Nothing downstream needs a type annotation:
 
 ```ts title="rows.ts"
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
 import { Todo, Todos, User } from "./schema.ts";
 
 const shape = {
@@ -127,7 +127,7 @@ const shape = {
   owner: Todo.owner.select({ name: User.name }),
 } as const;
 
-export type TodoRow = Ripple.Pull<typeof Todos, typeof shape>;
+export type TodoRow = Ramose.Pull<typeof Todos, typeof shape>;
 // { title: string; due: Date | undefined; owner: { name: string } }
 ```
 
@@ -136,7 +136,7 @@ database types, and they cannot drift.
 
 ## Changing a catalog later
 
-Installing a catalog is an idempotent update — `Ripple.Database` does it at
+Installing a catalog is an idempotent update — `Ramose.Database` does it at
 deploy, `db.install()` does it when you mint a tenant (see [A database is a
 name](/concepts/databases-are-names/#installing-a-catalog)). Adding attributes
 or namespaces is just another install.
