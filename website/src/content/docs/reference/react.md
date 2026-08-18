@@ -40,8 +40,9 @@ deps. Pass a module-scope catalog or the memo is worthless.
 | `Live` | `{ rows: A \| undefined; error: Cause.Cause<E> \| undefined; ticks: number }` |
 
 A standing read as React state. The query form memoises `db.live(query)` on
-`[db, query]` — pass a hoisted query (a query is a stable object) and the
-`Db` from `useDb`, or an `asOf(t)` / `history` view held in a memo. The
+the view and `query` — the view is structural, so an inline `db.asOf(t)`
+keeps one subscription per `t`, not per render; the query is identity, so
+pass a hoisted query (a query is a stable object). The
 stream form takes any stream an Effect user built themselves and
 re-subscribes when its identity changes; it needs no provider — `live`
 requires nothing, so the drain is a plain `Effect.runFork`.
@@ -100,10 +101,14 @@ const board = useQuery(db.asOf(t), boardQuery); // one query per slider move
 engine — the same `Live` shape, over one entity. `rows` is the projection or
 `null` (a retracted entity is a legitimate emission; the subscription keeps
 standing), and over a pinned view the stream emits once, completes, and
-keeps its rows.
+keeps its rows. The `pattern` is identity — hoist it, or a fresh object
+every render re-keys the subscription — while the `subject` is structural,
+so `{ id: issueId }` written inline is fine.
 
 ```tsx
-const issue = usePull(db, { id: issueId }, { title: Issue.title, done: Issue.done });
+const issuePattern = { title: Issue.title, done: Issue.done };
+
+const issue = usePull(db, { id: issueId }, issuePattern);
 if (issue.rows === null) return <Gone />;
 ```
 
