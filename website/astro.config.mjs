@@ -3,7 +3,7 @@ import starlight from "@astrojs/starlight";
 import { defineConfig } from "astro/config";
 
 export default defineConfig({
-  site: "https://ripplegraph.ai",
+  site: "https://ripple-docs.tvanhens.workers.dev",
   integrations: [
     starlight({
       title: "ripplegraph.ai",

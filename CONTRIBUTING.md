@@ -1,8 +1,10 @@
 # Contributing to Ripple
 
-Development notes for people changing Ripple itself. Consumer docs stay in
-[`README.md`](README.md); ops for a running deployment are in
-[`docs/RUNBOOK.md`](docs/RUNBOOK.md).
+Development notes for people changing Ripple itself. Consumer docs live at
+[ripple-docs.tvanhens.workers.dev](https://ripple-docs.tvanhens.workers.dev)
+(source in `website/`); the short path is [`README.md`](README.md). In-repo
+design notes stay in `docs/` (`API.md`, `AUTH_LAYER.md`, `QUERY.md`,
+`RUNBOOK.md`).
 
 ## Local checks
 
@@ -62,11 +64,15 @@ stage name is unguessable and torn down at the end of the run.
 | `.github/workflows/ci.yml` | every PR and push to `master` | `typecheck` + unit tests |
 | `.github/workflows/e2e-cloudflare.yml` | every PR, push to `master`, and `workflow_dispatch` | `bun run test:e2e:cf` |
 | `.github/workflows/docs-preview.yml` | PRs touching `website/` | deploy a `pr-<n>` preview of the docs site, comment the URL, destroy on close |
+| `.github/workflows/docs-publish.yml` | every push to `master` / `main`, and `workflow_dispatch` | deploy the docs site `prod` stage to Cloudflare |
 
-The e2e and docs-preview jobs use the GitHub **Development** environment
-(`environment: Development`). Put `CLOUDFLARE_API_TOKEN` there as a secret and
-`CLOUDFLARE_ACCOUNT_ID` as a variable (or secret). Cursor Cloud Agents need the
-same names in the Cursor secrets panel — see [`.cursor/CLOUD.md`](.cursor/CLOUD.md).
+The e2e, docs-preview, and docs-publish jobs use the GitHub **Development**
+environment (`environment: Development`). Put `CLOUDFLARE_API_TOKEN` there as
+a secret and `CLOUDFLARE_ACCOUNT_ID` as a variable (or secret). Optional:
+`RIPPLE_DOCS_DOMAIN` (variable) attaches a custom hostname to the production
+docs Worker (the zone must already exist in the account). Cursor Cloud Agents
+need the same names in the Cursor secrets panel — see
+[`.cursor/CLOUD.md`](.cursor/CLOUD.md).
 
 Each run deploys its own Alchemy stage (`ALCHEMY_STAGE=e2e-<run_id>-<attempt>`),
 so Worker / Durable Object / R2 names do not collide across parallel jobs. A
@@ -91,3 +97,13 @@ deleting the Worker named in the preview comment directly via the Cloudflare
 API. The minimal CI token above covers everything; Cloudflare-hosted Alchemy
 state (`Cloudflare.state()`) is not used because its state store needs Secrets
 Store and edge-preview token scopes beyond that minimal set.
+
+### Docs production
+
+Every push to `master` (or `main`) publishes `website/` as Alchemy stage
+`prod`: an assets-only Worker named `ripple-docs` at
+[ripple-docs.tvanhens.workers.dev](https://ripple-docs.tvanhens.workers.dev).
+Optional: `RIPPLE_DOCS_DOMAIN` (e.g. `ripplegraph.ai`) attaches a custom
+hostname once the zone exists in the account. Re-runs update the same Worker
+(`.alchemy/` is cached; the pinned name plus `--adopt` recovers from a
+cache miss). Manual republish: **Actions → Docs publish → Run workflow**.
