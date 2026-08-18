@@ -153,6 +153,7 @@ describe("the `/db` barrel's public names", () => {
         "connect",
         "layer",
         "Databases",
+        "token",
         // the database-name rule (issue #37)
         "DATABASE_NAME_RE",
         "isDatabaseName",

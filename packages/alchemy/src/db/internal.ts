@@ -40,5 +40,6 @@ export {
 } from "./Pull.ts";
 export * as Policy from "./Policy.ts";
 export * from "./session.ts";
+export * from "./token.ts";
 export * from "./Tx.ts";
 export * from "./valueTypes.ts";
