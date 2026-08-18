@@ -41,7 +41,7 @@ only.
 ## 1. Current write path (HTTP POST → ack)
 
 One small tx (`[{":k/id": n, ":k/v": "x"}]`, 3 datoms incl. `:db/txInstant`),
-default config (`RIPPLE_MAX_BATCH=0`, index every 500 txs / 5 s).
+default config (`RAMOSE_MAX_BATCH=0`, index every 500 txs / 5 s).
 
 | step | where | on the ack path? |
 |---|---|---|
@@ -356,11 +356,11 @@ can join the batch (guarantee 3 is unaffected either way).
 
 ### 3.8 Index knob tuning
 
-**Does not move remote.** In-process, lower `RIPPLE_INDEX_TX_THRESHOLD`
+**Does not move remote.** In-process, lower `RAMOSE_INDEX_TX_THRESHOLD`
 (500 → 100) shrinks steady-state novelty and with it the flush cost (35 → 19
 µs/tx in the `Connection` bench) at the price of 5× more runs (each with a
 `putLogChunk`, `publishRoot`, root frame to replicas, and its own R2 puts —
-run count is what hurt at 64 clients in §2.1); lower `RIPPLE_INDEX_MAX_TXS_PER_RUN`
+run count is what hurt at 64 clients in §2.1); lower `RAMOSE_INDEX_MAX_TXS_PER_RUN`
 shortens each stall. Both are second-order to 3.2/3.3 and trade R2 traffic
 for CPU. Worth a sweep only after 3.2.
 

@@ -1,25 +1,28 @@
-# Ripple
+# Ramose
 
-A modern Effect-native graph database on Cloudflare.
+**Reactive applications that grow safely.**
 
-Docs: **[ripple-docs.tvanhens.workers.dev](https://ripple-docs.tvanhens.workers.dev)**.
+A modern Effect-native graph database on Cloudflare — a typed, realtime
+database that runs next to your app at the edge.
+
+Docs: **[ramose.ai](https://ramose.ai)**.
 
 One Durable Object writes. Immutable segment trees live in R2. Datalog runs
-at the edge, next to your app. A database is a name — `ripple.db("acme",
+at the edge, next to your app. A database is a name — `ramose.db("acme",
 Catalog)` and you're in. No provision step.
 
 ## Why it exists
 
-- **Typed catalog.** `@ripple/alchemy/db` is the schema. Attributes, uniqueness,
+- **Typed catalog.** `@ramose/alchemy/db` is the schema. Attributes, uniqueness,
   cardinality — TypeScript, checked at compile time.
 - **Effect-native writes and reads.** Generator `transact`. Navigational
-  `Ripple.query` → `db.q` / `db.live`. `db.pull`.
+  `Ramose.query` → `db.q` / `db.live`. `db.pull`.
 - **Live queries.** `db.live` is a `Stream` on the session socket. Write a
   row, it re-runs. No refetch. No invalidation call at the write site.
 - **Db-per-tenant is a function call.** One Alchemy resource, one
-  `RIPPLE_TOKEN` (unset = open), or a `RIPPLE_POLICY` that turns JWT
+  `RAMOSE_TOKEN` (unset = open), or a `RAMOSE_POLICY` that turns JWT
   claims into a per-request filtered `Db` (see
-  [Auth and policy](https://ripple-docs.tvanhens.workers.dev/guides/auth/)).
+  [Auth and policy](https://ramose.ai/guides/auth/)).
   Every name shares the peer.
 - **The invariants are the product.** Single writer. Dense `t`.
   Persist-before-ack. QueryReplicas are first-class — workers never read
@@ -27,7 +30,7 @@ Catalog)` and you're in. No provision step.
 
 ## Get running with Alchemy
 
-The shortest path is the todos app — React, `Ripple.connect`, `db.live`:
+The shortest path is the todos app — React, `Ramose.connect`, `db.live`:
 
 ```sh
 bun install
@@ -49,12 +52,12 @@ CI=1 ALCHEMY_STATE=local \
 ```
 
 That stack is a peer Worker (R2 + Transactor DO + QueryReplica DO), a
-`Ripple.Server` and a `Ripple.Database`. The UI is Vite. Copy
+`Ramose.Server` and a `Ramose.Database`. The UI is Vite. Copy
 `examples/todos/{resources,alchemy.run,schema}.ts` and you have the same
 shape.
 
 ```ts
-import * as Ripple from "@ripple/alchemy";
+import * as Ramose from "@ramose/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 
 const Store = Cloudflare.R2.Bucket("Store");
@@ -65,28 +68,28 @@ const Replica = Cloudflare.DurableObject("QueryReplicaDO", {
   className: "QueryReplicaDO",
 });
 
-export const RippleWorker = Cloudflare.Worker("Peer", {
+export const RamoseWorker = Cloudflare.Worker("Peer", {
   main: "./packages/worker/src/index.ts",
   compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
   env: { STORE: Store, TRANSACTOR: Transactor, REPLICA: Replica },
 });
 
-export const Server = Ripple.Server("Ripple", { worker: RippleWorker });
-export const TodosDb = Ripple.Database("todos", { server: Server, catalog: Todos });
+export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
+export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
 ```
 
-`Ripple.Database` is not a cloud object — a database is a name — it is
+`Ramose.Database` is not a cloud object — a database is a name — it is
 "install this catalog on that name", so the catalog is on the peer before the
-UI connects. Per-tenant names call `db.install()` at tenant-creation instead. `RIPPLE_TOKEN` is the peer's
-one bearer token; leave it unset and the peer is open. Set `RIPPLE_POLICY` and
+UI connects. Per-tenant names call `db.install()` at tenant-creation instead. `RAMOSE_TOKEN` is the peer's
+one bearer token; leave it unset and the peer is open. Set `RAMOSE_POLICY` and
 the peer verifies JWTs, ties each token to one database, and filters reads /
 checks writes against the policy in
-[Auth and policy](https://ripple-docs.tvanhens.workers.dev/guides/auth/).
+[Auth and policy](https://ramose.ai/guides/auth/).
 
-An app Worker binds the same server (`yield* Ripple.ReadWriteDatabases(Server)`,
-under `Ripple.ServerBinding` or `Ripple.ServerHttp`) and calls
-`ripple.db(name, catalog)` per request — pure, zero network, so that is
-db-per-tenant. `Ripple.ReadDatabases` is the same client with the writes
+An app Worker binds the same server (`yield* Ramose.ReadWriteDatabases(Server)`,
+under `Ramose.ServerBinding` or `Ramose.ServerHttp`) and calls
+`ramose.db(name, catalog)` per request — pure, zero network, so that is
+db-per-tenant. `Ramose.ReadDatabases` is the same client with the writes
 removed. See `examples/kv-style/`.
 
 Local root stack (no example UI):
@@ -102,27 +105,27 @@ the `$USER` stage; `--stage prod` for production.
 ## Catalog → db → transact → live
 
 ```ts
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
 import * as Schema from "effect/Schema";
 
-export const Todo = Ripple.Namespace("todo", {
-  title: Ripple.Attr(Schema.String),
-  done: Ripple.Attr(Schema.Boolean),
-  createdAt: Ripple.Attr(Ripple.Instant),
+export const Todo = Ramose.Namespace("todo", {
+  title: Ramose.Attr(Schema.String),
+  done: Ramose.Attr(Schema.Boolean),
+  createdAt: Ramose.Attr(Ramose.Instant),
 });
-export const Todos = Ripple.Catalog({ todo: Todo });
+export const Todos = Ramose.Catalog({ todo: Todo });
 
-// one client, closed with the page (Effect users: Ripple.layer is the same
+// one client, closed with the page (Effect users: Ramose.layer is the same
 // client as a scoped Layer<Databases>)
-const token = import.meta.env.VITE_RIPPLE_TOKEN;
-const ripple = Ripple.connect({
-  url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:1337",
+const token = import.meta.env.VITE_RAMOSE_TOKEN;
+const ramose = Ramose.connect({
+  url: import.meta.env.VITE_RAMOSE_URL ?? "http://localhost:1337",
   // an open peer has no token: pass nothing rather than an empty credential
-  token: token ? Ripple.token.static(token) : undefined,
+  token: token ? Ramose.token.static(token) : undefined,
 });
-const db = ripple.db("todos", Todos);
+const db = ramose.db("todos", Todos);
 
-const todoQuery = Ripple.query(Todo)
+const todoQuery = Ramose.query(Todo)
   .orderBy(Todo.createdAt, "asc")
   .select({
     id: Todo.id,
@@ -146,11 +149,11 @@ await Effect.runPromise(
 
 Every signature's `R` is `never`, so `Effect.runPromise` runs anything a
 `Db` returns; in React the shipped hooks do it for you — `useLive(db, todoQuery)`
-and `useTransact()` from `@ripple/react`, exactly as `examples/todos/src/App.tsx`
-uses them. `@ripple/alchemy/db` is a real `exports` entry and nothing it
+and `useTransact()` from `@ramose/react`, exactly as `examples/todos/src/App.tsx`
+uses them. `@ramose/alchemy/db` is a real `exports` entry and nothing it
 reaches imports the deploy engine, so the Vite app needs no alias.
 
-From a Worker the code is identical: `ripple.db("movies", Movies)`, then the
+From a Worker the code is identical: `ramose.db("movies", Movies)`, then the
 same `transact` / `q` / `pull`. `transact` returns a `TxReport`, and its
 `dbAfter` is the same db floored at `report.t` — that is the read-your-write
 fence, with no second round trip. `db.asOf(t)` and `db.history` are pure
@@ -159,13 +162,13 @@ views.
 ## Features
 
 - Immutable EAVT graph. Time travel is a view, not a dump.
-- Seek-driven datalog at the edge. `Ripple.query` builds a typed value;
+- Seek-driven datalog at the edge. `Ramose.query` builds a typed value;
   `db.q` and `db.live` run it — once or as a `Stream` on the session socket.
-  See [Query and pull](https://ripple-docs.tvanhens.workers.dev/guides/queries/).
+  See [Query and pull](https://ramose.ai/guides/queries/).
 - One writer per name, dense `t`, persist-before-ack.
 - QueryReplicas hold novelty; workers read through them.
-- Privilege is the capability you bind: `Ripple.ReadWriteDatabases` or
-  `Ripple.ReadDatabases`; the transport is a Layer.
+- Privilege is the capability you bind: `Ramose.ReadWriteDatabases` or
+  `Ramose.ReadDatabases`; the transport is a Layer.
 - Engine in `packages/core`, Cloudflare peer in `packages/worker`, client in
   `packages/alchemy`.
 
@@ -180,8 +183,8 @@ bun alchemy deploy              # $USER stage
 bun alchemy deploy --stage prod
 ```
 
-Docs: [ripple-docs.tvanhens.workers.dev](https://ripple-docs.tvanhens.workers.dev).
+Docs: [ramose.ai](https://ramose.ai).
 Contributing (tests, CI, Cloudflare e2e): [`CONTRIBUTING.md`](CONTRIBUTING.md).
-Ops: [Runbook](https://ripple-docs.tvanhens.workers.dev/reference/runbook/).
+Ops: [Runbook](https://ramose.ai/reference/runbook/).
 Recorded benches:
 [`bench/RESULTS.md`](bench/RESULTS.md).
