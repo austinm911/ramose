@@ -6,3 +6,9 @@ dist/
 .env
 .env.*
 FABLE_TASK.md
+
+# Claude Code scratch. `worktrees/` holds real git worktrees — committing one
+# would commit a checkout of another branch. Shared config (settings.json,
+# agents/, skills/, commands/) is deliberately NOT ignored so it can be checked in.
+.claude/worktrees/
+.claude/settings.local.json
