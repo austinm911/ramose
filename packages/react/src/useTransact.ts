@@ -21,7 +21,10 @@ export interface Transact {
   readonly run: <A, E>(effect: Effect.Effect<A, E>) => Promise<Exit.Exit<A, E>>;
   /** In-flight count > 0. */
   readonly pending: boolean;
-  /** The last failure's error (not the cause) — cleared on the next successful `run`. */
+  /**
+   * The last-settled failure's error (not the cause) — cleared when a run
+   * settles successfully.
+   */
   readonly error: unknown | undefined;
   readonly clearError: () => void;
 }
@@ -42,8 +45,14 @@ const causeError = (cause: Cause.Cause<unknown>): unknown => {
  * - `onError` fires per failure (the toast hook); `error` also lands on the
  *   return for inline rendering, and clears on the next successful run (or
  *   `clearError`).
+ * - Concurrent runs settle independently and the last settler wins `error`:
+ *   a failure that lands after a later-started success re-sets `error`.
+ *   "Cleared on the next successful run" is about settle order, not start
+ *   order.
  * - After unmount the effect still runs to completion, but no state is
- *   touched (guarded with a ref), so late settles never warn.
+ *   touched (guarded with a ref), so late settles never warn. `onError`
+ *   still fires — the failure is real, and the toast host usually outlives
+ *   the form that ran the write (toast after navigate-away is the point).
  */
 export const useTransact = (options?: {
   onError?: (error: unknown) => void;

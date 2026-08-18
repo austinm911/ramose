@@ -39,12 +39,15 @@ const db = useDb("todos", Todos); // inside <App />
 
   `run` resolves to the `Exit` instead of throwing, so handlers stay
   `void`-safe; `pending` is true while any run is in flight; `error` holds
-  the last failure's error (not the cause) for inline rendering, clears on
-  the next successful run or `clearError()`, and `onError` fires per
-  failure. It takes no `db` argument — it runs whatever Effect the caller
-  built, so it composes with a module-singleton `Db` just as well as with
-  `useDb`, and works without a provider. An effect settling after unmount
-  touches no state.
+  the last-settled failure's error (not the cause) for inline rendering,
+  clears when a run settles successfully or on `clearError()`, and
+  `onError` fires per failure. Concurrent runs settle independently — the
+  last settler wins `error`, whatever order the runs started in. It takes
+  no `db` argument — it runs whatever Effect the caller built, so it
+  composes with a module-singleton `Db` just as well as with `useDb`, and
+  works without a provider. An effect settling after unmount touches no
+  state, but `onError` still fires: the toast host usually outlives the
+  form that ran the write.
 - `errorMessage(error): string` — `e.message ?? e._tag ?? String(e)`, the
   one-liner every toast wants. Every `DbError` carries a `message`, so a
   policy denial (`Unauthorized`) toasts its server-written message; bare

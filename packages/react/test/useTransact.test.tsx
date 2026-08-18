@@ -6,8 +6,11 @@
  * - a failing `run` calls `onError` with the failure's error (the
  *   `Unauthorized` instance itself, not a cause wrapper) and lands the same
  *   value on `error`;
+ * - a defect lands the squashed defect itself, not a Cause wrapper;
  * - `error` clears on the next successful run, and on `clearError`;
- * - an unmounted component touches no state when a late run settles;
+ * - concurrent runs settle independently: the last settler wins `error`;
+ * - an unmounted component touches no state when a late run settles, but
+ *   `onError` still fires (the toast host outlives the form);
  * - `errorMessage` is `e.message ?? e._tag ?? String(e)`.
  */
 
@@ -96,6 +99,22 @@ describe("useTransact", () => {
     expect(result.current.pending).toBe(false);
   });
 
+  test("a defect lands the squashed defect on error and onError", async () => {
+    const seen: unknown[] = [];
+    const { result } = renderHook(() =>
+      useTransact({ onError: (e) => seen.push(e) }),
+    );
+
+    let exit!: Exit.Exit<never, never>;
+    await act(async () => {
+      exit = await result.current.run(Effect.die("boom"));
+    });
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(seen).toEqual(["boom"]); // the defect itself, not a Cause wrapper
+    expect(result.current.error).toBe("boom");
+  });
+
   test("error clears on the next successful run, and on clearError", async () => {
     const denied = new Unauthorized({ message: "no" });
     const { result } = renderHook(() => useTransact());
@@ -116,6 +135,34 @@ describe("useTransact", () => {
     expect(result.current.error).toBe(denied);
     act(() => result.current.clearError());
     expect(result.current.error).toBeUndefined();
+  });
+
+  test("the last settler wins error: a late failure re-sets it after a success cleared it", async () => {
+    const denied = new Unauthorized({ message: "late denial" });
+    const { result } = renderHook(() => useTransact());
+
+    // run A starts first and will fail — but only when the gate opens
+    const g = gate<void>();
+    let ranA!: Promise<Exit.Exit<void, Unauthorized>>;
+    act(() => {
+      ranA = result.current.run(
+        Effect.promise(() => g.promise).pipe(
+          Effect.andThen(Effect.fail(denied)),
+        ),
+      );
+    });
+
+    // run B starts later, settles first, and clears error
+    await act(async () => {
+      await result.current.run(Effect.succeed("ok"));
+    });
+    expect(result.current.error).toBeUndefined();
+
+    // A settles last: its failure wins, start order notwithstanding
+    g.resolve();
+    await act(() => ranA);
+    expect(result.current.error).toBe(denied);
+    expect(result.current.pending).toBe(false);
   });
 
   test("a run settling after unmount touches no state", async () => {
@@ -140,6 +187,38 @@ describe("useTransact", () => {
     } finally {
       console.error = noisy;
     }
+    expect(complaints).toEqual([]);
+  });
+
+  test("a failure settling after unmount still fires onError, without touching state", async () => {
+    const denied = new Unauthorized({ message: "denied after navigate-away" });
+    const seen: unknown[] = [];
+    const { result, unmount } = renderHook(() =>
+      useTransact({ onError: (e) => seen.push(e) }),
+    );
+
+    const g = gate<void>();
+    let outcome!: Promise<Exit.Exit<void, Unauthorized>>;
+    act(() => {
+      outcome = result.current.run(
+        Effect.promise(() => g.promise).pipe(
+          Effect.andThen(Effect.fail(denied)),
+        ),
+      );
+    });
+    unmount();
+
+    const noisy = console.error;
+    const complaints: unknown[] = [];
+    console.error = (...args: unknown[]) => complaints.push(args);
+    try {
+      g.resolve();
+      const exit = await outcome;
+      expect(Exit.isFailure(exit)).toBe(true);
+    } finally {
+      console.error = noisy;
+    }
+    expect(seen).toEqual([denied]); // the toast still happens
     expect(complaints).toEqual([]);
   });
 });
