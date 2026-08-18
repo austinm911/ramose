@@ -10,8 +10,9 @@
  *                           an `Output.interpolate` over `Api.url`, which is
  *                           the one edge between the two Workers (the auth
  *                           Worker needs nothing back, so the graph is a DAG)
- *   RIPPLE_JWT_ISS/_AUD     pinned constants shared with the jwt plugin
- *   RIPPLE_JWT_MAX_TTL      equals the minted lifetime exactly
+ *   RIPPLE_JWT_ISS/_AUD     REEF_AUTH — the one AuthConfig the jwt plugin
+ *   RIPPLE_JWT_MAX_TTL      and the mint route (`Ripple.claims`) also read,
+ *                           so the cap equals the minted lifetime exactly
  *   RIPPLE_ALLOWED_ORIGINS  the Vite dev origin + the deployed SPA origin
  *                           (the auth Worker serves the built assets)
  *
@@ -30,9 +31,7 @@ import {
   AUTH_BASE_PATH,
   DEV_PEER_PORT,
   DEV_UI_ORIGIN,
-  JWT_AUDIENCE,
-  JWT_ISSUER,
-  JWT_TTL_SECONDS,
+  REEF_AUTH,
 } from "../domain/shared.ts";
 
 const Store = Cloudflare.R2.Bucket("Store");
@@ -49,9 +48,7 @@ export const RippleWorker = Cloudflare.Worker("Peer", {
     REPLICA: Replica,
     ...Ripple.authEnv({
       policy: compiledPolicy(),
-      issuers: JWT_ISSUER,
-      aud: JWT_AUDIENCE,
-      maxTtl: JWT_TTL_SECONDS,
+      auth: REEF_AUTH,
       internalSecret: process.env.RIPPLE_INTERNAL_SECRET,
     }),
     // Yielding the Api declaration registers (or reuses) the Worker in the
