@@ -13,7 +13,7 @@ hero:
   title: Ripple — the typed, realtime database for Cloudflare
   tagline: Define your schema in TypeScript. Queries update themselves as data changes, every user only sees their own rows, and one deploy puts it all in your own Cloudflare account.
   actions:
-    - text: Run it locally
+    - text: Get started
       link: /getting-started/quickstart/
       variant: primary
     - text: GitHub
@@ -45,19 +45,17 @@ hero:
 
 <div class="rg-band rg-run">
 
-<p class="rg-eyebrow">Try it in two minutes</p>
+<p class="rg-eyebrow">Install the package</p>
 
-<p class="rg-run-note"><strong>Ripple is pre-release and not on npm yet</strong> — you run it from the repository. One command starts the database and the app together.</p>
+<p class="rg-run-note">Add Ripple to an app the way you add any other library. The <a href="/getting-started/quickstart/">Quickstart</a> stands up a local peer and a live query — nothing else to run.</p>
 
-```sh title="From the repository root" frame="terminal" wrap
-git clone https://github.com/tvanhens/ripple && cd ripple
-bun install
-bun run dev:todos     # peer on :1337, app on :5173
+```sh title="In your project" frame="terminal" wrap
+npm install @ripple/alchemy @ripple/worker @ripple/react
 ```
 
-<p class="rg-run-after">Open <code>http://localhost:5173</code> and add a todo. The list re-renders from the database, and there is no refetch call anywhere in the app — that is <code>db.live</code>, working locally. <span class="rg-caveat">On the local emulator writes do not cross isolates, so a second tab picks them up on reload; your own tab always updates, and against a deployed peer every connected client does.</span></p>
+<p class="rg-run-after">Import <code>@ripple/alchemy/db</code> from the browser, point a <code>Cloudflare.Worker</code> at <code>@ripple/worker</code>, and <code>db.live</code> keeps the list current. There is no refetch call anywhere in the app. <span class="rg-caveat">On the local emulator writes do not cross isolates, so a second tab picks them up on reload; your own tab always updates, and against a deployed peer every connected client does.</span></p>
 
-<p class="rg-run-more">Want the bigger one? <code>bun run dev:reef</code> boots <a href="https://github.com/tvanhens/ripple/tree/master/examples/reef">Reef</a> — a Linear-style issue tracker, one database per workspace, behind Better Auth JWTs and a compiled policy:</p>
+<p class="rg-run-more">Want a complete app to read? <a href="https://github.com/tvanhens/ripple/tree/master/examples/reef">Reef</a> is a Linear-style issue tracker, one database per workspace, behind Better Auth JWTs and a compiled policy:</p>
 
 <figure class="rg-shot">
   <img
@@ -338,7 +336,6 @@ Ripple.Policy.compile(policy, { pulls: [todoShape] });
   <strong>What Ripple does not have</strong>
   <ul>
     <li>SQL, or joins across databases</li>
-    <li>An npm package — you clone the repo</li>
     <li>A hosted dashboard</li>
     <li>An identity provider of its own — bring any issuer with a JWKS endpoint</li>
   </ul>
@@ -376,8 +373,8 @@ Ripple.Policy.compile(policy, { pulls: [todoShape] });
 
 <div class="rg-closing">
   <p class="rg-eyebrow">Changes ripple.</p>
-  <p class="rg-big">Clone it, run the todo app in one command, then run Reef.</p>
-  <p class="rg-closing-note">The repository ships 48 test files; <code>bun run test</code> runs the suite across the packages and the example apps.</p>
+  <p class="rg-big">Install the package, write a schema, run a live query.</p>
+  <p class="rg-closing-note"><code>npm install @ripple/alchemy</code> — then the Quickstart stands up a local peer in your own app.</p>
   <div class="rg-actions">
     <a class="rg-button primary" href="/getting-started/quickstart/">Open the quickstart</a>
     <a class="rg-button secondary" href="https://github.com/tvanhens/ripple/tree/master/examples/reef">See Reef</a>

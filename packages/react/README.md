@@ -1,5 +1,9 @@
 # @ripple/react
 
+```sh
+npm install @ripple/react @ripple/alchemy
+```
+
 React bindings for Ripple. The provider owns one `Client` per subtree —
 connect on mount, close on unmount or when its options change — and the hooks
 hand it back. Named imports, not a namespace:

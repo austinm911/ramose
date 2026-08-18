@@ -27,7 +27,7 @@ const Replica = Cloudflare.DurableObject("QueryReplicaDO", {
 });
 
 const Worker = Cloudflare.Worker("Peer", {
-  main: "./packages/worker/src/index.ts",
+  main: "@ripple/worker",
   compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
   env: { STORE: Store, TRANSACTOR: Transactor, REPLICA: Replica },
 });
@@ -69,15 +69,14 @@ tenant creation instead.
 ## Commands
 
 ```sh
-bun alchemy dev                 # local stack (miniflare emulates R2 + both DOs)
-bun alchemy deploy              # deploy the $USER stage
-bun alchemy deploy --stage prod # production
-bun alchemy destroy             # tear a stage down
+npx alchemy dev                 # local stack (miniflare emulates R2 + both DOs)
+npx alchemy deploy              # deploy the $USER stage
+npx alchemy deploy --stage prod # production
+npx alchemy destroy             # tear a stage down
 ```
 
-Stages are isolated copies of the stack. `$USER` gives every developer their
-own; CI can mint ephemeral stages (the repository's e2e suite deploys
-`e2e-<epoch>-<rand>` and destroys it after the run).
+`bun alchemy` is the same CLI. Stages are isolated copies of the stack.
+`$USER` gives every developer their own; CI can mint ephemeral stages.
 
 ## Credentials
 
@@ -125,7 +124,7 @@ request at runtime.
 
 ## Tearing down
 
-`bun alchemy destroy` removes the Worker and the resource records. It does
+`npx alchemy destroy` removes the Worker and the resource records. It does
 **not** delete your data: `Ripple.Database` and `Ripple.Server` deliberately
 delete nothing, so a forgotten resource never erases a database. The bucket and
 the Durable Object namespaces stay behind — and stay billable — until you

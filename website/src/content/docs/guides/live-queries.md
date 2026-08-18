@@ -50,8 +50,9 @@ const TodoList = () => {
 };
 ```
 
-This is `examples/todos/src/App.tsx` as shipped (`TodoRowView` is the row —
-a checkbox and a delete button, each write run with `useTransact`).
+This is the same list as the [Quickstart](/getting-started/quickstart/)
+(`TodoRowView` is the row — a checkbox and a delete button, each write run
+with `useTransact`).
 
 It owns the memoisation (keyed on the view's structural key and `query`, so
 nothing re-subscribes per render — an inline `db.asOf(t)` included), resets

@@ -24,7 +24,7 @@
  * import * as Cloudflare from "alchemy/Cloudflare";
  * import * as Ripple from "@ripple/alchemy";
  *
- * const RippleWorker = Cloudflare.Worker("RippleWorker", { main: "./src/index.ts" });
+ * const RippleWorker = Cloudflare.Worker("RippleWorker", { main: "@ripple/worker" });
  * export const Server = Ripple.Server("Ripple", { worker: RippleWorker });
  * export const TodosDb = Ripple.Database("todos", { server: Server, catalog: Todos });
  * ```
@@ -212,7 +212,7 @@ export const internalSecret = (
  * @example
  * ```typescript
  * export const RippleWorker = Cloudflare.Worker("RippleWorker", {
- *   main: "./packages/worker/src/index.ts",
+ *   main: "@ripple/worker",
  *   env: { STORE: Store, ...Ripple.authEnv({ policy, jwksUrl, auth: AUTH }) },
  * });
  * ```

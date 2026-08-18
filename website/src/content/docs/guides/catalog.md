@@ -8,9 +8,9 @@ attribute, a compile error when you write the wrong type, and no code
 generation step to run. That file is the catalog, and the deploy script, the
 browser, and any server code all import the same one.
 
-The Quickstart's app ships this catalog:
+The Quickstart uses this catalog:
 
-```ts title="examples/todos/schema.ts"
+```ts title="schema.ts"
 import * as Ripple from "@ripple/alchemy/db";
 import * as Schema from "effect/Schema";
 
@@ -39,10 +39,10 @@ of its own for values TypeScript cannot describe on its own, such as
 
 The rest of these guides use the same todos catalog with two more attributes
 and a second namespace, so the examples have something to filter, sort, and
-own. This is the version every later page assumes — read it here rather than
-editing the shipped example, whose tests use the smaller catalog:
+own. This is the version every later page assumes — grow the Quickstart
+catalog as you read, or keep both files side by side:
 
-```ts title="schema.ts — the grown catalog (not the file in examples/todos)"
+```ts title="schema.ts — the grown catalog"
 import * as Ripple from "@ripple/alchemy/db";
 import * as Schema from "effect/Schema";
 
@@ -146,7 +146,8 @@ old data keeps the attribute it was written with, and reads of the past keep
 working. Removing an attribute from the catalog does not delete the facts that
 used it.
 
-**Checkpoint.** `bun test examples/todos` — four passing tests, driving the
-same `todoQuery` and `addTodo` the rest of these guides use.
+**Checkpoint.** The Quickstart's `todoQuery` and `addTodo` are the same
+helpers the rest of these guides keep using. Add a todo in the running app
+and the list updates.
 
 Next: [write some data](/guides/transactions/).
