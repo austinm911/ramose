@@ -41,6 +41,18 @@ export interface PullOptional<F = unknown> {
     : never;
 }
 
+/**
+ * A card-one scalar with a stand-in for "no datom": the field reads as `value`
+ * when the entity has none. It lowers to the pull-phase `:default`, so the
+ * substitution is the *peer's* — the row is neither dropped nor invented, and
+ * no datom is written. The result type is the attribute's, never `| undefined`.
+ */
+export interface PullDefault<F = unknown> {
+  readonly _tag: "default";
+  readonly field: F;
+  readonly value: unknown;
+}
+
 export interface PullNested<A = unknown, P = unknown> {
   readonly _tag: "nested";
   readonly attr: A;
@@ -66,6 +78,17 @@ export const optional = <const F>(field: F): PullOptional<F> => ({
   field,
   select: ((pattern: Record<string, unknown>) =>
     optional(nested(field as never, pattern))) as unknown as PullOptional<F>["select"],
+});
+
+/**
+ * Internal: implements `attr.orDefault(value)`. The value travels verbatim —
+ * `null` is a default like any other, which is why lowering asks *whether*
+ * there is one rather than comparing against `undefined`.
+ */
+export const pullDefault = <const F>(field: F, value: unknown): PullDefault<F> => ({
+  _tag: "default",
+  field,
+  value,
 });
 
 /**
@@ -115,6 +138,13 @@ export const isPullOptional = (value: unknown): value is PullOptional =>
   (value as { _tag?: unknown })._tag === "optional" &&
   "field" in value;
 
+export const isPullDefault = (value: unknown): value is PullDefault =>
+  typeof value === "object" &&
+  value !== null &&
+  (value as { _tag?: unknown })._tag === "default" &&
+  "field" in value &&
+  "value" in value;
+
 export const isPullNested = (value: unknown): value is PullNested =>
   typeof value === "object" &&
   value !== null &&
@@ -143,7 +173,10 @@ type NestedResult<A, P> = A extends { readonly cardinality: "many" }
   ? readonly FieldsResult<P>[]
   : FieldsResult<P>;
 
-type FieldResult<F> = F extends PullOptional<infer Inner>
+type FieldResult<F> = F extends PullDefault<infer Inner>
+  ? // a default stands in for the missing datom, so the field always reads
+    FieldResult<Inner>
+  : F extends PullOptional<infer Inner>
   ? FieldResult<Inner> | undefined
   : F extends PullNested<infer A, infer P>
     ? NestedResult<A, P>
@@ -213,6 +246,8 @@ export type IdentPullResult<
  * those blow the client type (`Type instantiation is excessively deep`).
  */
 type IdentsIn<P> = [P] extends [PullOptional<infer I>]
+  ? IdentsIn<I>
+  : [P] extends [PullDefault<infer I>]
   ? IdentsIn<I>
   : [P] extends [PullNested<infer A, infer Inner>]
     ? IdentsIn<A> | IdentsIn<Inner>
@@ -413,11 +448,17 @@ const isElementCarrier = (value: unknown): boolean =>
   value !== null &&
   typeof (value as { __each?: unknown }).__each === "string";
 
-/** Inspect a literate pull field: optional / many / nested pattern. */
+/** Inspect a literate pull field: optional / default / many / nested pattern. */
 export const inspectPullField = (
   field: unknown,
 ): {
   readonly optional: boolean;
+  /**
+   * The field carries a stand-in for the missing datom. Separate from
+   * {@link defaultValue} so `null` — a perfectly good default — is one.
+   */
+  readonly hasDefault: boolean;
+  readonly defaultValue: unknown;
   readonly many: boolean;
   readonly reverse: boolean;
   readonly nestedPattern: unknown | undefined;
@@ -425,10 +466,24 @@ export const inspectPullField = (
   readonly attr: unknown;
 } => {
   let optional = false;
+  let hasDefault = false;
+  let defaultValue: unknown;
   let current = field;
-  if (isPullOptional(current)) {
-    optional = true;
-    current = current.field;
+  // the two markers wrap in either order (neither is typed to stack, but a
+  // cast can still put one inside the other) — unwrap until neither is on top
+  for (;;) {
+    if (isPullOptional(current)) {
+      optional = true;
+      current = current.field;
+      continue;
+    }
+    if (isPullDefault(current)) {
+      hasDefault = true;
+      defaultValue = current.value;
+      current = current.field;
+      continue;
+    }
+    break;
   }
   if (isElementCarrier(current)) {
     throw new Error(
@@ -445,6 +500,8 @@ export const inspectPullField = (
     }
     return {
       optional,
+      hasDefault,
+      defaultValue,
       many: true,
       reverse: false,
       nestedPattern: undefined,
@@ -455,6 +512,8 @@ export const inspectPullField = (
   if (isPullNested(current)) {
     return {
       optional,
+      hasDefault,
+      defaultValue,
       many: cardinalityOf(current.attr) === "many",
       reverse: isReverseCarrier(current.attr),
       nestedPattern: current.pattern,
@@ -465,6 +524,8 @@ export const inspectPullField = (
   if (isSelectNestedField(current)) {
     return {
       optional,
+      hasDefault,
+      defaultValue,
       many: cardinalityOf(current.attr) === "many",
       reverse: isReverseCarrier(current.attr),
       nestedPattern: current.shape,
@@ -474,6 +535,8 @@ export const inspectPullField = (
   }
   return {
     optional,
+    hasDefault,
+    defaultValue,
     many: cardinalityOf(current) === "many",
     reverse: isReverseCarrier(current),
     nestedPattern: undefined,
@@ -495,6 +558,13 @@ const constraintFields = (
         ...(c.limit !== undefined ? { limit: c.limit } : {}),
       };
 
+/** `.orDefault(v)` is the pull-phase `:default` — the peer's substitution. */
+const defaultField = (info: {
+  readonly hasDefault: boolean;
+  readonly defaultValue: unknown;
+}): Record<string, unknown> =>
+  info.hasDefault ? { default: info.defaultValue } : {};
+
 const lowerField = (as: string, field: unknown): unknown => {
   const info = inspectPullField(field);
   assertDirectField(as, info.attr, info.nestedPattern !== undefined);
@@ -504,6 +574,7 @@ const lowerField = (as: string, field: unknown): unknown => {
       attr: identOf(info.attr),
       reverse: info.reverse,
       as,
+      ...defaultField(info),
       ...constraintFields(info.constraints),
       sub: lowerLiterateMap(info.nestedPattern),
     };
@@ -521,6 +592,7 @@ const lowerField = (as: string, field: unknown): unknown => {
     attr: identOf(info.attr),
     reverse: false,
     as,
+    ...defaultField(info),
     ...constraintFields(info.constraints),
   };
 };
@@ -550,7 +622,9 @@ export const lowerPullPattern = (pattern: unknown): unknown[] => {
  * Enforce required vs optional so the TypeScript type matches the value.
  *
  * A bare attr is required: missing / null / undefined drops the entity
- * (`null` at the top level). `.optional` may be missing (`undefined`).
+ * (`null` at the top level). `.optional` may be missing (`undefined`), and
+ * `.orDefault(v)` reads as `v` (the peer already substituted it; this is the
+ * same answer for a result that arrived without one).
  * Required `.select` drops the parent when the ref is missing or the nested
  * object fails *its* required fields. Cardinality-many `.select` filters the
  * array (empty `[]` is still a valid many). Ident-keyed arrays are left as
@@ -623,6 +697,13 @@ const filterPull = (pattern: unknown, result: unknown): unknown => {
     }
 
     if (missing) {
+      // the peer already substituted the default; this is the same answer for
+      // a result that reached here without one (`db.pull` of a stale cache,
+      // an ident-keyed reply reshaped by hand)
+      if (info.hasDefault) {
+        out[key] = info.defaultValue;
+        continue;
+      }
       if (info.optional) {
         out[key] = undefined;
         continue;

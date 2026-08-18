@@ -177,6 +177,7 @@ const OWN_ATTR_KEYS = new Set([
   "doc",
   "valueType",
   "optional",
+  "orDefault",
   "select",
   "eq",
   "ne",

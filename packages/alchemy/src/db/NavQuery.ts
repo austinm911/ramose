@@ -25,12 +25,15 @@ import type { AnyNamespace } from "./Namespace.ts";
 import {
   assertDirectField,
   inspectPullField,
+  isPullDefault,
   isPullNested,
   isPullOptional,
   lowerPullPattern,
   nested,
   optional,
+  pullDefault,
   reshapePullResult,
+  type PullDefault,
   type PullNestedConstraints,
 } from "./Pull.ts";
 import { isSelfRefSchema, refTargetOf } from "./valueTypes.ts";
@@ -186,6 +189,7 @@ export type ShapeField =
   | PathCarrier
   | ScalarCollectionField
   | { readonly _tag: "optional"; readonly field: unknown }
+  | { readonly _tag: "default"; readonly field: unknown; readonly value: unknown }
   | { readonly _tag: "nested"; readonly attr: unknown; readonly pattern: unknown }
   | { readonly _tag: "select"; readonly attr: unknown; readonly shape: Shape };
 
@@ -193,11 +197,11 @@ export type Shape = { readonly [key: string]: ShapeField };
 
 /**
  * Is this field a path that walked a ref before naming its attribute? True
- * through `.optional` and through a nested `.select`, which carry the field
- * they wrap.
+ * through `.optional` / `.orDefault` and through a nested `.select`, which
+ * carry the field they wrap.
  */
 type IsHopped<F> = F extends {
-  readonly _tag: "optional";
+  readonly _tag: "optional" | "default";
   readonly field: infer Inner;
 }
   ? IsHopped<Inner>
@@ -218,9 +222,9 @@ type IsHopped<F> = F extends {
 type MultiHopField<K extends string> =
   `select field "${K}" is a multi-hop path: a select field must be a direct attribute of the queried namespace — use a nested select, e.g. { owner: Todo.owner.select({ name: User.name }) }`;
 
-/** Is this field an element cursor (`attr.each`), through `.optional` too? */
+/** Is this field an element cursor (`attr.each`), through the markers too? */
 type IsElement<F> = F extends {
-  readonly _tag: "optional";
+  readonly _tag: "optional" | "default";
   readonly field: infer Inner;
 }
   ? IsElement<Inner>
@@ -340,10 +344,10 @@ export type Hopped<M> = { readonly [K in keyof M]: HopAttr<M[K]> };
 
 /**
  * One attribute of a hop's target. The mark has to survive the field wrappers
- * a select shape takes, so `.optional` and `.select` are re-stamped here —
- * they are declared in terms of `AttrNav`'s own (unmarked) parameter, and an
- * intersection cannot reach inside it. `.reverse` off a hop is left to the
- * runtime check.
+ * a select shape takes, so `.optional`, `.orDefault` and `.select` are
+ * re-stamped here — they are declared in terms of `AttrNav`'s own (unmarked)
+ * parameter, and an intersection cannot reach inside it. `.reverse` off a hop
+ * is left to the runtime check.
  */
 type HopAttr<F> = {
   readonly select: F extends { readonly valueType: ":db.type/ref" }
@@ -352,6 +356,9 @@ type HopAttr<F> = {
       ) => SelectNested<F & Hop, S>
     : never;
   readonly optional: { readonly _tag: "optional"; readonly field: F & Hop };
+  readonly orDefault: IsDefaultable<F> extends true
+    ? (value: AttrValue<F>) => PullDefault<F & Hop>
+    : never;
 } & F &
   Hop;
 
@@ -407,6 +414,18 @@ export type InValue<A> = A extends { readonly valueType: ":db.type/ref" }
  * cannot.
  */
 type IsMany<A> = A extends { readonly cardinality: "many" } ? true : false;
+
+/**
+ * Where `.orDefault` is defined: a **card-one scalar**. A card-many attribute
+ * has no missing value to stand in for — it is `[]`, which is already an
+ * answer — and a ref reaches an entity, whose stand-in would have to be a
+ * whole shape, not a value. `:db/id` is a ref here, and is never missing.
+ */
+type IsDefaultable<A> = IsMany<A> extends true
+  ? false
+  : A extends { readonly valueType: ":db.type/ref" }
+    ? false
+    : true;
 
 /** The attribute a nav ends on, as its ident — the identity of its element. */
 type AttrIdent<A> = A extends { readonly ident: infer I extends string }
@@ -500,6 +519,15 @@ export type AttrNav<A extends PathCarrier, E = never> = A & {
     ? (n: number) => CollectionNav<A>
     : never;
   readonly optional: ReturnType<typeof optional<A>>;
+  /**
+   * Card-one scalar only: read a missing datom as `value`. It lowers to the
+   * pull's `:default`, so the peer substitutes it — the row is kept without a
+   * required clause, nothing is written, and the field's type is the
+   * attribute's, not `| undefined`. See {@link IsDefaultable}.
+   */
+  readonly orDefault: IsDefaultable<A> extends true
+    ? (value: AttrValue<A>) => PullDefault<A>
+    : never;
   readonly select: A extends { readonly valueType: ":db.type/ref" }
     ? <const S extends Shape>(shape: S & ValidShape<S>) => SelectNested<A, S>
     : never;
@@ -1086,6 +1114,7 @@ const NAV_METHODS = new Set([
   "limit",
   "offset",
   "optional",
+  "orDefault",
   "select",
 ]);
 
@@ -1167,6 +1196,11 @@ export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
     select(this: PathCarrier, shape: Shape) {
       return makeSelectNested(this, shape);
     },
+    // like `.optional`, it wraps the *receiver*, so a path keeps walking
+    // through it and the multi-hop it may be is still noticed (issue #69)
+    orDefault(this: PathCarrier, value: unknown) {
+      return pullDefault(this, value);
+    },
   };
 
   return new Proxy(attr, {
@@ -1232,6 +1266,9 @@ const shapeFieldToPull = (field: unknown): unknown => {
   if (isPullOptional(field)) {
     return optional(shapeFieldToPull(field.field));
   }
+  if (isPullDefault(field)) {
+    return pullDefault(shapeFieldToPull(field.field), field.value);
+  }
   if (isSelectNested(field)) {
     return nested(
       field.attr as { readonly valueType: ":db.type/ref" },
@@ -1258,9 +1295,16 @@ type SchemaType<S> = S extends { readonly Type: infer T }
     : never;
 
 type SelectFieldResult<F> = F extends {
-  readonly _tag: "optional";
+  readonly _tag: "default";
   readonly field: infer Inner;
 }
+  ? // the default stands in for the missing datom: the field always reads,
+    // so it is the attribute's own type — never `| undefined`
+    SelectFieldResult<Inner>
+  : F extends {
+        readonly _tag: "optional";
+        readonly field: infer Inner;
+      }
   ? SelectFieldResult<Inner> | undefined
   : F extends { readonly _tag: "collection"; readonly attr: infer A }
     ? // a constrained card-many scalar: the same array, with fewer values in it
@@ -1572,6 +1616,11 @@ const lowerOrderPath = (
  * A required cardinality-one field must be present (a nested one recursively,
  * through the ref); `.optional` and cardinality-many fields never drop the
  * row (a missing many is `[]`), and `:db/id` is always there.
+ *
+ * A defaulted field is not required either — the whole point of `.orDefault`
+ * is that the entity without the datom is a row, reading as the default. A
+ * clause here would drop exactly the rows it exists to keep, and `:limit`
+ * would page a set the client never sees.
  */
 const requiredClauses = (e: string, pattern: unknown): unknown[] => {
   if (Array.isArray(pattern)) return [];
@@ -1582,7 +1631,7 @@ const requiredClauses = (e: string, pattern: unknown): unknown[] => {
     // a datom they were never meant to have — reject it here too, not just in
     // the pull pattern, because this half runs first
     assertDirectField(key, info.attr, info.nestedPattern !== undefined);
-    if (info.optional || info.many) continue;
+    if (info.optional || info.many || info.hasDefault) continue;
     const ident = lowerAttr(info.attr);
     if (ident === ID) continue;
     if (info.nestedPattern === undefined) {

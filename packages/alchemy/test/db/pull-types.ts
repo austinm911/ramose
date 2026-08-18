@@ -45,6 +45,17 @@ type MaybePull = NonNullable<Effect.Success<typeof maybe>>;
 type _optName = Expect<Equal<MaybePull["name"], string | undefined>>;
 type _optAge = Expect<Equal<MaybePull["age"], number | undefined>>;
 
+/** `.orDefault` is required-shaped: the peer substitutes, so it always reads. */
+const defaulted = db.pull(eid, {
+  name: User.name,
+  age: User.age.orDefault(0),
+});
+type DefaultedPull = NonNullable<Effect.Success<typeof defaulted>>;
+type _defAge = Expect<Equal<DefaultedPull["age"], number>>;
+
+// @ts-expect-error `:user/age` is a number attribute, and so is its stand-in
+db.pull(eid, { age: User.age.orDefault("none") });
+
 // ── .select nest: many → array, one → object ───────────────────────────────
 
 const withFriends = db.pull(eid, {

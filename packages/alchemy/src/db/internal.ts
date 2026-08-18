@@ -28,14 +28,17 @@ export {
   type IdentPullPattern,
   type IdentPullResult,
   type Pull,
+  type PullDefault,
   type PullNested,
   type PullOptional,
   type StructPullResult,
   type ValidatePull,
+  isPullDefault,
   isPullNested,
   isPullOptional,
   lowerPullPattern,
   pick,
+  pullDefault,
   reshapePullResult,
 } from "./Pull.ts";
 export * as Policy from "./Policy.ts";
