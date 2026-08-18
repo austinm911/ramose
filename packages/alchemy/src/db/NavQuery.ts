@@ -36,7 +36,11 @@ export type PredTag =
   | "gt"
   | "gte"
   | "startsWith"
+  | "endsWith"
   | "includes"
+  | "matches"
+  | "in"
+  | "is"
   | "exists"
   | "missing";
 
@@ -46,8 +50,81 @@ export interface Predicate {
   readonly op: PredTag;
   /** Idents from the root entity, e.g. `[":todo/owner", ":user/name"]`. */
   readonly path: readonly string[];
+  /** Which hops are walked backwards (`.reverse`) — parallel to `path`. */
+  readonly revs?: readonly boolean[];
   readonly value?: unknown;
 }
+
+/** How a quantified predicate reads the elements of a cardinality-many hop. */
+export type Quantifier = "some" | "every" | "none";
+
+/**
+ * `attr.some(pred)` / `.every(pred)` / `.none(pred)` on a cardinality-many
+ * ref: `pred` is rooted at the hop's *target*, and the quantifier says how
+ * many elements must satisfy it.
+ *
+ * `every` and `none` are vacuously true when the hop has no elements at all —
+ * "no element fails" and "no element matches" are both true of nothing.
+ */
+export interface Quantified {
+  readonly _tag: "Quantified";
+  readonly quant: Quantifier;
+  /** Idents from the root entity down to (and including) the many hop. */
+  readonly path: readonly string[];
+  readonly cards: readonly Cardinality[];
+  readonly revs: readonly boolean[];
+  /** Rooted at the element the path ends on, not at the query root. */
+  readonly pred: WhereNode;
+}
+
+/**
+ * Disjunction of where-nodes. Nestable: a branch is itself a predicate, an
+ * `Or` or a `Not`, and every branch is scoped to the query root entity, so
+ * the join variables a branch invents stay inside it.
+ */
+export interface Or {
+  readonly _tag: "Or";
+  readonly preds: readonly WhereNode[];
+}
+
+/** Negation of a where-node, scoped to the query root entity. */
+export interface Not {
+  readonly _tag: "Not";
+  readonly pred: WhereNode;
+}
+
+/** What `.where(...)` takes: a predicate or a combinator over predicates. */
+export type WhereNode = Predicate | Or | Not | Quantified;
+
+/**
+ * `Ripple.or(a, b, …)` — a row matches when **any** branch does. Lowers to
+ * `or-join` on the root entity variable, so branches need not bind the same
+ * variables. `or()` with no branches matches nothing.
+ */
+export const or = (...preds: readonly WhereNode[]): Or => ({
+  _tag: "Or",
+  preds: [...preds],
+});
+
+/**
+ * `Ripple.not(pred)` — a row matches when `pred` does **not**. Lowers to
+ * `not-join` on the root entity variable, so `not(or(…))` and
+ * `not(Todo.due.missing())` nest the way they read.
+ */
+export const not = (pred: WhereNode): Not => ({ _tag: "Not", pred });
+
+export const isOr = (x: unknown): x is Or =>
+  typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "Or";
+
+export const isNot = (x: unknown): x is Not =>
+  typeof x === "object" &&
+  x !== null &&
+  (x as { _tag?: unknown })._tag === "Not";
+
+export const isQuantified = (x: unknown): x is Quantified =>
+  typeof x === "object" &&
+  x !== null &&
+  (x as { _tag?: unknown })._tag === "Quantified";
 
 export type ShapeField =
   | AnyAttribute
@@ -71,6 +148,8 @@ export type OrderDir = "asc" | "desc";
  */
 export interface OrderBy {
   readonly path: readonly string[];
+  /** Parallel to `path`; a reversed hop is many, so this is always all-false. */
+  readonly revs?: readonly boolean[];
   readonly dir: OrderDir;
   readonly empty: OrderEmpty;
 }
@@ -79,7 +158,7 @@ export interface NavQuerySpec {
   readonly ns: string;
   /** Attribute idents that define membership in `ns` (for bare scope). */
   readonly nsIdents: readonly string[];
-  readonly where: readonly Predicate[];
+  readonly where: readonly WhereNode[];
   readonly shape: Shape | undefined;
   readonly orderBy: readonly OrderBy[];
   readonly limit: number | undefined;
@@ -109,6 +188,14 @@ export type PathCarrier = {
   readonly __path?: readonly string[];
   /** Cardinality of each hop in `__path` — parallel to it. */
   readonly __cards?: readonly Cardinality[];
+  /**
+   * Which hops in `__path` are walked backwards — parallel to it. A reversed
+   * hop is `[?next :a ?e]` instead of `[?e :a ?next]`, and is always
+   * cardinality-many: any number of entities may point at one.
+   */
+  readonly __revs?: readonly boolean[];
+  /** @internal Set on the node `attr.reverse` returns. */
+  readonly __reverse?: boolean;
 };
 
 export const pathOf = (attr: PathCarrier): readonly string[] =>
@@ -116,6 +203,10 @@ export const pathOf = (attr: PathCarrier): readonly string[] =>
 
 export const cardsOf = (attr: PathCarrier): readonly Cardinality[] =>
   attr.__cards ?? [attr.cardinality ?? "one"];
+
+/** Reversal flag per hop. A path with no reversed hop reports all `false`. */
+export const revsOf = (attr: PathCarrier): readonly boolean[] =>
+  attr.__revs ?? pathOf(attr).map(() => false);
 
 const pred = (
   op: PredTag,
@@ -125,6 +216,7 @@ const pred = (
   _tag: "Predicate",
   op,
   path: pathOf(attr),
+  revs: revsOf(attr),
   value,
 });
 
@@ -135,6 +227,33 @@ export type AttrValue<A> = A extends {
   ? T
   : unknown;
 
+/** What names an entity in a predicate: a raw eid, or an {@link Eid} row cell. */
+export type EidLike = number | { readonly id: number };
+
+/**
+ * The element type of `in(...)`. A ref (including the `:db/id`
+ * pseudo-attribute) takes entities; anything else takes its Schema's type.
+ */
+export type InValue<A> = A extends { readonly valueType: ":db.type/ref" }
+  ? EidLike
+  : AttrValue<A>;
+
+/**
+ * `some` / `every` / `none` quantify over the entities a hop reaches, so they
+ * are defined exactly on cardinality-many refs — including the many hop a
+ * `.reverse` backlink always is.
+ *
+ * A cardinality-many *scalar* has no target to root an inner predicate at,
+ * and does not need one: a bare predicate on it (`Todo.tags.eq("x")`) already
+ * means "some value matches".
+ */
+type IsManyRef<A> = A extends {
+  readonly cardinality: "many";
+  readonly valueType: ":db.type/ref";
+}
+  ? true
+  : false;
+
 /** Predicate / shape methods attached to every stamped attr. */
 export type AttrNav<A extends PathCarrier> = A & {
   readonly eq: (value: AttrValue<A>) => Predicate;
@@ -143,15 +262,106 @@ export type AttrNav<A extends PathCarrier> = A & {
   readonly lte: (value: AttrValue<A>) => Predicate;
   readonly gt: (value: AttrValue<A>) => Predicate;
   readonly gte: (value: AttrValue<A>) => Predicate;
+  readonly in: (values: readonly InValue<A>[]) => Predicate;
   readonly startsWith: (prefix: string) => Predicate;
+  readonly endsWith: (suffix: string) => Predicate;
   readonly includes: (needle: string) => Predicate;
+  readonly matches: (re: RegExp | string) => Predicate;
   readonly exists: () => Predicate;
   readonly missing: () => Predicate;
+  /** Ref-only: the entity this ref points at. */
+  readonly is: A extends { readonly valueType: ":db.type/ref" }
+    ? (ref: EidLike) => Predicate
+    : never;
+  /** Card-many ref only: at least one element satisfies `pred`. */
+  readonly some: IsManyRef<A> extends true
+    ? (pred: WhereNode) => Quantified
+    : never;
+  /** Card-many ref only: no element fails `pred` (vacuously true when empty). */
+  readonly every: IsManyRef<A> extends true
+    ? (pred: WhereNode) => Quantified
+    : never;
+  /** Card-many ref only: no element satisfies `pred` (true when empty). */
+  readonly none: IsManyRef<A> extends true
+    ? (pred: WhereNode) => Quantified
+    : never;
   readonly optional: ReturnType<typeof optional<A>>;
   readonly select: A extends { readonly valueType: ":db.type/ref" }
     ? <const S extends Shape>(shape: S) => SelectNested<A, S>
     : never;
 };
+
+/**
+ * The peer compiles a `matches` pattern with `new RegExp(source)` — no flags,
+ * because the pattern travels as a string and the engine's `re-find?` takes
+ * one argument. A flagged `RegExp` is rejected here rather than lowered to
+ * something that quietly means something else.
+ */
+const regexSource = (re: RegExp | string): string => {
+  if (typeof re === "string") return re;
+  if (re.flags !== "") {
+    throw new Error(
+      `ripple/query: matches(/${re.source}/${re.flags}) — the peer compiles the pattern with no flags, so \`${re.flags}\` cannot be lowered. Express it in the pattern instead (e.g. \`[aA]da\` for case-insensitivity).`,
+    );
+  }
+  return re.source;
+};
+
+/** `Eid` row cells and raw ids are the same entity to a predicate. */
+const eidValue = (ref: unknown): number => {
+  if (typeof ref === "number") return ref;
+  if (
+    typeof ref === "object" &&
+    ref !== null &&
+    typeof (ref as { id?: unknown }).id === "number"
+  ) {
+    return (ref as { id: number }).id;
+  }
+  throw new Error(
+    `ripple/query: is(...) takes an entity id or an Eid, got ${String(ref)}`,
+  );
+};
+
+/**
+ * Build a quantified node, rejecting the two shapes that cannot mean anything:
+ * a card-one hop (there is nothing to quantify over) and a scalar hop (there
+ * is no entity for `pred` to be rooted at).
+ */
+const quantified = (
+  quant: Quantifier,
+  attr: PathCarrier,
+  pred: WhereNode,
+): Quantified => {
+  const path = pathOf(attr);
+  const cards = cardsOf(attr);
+  if (cards[cards.length - 1] !== "many") {
+    throw new Error(
+      `ripple/query: ${quant}(...) on ${path.join(" → ")} — only a cardinality-many attribute has elements to quantify over`,
+    );
+  }
+  if ((attr as { valueType?: unknown }).valueType !== ":db.type/ref") {
+    throw new Error(
+      `ripple/query: ${quant}(...) on ${path.join(" → ")} — the inner predicate is rooted at the hop's target, so the hop must be a ref. A predicate on a cardinality-many scalar already means "some value matches".`,
+    );
+  }
+  return {
+    _tag: "Quantified",
+    quant,
+    path,
+    cards,
+    revs: revsOf(attr),
+    pred,
+  };
+};
+
+/** Refs compare by id, so an `Eid` in an `in(...)` list is its number. */
+const inValue = (v: unknown): unknown =>
+  typeof v === "object" &&
+  v !== null &&
+  typeof (v as { id?: unknown }).id === "number" &&
+  Object.keys(v).length === 1
+    ? (v as { id: number }).id
+    : v;
 
 export interface SelectNested<A = unknown, S = unknown> {
   readonly _tag: "select";
@@ -170,10 +380,17 @@ const NAV_METHODS = new Set([
   "lte",
   "gt",
   "gte",
+  "in",
   "startsWith",
+  "endsWith",
   "includes",
+  "matches",
   "exists",
   "missing",
+  "is",
+  "some",
+  "every",
+  "none",
   "optional",
   "select",
 ]);
@@ -198,11 +415,37 @@ export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
     gte(this: PathCarrier, value: unknown) {
       return pred("gte", this, value);
     },
+    in(this: PathCarrier, values: readonly unknown[]) {
+      if (!Array.isArray(values)) {
+        throw new Error(
+          `ripple/query: in(...) takes an array of values, got ${String(values)}`,
+        );
+      }
+      return pred("in", this, values.map(inValue));
+    },
     startsWith(this: PathCarrier, prefix: string) {
       return pred("startsWith", this, prefix);
     },
+    endsWith(this: PathCarrier, suffix: string) {
+      return pred("endsWith", this, suffix);
+    },
     includes(this: PathCarrier, needle: string) {
       return pred("includes", this, needle);
+    },
+    matches(this: PathCarrier, re: RegExp | string) {
+      return pred("matches", this, regexSource(re));
+    },
+    is(this: PathCarrier, ref: unknown) {
+      return pred("is", this, eidValue(ref));
+    },
+    some(this: PathCarrier, inner: WhereNode) {
+      return quantified("some", this, inner);
+    },
+    every(this: PathCarrier, inner: WhereNode) {
+      return quantified("every", this, inner);
+    },
+    none(this: PathCarrier, inner: WhereNode) {
+      return quantified("none", this, inner);
     },
     exists(this: PathCarrier) {
       return pred("exists", this);
@@ -241,12 +484,16 @@ export const withPath = <A extends PathCarrier>(
   attr: A,
   path: readonly string[],
   cards: readonly Cardinality[],
+  revs: readonly boolean[] = path.map(() => false),
 ): A => {
   if (attr.__path === path) return attr;
   return new Proxy(attr, {
     get(target, prop, receiver) {
       if (prop === "__path") return path;
       if (prop === "__cards") return cards;
+      if (prop === "__revs") return revs;
+      // a path that continues past a reversed hop is no longer that node
+      if (prop === "__reverse") return false;
       const v = Reflect.get(target, prop, receiver);
       if (
         typeof prop === "string" &&
@@ -344,7 +591,7 @@ export interface NavQueryBuilder<
   readonly ns: N;
   readonly spec: NavQuerySpec;
 
-  where(...preds: Predicate[]): NavQueryBuilder<N, R>;
+  where(...preds: WhereNode[]): NavQueryBuilder<N, R>;
   select<const S extends Shape>(
     shape: S,
   ): NavQueryBuilder<N, readonly SelectResult<S>[]>;
@@ -390,7 +637,7 @@ const builder = <N extends AnyNamespace, R>(
         ...spec,
         orderBy: [
           ...spec.orderBy,
-          { path, dir, empty: opts?.empty ?? "last" },
+          { path, revs: revsOf(attr), dir, empty: opts?.empty ?? "last" },
         ],
       });
     },
@@ -476,7 +723,7 @@ export const lowerNavQuery = (
   }
 
   for (const p of q.spec.where) {
-    where.push(...lowerPredicate(root, p));
+    where.push(...lowerWhere(root, p));
   }
 
   const pullMap =
@@ -485,7 +732,7 @@ export const lowerNavQuery = (
 
   const order: OrderClause[] = [];
   for (const o of q.spec.orderBy) {
-    const bound = lowerOrderPath(root, o.path);
+    const bound = lowerOrderPath(root, o.path, o.revs ?? o.path.map(() => false));
     where.push(...bound.clauses);
     order.push({ var: bound.var, dir: o.dir, empty: o.empty });
   }
@@ -507,20 +754,28 @@ export const lowerNavQuery = (
   };
 };
 
-/** `[?e :a ?j] [?j :b <value>]` — the join chain a path of idents walks. */
+/**
+ * `[?e :a ?j] [?j :b <value>]` — the join chain a path of idents walks.
+ * A reversed hop is the same datom read the other way: `[?j :a ?e]`.
+ */
 const hopClauses = (
   root: string,
   path: readonly string[],
+  revs: readonly boolean[],
   value: unknown,
 ): unknown[] => {
   const clauses: unknown[] = [];
   let e = root;
   for (let i = 0; i < path.length - 1; i++) {
     const next = gensym("j");
-    clauses.push([e, path[i], next]);
+    clauses.push(revs[i] ? [next, path[i], e] : [e, path[i], next]);
     e = next;
   }
-  return [...clauses, [e, path[path.length - 1], value]];
+  const last = path.length - 1;
+  return [
+    ...clauses,
+    revs[last] ? [value, path[last], e] : [e, path[last], value],
+  ];
 };
 
 /**
@@ -532,6 +787,7 @@ const hopClauses = (
 const lowerOrderPath = (
   root: string,
   path: readonly string[],
+  revs: readonly boolean[],
 ): { readonly var: string; readonly clauses: unknown[] } => {
   if (path.length === 1 && path[0] === ID) return { var: root, clauses: [] };
   const bound = gensym("o");
@@ -541,10 +797,10 @@ const lowerOrderPath = (
       [
         "or-join",
         [root, bound],
-        ["and", ...hopClauses(root, path, bound)],
+        ["and", ...hopClauses(root, path, revs, bound)],
         [
           "and",
-          ["not", ...hopClauses(root, path, "_")],
+          ["not", ...hopClauses(root, path, revs, "_")],
           [["ground", [null]], [bound, "..."]],
         ],
       ],
@@ -584,27 +840,101 @@ const fieldsOf = (pattern: unknown): Record<string, unknown> =>
     ? (pattern as Record<string, unknown>)
     : {};
 
+/**
+ * A clause that binds nothing and matches nothing: an empty collection binding
+ * yields no rows. `in([])`, `or()` and `not(<always true>)` all mean "no rows",
+ * and they mean it on the peer, so a `:limit` still counts kept rows.
+ */
+const neverClause = (): unknown[] => [["ground", []], [gensym("n"), "..."]];
+
+/**
+ * A where-node's clauses. Combinators scope to the root entity variable: an
+ * `or` branch and a `not` body may invent join variables freely, because
+ * `or-join` / `not-join` export only `?e`.
+ */
+const lowerWhere = (root: string, node: WhereNode): unknown[] => {
+  if (isOr(node)) {
+    if (node.preds.length === 0) return [neverClause()];
+    return [
+      [
+        "or-join",
+        [root],
+        ...node.preds.map((p) => ["and", ...lowerWhere(root, p)]),
+      ],
+    ];
+  }
+  if (isNot(node)) {
+    const inner = lowerWhere(root, node.pred);
+    // nothing to negate is a predicate that always holds — its negation never does
+    if (inner.length === 0) return [neverClause()];
+    return [["not-join", [root], ...inner]];
+  }
+  if (isQuantified(node)) return lowerQuantified(root, node);
+  return lowerPredicate(root, node);
+};
+
+/**
+ * Quantify over the elements a many hop reaches. The hop chain binds one
+ * element variable `?x`; the inner node is lowered against it, so its own join
+ * variables are local to the quantifier.
+ *
+ * - `some`  → the chain plus the inner clauses: a plain existential join.
+ * - `none`  → `(not-join [?e] <chain> <inner>)` — no element matches.
+ * - `every` → `(not-join [?e] <chain> (not-join [?x] <inner>))` — no element
+ *   *fails*. Both negatives are vacuously true when the hop has no elements:
+ *   the chain binds nothing, so the outer `not-join` removes no rows.
+ */
+const lowerQuantified = (root: string, node: Quantified): unknown[] => {
+  const x = gensym("x");
+  const chain = hopClauses(root, node.path, node.revs, x);
+  const inner = lowerWhere(x, node.pred);
+  switch (node.quant) {
+    case "some":
+      return [...chain, ...inner];
+    case "none":
+      return [["not-join", [root], ...chain, ...inner]];
+    case "every":
+      // an inner node that constrains nothing is satisfied by every element
+      if (inner.length === 0) return [];
+      return [["not-join", [root], ...chain, ["not-join", [x], ...inner]]];
+  }
+};
+
 const lowerPredicate = (root: string, p: Predicate): unknown[] => {
   const { path, op, value } = p;
   if (path.length === 0) return [];
-  if (path[path.length - 1] === ID) return lowerIdPredicate(root, path, p);
+  const revs = p.revs ?? path.map(() => false);
+  if (path[path.length - 1] === ID) return lowerIdPredicate(root, path, revs, p);
 
   const clauses: unknown[] = [];
   let e = root;
   for (let i = 0; i < path.length - 1; i++) {
     const next = gensym("j");
-    clauses.push([e, path[i], next]);
+    clauses.push(revs[i] ? [next, path[i], e] : [e, path[i], next]);
     e = next;
   }
   const attr = path[path.length - 1]!;
+  /** The last hop, oriented: a reversed hop reads the datom the other way. */
+  const at = (v: unknown): unknown[] =>
+    revs[path.length - 1] ? [v, attr, e] : [e, attr, v];
 
   switch (op) {
     case "eq":
-      clauses.push([e, attr, value]);
+    case "is":
+      clauses.push(at(value));
       break;
+    case "in": {
+      const values = value as readonly unknown[];
+      if (values.length === 0) return [neverClause()];
+      const v = gensym("v");
+      // `?v` is bound by the pattern, so the collection binding filters it
+      // rather than generating: the peer keeps one row per match, not per value
+      clauses.push(at(v), [["ground", [...values]], [v, "..."]]);
+      break;
+    }
     case "ne": {
       const v = gensym("v");
-      clauses.push([e, attr, v], [["not=", v, value]]);
+      clauses.push(at(v), [["not=", v, value]]);
       break;
     }
     case "lt":
@@ -620,24 +950,35 @@ const lowerPredicate = (root: string, p: Predicate): unknown[] => {
             : op === "gt"
               ? ">"
               : ">=";
-      clauses.push([e, attr, v], [[fn, v, value]]);
+      clauses.push(at(v), [[fn, v, value]]);
       break;
     }
     case "startsWith": {
       const v = gensym("v");
-      clauses.push([e, attr, v], [["starts-with?", v, value]]);
+      clauses.push(at(v), [["starts-with?", v, value]]);
+      break;
+    }
+    case "endsWith": {
+      const v = gensym("v");
+      clauses.push(at(v), [["ends-with?", v, value]]);
       break;
     }
     case "includes": {
       const v = gensym("v");
-      clauses.push([e, attr, v], [["includes?", v, value]]);
+      clauses.push(at(v), [["includes?", v, value]]);
+      break;
+    }
+    case "matches": {
+      const v = gensym("v");
+      // `re-find?` takes the pattern first, then the string
+      clauses.push(at(v), [["re-find?", value, v]]);
       break;
     }
     case "exists":
-      clauses.push([e, attr, "_"]);
+      clauses.push(at("_"));
       break;
     case "missing":
-      clauses.push(["not", [e, attr, "_"]]);
+      clauses.push(["not", at("_")]);
       break;
   }
   return clauses;
@@ -651,19 +992,27 @@ const lowerPredicate = (root: string, p: Predicate): unknown[] => {
 const lowerIdPredicate = (
   root: string,
   path: readonly string[],
+  revs: readonly boolean[],
   p: Predicate,
 ): unknown[] => {
   const clauses: unknown[] = [];
   let e = root;
   for (let i = 0; i < path.length - 1; i++) {
     const next = gensym("j");
-    clauses.push([e, path[i], next]);
+    clauses.push(revs[i] ? [next, path[i], e] : [e, path[i], next]);
     e = next;
   }
   switch (p.op) {
     case "eq":
-      clauses.push([["ground", p.value], e]);
+    case "is":
+      clauses.push([["ground", eidValue(p.value)], e]);
       break;
+    case "in": {
+      const values = (p.value as readonly unknown[]).map(eidValue);
+      if (values.length === 0) return [neverClause()];
+      clauses.push([["ground", values], [e, "..."]]);
+      break;
+    }
     case "ne":
       clauses.push([["not=", e, p.value]]);
       break;

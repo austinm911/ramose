@@ -26,9 +26,14 @@ import {
   Ref,
   cardsOf,
   finalizeNavResult,
+  pathOf,
   layer,
   lowerNavQuery,
+  not,
+  or,
   query,
+  revsOf,
+  type WhereNode,
 } from "../../src/db/internal.ts";
 
 const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
@@ -435,6 +440,685 @@ describe("lowering: everything that changes the row set is the peer's", () => {
       { id: 10 },
       { id: 20 },
     ]);
+  });
+});
+
+describe("lowering: in / endsWith / matches / is", () => {
+  const whereOf = (...preds: WhereNode[]) =>
+    lowerNavQuery(query(Todo).where(...preds).build()).query.where;
+
+  test("`in` binds the value, then filters it with a collection binding", () => {
+    expect(whereOf(Todo.title.in(["ship", "also open"]))).toEqual([
+      todoScope,
+      ["?e", ":todo/title", "?v0"],
+      [["ground", ["ship", "also open"]], ["?v0", "..."]],
+    ]);
+    // through a ref hop the join chain comes first, as ever
+    expect(whereOf(Todo.owner.name.in(["Alice"]))).toEqual([
+      todoScope,
+      ["?e", ":todo/owner", "?j0"],
+      ["?j0", ":user/name", "?v1"],
+      [["ground", ["Alice"]], ["?v1", "..."]],
+    ]);
+  });
+
+  test("`in([])` is a clause that matches nothing, on the peer", () => {
+    expect(whereOf(Todo.title.in([]))).toEqual([
+      todoScope,
+      [["ground", []], ["?n0", "..."]],
+    ]);
+    expect(whereOf(Todo.id.in([]))).toEqual([
+      todoScope,
+      [["ground", []], ["?n0", "..."]],
+    ]);
+  });
+
+  test("`in` on `:db/id` filters the entity variable itself", () => {
+    expect(whereOf(Todo.id.in([1, 2, { id: 3 }]))).toEqual([
+      todoScope,
+      [["ground", [1, 2, 3]], ["?e", "..."]],
+    ]);
+  });
+
+  test("`endsWith` and `matches` lower to the engine's string builtins", () => {
+    expect(whereOf(Todo.title.endsWith("ing"))).toEqual([
+      todoScope,
+      ["?e", ":todo/title", "?v0"],
+      [["ends-with?", "?v0", "ing"]],
+    ]);
+    // `re-find?` takes the pattern first, then the string
+    expect(whereOf(Todo.title.matches(/^sh/))).toEqual([
+      todoScope,
+      ["?e", ":todo/title", "?v0"],
+      [["re-find?", "^sh", "?v0"]],
+    ]);
+    expect(whereOf(Todo.title.matches("^sh"))).toEqual(
+      whereOf(Todo.title.matches(/^sh/)),
+    );
+  });
+
+  test("a flagged RegExp is rejected rather than silently unflagged", () => {
+    expect(() => Todo.title.matches(/^sh/i)).toThrow(
+      /cannot be lowered|no flags/,
+    );
+    expect(() => Todo.title.matches(/^sh/g)).toThrow();
+  });
+
+  test("`is` names the ref's target, as an eid or an Eid", () => {
+    expect(whereOf(Todo.owner.is(42))).toEqual([
+      todoScope,
+      ["?e", ":todo/owner", 42],
+    ]);
+    expect(whereOf(Todo.owner.is({ id: 42 }))).toEqual([
+      todoScope,
+      ["?e", ":todo/owner", 42],
+    ]);
+    // on `:db/id` it unifies the entity variable, like `eq`
+    expect(whereOf(Todo.id.is({ id: 7 }))).toEqual([
+      todoScope,
+      [["ground", 7], "?e"],
+    ]);
+    expect(() => Todo.owner.is("nope" as never)).toThrow(/entity id or an Eid/);
+  });
+});
+
+describe("lowering: or / not scope to the root entity variable", () => {
+  const whereOf = (...preds: WhereNode[]) =>
+    lowerNavQuery(query(Todo).where(...preds).build()).query.where;
+
+  test("`or` is an or-join on `?e`, so branches need not bind alike", () => {
+    expect(
+      whereOf(or(Todo.done.eq(true), Todo.owner.name.eq("Alice"))),
+    ).toEqual([
+      todoScope,
+      [
+        "or-join",
+        ["?e"],
+        ["and", ["?e", ":todo/done", true]],
+        ["and", ["?e", ":todo/owner", "?j0"], ["?j0", ":user/name", "Alice"]],
+      ],
+    ]);
+  });
+
+  test("`or()` with no branches matches nothing", () => {
+    expect(whereOf(or())).toEqual([todoScope, [["ground", []], ["?n0", "..."]]]);
+  });
+
+  test("`not` is a not-join on `?e`, and nests", () => {
+    expect(whereOf(not(Todo.done.eq(true)))).toEqual([
+      todoScope,
+      ["not-join", ["?e"], ["?e", ":todo/done", true]],
+    ]);
+    // not(missing) — the double negative the engine reads as "present"
+    expect(whereOf(not(Todo.due.missing()))).toEqual([
+      todoScope,
+      ["not-join", ["?e"], ["not", ["?e", ":todo/due", "_"]]],
+    ]);
+    expect(whereOf(not(or(Todo.done.eq(true), Todo.due.missing())))).toEqual([
+      todoScope,
+      [
+        "not-join",
+        ["?e"],
+        [
+          "or-join",
+          ["?e"],
+          ["and", ["?e", ":todo/done", true]],
+          ["and", ["not", ["?e", ":todo/due", "_"]]],
+        ],
+      ],
+    ]);
+  });
+
+  test("or of not, and nested or, keep their branch-local join variables", () => {
+    expect(
+      whereOf(
+        or(
+          not(Todo.owner.name.eq("Alice")),
+          or(Todo.owner.name.eq("Bob"), Todo.title.endsWith("!")),
+        ),
+      ),
+    ).toEqual([
+      todoScope,
+      [
+        "or-join",
+        ["?e"],
+        [
+          "and",
+          [
+            "not-join",
+            ["?e"],
+            ["?e", ":todo/owner", "?j0"],
+            ["?j0", ":user/name", "Alice"],
+          ],
+        ],
+        [
+          "and",
+          [
+            "or-join",
+            ["?e"],
+            [
+              "and",
+              ["?e", ":todo/owner", "?j1"],
+              ["?j1", ":user/name", "Bob"],
+            ],
+            ["and", ["?e", ":todo/title", "?v2"], [["ends-with?", "?v2", "!"]]],
+          ],
+        ],
+      ],
+    ]);
+  });
+
+  test("`not` of a predicate that constrains nothing matches nothing", () => {
+    // `:db/id` always exists, so its negation is empty — and the peer says so
+    expect(whereOf(not(Todo.id.exists()))).toEqual([
+      todoScope,
+      [["ground", []], ["?n0", "..."]],
+    ]);
+  });
+});
+
+describe("predicates and combinators end to end: the peer counts the rows", () => {
+  const seed = (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
+    const db = peer.ripple.db("todos", Todos);
+    return run(
+      Effect.gen(function* () {
+        yield* db.install();
+        yield* db.transact(function* (tx) {
+          const alice = yield* tx.entity();
+          yield* alice.add(User.name, "Alice");
+          const bob = yield* tx.entity();
+          yield* bob.add(User.name, "Bob");
+          const mk = function* (title: string, done: boolean, owner: unknown) {
+            const t = yield* tx.entity();
+            yield* t.add(Todo.title, title);
+            yield* t.add(Todo.done, done);
+            if (owner !== undefined) yield* t.add(Todo.owner, owner as never);
+          };
+          yield* mk("ship it", false, alice.eid);
+          yield* mk("write docs", false, bob.eid);
+          yield* mk("done already", true, bob.eid);
+          yield* mk("orphan", false, undefined);
+        });
+        // the eids come back through the query surface itself
+        const users = yield* db.q(
+          query(User).orderBy(User.name, "asc").select({ id: User.id }),
+        );
+        return { db, alice: users[0]!.id, bob: users[1]!.id };
+      }),
+    );
+  };
+
+  const titles = async (
+    peer: Awaited<ReturnType<typeof inProcessPeer>>,
+    db: Awaited<ReturnType<typeof seed>>["db"],
+    ...preds: WhereNode[]
+  ) => {
+    peer.seen.length = 0;
+    const rows = await run(
+      db.q(
+        query(Todo)
+          .where(...preds)
+          .orderBy(Todo.title, "asc")
+          .select({ title: Todo.title }),
+      ),
+    );
+    // the row count is the peer's, not something the client filtered down to
+    expect(peer.seen[0]?.rows).toBe(rows.length);
+    return rows.map((r) => r.title);
+  };
+
+  test("in / endsWith / matches / is run on the peer", async () => {
+    const peer = await inProcessPeer();
+    const { db, alice } = await seed(peer);
+
+    expect(await titles(peer, db, Todo.title.in(["ship it", "orphan"]))).toEqual(
+      ["orphan", "ship it"],
+    );
+    expect(await titles(peer, db, Todo.title.in([]))).toEqual([]);
+    expect(
+      await titles(peer, db, Todo.owner.name.in(["Alice", "Nobody"])),
+    ).toEqual(["ship it"]);
+    expect(await titles(peer, db, Todo.title.endsWith("docs"))).toEqual([
+      "write docs",
+    ]);
+    expect(await titles(peer, db, Todo.title.matches(/^(ship|write)/))).toEqual([
+      "ship it",
+      "write docs",
+    ]);
+    expect(await titles(peer, db, Todo.owner.is(alice))).toEqual(["ship it"]);
+    expect(await titles(peer, db, Todo.owner.is({ id: alice }))).toEqual([
+      "ship it",
+    ]);
+    // a repeated value in the list is still one row, not two
+    expect(
+      await titles(peer, db, Todo.title.in(["ship it", "ship it"])),
+    ).toEqual(["ship it"]);
+
+    await peer.dispose();
+  });
+
+  test("`in` composes with a limit the peer applies after the filter", async () => {
+    const peer = await inProcessPeer();
+    const { db } = await seed(peer);
+    peer.seen.length = 0;
+    const rows = await run(
+      db.q(
+        query(Todo)
+          .where(Todo.title.in(["ship it", "write docs", "orphan"]))
+          .orderBy(Todo.title, "asc")
+          .limit(2)
+          .select({ title: Todo.title }),
+      ),
+    );
+    expect(rows.map((r) => r.title)).toEqual(["orphan", "ship it"]);
+    expect(peer.seen[0]?.rows).toBe(2);
+    await peer.dispose();
+  });
+
+  test("or / not run on the peer, and nest", async () => {
+    const peer = await inProcessPeer();
+    const { db, bob } = await seed(peer);
+
+    expect(
+      await titles(peer, db, or(Todo.done.eq(true), Todo.owner.missing())),
+    ).toEqual(["done already", "orphan"]);
+    expect(await titles(peer, db, not(Todo.done.eq(true)))).toEqual([
+      "orphan",
+      "ship it",
+      "write docs",
+    ]);
+    // not(missing) is "present"
+    expect(await titles(peer, db, not(Todo.owner.missing()))).toEqual([
+      "done already",
+      "ship it",
+      "write docs",
+    ]);
+    expect(await titles(peer, db, or())).toEqual([]);
+    expect(
+      await titles(
+        peer,
+        db,
+        not(or(Todo.owner.is(bob), Todo.owner.missing())),
+      ),
+    ).toEqual(["ship it"]);
+    // combinators are conjunctive with the rest of `.where`
+    expect(
+      await titles(
+        peer,
+        db,
+        Todo.done.eq(false),
+        or(Todo.owner.name.eq("Bob"), Todo.title.matches("^or")),
+      ),
+    ).toEqual(["orphan", "write docs"]);
+
+    await peer.dispose();
+  });
+
+  test("`or` branches that bind different variables do not duplicate rows", async () => {
+    const peer = await inProcessPeer();
+    const { db } = await seed(peer);
+    // "write docs" satisfies both branches; it must come back once
+    expect(
+      await titles(
+        peer,
+        db,
+        or(Todo.owner.name.eq("Bob"), Todo.title.startsWith("write")),
+      ),
+    ).toEqual(["done already", "write docs"]);
+    await peer.dispose();
+  });
+});
+
+/** The scope clause every `:user/*` query carries. */
+const userScope = [
+  "or",
+  ["?e", ":user/name", "_"],
+  ["?e", ":user/friends", "_"],
+];
+
+describe("lowering: some / every / none quantify over a many hop", () => {
+  const whereOf = (...preds: WhereNode[]) =>
+    lowerNavQuery(query(User).where(...preds).build()).query.where;
+
+  test("`some` is the existential join the hop already was", () => {
+    expect(whereOf(User.friends.some(User.name.eq("Ada")))).toEqual([
+      userScope,
+      ["?e", ":user/friends", "?x0"],
+      ["?x0", ":user/name", "Ada"],
+    ]);
+  });
+
+  test("`none` is the same join, negated on the root", () => {
+    expect(whereOf(User.friends.none(User.name.eq("Ada")))).toEqual([
+      userScope,
+      [
+        "not-join",
+        ["?e"],
+        ["?e", ":user/friends", "?x0"],
+        ["?x0", ":user/name", "Ada"],
+      ],
+    ]);
+  });
+
+  test("`every` is `no element fails`: a not-join inside a not-join", () => {
+    expect(whereOf(User.friends.every(User.name.startsWith("A")))).toEqual([
+      userScope,
+      [
+        "not-join",
+        ["?e"],
+        ["?e", ":user/friends", "?x0"],
+        [
+          "not-join",
+          ["?x0"],
+          ["?x0", ":user/name", "?v1"],
+          [["starts-with?", "?v1", "A"]],
+        ],
+      ],
+    ]);
+    // an inner node that constrains nothing holds of every element
+    expect(whereOf(User.friends.every(User.id.exists()))).toEqual([userScope]);
+  });
+
+  test("the inner node may be a combinator, or another quantifier", () => {
+    expect(
+      whereOf(User.friends.some(or(User.name.eq("Ada"), User.name.missing()))),
+    ).toEqual([
+      userScope,
+      ["?e", ":user/friends", "?x0"],
+      [
+        "or-join",
+        ["?x0"],
+        ["and", ["?x0", ":user/name", "Ada"]],
+        ["and", ["not", ["?x0", ":user/name", "_"]]],
+      ],
+    ]);
+    // friends-of-friends: the inner quantifier is rooted at the element
+    expect(
+      whereOf(User.friends.some(User.friends.none(User.name.eq("Bob")))),
+    ).toEqual([
+      userScope,
+      ["?e", ":user/friends", "?x0"],
+      [
+        "not-join",
+        ["?x0"],
+        ["?x0", ":user/friends", "?x1"],
+        ["?x1", ":user/name", "Bob"],
+      ],
+    ]);
+  });
+
+  test("quantifiers need a cardinality-many ref to quantify over", () => {
+    // the type says `never` for both; these are the runtime guards behind it
+    const quantify = (attr: unknown) =>
+      (attr as typeof User.friends).some(User.name.eq("Ada"));
+    expect(() => quantify(Todo.owner)).toThrow(
+      /only a cardinality-many attribute has elements/,
+    );
+    const Post = Namespace("post", {
+      tags: Attr(Schema.String, { cardinality: "many" }),
+    });
+    expect(() => quantify(Post.tags)).toThrow(/must be a ref/);
+  });
+});
+
+describe("lowering: reverse refs walk a ref hop backwards", () => {
+  const whereOf = (...preds: WhereNode[]) =>
+    lowerNavQuery(query(User).where(...preds).build()).query.where;
+
+  test("the path keeps the ref's ident; the hop is reversed and many", () => {
+    const back = Todo.owner.reverse;
+    expect(pathOf(back)).toEqual([":todo/owner"]);
+    expect(cardsOf(back)).toEqual(["many"]);
+    expect(revsOf(back)).toEqual([true]);
+    // walking on from the backlink continues forwards, in the owning namespace
+    expect(pathOf(back.title)).toEqual([":todo/owner", ":todo/title"]);
+    expect(cardsOf(back.title)).toEqual(["many", "one"]);
+    expect(revsOf(back.title)).toEqual([true, false]);
+  });
+
+  test("a reversed hop flips the datom, and nothing else", () => {
+    expect(whereOf(Todo.owner.reverse.title.eq("ship"))).toEqual([
+      userScope,
+      ["?j0", ":todo/owner", "?e"],
+      ["?j0", ":todo/title", "ship"],
+    ]);
+    expect(whereOf(Todo.owner.reverse.exists())).toEqual([
+      userScope,
+      ["_", ":todo/owner", "?e"],
+    ]);
+    expect(whereOf(Todo.owner.reverse.missing())).toEqual([
+      userScope,
+      ["not", ["_", ":todo/owner", "?e"]],
+    ]);
+  });
+
+  test("a backlink is a many hop, so it quantifies", () => {
+    expect(whereOf(Todo.owner.reverse.some(Todo.done.eq(true)))).toEqual([
+      userScope,
+      ["?x0", ":todo/owner", "?e"],
+      ["?x0", ":todo/done", true],
+    ]);
+    expect(whereOf(Todo.owner.reverse.none(Todo.done.eq(false)))).toEqual([
+      userScope,
+      [
+        "not-join",
+        ["?e"],
+        ["?x0", ":todo/owner", "?e"],
+        ["?x0", ":todo/done", false],
+      ],
+    ]);
+    expect(whereOf(Todo.owner.reverse.every(Todo.done.eq(true)))).toEqual([
+      userScope,
+      [
+        "not-join",
+        ["?e"],
+        ["?x0", ":todo/owner", "?e"],
+        ["not-join", ["?x0"], ["?x0", ":todo/done", true]],
+      ],
+    ]);
+  });
+
+  test("`.reverse.select` is a reverse pull spec, and drops no rows", () => {
+    const { query: q } = lowerNavQuery(
+      query(User)
+        .select({
+          name: User.name,
+          todos: Todo.owner.reverse.select({ title: Todo.title }),
+        })
+        .build(),
+    );
+    expect(q.find).toEqual([
+      [
+        "pull",
+        "?e",
+        [
+          { kind: "attr", attr: ":user/name", reverse: false, as: "name" },
+          {
+            kind: "attr",
+            attr: ":todo/owner",
+            reverse: true,
+            as: "todos",
+            sub: [
+              { kind: "attr", attr: ":todo/title", reverse: false, as: "title" },
+            ],
+          },
+        ],
+      ],
+    ]);
+    // a backlink is a possibly-empty array: it never becomes a required clause
+    expect(q.where).toEqual([userScope, ["?e", ":user/name", "_"]]);
+  });
+
+  test("a bare backlink in a shape is rejected: ask for a shape", () => {
+    expect(() =>
+      lowerNavQuery(
+        query(User).select({ todos: Todo.owner.reverse }).build(),
+      ),
+    ).toThrow(/backlinks need a shape/);
+  });
+
+  test("orderBy across a backlink is rejected like any many hop", () => {
+    expect(() => query(User).orderBy(Todo.owner.reverse)).toThrow(
+      /cardinality-many/,
+    );
+    expect(() => query(User).orderBy(Todo.owner.reverse.title)).toThrow(
+      /orderBy\(:todo\/owner → :todo\/title\) crosses a cardinality-many attribute/,
+    );
+  });
+});
+
+describe("quantifiers and backlinks end to end", () => {
+  /**
+   * Ada — friends [Bob],       todos "a1" done, "a2" done
+   * Bob — friends [Ada, Cyd],  todos "b1" open
+   * Cyd — friends [],          no todos      (the vacuous-truth case)
+   */
+  const seed = (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
+    const db = peer.ripple.db("todos", Todos);
+    return run(
+      Effect.gen(function* () {
+        yield* db.install();
+        yield* db.transact(function* (tx) {
+          const ada = yield* tx.entity();
+          yield* ada.add(User.name, "Ada");
+          const bob = yield* tx.entity();
+          yield* bob.add(User.name, "Bob");
+          const cyd = yield* tx.entity();
+          yield* cyd.add(User.name, "Cyd");
+          yield* ada.add(User.friends, bob.eid as never);
+          yield* bob.add(User.friends, ada.eid as never);
+          yield* bob.add(User.friends, cyd.eid as never);
+          const mk = function* (title: string, done: boolean, owner: unknown) {
+            const t = yield* tx.entity();
+            yield* t.add(Todo.title, title);
+            yield* t.add(Todo.done, done);
+            yield* t.add(Todo.owner, owner as never);
+          };
+          yield* mk("a1", true, ada.eid);
+          yield* mk("a2", true, ada.eid);
+          yield* mk("b1", false, bob.eid);
+        });
+        return db;
+      }),
+    );
+  };
+
+  const names = async (
+    peer: Awaited<ReturnType<typeof inProcessPeer>>,
+    db: Awaited<ReturnType<typeof seed>>,
+    ...preds: WhereNode[]
+  ) => {
+    peer.seen.length = 0;
+    const rows = await run(
+      db.q(
+        query(User)
+          .where(...preds)
+          .orderBy(User.name, "asc")
+          .select({ name: User.name }),
+      ),
+    );
+    expect(peer.seen[0]?.rows).toBe(rows.length);
+    return rows.map((r) => r.name);
+  };
+
+  test("some / every / none over a card-many ref, on the peer", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+
+    expect(await names(peer, db, User.friends.some(User.name.eq("Ada")))).toEqual(
+      ["Bob"],
+    );
+    expect(await names(peer, db, User.friends.none(User.name.eq("Cyd")))).toEqual(
+      ["Ada", "Cyd"],
+    );
+    // Cyd has no friends at all, and `every` is true of nothing
+    expect(
+      await names(peer, db, User.friends.every(User.name.startsWith("B"))),
+    ).toEqual(["Ada", "Cyd"]);
+    // friends-of-friends: the inner quantifier is rooted at the element
+    expect(
+      await names(peer, db, User.friends.some(User.friends.some(User.name.eq("Cyd")))),
+    ).toEqual(["Ada"]);
+
+    await peer.dispose();
+  });
+
+  test("a backlink filters, and `every` over it is vacuously true", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+
+    expect(await names(peer, db, Todo.owner.reverse.exists())).toEqual([
+      "Ada",
+      "Bob",
+    ]);
+    expect(await names(peer, db, Todo.owner.reverse.missing())).toEqual(["Cyd"]);
+    expect(
+      await names(peer, db, Todo.owner.reverse.title.eq("b1")),
+    ).toEqual(["Bob"]);
+    expect(
+      await names(peer, db, Todo.owner.reverse.some(Todo.done.eq(false))),
+    ).toEqual(["Bob"]);
+    // Ada's todos are all done; Cyd has none, so nothing of hers fails
+    expect(
+      await names(peer, db, Todo.owner.reverse.every(Todo.done.eq(true))),
+    ).toEqual(["Ada", "Cyd"]);
+    expect(
+      await names(peer, db, Todo.owner.reverse.none(Todo.done.eq(false))),
+    ).toEqual(["Ada", "Cyd"]);
+
+    await peer.dispose();
+  });
+
+  test("a backlink in a shape is an array, empty rather than a dropped row", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    peer.seen.length = 0;
+
+    const rows = await run(
+      db.q(
+        query(User)
+          .orderBy(User.name, "asc")
+          .select({
+            name: User.name,
+            todos: Todo.owner.reverse.select({ title: Todo.title }),
+          }),
+      ),
+    );
+    expect(
+      rows.map((r) => ({
+        name: r.name,
+        todos: r.todos.map((t) => t.title).sort(),
+      })),
+    ).toEqual([
+      { name: "Ada", todos: ["a1", "a2"] },
+      { name: "Bob", todos: ["b1"] },
+      // no backlinks is an empty array, not a missing row
+      { name: "Cyd", todos: [] },
+    ]);
+    expect(peer.seen[0]?.rows).toBe(3);
+
+    await peer.dispose();
+  });
+
+  test("a backlink paged by the peer still counts whole rows", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    peer.seen.length = 0;
+    const rows = await run(
+      db.q(
+        query(User)
+          .where(Todo.owner.reverse.exists())
+          .orderBy(User.name, "desc")
+          .limit(1)
+          .select({
+            name: User.name,
+            todos: Todo.owner.reverse.select({ title: Todo.title }),
+          }),
+      ),
+    );
+    expect(rows.map((r) => r.name)).toEqual(["Bob"]);
+    expect(peer.seen[0]?.rows).toBe(1);
+    await peer.dispose();
   });
 });
 

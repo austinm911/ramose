@@ -17,6 +17,8 @@ import {
   type Expect,
   Instant,
   Namespace,
+  not,
+  or,
   query,
   type ReadDb,
   Ref,
@@ -124,6 +126,134 @@ query(Book).where(Book.published.gt("2026-01-01"));
 // @ts-expect-error a predicate is the only thing `where` takes
 query(User).where(User.name);
 
+// ── in / endsWith / matches ────────────────────────────────────────────────
+
+query(User).where(User.name.in(["Ada", "Grace"]), User.age.in([36, 37]));
+query(User).where(User.name.in([]));
+library.q(query(Book).where(Book.author.name.in(["Ada"])));
+query(Movie).where(
+  Movie.title.endsWith("Calculus"),
+  Movie.title.matches(/^The /),
+  Movie.title.matches("^The "),
+);
+
+// @ts-expect-error `:user/name` is a string attribute, so is every element
+query(User).where(User.name.in([1, 2]));
+
+// @ts-expect-error `:movie/year` is a number attribute
+query(Movie).where(Movie.year.in(["2016"]));
+
+// @ts-expect-error `in` takes an array, not a value
+query(User).where(User.name.in("Ada"));
+
+// @ts-expect-error `matches` takes a pattern, not a number
+query(Movie).where(Movie.title.matches(42));
+
+// ── ref `is` takes an entity, and only a ref has it ────────────────────────
+
+declare const someEid: Eid<typeof Movies>;
+query(User).where(User.bestFriend.is(someEid), User.friends.is(1001));
+query(User).where(User.id.is(someEid), User.id.is(1001));
+library.q(query(Book).where(Book.author.is(1001)));
+/** a ref's `in` takes entities too */
+query(User).where(User.bestFriend.in([someEid, 1001]));
+
+// @ts-expect-error `:user/name` is not a ref
+query(User).where(User.name.is(1001));
+
+// @ts-expect-error `:movie/year` is not a ref
+query(Movie).where(Movie.year.is(1001));
+
+// @ts-expect-error an entity is an eid or an `Eid`, not a name
+query(User).where(User.bestFriend.is("Ada"));
+
+// ── combinators nest, and are what `where` takes ───────────────────────────
+
+query(User).where(
+  or(User.name.eq("Ada"), User.age.gte(36)),
+  not(User.name.missing()),
+  or(not(User.age.lt(18)), or(User.name.startsWith("A"))),
+  or(),
+);
+const combined = db.q(
+  query(User)
+    .where(or(User.name.eq("Ada"), not(User.age.exists())))
+    .select({ name: User.name }),
+);
+type _combined = Expect<
+  Equal<Effect.Success<typeof combined>, readonly { readonly name: string }[]>
+>;
+
+// @ts-expect-error `or` combines predicates, not attributes
+query(User).where(or(User.name));
+
+// @ts-expect-error `not` takes one where-node, not a list
+query(User).where(not(User.name.eq("Ada"), User.age.gte(36)));
+
+// ── some / every / none, on cardinality-many refs only ─────────────────────
+
+query(User).where(
+  User.friends.some(User.name.eq("Ada")),
+  User.friends.every(User.age.gte(18)),
+  User.friends.none(User.name.missing()),
+  // the inner node may be a combinator, or another quantifier
+  User.friends.some(or(User.age.lt(18), User.friends.none(User.age.exists()))),
+);
+
+// @ts-expect-error `:user/bestFriend` is a cardinality-one ref
+query(User).where(User.bestFriend.some(User.name.eq("Ada")));
+
+// @ts-expect-error `:user/name` is neither many nor a ref
+query(User).where(User.name.every(User.name.eq("Ada")));
+
+// @ts-expect-error `:movie/year` has no elements to quantify over
+query(Movie).where(Movie.year.none(Movie.title.eq("x")));
+
+// @ts-expect-error a quantifier takes a where-node, not an attribute
+query(User).where(User.friends.some(User.name));
+
+// ── reverse refs: the backlink is rooted at the ref's owning namespace ─────
+
+/** `:book/author` read backwards, from an `Author` root. */
+type _reverseIdent = Expect<
+  Equal<typeof Book.author.reverse.title.ident, ":book/title">
+>;
+library.q(
+  query(Author).where(
+    Book.author.reverse.title.eq("Calculus"),
+    Book.author.reverse.exists(),
+    // a backlink is a many hop, so it quantifies
+    Book.author.reverse.some(Book.published.lt(new Date())),
+    Book.author.reverse.every(Book.title.startsWith("A")),
+  ),
+);
+
+const backlinks = library.q(
+  query(Author).select({
+    name: Author.name,
+    books: Book.author.reverse.select({ title: Book.title }),
+  }),
+);
+/** a backlink shape is an array — a possibly-empty one, never a dropped row */
+type _backlinks = Expect<
+  Equal<
+    Effect.Success<typeof backlinks>,
+    readonly {
+      readonly name: string;
+      readonly books: readonly { readonly title: string }[];
+    }[]
+  >
+>;
+
+/** an untargeted ref has a backlink too — only the owning namespace matters */
+query(User).where(User.bestFriend.reverse.name.eq("Ada"));
+
+// @ts-expect-error `:author/name` is not a ref, so it has no backlink
+query(Author).where(Book.title.reverse.eq("x"));
+
+// @ts-expect-error a backlink exposes the *owning* namespace's attributes
+query(Author).where(Book.author.reverse.name.eq("Ada"));
+
 // ── `.orderBy` takes an attribute, including one across a ref ──────────────
 
 const ordered = library.q(
@@ -155,6 +285,12 @@ type _selfHops = Expect<
 type _selfMany = Expect<Equal<typeof Person.friends.name.ident, ":person/name">>;
 query(Person).where(Person.boss.name.startsWith("A"));
 query(Org).orderBy(Org.lead.boss.name);
+
+/** a self-ref's backlink is the same namespace, walked the other way */
+query(Person).where(
+  Person.boss.reverse.name.startsWith("A"),
+  Person.friends.some(Person.boss.reverse.name.eq("Ada")),
+);
 
 // @ts-expect-error `:person/name` is a string attribute, two hops in too
 query(Person).where(Person.boss.boss.name.eq(3));
