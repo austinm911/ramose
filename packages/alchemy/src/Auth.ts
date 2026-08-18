@@ -48,8 +48,13 @@ export interface ClaimsInput {
   readonly now?: Date | undefined;
 }
 
-/** The payload the peer verifies (docs/AUTH_LAYER.md §1). */
-export interface Claims {
+/**
+ * The payload the peer verifies (docs/AUTH_LAYER.md §1), as built — every
+ * field present. The client-side `Claims` on `@ripple/alchemy/db` is the
+ * same shape *decoded but unverified* (all-optional, UI hints only); this is
+ * the minted original.
+ */
+export interface MintedClaims {
   readonly iss: string;
   readonly aud: string;
   readonly sub: string;
@@ -104,7 +109,7 @@ export const claims = (
   auth: AuthConfig,
   input: ClaimsInput,
   policy?: CompiledPolicy | string,
-): Claims => {
+): MintedClaims => {
   // JWT NumericDate is whole seconds, so a fractional ttl would mint a
   // fractional `exp` — reject it rather than round it.
   if (!Number.isInteger(auth.ttl) || auth.ttl <= 0) {

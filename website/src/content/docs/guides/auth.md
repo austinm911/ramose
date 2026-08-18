@@ -83,9 +83,9 @@ the policy declares, because an undeclared class grants nothing, never an
 outage. `exp - iat` is exactly `ttl`, and `authEnv({ auth: AUTH })` pins
 `RIPPLE_JWT_MAX_TTL` to the same `ttl`, so the cap holds by construction.
 
-On the client, hand the fetch of that token to the `token` option of
-`Ripple.layer` — it is re-read on every (re)connect and every transact, so
-re-minting before `exp` is the app's only job.
+On the client, wrap the mint call in `Ripple.token.jwt(mint)` — the shipped
+`TokenSource` for `layer({ token })` that caches the token and re-mints
+inside a margin of its `exp`; see [From the browser](#from-the-browser).
 
 ## Writing a policy
 
