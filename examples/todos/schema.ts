@@ -1,10 +1,10 @@
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
 import * as Schema from "effect/Schema";
 
-export const Todo = Ripple.Namespace("todo", {
-  title: Ripple.Attr(Schema.String),
-  done: Ripple.Attr(Schema.Boolean),
-  createdAt: Ripple.Attr(Ripple.Instant),
+export const Todo = Ramose.Namespace("todo", {
+  title: Ramose.Attr(Schema.String),
+  done: Ramose.Attr(Schema.Boolean),
+  createdAt: Ramose.Attr(Ramose.Instant),
 });
 
-export const Todos = Ripple.Catalog({ todo: Todo });
+export const Todos = Ramose.Catalog({ todo: Todo });

@@ -1,5 +1,5 @@
 /**
- * `Ripple.ServerHttp` — the public-URL transport.
+ * `Ramose.ServerHttp` — the public-URL transport.
  *
  * No service binding, no Cloudflare-specific machinery: the client talks to
  * the server's public URL with the ambient `fetch`. That makes this the
@@ -7,7 +7,7 @@
  * — the one that works when the server was given as a plain URL, and the one
  * an `Alchemy.Action` (or `alchemy dev`) uses, where the code runs in the
  * *engine's* process rather than in a deployed Worker. There is no third
- * "local" variant: unlike KV, Ripple has no second protocol to fall back to —
+ * "local" variant: unlike KV, Ramose has no second protocol to fall back to —
  * one HTTP API serves the Worker, the operator and the test.
  *
  * The server's URL and the token ride into the runtime as bound env values

@@ -1,5 +1,5 @@
 /**
- * Transactor — the single writer of one logical Ripple database.
+ * Transactor — the single writer of one logical Ramose database.
  *
  * Runtime-agnostic (see host.ts): the Durable Object shell and the Bun test
  * harness both drive this class.
@@ -49,8 +49,8 @@ import {
   checkTx,
   componentLogger,
   isAdmin,
-} from "@ripple/core";
-import { R2NodeStore, readCurrentRoot, recordToRoots, rootsToRecord } from "@ripple/storage";
+} from "@ramose/core";
+import { R2NodeStore, readCurrentRoot, recordToRoots, rootsToRecord } from "@ramose/storage";
 import * as Effect from "effect/Effect";
 import { BadRequest, NotFound, TransactorDeadError, TxRejected, errorResponse, toHttpError } from "./errors.ts";
 import { type SocketLike, type TransactorHost } from "./host.ts";
@@ -546,7 +546,7 @@ export class Transactor {
   async handleRequest(request: Request): Promise<Response> {
     await this.init();
     // Worker→DO subrequests have no `request.cf`; the Worker forwards its own colo as a header.
-    this.metrics.observeColo((request as { cf?: { colo?: string } }).cf?.colo ?? request.headers.get("x-ripple-colo") ?? undefined);
+    this.metrics.observeColo((request as { cf?: { colo?: string } }).cf?.colo ?? request.headers.get("x-ramose-colo") ?? undefined);
     const url = new URL(request.url);
     return Effect.runPromise(
       Effect.tryPromise({ try: () => this.route(request, url), catch: toHttpError }).pipe(

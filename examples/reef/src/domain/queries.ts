@@ -2,12 +2,12 @@
  * Every read the app asks, as hoisted navigational query values — stable
  * dependencies for `useLive`, runnable one-shot (`db.q`), live (`db.live`) or
  * in the past (`db.asOf(t).q`) unchanged. The pull shapes are also fed to
- * `Ripple.Policy.compile({ pulls })` so a read-masked attribute pulled as
+ * `Ramose.Policy.compile({ pulls })` so a read-masked attribute pulled as
  * required is a deploy-time error, not a silently dropped row.
  */
 
-import type { Db } from "@ripple/alchemy/db";
-import * as Ripple from "@ripple/alchemy/db";
+import type { Db } from "@ramose/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
 import { Comment, Issue, Label, Reef, User } from "./schema.ts";
 
 export type ReefDb = Db<typeof Reef>;
@@ -63,33 +63,33 @@ export const allShapes: readonly unknown[] = [
 
 // ── queries ──────────────────────────────────────────────────────────────────
 
-export const boardQuery = Ripple.query(Issue)
+export const boardQuery = Ramose.query(Issue)
   .orderBy(Issue.rank, "asc")
   .select(boardShape);
 
-export const peopleQuery = Ripple.query(User)
+export const peopleQuery = Ramose.query(User)
   .orderBy(User.name, "asc")
   .select({ id: User.id, name: User.name, email: User.email });
 
-export const labelsQuery = Ripple.query(Label)
+export const labelsQuery = Ramose.query(Label)
   .orderBy(Label.name, "asc")
   .select(labelShape);
 
 export const commentsQuery = (issueId: number) =>
-  Ripple.query(Comment)
+  Ramose.query(Comment)
     .where(Comment.issue.eq(issueId))
     .orderBy(Comment.at, "asc")
     .select(commentShape);
 
 /** Over `db.history` this also returns issues that no longer exist. */
-export const everyIssueEverQuery = Ripple.query(Issue).select({
+export const everyIssueEverQuery = Ramose.query(Issue).select({
   id: Issue.id,
   title: Issue.title,
 });
 
 /** One row of {@link boardQuery} — inferred from the query, never restated. */
-export type BoardRow = Ripple.Row<typeof boardQuery>;
+export type BoardRow = Ramose.Row<typeof boardQuery>;
 
 export type Person = BoardRow["creator"];
-export type LabelRow = Ripple.Row<typeof labelsQuery>;
-export type CommentRow = Ripple.Row<ReturnType<typeof commentsQuery>>;
+export type LabelRow = Ramose.Row<typeof labelsQuery>;
+export type CommentRow = Ramose.Row<ReturnType<typeof commentsQuery>>;

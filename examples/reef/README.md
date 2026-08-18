@@ -1,10 +1,10 @@
 # Reef
 
 The flagship demo: a Linear-style, multi-tenant, real-time issue tracker where
-**every workspace is its own Ripple database**. One app exercises every
+**every workspace is its own Ramose database**. One app exercises every
 headline feature — reactivity (`db.live`), multi-tenancy (`db.install()` at
 runtime), auth (Better Auth JWTs verified by the peer against a compiled
-`Ripple.Policy`), immutability (`db.asOf` time travel + `db.history`), and a
+`Ramose.Policy`), immutability (`db.asOf` time travel + `db.history`), and a
 StyleX design system with dark/light themes.
 
 ## Run it
@@ -45,20 +45,20 @@ account to watch writes propagate live.
 ```
 browser SPA (Vite + React 19 + StyleX)
   ├── cookies ──────────► auth Worker   BetterAuth on D1: sign-in, orgs,
-  │                       (:1338)       JWKS, POST /api/auth/ripple/token
-  └── JWT per request ──► Ripple peer   RIPPLE_POLICY + JWKS verify,
+  │                       (:1338)       JWKS, POST /api/auth/ramose/token
+  └── JWT per request ──► Ramose peer   RAMOSE_POLICY + JWKS verify,
                           (:1337)       Transactor/QueryReplica DOs, R2
 ```
 
-The browser is the **only** Ripple data-plane client. The auth Worker never
+The browser is the **only** Ramose data-plane client. The auth Worker never
 talks to the peer, so the resource graph is a DAG: the peer's env needs the
-auth Worker's URL (for `RIPPLE_JWKS_URL`), and the auth Worker needs nothing
+auth Worker's URL (for `RAMOSE_JWKS_URL`), and the auth Worker needs nothing
 back.
 
 A workspace is born entirely from the browser: Better Auth org create →
-`POST /api/auth/ripple/token` (the `@ripple/better-auth` mint plugin) mints a
+`POST /api/auth/ramose/token` (the `@ramose/better-auth` mint plugin) mints a
 15-minute JWT with
-`ripple: { db: <slug>, class: <role> }` → `ripple.db(slug, Reef).install()` →
+`ramose: { db: <slug>, class: <role> }` → `ramose.db(slug, Reef).install()` →
 seed labels + the creator's `user` row. No resource, no deploy — a database is
 a name.
 
@@ -81,22 +81,22 @@ examples/reef/
 | file | what it is |
 |---|---|
 | `src/domain/schema.ts` | the catalog: `user`, `issue`, `comment`, `label` namespaces |
-| `src/domain/policy.ts` | `Ripple.Policy.policy` — classes `admin`/`member`/`viewer`, `preset` ownership (creator/author pinned to the caller), `issue.privateNote` masked to admin |
+| `src/domain/policy.ts` | `Ramose.Policy.policy` — classes `admin`/`member`/`viewer`, `preset` ownership (creator/author pinned to the caller), `issue.privateNote` masked to admin |
 | `src/domain/queries.ts` | every navigational query and pull shape; compiled against the policy in tests |
 | `src/domain/rank.ts` | fractional ranking — a drag writes one `:issue/rank` double |
 | `src/domain/roles.ts` / `shared.ts` | Better Auth access-control roles and the constants both Workers and the SPA share |
-| `src/infra/api.ts` | the auth Worker: BetterAuth (organization + jwt + `@ripple/better-auth` mint plugins) on D1 and the built SPA as Worker assets |
-| `src/infra/resources.ts` / `alchemy.run.ts` | the peer (R2 + DOs + compiled policy via `Ripple.authEnv`) and the one stack wiring both Workers plus the dev-only `Ui` (`Command.Dev` running Vite) |
-| `src/app/ripple.ts` | the whole client wiring, ~20 lines: `Ripple.token.jwt` over `authClient.ripple.token` + `Ripple.connect`, exposed to screens as `{ slug, cls, db, close }` |
+| `src/infra/api.ts` | the auth Worker: BetterAuth (organization + jwt + `@ramose/better-auth` mint plugins) on D1 and the built SPA as Worker assets |
+| `src/infra/resources.ts` / `alchemy.run.ts` | the peer (R2 + DOs + compiled policy via `Ramose.authEnv`) and the one stack wiring both Workers plus the dev-only `Ui` (`Command.Dev` running Vite) |
+| `src/app/ramose.ts` | the whole client wiring, ~20 lines: `Ramose.token.jwt` over `authClient.ramose.token` + `Ramose.connect`, exposed to screens as `{ slug, cls, db, close }` |
 | `src/app/` | the SPA: `ui.tsx` primitives (icons, buttons, dialog, toasts, priority glyph), auth screen, workspace picker, live kanban board, issue detail, time travel |
 | `test/` | policy compilation + masked-pull checks, role→class mapping, ranking — part of `bun run test` |
 
 ## What each screen demonstrates
 
 - **Workspace picker** — multi-tenancy. Creating "Coral Team" runs
-  `ripple.db("coral-team").install()` under the creator's freshly-minted
-  admin JWT. Switching workspaces closes the client and `Ripple.connect`s a
-  new one whose `Ripple.token.jwt` source re-mints as the token nears `exp`,
+  `ramose.db("coral-team").install()` under the creator's freshly-minted
+  admin JWT. Switching workspaces closes the client and `Ramose.connect`s a
+  new one whose `Ramose.token.jwt` source re-mints as the token nears `exp`,
   so 15-minute tokens refresh themselves.
 - **Board** — reactivity. Columns render one `db.live(boardQuery)` stream;
   a drag writes two datoms (status + rank) and the board re-renders when the
@@ -122,7 +122,7 @@ examples/reef/
 
 ```sh
 bun alchemy deploy examples/reef/alchemy.run.ts          # first pass: Workers + D1 + R2
-VITE_RIPPLE_URL=<peerUrl> bunx vite build examples/reef  # bake the peer URL into the SPA
+VITE_RAMOSE_URL=<peerUrl> bunx vite build examples/reef  # bake the peer URL into the SPA
 bun alchemy deploy examples/reef/alchemy.run.ts          # second pass: ship the assets
 ```
 

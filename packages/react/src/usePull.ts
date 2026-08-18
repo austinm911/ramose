@@ -17,7 +17,7 @@ import type {
   Pull,
   ReadDb,
   ValidatePull,
-} from "@ripple/alchemy/db";
+} from "@ramose/alchemy/db";
 import type * as Stream from "effect/Stream";
 import { useMemo } from "react";
 import { type Live, useLive } from "./useLive.ts";

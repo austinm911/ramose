@@ -22,29 +22,29 @@ with, wants permissions and typed data so they cannot silently wreck prod.
 
 18 doc pages + `index.mdx` landing. No Examples section, no React/framework
 page, no comparison page, no FAQ, no limitations page, no changelog, no
-"what Ripple is not". `examples/todos` and `examples/kv-style` exist in the
+"what Ramose is not". `examples/todos` and `examples/kv-style` exist in the
 repo and are named only in running prose (`guides/workers.md:80-81`,
 `guides/live-queries.md:33`). The site never links to either directory.
 
 ### Landing copy, verbatim (`src/content/docs/index.mdx`)
 
 - Frontmatter title (`:2`): `The graph that reacts` — this is also `<title>`
-  and `og:title`. Neither the word "Ripple" nor "database" is in it.
+  and `og:title`. Neither the word "Ramose" nor "database" is in it.
 - Hero H1 (`:19`): **"The graph that reacts."**
-- Subhead (`:21-25`): **"Ripple is an immutable, reactive graph database for
+- Subhead (`:21-25`): **"Ramose is an immutable, reactive graph database for
   Cloudflare. One Durable Object writes. Segment trees live in R2. Datalog runs
   at the edge, next to your app. Built on Effect, typed end to end."**
 - CTAs (`:28-29`): **"Get started"** → `/getting-started/quickstart/`;
   **"GitHub"** → `github.com/tvanhens/ripple`. Two CTAs, no demo, no playground.
 - Pseudo-terminal strip (`:32`, styled `.rg-install`, `user-select: all`):
-  **"› ripple.db("acme", Catalog) // a database is a name — no provision step"**
+  **"› ramose.db("acme", Catalog) // a database is a name — no provision step"**
 - Section 2 (`:36-41`): H2 **"State the change."** / lede **"A change enters the
   system, travels through the field, and produces a coherent response. Write a
   row and every standing live query re-runs — no refetch, no invalidation call
   at the write site."** Then "The catalog is the schema" + catalog snippet.
 - Section 3 (`:74`): **"Observe. Propagate. Resolve."** + query/transact snippet.
 - Section 4 (`:106`): **"Deploy is one resource"** + Alchemy snippet.
-- Section 5 (`:136-137`): H2 **"Why Ripple."** / lede **"Reactive graph
+- Section 5 (`:136-137`): H2 **"Why Ramose."** / lede **"Reactive graph
   infrastructure for agentic systems — one exact sentence per claim."** Six
   cells: Typed catalog, Effect-native, Live queries, Db-per-tenant, Time travel,
   **"Invariants as product"**.
@@ -52,7 +52,7 @@ repo and are named only in running prose (`guides/workers.md:80-81`,
   one Transactor Durable Object per logical database, N QueryReplica Durable
   Objects, one R2 bucket. Nothing else to run." + four invariant cells
   (Single writer / Dense `t` / Persist-before-ack / Replicas first-class).
-- Closing (`:195`): **"Changes ripple. Agents respond. State stays coherent."**
+- Closing (`:195`): **"Changes ramose. Agents respond. State stays coherent."**
   + one CTA, **"Read the introduction"**.
 
 ### First-run path, in order
@@ -95,7 +95,7 @@ Datalog runs at the edge, next to your app. Built on Effect, typed end to end."
 Four sentences, four proper nouns of internal machinery (Durable Object,
 segment trees, R2, Datalog), and not one noun the reader owns: no app, no user,
 no screen, no team, no data. A stranger cannot answer "would I use this for my
-chat app?" *Fix:* one sentence of the form "Ripple is a typed, realtime
+chat app?" *Fix:* one sentence of the form "Ramose is a typed, realtime
 database for apps you deploy on Cloudflare — write TypeScript, get live queries
 and per-user permissions, no server to run," then the machinery below the fold.
 
@@ -138,17 +138,17 @@ scrolls for a code shape and finds none.
 examples/todos/alchemy.run.ts`. Every package in the repo is `"private": true`
 (`packages/*/package.json`) — there is nothing on npm — but the docs never say
 so. Meanwhile the hero's terminal-styled strip
-(`› ripple.db("acme", Catalog)`) *looks* like the install line and isn't one;
+(`› ramose.db("acme", Catalog)`) *looks* like the install line and isn't one;
 `user-select: all` means one click copies the comment too. So the single
 strongest "how do I try it" affordance on the page yields text that does not
-run. *Fix:* say it out loud on the landing page and in Quickstart — "Ripple is
+run. *Fix:* say it out loud on the landing page and in Quickstart — "Ramose is
 pre-release; you run it from the repo today" — and put a real command in the
 strip (`bun alchemy dev examples/todos/alchemy.run.ts`).
 
 **F1.7 — The Quickstart's own snippet is broken when copied.**
 `quickstart.md:100-105`:
 ```ts
-token: Effect.succeed(Redacted.make(import.meta.env.VITE_RIPPLE_TOKEN)),
+token: Effect.succeed(Redacted.make(import.meta.env.VITE_RAMOSE_TOKEN)),
 ```
 The real example (`examples/todos/src/db.ts`) guards it: `token === undefined ||
 token === "" ? undefined : Effect.succeed(Redacted.make(token))`. The
@@ -164,7 +164,7 @@ characters) with `CLOUDFLARE_API_TOKEN=x` **if Alchemy asks for credentials**."
 "If Alchemy asks" is a coin flip presented as prose after the command block.
 `examples/todos/README.md` states the env vars as *required* and prefixes them
 on the command. Also, port drift: `examples/todos/README.md` says "peer on
-:1337" and uses `VITE_RIPPLE_URL=http://localhost:1337`, while
+:1337" and uses `VITE_RAMOSE_URL=http://localhost:1337`, while
 `quickstart.md:20` says `http://localhost:8787`. One of these makes the tab
 never connect, with no error the reader can interpret. *Fix:* one copyable
 block with the env vars inlined, one port, and a "you should see" checkpoint.
@@ -225,7 +225,7 @@ never said in reader-facing terms. `quickstart.md:25` gets closest: "there is no
 external database to start."
 
 **F2.4 — Auth is BYO-everything and the docs bury the punchline.**
-`guides/auth.md:147-148`: "Ripple verifies tokens; it never issues them. JWT
+`guides/auth.md:147-148`: "Ramose verifies tokens; it never issues them. JWT
 minting, IdP integration, login, and refresh UX live in your auth provider."
 That is a legitimate design, but it is the *last line* of the page. A Firebase
 reader reads seven paragraphs about policy ASTs and then discovers they must
@@ -293,8 +293,8 @@ also means Pagefind and crawlers see a duplicated headline. *Fix:* use
 hiding framework output with `:has()`.
 
 **F3.6 — Social/SEO presentation is unbranded.** `og:title` = "The graph that
-reacts", `og:description` = "Ripple — an immutable, reactive graph database for
-Cloudflare. Changes ripple. Agents respond. State stays coherent." There is
+reacts", `og:description` = "Ramose — an immutable, reactive graph database for
+Cloudflare. Changes ramose. Agents respond. State stays coherent." There is
 `twitter:card: summary_large_image` and **no `og:image`** — every share renders
 as a blank card. `<title>` for the homepage carries no product noun.
 
@@ -325,7 +325,7 @@ systems" is four abstract nouns and zero verbs.
 the change." / "A change enters the system, travels through the field, and
 produces a coherent response." "The field" is not a thing in this product.
 `index.mdx:74`: "Observe. Propagate. Resolve." — three verbs with no subject.
-`index.mdx:195`: "Changes ripple. Agents respond. State stays coherent." Three
+`index.mdx:195`: "Changes ramose. Agents respond. State stays coherent." Three
 sentences, zero facts. This is the closing CTA: the last thing a reader reads
 before deciding, and it says nothing they can act on.
 
@@ -348,7 +348,7 @@ reply"*, *"deleting a row never destroys the record — you can read yesterday"*
 
 **F4.5 — The one-noun brand test fails.** In the first 42 words the reader must
 already know: Cloudflare, Durable Object, R2, Datalog, Effect. Every one is
-somebody else's proper noun. Ripple is described in terms of five dependencies
+somebody else's proper noun. Ramose is described in terms of five dependencies
 before it is described in terms of one job.
 
 **F4.6 — Hedging and roadmap in the middle of a teaching page.**
@@ -422,7 +422,7 @@ fears are only discoverable in Reference: 413 query-budget kills
 (`guides/queries.md:146-151`), `Unavailable` 503s during a transactor reboot
 (`reference/errors.md:25`), the hard write ceiling and the "split your database,
 there are no cross-database joins" remedy (`reference/runbook.md:54-66`), and
-`RIPPLE_RETAIN_ROOTS` default 20 — which quietly means **history older than the
+`RAMOSE_RETAIN_ROOTS` default 20 — which quietly means **history older than the
 retention window is not `asOf`-able** (`concepts/time-travel.md:46-49`,
 `reference/configuration.md:36`). If time travel is a headline feature, its
 retention limit must be next to it, not two clicks away.
@@ -457,7 +457,7 @@ Ordered by impact on "stranger understands + tries + trusts".
    page or into Concepts.
 
 2. **Put safety on the first screen with a mechanism, not a slogan.**
-   *(Landing)* Add a third hero-adjacent block, above "Why Ripple", with real
+   *(Landing)* Add a third hero-adjacent block, above "Why Ramose", with real
    code: a policy rule, a denied write returning `TxRejected`, and the
    compile-time rejection `movie.add(Movie.year, "2016")`. Lead with the
    deploy-time leak check from `guides/auth.md:123-127`, phrased for humans:
@@ -469,7 +469,7 @@ Ordered by impact on "stranger understands + tries + trusts".
    gap on the page.
 
 4. **Fix the "how do I try it" line.** *(Landing / First-hour path)* Replace the
-   fake terminal strip `› ripple.db("acme", Catalog) …` with a real, copyable
+   fake terminal strip `› ramose.db("acme", Catalog) …` with a real, copyable
    command, and state pre-release status honestly ("not on npm yet — run it from
    the repo"). Nothing on the page should look like an install command and not
    be one.
@@ -504,15 +504,15 @@ Ordered by impact on "stranger understands + tries + trusts".
    three boxes and plain labels (writer / storage / edge readers) and link to
    `concepts/architecture.md`.
 
-9. **Translate the six "Why Ripple" cells into benefits.** *(Landing)* Cut to
+9. **Translate the six "Why Ramose" cells into benefits.** *(Landing)* Cut to
    four. Kill "Effect-native", "Invariants as product", "requirements channel is
    `never`", "teardown is fiber interruption". Replace with: *typed writes fail
    at compile time*, *queries update themselves*, *every user sees only their
    rows*, *nothing is ever overwritten — read any past state*. Keep the precise
    internal sentence as a smaller subline under each.
 
-10. **Add "Ripple vs. what you're using now".** *(IA)* One page, honest columns
-    against Postgres+Prisma, Convex, Supabase, Instant: what Ripple gives
+10. **Add "Ramose vs. what you're using now".** *(IA)* One page, honest columns
+    against Postgres+Prisma, Convex, Supabase, Instant: what Ramose gives
     (typed graph, live queries by default, per-datom policy, immutable history,
     no server) and what it does not (no SQL, no published npm package yet, no
     hosted dashboard, no cross-database joins, low-thousands tx/s per database,
@@ -520,10 +520,10 @@ Ordered by impact on "stranger understands + tries + trusts".
     the rest.
 
 11. **Add a "Before production" page.** *(IA / Reference)* Checklist:
-    `RIPPLE_POLICY` set (the peer is open by default —
-    `guides/deploy.md:95`), `RIPPLE_ALLOWED_ORIGINS` narrowed, JWT audience and
+    `RAMOSE_POLICY` set (the peer is open by default —
+    `guides/deploy.md:95`), `RAMOSE_ALLOWED_ORIGINS` narrowed, JWT audience and
     TTL, admin routes reachable only by the `admin` class, retention chosen
-    (`RIPPLE_RETAIN_ROOTS` — and what you lose when a root ages out), query
+    (`RAMOSE_RETAIN_ROOTS` — and what you lose when a root ages out), query
     budget, what to do on 503/413. Link it from Deploy and from the landing
     safety block.
 
@@ -543,7 +543,7 @@ Ordered by impact on "stranger understands + tries + trusts".
     theme in brand colors instead of `github-dark`; `title=` on every fence so
     files are labeled; Starlight `<Steps>` for Quickstart and `<Card>`/`<Tabs>`
     where tables are being used to teach; an `og:image`; a real `<title>`
-    containing "Ripple"; a footer with GitHub / license / status; drop the
+    containing "Ramose"; a footer with GitHub / license / status; drop the
     two-`h1` CSS hack at `theme.css:83-85` for a proper splash page.
 
 15. **Ship the things a vibe-coder expects in 2026.** *(IA)* An `/examples`

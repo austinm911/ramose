@@ -1,22 +1,22 @@
 ---
 title: A database is a name
-description: No create step, no provisioning — ripple.db(name, catalog) is the whole story, and db-per-tenant is a function call.
+description: No create step, no provisioning — ramose.db(name, catalog) is the whole story, and db-per-tenant is a function call.
 ---
 
-Ripple has no create-database call, no list, no delete. A database *is* a
+Ramose has no create-database call, no list, no delete. A database *is* a
 name: the Transactor DO is `idFromName(name)`, the log and segments live under
 `db/<name>/…` in the bucket, and the first transaction against a name
 materializes it.
 
 ```ts
-const db = ripple.db("acme", Catalog); // pure — zero network
+const db = ramose.db("acme", Catalog); // pure — zero network
 ```
 
 ## What that buys you
 
 - **Db-per-tenant is a function call.** One deployed peer serves every name.
   An app Worker resolves the tenant from the request and calls
-  `ripple.db(tenantOf(request), Catalog)` — pure, per request, no provisioning
+  `ramose.db(tenantOf(request), Catalog)` — pure, per request, no provisioning
   service in the middle.
 - **No fleet to manage.** There is one resource (the peer), not one resource
   per tenant. Tenant count is a namespace, not an ops problem.
@@ -26,13 +26,13 @@ const db = ripple.db("acme", Catalog); // pure — zero network
 
 ## Installing a catalog
 
-`ripple.db(name, catalog)` is pure, so something must put the schema on the
+`ramose.db(name, catalog)` is pure, so something must put the schema on the
 peer before the first real read or write. There are two doors, both explicit:
 
 **At deploy** — for databases you know about statically:
 
 ```ts
-export const TodosDb = Ripple.Database("todos", {
+export const TodosDb = Ramose.Database("todos", {
   server: Server,
   catalog: Todos,
 });
@@ -41,7 +41,7 @@ export const TodosDb = Ripple.Database("todos", {
 **At tenant creation** — for names minted at runtime:
 
 ```ts
-const db = ripple.db(`tenant-${key}`, Catalog);
+const db = ramose.db(`tenant-${key}`, Catalog);
 yield* db.install(); // idempotent catalog upsert — one no-op tx when unchanged
 ```
 
@@ -53,16 +53,16 @@ fails with `InvalidRequest` and `transact` fails with `TxRejected`.
 
 A name must match `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$` — alphanumeric first
 character, then up to 63 more of `[a-zA-Z0-9._-]`. The client exports the rule
-from `@ripple/alchemy/db` as `DATABASE_NAME_RE` and `isDatabaseName(name)`, so
+from `@ramose/alchemy/db` as `DATABASE_NAME_RE` and `isDatabaseName(name)`, so
 an app that lets users mint names (a "create workspace" flow) can validate
 before the peer does; a bad name fails the first operation with
 `InvalidRequest` without reaching the peer.
 
 ## Names and tokens
 
-With a shared `RIPPLE_TOKEN`, one bearer token opens every name — fine for a
-service tier that is itself the authority. Under a `RIPPLE_POLICY`, a JWT is
-bound to exactly one database by its `ripple.db` claim, so a token cannot
+With a shared `RAMOSE_TOKEN`, one bearer token opens every name — fine for a
+service tier that is itself the authority. Under a `RAMOSE_POLICY`, a JWT is
+bound to exactly one database by its `ramose.db` claim, so a token cannot
 wander across tenants. See [Auth and policy](/guides/auth/).
 
 ## The one limit

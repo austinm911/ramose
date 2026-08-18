@@ -1,58 +1,58 @@
 /**
  * Reef — the catalog one workspace runs on.
  *
- * Every workspace is its own Ripple database (`ripple.db(slug, Reef)`), so
+ * Every workspace is its own Ramose database (`ramose.db(slug, Reef)`), so
  * this catalog is installed once per workspace at creation time, from the
  * browser, under the creator's admin-class JWT. Refs are targeted
- * (`Ripple.Ref(() => User)`) so navigational queries can join through them
+ * (`Ramose.Ref(() => User)`) so navigational queries can join through them
  * (`Issue.assignee.name`).
  */
 
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
 import * as Schema from "effect/Schema";
 
 /** One row per human who has entered the workspace. `sub` is the JWT subject. */
-export const User = Ripple.Namespace("user", {
-  sub: Ripple.Attr(Schema.String, {
+export const User = Ramose.Namespace("user", {
+  sub: Ramose.Attr(Schema.String, {
     unique: "identity",
     doc: "Better Auth user id — the JWT `sub`; the policy resolves principals through it",
   }),
-  name: Ripple.Attr(Schema.String),
-  email: Ripple.Attr(Schema.String),
+  name: Ramose.Attr(Schema.String),
+  email: Ramose.Attr(Schema.String),
 });
 
-export const Label = Ripple.Namespace("label", {
-  name: Ripple.Attr(Schema.String, { unique: "identity" }),
-  color: Ripple.Attr(Schema.String),
+export const Label = Ramose.Namespace("label", {
+  name: Ramose.Attr(Schema.String, { unique: "identity" }),
+  color: Ramose.Attr(Schema.String),
 });
 
-export const Issue = Ripple.Namespace("issue", {
-  title: Ripple.Attr(Schema.String),
-  description: Ripple.Attr(Schema.String),
+export const Issue = Ramose.Namespace("issue", {
+  title: Ramose.Attr(Schema.String),
+  description: Ramose.Attr(Schema.String),
   /** One of {@link STATUSES}. */
-  status: Ripple.Attr(Schema.String),
+  status: Ramose.Attr(Schema.String),
   /** 0 none · 1 low · 2 medium · 3 high · 4 urgent. */
-  priority: Ripple.Attr(Ripple.Long),
+  priority: Ramose.Attr(Ramose.Long),
   /** Fractional order inside a column; drag-and-drop writes midpoints. */
-  rank: Ripple.Attr(Schema.Number),
-  createdAt: Ripple.Attr(Ripple.Instant),
-  creator: Ripple.Attr(Ripple.Ref(() => User)),
-  assignee: Ripple.Attr(Ripple.Ref(() => User)),
-  labels: Ripple.Attr(Ripple.Ref(() => Label), { cardinality: "many" }),
+  rank: Ramose.Attr(Schema.Number),
+  createdAt: Ramose.Attr(Ramose.Instant),
+  creator: Ramose.Attr(Ramose.Ref(() => User)),
+  assignee: Ramose.Attr(Ramose.Ref(() => User)),
+  labels: Ramose.Attr(Ramose.Ref(() => Label), { cardinality: "many" }),
   /** Admin-only field — the policy narrows its `read` (see policy.ts). */
-  privateNote: Ripple.Attr(Schema.String, {
+  privateNote: Ramose.Attr(Schema.String, {
     doc: "visible to the admin class only",
   }),
 });
 
-export const Comment = Ripple.Namespace("comment", {
-  body: Ripple.Attr(Schema.String),
-  at: Ripple.Attr(Ripple.Instant),
-  author: Ripple.Attr(Ripple.Ref(() => User)),
-  issue: Ripple.Attr(Ripple.Ref(() => Issue)),
+export const Comment = Ramose.Namespace("comment", {
+  body: Ramose.Attr(Schema.String),
+  at: Ramose.Attr(Ramose.Instant),
+  author: Ramose.Attr(Ramose.Ref(() => User)),
+  issue: Ramose.Attr(Ramose.Ref(() => Issue)),
 });
 
-export const Reef = Ripple.Catalog({
+export const Reef = Ramose.Catalog({
   user: User,
   label: Label,
   issue: Issue,

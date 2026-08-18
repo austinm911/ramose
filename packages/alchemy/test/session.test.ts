@@ -45,7 +45,7 @@ describe("the handshake", () => {
       token: Effect.succeed(Redacted.make("s3cret")),
     });
     await run(
-      c.ripple.db("a.b-c_1", Movies).q(eids),
+      c.ramose.db("a.b-c_1", Movies).q(eids),
     );
     expect(peer.sockets[0].url).toBe(
       "wss://peer.example.com/db/a.b-c_1/session?token=s3cret",
@@ -57,7 +57,7 @@ describe("the handshake", () => {
     const peer = fakePeer({ answer: () => rows([]) });
     const c = client(peer, { url: "http://localhost:8787" });
     await run(
-      c.ripple.db("movies", Movies).q(eids),
+      c.ramose.db("movies", Movies).q(eids),
     );
     expect(peer.sockets[0].url).toBe("ws://localhost:8787/db/movies/session");
     await c.dispose();
@@ -67,9 +67,9 @@ describe("the handshake", () => {
     const peer = fakePeer({ answer: () => rows([]) });
     const c = client(peer);
 
-    await run(c.ripple.db("movies", Movies).q(names));
-    await run(c.ripple.db("movies", Movies).q(names));
-    await run(c.ripple.db("other", Movies).q(names));
+    await run(c.ramose.db("movies", Movies).q(names));
+    await run(c.ramose.db("movies", Movies).q(names));
+    await run(c.ramose.db("other", Movies).q(names));
 
     expect(peer.sockets).toHaveLength(2);
     expect(peer.sockets.map((s) => s.url)).toEqual([
@@ -89,7 +89,7 @@ describe("reads become frames", () => {
           : rows([[1001]]),
     });
     const c = client(peer);
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
 
     await run(db.q(eids));
     await run(db.asOf(3).history.pull({ id: 17 }, { name: User.name }));
@@ -137,7 +137,7 @@ describe("reads become frames", () => {
     const peer = fakePeer({ answer: () => ({ body: { t: 2, result: null } }) });
     const c = client(peer);
     await run(
-      c.ripple
+      c.ramose
         .db("movies", Movies)
         .pull([":user/name", "Ada"], { name: User.name }),
     );
@@ -148,7 +148,7 @@ describe("reads become frames", () => {
   test("out-of-order replies land on the request that asked", async () => {
     const peer = fakePeer({ answer: () => undefined });
     const c = client(peer);
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
     const build = (n: string) =>
       query(User).where(User.name.eq(n)).select({ name: User.name });
 
@@ -179,7 +179,7 @@ describe("reads become frames", () => {
     });
     const c = client(peer);
     const e = await runFail(
-      c.ripple.db("movies", Movies).q(eids),
+      c.ramose.db("movies", Movies).q(eids),
     );
     expect(e._tag).toBe("QueryBudgetExceeded");
     if (e._tag === "QueryBudgetExceeded") {
@@ -205,7 +205,7 @@ describe("a socket that goes away", () => {
       },
     });
     const c = client(peer);
-    expect(await run(c.ripple.db("movies", Movies).q(eids))).toEqual([
+    expect(await run(c.ramose.db("movies", Movies).q(eids))).toEqual([
       { id: 1001 },
     ]);
     // one frame per socket: the first died with its socket, the retry landed
@@ -221,7 +221,7 @@ describe("a socket that goes away", () => {
     async () => {
       const peer = fakePeer({ answer: () => rows([]), refuseUpgrades: 99 });
       const c = client(peer);
-      expect((await runFail(c.ripple.db("movies", Movies).q(eids)))._tag).toBe(
+      expect((await runFail(c.ramose.db("movies", Movies).q(eids)))._tag).toBe(
         "NetworkError",
       );
       expect(peer.sockets).toHaveLength(6);
@@ -236,7 +236,7 @@ describe("a socket that goes away", () => {
     const c = client(peer, {
       token: Effect.sync(() => Redacted.make(`token-${++issued}`)),
     });
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
 
     expect(await run(db.q(names))).toEqual([{ name: "Ada" }]);
     peer.drop();
@@ -252,7 +252,7 @@ describe("a socket that goes away", () => {
   test("a refused upgrade is retried, and the read lands on the socket after it", async () => {
     const peer = fakePeer({ answer: () => rows([]), refuseUpgrades: 1 });
     const c = client(peer);
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
 
     expect(await run(db.q(names))).toEqual([]);
     expect(peer.sockets).toHaveLength(2);
@@ -281,7 +281,7 @@ describe("Unauthorized is handled in place", () => {
 
     expect(
       await run(
-        c.ripple
+        c.ramose
           .db("movies", Movies)
           .q(names),
       ),
@@ -303,7 +303,7 @@ describe("Unauthorized is handled in place", () => {
     });
     const c = client(peer, { token: Effect.succeed(Redacted.make("stale")) });
     const e = await runFail(
-      c.ripple.db("movies", Movies).q(names),
+      c.ramose.db("movies", Movies).q(names),
     );
     expect(e._tag).toBe("Unauthorized");
     if (e._tag === "Unauthorized") {
@@ -319,7 +319,7 @@ describe("Unauthorized is handled in place", () => {
     });
     const c = client(peer);
     const e = await runFail(
-      c.ripple.db("movies", Movies).q(eids),
+      c.ramose.db("movies", Movies).q(eids),
     );
     expect(e._tag).toBe("Unauthorized");
     expect(peer.frames.map((f) => f.op)).toEqual(["q"]);
@@ -331,7 +331,7 @@ describe("the layer's scope owns the socket", () => {
   test("disposing the runtime closes it, and nothing reopens", async () => {
     const peer = fakePeer({ answer: () => rows([]) });
     const c = client(peer);
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
 
     await run(db.q(names));
     expect(peer.sockets).toHaveLength(1);

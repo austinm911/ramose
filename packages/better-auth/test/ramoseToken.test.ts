@@ -2,11 +2,11 @@
  * The mint-route plugin, against a real Better Auth on the in-memory
  * adapter: session in, `{ token, class, exp }` out, signature verifiable
  * with the JWKS the jwt plugin's own /jwks endpoint publishes — the exact
- * key the peer's `RIPPLE_JWKS_URL` would read.
+ * key the peer's `RAMOSE_JWKS_URL` would read.
  */
 
 import { describe, expect, test } from "bun:test";
-import type { AuthConfig } from "@ripple/alchemy";
+import type { AuthConfig } from "@ramose/alchemy";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import { APIError } from "better-auth/api";
@@ -17,13 +17,13 @@ import {
   type ClassOf,
   classOfRole,
   orgClassOf,
-  rippleToken,
+  ramoseToken,
 } from "../src/index.ts";
 import { memoryDb } from "./support.ts";
 
 const AUTH: AuthConfig = {
   issuer: "test-auth",
-  audience: "ripple:test",
+  audience: "ramose:test",
   ttl: 900,
 };
 
@@ -60,7 +60,7 @@ const makeAuth = (options?: {
               },
             }),
           ]),
-      rippleToken({
+      ramoseToken({
         auth: AUTH,
         policy: options?.policy ?? POLICY,
         classOf: options?.classOf ?? orgClassOf(),
@@ -94,7 +94,7 @@ const statusOf = async (attempt: Promise<unknown>): Promise<number> => {
   }
 };
 
-describe("rippleToken", () => {
+describe("ramoseToken", () => {
   test("mints a verifiable token for an org owner: class admin, exp - iat = ttl", async () => {
     const auth = makeAuth();
     const owner = await signUp(auth, "owner@acme.test");
@@ -103,7 +103,7 @@ describe("rippleToken", () => {
       headers: owner.headers,
     });
 
-    const minted = await auth.api.rippleToken({
+    const minted = await auth.api.ramoseToken({
       body: { db: "acme" },
       headers: owner.headers,
     });
@@ -117,7 +117,7 @@ describe("rippleToken", () => {
       audience: AUTH.audience,
     });
     expect(payload.sub).toBe(owner.userId);
-    expect(payload.ripple).toEqual({ db: "acme", class: "admin" });
+    expect(payload.ramose).toEqual({ db: "acme", class: "admin" });
     expect(payload.exp! - payload.iat!).toBe(AUTH.ttl);
     expect(payload.exp).toBe(minted.exp);
   });
@@ -136,7 +136,7 @@ describe("rippleToken", () => {
       body: { userId: member.userId, organizationId: org!.id, role: "member" },
     });
 
-    const minted = await auth.api.rippleToken({
+    const minted = await auth.api.ramoseToken({
       body: { db: "acme" },
       headers: member.headers,
     });
@@ -144,7 +144,7 @@ describe("rippleToken", () => {
 
     expect(
       await statusOf(
-        auth.api.rippleToken({ body: { db: "acme" }, headers: outsider.headers }),
+        auth.api.ramoseToken({ body: { db: "acme" }, headers: outsider.headers }),
       ),
     ).toBe(403);
   });
@@ -154,14 +154,14 @@ describe("rippleToken", () => {
     const user = await signUp(auth, "user@acme.test");
     expect(
       await statusOf(
-        auth.api.rippleToken({ body: { db: "ghost" }, headers: user.headers }),
+        auth.api.ramoseToken({ body: { db: "ghost" }, headers: user.headers }),
       ),
     ).toBe(403);
   });
 
   test("no session is 401", async () => {
     const auth = makeAuth();
-    expect(await statusOf(auth.api.rippleToken({ body: { db: "acme" } }))).toBe(
+    expect(await statusOf(auth.api.ramoseToken({ body: { db: "acme" } }))).toBe(
       401,
     );
   });
@@ -178,7 +178,7 @@ describe("rippleToken", () => {
     for (const bad of ["has/slash", "has space", "-leading", ""]) {
       expect(
         await statusOf(
-          auth.api.rippleToken({ body: { db: bad }, headers: user.headers }),
+          auth.api.ramoseToken({ body: { db: bad }, headers: user.headers }),
         ),
       ).toBe(400);
     }
@@ -190,12 +190,12 @@ describe("rippleToken", () => {
     const user = await signUp(auth, "user@acme.test");
     expect(
       await statusOf(
-        auth.api.rippleToken({ body: { db: "acme" }, headers: user.headers }),
+        auth.api.ramoseToken({ body: { db: "acme" }, headers: user.headers }),
       ),
     ).toBe(500);
   });
 
-  test("classOf may grant attrs; they ride under ripple.attrs", async () => {
+  test("classOf may grant attrs; they ride under ramose.attrs", async () => {
     const auth = makeAuth({
       classOf: ({ session, db }) => ({
         class: "member",
@@ -203,13 +203,13 @@ describe("rippleToken", () => {
       }),
     });
     const user = await signUp(auth, "user@acme.test");
-    const minted = await auth.api.rippleToken({
+    const minted = await auth.api.ramoseToken({
       body: { db: "acme" },
       headers: user.headers,
     });
     const jwks = createLocalJWKSet(await auth.api.getJwks());
     const { payload } = await jwtVerify(minted.token, jwks);
-    expect(payload.ripple).toEqual({
+    expect(payload.ramose).toEqual({
       db: "acme",
       class: "member",
       attrs: { org: "org-of-acme", email: "user@acme.test" },
@@ -219,15 +219,15 @@ describe("rippleToken", () => {
   test("without the jwt plugin, init fails with a pointed error", async () => {
     const auth = makeAuth({ withJwt: false });
     await expect(
-      auth.api.rippleToken({ body: { db: "acme" } }),
+      auth.api.ramoseToken({ body: { db: "acme" } }),
     ).rejects.toThrow(/requires Better Auth's jwt plugin/);
   });
 
   test("a custom path serves the same endpoint over HTTP", async () => {
-    const auth = makeAuth({ path: "/ripple-token", classOf: () => "member" });
+    const auth = makeAuth({ path: "/ramose-token", classOf: () => "member" });
     const user = await signUp(auth, "user@acme.test");
     const response = await auth.handler(
-      new Request("http://localhost:3000/api/auth/ripple-token", {
+      new Request("http://localhost:3000/api/auth/ramose-token", {
         method: "POST",
         headers: {
           "content-type": "application/json",

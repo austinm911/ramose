@@ -16,7 +16,7 @@ import { describe, expect, test } from "bun:test";
 import * as Cause from "effect/Cause";
 import { StrictMode } from "react";
 import { renderHook, waitFor } from "@testing-library/react";
-import type * as Ripple from "@ripple/alchemy/db";
+import type * as Ramose from "@ramose/alchemy/db";
 import { registerDom, sleep, Todo, Todos, wrapperFor } from "./harness.tsx";
 import { fakePeer, type Frame } from "./peer.ts";
 import { useDb, usePull } from "../src/index.ts";
@@ -24,7 +24,7 @@ import { useDb, usePull } from "../src/index.ts";
 registerDom();
 
 const shape = { title: Todo.title };
-const ada: Ripple.Eid<typeof Todos> = { id: 17 };
+const ada: Ramose.Eid<typeof Todos> = { id: 17 };
 
 /** A peer whose entity and basis the test moves under it. */
 const peerAt = (state: { t: number; entity: unknown }) =>

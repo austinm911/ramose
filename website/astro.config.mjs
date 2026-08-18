@@ -2,15 +2,18 @@
 import starlight from "@astrojs/starlight";
 import { defineConfig } from "astro/config";
 
+// Public canonical origin. The Worker keeps its physical name (`ripple-docs`,
+// see alchemy.run.ts) and its workers.dev hostname; ramose.ai is the custom
+// domain the site is published under.
 const site = "https://ramose.ai";
 
 export default defineConfig({
   site,
   integrations: [
     starlight({
-      title: "Ripple",
+      title: "Ramose",
       description:
-        "Ripple is a typed, realtime database for apps you ship on Cloudflare: TypeScript schema, queries that update themselves, and per-user permissions, all running in your own Cloudflare account.",
+        "Ramose is a typed, realtime database for apps you ship on Cloudflare: TypeScript schema, queries that update themselves, and per-user permissions, all running in your own Cloudflare account.",
       favicon: "/favicon.svg",
       head: [
         {
@@ -27,7 +30,7 @@ export default defineConfig({
           attrs: {
             property: "og:image:alt",
             content:
-              "Ripple — the typed, realtime database for Cloudflare",
+              "Ramose — the typed, realtime database for Cloudflare",
           },
         },
         {
@@ -58,23 +61,26 @@ export default defineConfig({
         ThemeSelect: "./src/components/ThemeSelect.astro",
       },
       expressiveCode: {
-        // Warm-dark, sand foreground, moss-family strings — the brand palette,
-        // not GitHub's blues. Backgrounds are pinned to the site's void below.
-        themes: ["everforest-dark"],
+        // `vesper` — a near-monochrome black theme whose one chromatic accent
+        // is mint/green on white text. It reads as the ramose.ai palette
+        // (deep black surface, green signal) rather than GitHub's blues.
+        // Backgrounds are pinned to the brand's black / dark forest below so
+        // code blocks sit on the same surfaces as the rest of the page.
+        themes: ["vesper"],
         styleOverrides: {
           borderRadius: "0.625rem",
-          borderColor: "#2a2a25",
+          borderColor: "#1c2a21",
           frames: {
-            editorBackground: "#0b0b09",
-            terminalBackground: "#0b0b09",
-            terminalTitlebarBackground: "#131310",
-            editorTabBarBackground: "#131310",
-            editorActiveTabBackground: "#0b0b09",
-            editorActiveTabIndicatorTopColor: "#879b45",
-            editorTabBarBorderBottomColor: "#2a2a25",
+            editorBackground: "#0d0d0d",
+            terminalBackground: "#0d0d0d",
+            terminalTitlebarBackground: "#0b1a10",
+            editorTabBarBackground: "#0b1a10",
+            editorActiveTabBackground: "#0d0d0d",
+            editorActiveTabIndicatorTopColor: "#42d37a",
+            editorTabBarBorderBottomColor: "#1c2a21",
             frameBoxShadowCssValue: "none",
           },
-          codeBackground: "#0b0b09",
+          codeBackground: "#0d0d0d",
           codeFontSize: "0.8125rem",
         },
       },

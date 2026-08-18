@@ -1,6 +1,9 @@
-# Ripple bench results
+# Ramose bench results
 
 Recorded on the dev machine (Bun 1.3, Linux, shared/noisy CPU). Re-run with `bun run bench`.
+
+> The `ripple-worker-…workers.dev` hosts quoted below are historical records of
+> the runs as they happened; the product is now Ramose.
 
 ## M1 — core engine (1,000,025-datom in-memory dataset, 100k people)
 
@@ -45,7 +48,7 @@ with one novelty subscriber receiving every frame:
 verified contiguous after each run (`t` = 1..N, no gaps/dupes).
 
 Through the full local stack (`bun alchemy dev`: Worker → Transactor DO with
-SQLite storage, miniflare emulation; `RIPPLE_URL=… bun run bench/write-do.bench.ts 64 5`):
+SQLite storage, miniflare emulation; `RAMOSE_URL=… bun run bench/write-do.bench.ts 64 5`):
 
 | clients | tx/s | ack p50 | ack p99 | batches | avg batch | max batch |
 |---|---|---|---|---|---|---|
@@ -78,7 +81,7 @@ this machine, i.e. the write ceiling of one logical database is
 logical database (see `docs/RUNBOOK.md`).
 
 Through the full local stack (`bun alchemy dev`, Worker → Transactor DO,
-`bun run bench/write-do.bench.ts <clients> 5`; "off" = `RIPPLE_MAX_BATCH=1`):
+`bun run bench/write-do.bench.ts <clients> 5`; "off" = `RAMOSE_MAX_BATCH=1`):
 
 | clients | group commit tx/s | ack p50 / p99 | avg batch | group commit off tx/s | ack p50 / p99 |
 |---|---|---|---|---|---|
@@ -94,7 +97,7 @@ numbers are the better estimate of the transactor itself.
 
 `bun run bench/read-do.bench.ts 5000 200 8` (5k people indexed into segments,
 200 runs × 8 concurrent per query, warm isolate; client p50 includes local
-HTTP RTT, server p50 is the Worker's own `x-ripple-ms`):
+HTTP RTT, server p50 is the Worker's own `x-ramose-ms`):
 
 | query | client p50 | client p95 | server p50 |
 |---|---|---|---|
@@ -157,7 +160,7 @@ whose Cloudflare edge is **IAD** (`cf-ray …-IAD`; `/db/*/info` reports
 → one DO placement; **no multi-colo data was measured**. The stage was
 destroyed afterwards (`bun alchemy destroy`; `/health` → 404, Cloudflare error 1042 "worker not found"; a re-plan shows nothing left in the stage).
 
-### e2e (`RIPPLE_URL=<url> bun test test/e2e`)
+### e2e (`RAMOSE_URL=<url> bun test test/e2e`)
 
 9/9 pass in ~9 s (schema → transact → query → as-of → history → pull,
 serialized `t` under 40 concurrent clients, replica reconnect under writes,
@@ -176,7 +179,7 @@ the test now polls for it (test-only change).
 
 ### Read path (`bun run bench/read-do.bench.ts` = 5000 people, 200 runs × 8 concurrent, warm)
 
-| query | client p50 | client p95 | server p50 (`x-ripple-ms`) |
+| query | client p50 | client p95 | server p50 (`x-ramose-ms`) |
 |---|---|---|---|
 | point lookup (AVET) | 44.8 ms | 84.2 ms | 37 ms |
 | entity attributes (EAVT) | 44.4 ms | 100.1 ms | 36 ms |
@@ -190,7 +193,7 @@ Peer segment cache over the run: 7,252 peek hits, 10 R2 gets, 0 puts.
 round-trip (~35 ms floor per ack, so 8 clients can only push ~200 tx/s and
 batches stay near 1), and throughput scales with concurrency as group commit
 kicks in (avg batch 1.2 → 6.4); reads are ~45 ms client p50 vs ~4–12 ms
-locally, of which ~37 ms is the server-side `x-ripple-ms` (Worker → replica DO
+locally, of which ~37 ms is the server-side `x-ramose-ms` (Worker → replica DO
 basis fetch + edge query, i.e. an intra-Cloudflare hop that the single local
 isolate does not pay) and the rest is WAN RTT.
 
@@ -200,7 +203,7 @@ Change under test: the Worker's `/query` `/pull` `/entity` now **forward the
 read to the nearest `QueryReplicaDO` (`POST /query`)** — same `replicaId` /
 `locationHint` as the old `fetchBasis` — instead of fetching a basis and
 running datalog in the Worker (SPEC §8). Public API unchanged;
-`x-ripple-ms` is still Worker wall time for the read. Hypothesis: the ~37 ms
+`x-ramose-ms` is still Worker wall time for the read. Hypothesis: the ~37 ms
 server p50 in the section above was the extra basis hop.
 
 Worker host: `ripple-worker-dev-box-zobj7ehwvxnrrft3.tvanhens.workers.dev`
@@ -210,7 +213,7 @@ Cloudflare 1042 "worker not found").
 
 ### e2e
 
-`RIPPLE_URL=<url> bun test test/e2e` → **9/9 pass** in 9.8 s (write smoke 300 tx in 1.17 s → 256 tx/s, max batch 110). Unit suite incl. the new Worker forwarding test: 84/84.
+`RAMOSE_URL=<url> bun test test/e2e` → **9/9 pass** in 9.8 s (write smoke 300 tx in 1.17 s → 256 tx/s, max batch 110). Unit suite incl. the new Worker forwarding test: 84/84.
 
 ### Write path (unchanged code path; `bun run bench/write-do.bench.ts <clients> 5`)
 
@@ -223,7 +226,7 @@ Cloudflare 1042 "worker not found").
 
 ### Read path (`bun run bench/read-do.bench.ts` = 5000 people, 200 runs × 8 concurrent, warm)
 
-| query | previous CF (Worker executes): server p50 | **replica executes: client p50** | **client p95** | **server p50 (`x-ripple-ms`)** |
+| query | previous CF (Worker executes): server p50 | **replica executes: client p50** | **client p95** | **server p50 (`x-ramose-ms`)** |
 |---|---|---|---|---|
 | point lookup (AVET) | 37 ms | 80.0 ms | 186.3 ms | **73 ms** |
 | entity attributes (EAVT) | 36 ms | 76.3 ms | 136.3 ms | **68 ms** |
@@ -231,8 +234,8 @@ Cloudflare 1042 "worker not found").
 | count by city (aggregate) | 38 ms | 83.1 ms | 101.3 ms | **76 ms** |
 
 Peer segment cache: all zeros (the Worker no longer touches segments; the
-replica's own R2/tier stats now travel back as `x-ripple-r2-gets` /
-`x-ripple-cache-hits`).
+replica's own R2/tier stats now travel back as `x-ramose-r2-gets` /
+`x-ramose-cache-hits`).
 
 Diagnostic extra run, **same data, 100 runs × 1 concurrent** (to separate
 per-request cost from queueing inside the DO):
@@ -265,16 +268,16 @@ Worker-local execution restored (`fetchBasis` → `dbFromBasis` → `query`/`pul
 in the Worker; the replica-executed forwarding above is gone). Two knobs,
 switchable **per request by header** so one deploy covers all variants:
 
-- `x-ripple-replica-hint: wnam | enam` — DO location hint; the hint is now part
+- `x-ramose-replica-hint: wnam | enam` — DO location hint; the hint is now part
   of the replica id (`${db}|${region}|${hint}|${shard}`) so `enam` creates a
   fresh DO in the east instead of reusing the wnam one. Default: `hintFor(continent)` = `wnam` for NA (old behavior).
-- `x-ripple-cache-basis: 0 | 1` — module-scope basis cache in the Worker isolate,
+- `x-ramose-cache-basis: 0 | 1` — module-scope basis cache in the Worker isolate,
   keyed `db|hint`, invalidated by a write through this Worker or a 5 s TTL. Default 0.
 
 Client passes both via `headers`; `bench/read-do.bench.ts` reads
-`RIPPLE_REPLICA_HINT` / `RIPPLE_CACHE_BASIS`. Worker host
+`RAMOSE_REPLICA_HINT` / `RAMOSE_CACHE_BASIS`. Worker host
 `ripple-worker-dev-box-dig2mjnjv4e53lyb.tvanhens.workers.dev`; client and Worker
-in **IAD** (cf-ray `…-IAD`, `x-ripple-colo: IAD` on every query) — one colo, **no
+in **IAD** (cf-ray `…-IAD`, `x-ramose-colo: IAD` on every query) — one colo, **no
 multi-colo data**. Destroyed afterwards (`/health` → 404).
 
 e2e on defaults (Worker executes, hint wnam, cache off): **9/9 pass** (write smoke 300 tx in 1.20 s → 251 tx/s, max batch 80). Unit suite 81/81 (the forwarding test was removed with the forwarding).
@@ -286,7 +289,7 @@ e2e on defaults (Worker executes, hint wnam, cache off): **9/9 pass** (write smo
 | 8 | 160 | 35 ms | 95 ms | 152 ms | 0 | 1176 / 6 / 1.37 |
 | 64 | 879 | 59 ms | 130 ms | 241 ms | 0 | 937 / 56 / 9.48 |
 
-### Read path (`bun run bench/read-do.bench.ts 5000 200 8` and `5000 100 1`, warm; server p50 = `x-ripple-ms`)
+### Read path (`bun run bench/read-do.bench.ts 5000 200 8` and `5000 100 1`, warm; server p50 = `x-ramose-ms`)
 
 Baseline (first deploy, Worker executes, hint wnam, no cache): server p50 **36–39 ms** at conc 8, **38–41 ms** at conc 1. Replica-executed (second deploy): 68–76 ms at conc 8.
 
@@ -333,7 +336,7 @@ contention in one isolate). Cache-miss refills are cheaper here (7 ms vs ~40 ms
 per the A/baseline conc-1 numbers) so C is the better default combination, but
 the cache is what moves the number, not the hint.
 
-Summary (server p50, `x-ripple-ms`):
+Summary (server p50, `x-ramose-ms`):
 
 | variant | execution | hint | basis cache | conc 1 | conc 8 |
 |---|---|---|---|---|---|
@@ -351,19 +354,19 @@ earlier B/C rows used opt-in headers and a 5 s TTL; this deploy adds the
 knobs below and measures them per request **on one deploy** (no redeploys
 between variants). Worker host
 `ripple-worker-dev-box-uax23drlds3vbl4b.tvanhens.workers.dev`; client and Worker
-in **IAD** (`cf-ray …-IAD`, `x-ripple-colo: IAD`).
+in **IAD** (`cf-ray …-IAD`, `x-ramose-colo: IAD`).
 
 Knobs (`packages/worker/src/peer.ts`; header per request, env for the default):
 
-- `x-ripple-cache-basis: 0|1` (env `RIPPLE_CACHE_BASIS`) — isolate basis cache keyed `db|hint`.
-- `x-ripple-cache-mode: ttl|peer` (env `RIPPLE_CACHE_MODE`) — `ttl` = today's 5 s
+- `x-ramose-cache-basis: 0|1` (env `RAMOSE_CACHE_BASIS`) — isolate basis cache keyed `db|hint`.
+- `x-ramose-cache-mode: ttl|peer` (env `RAMOSE_CACHE_MODE`) — `ttl` = today's 5 s
   expiry (control); `peer` = no freshness timer: a transact through this isolate
-  invalidates, `x-ripple-min-t: <t>` (client's last seen t) refetches when the cached
+  invalidates, `x-ramose-min-t: <t>` (client's last seen t) refetches when the cached
   basis is behind (polls a lagging replica up to 5×20 ms), a 10 min safety TTL only bounds memory.
-- `x-ripple-replica-hint: wnam|enam|…|auto` (env `RIPPLE_REPLICA_HINT`) — `auto` = colo→hint
+- `x-ramose-replica-hint: wnam|enam|…|auto` (env `RAMOSE_REPLICA_HINT`) — `auto` = colo→hint
   (IAD/EWR/ATL/… → `enam`, SJC/LAX/SEA/… → `wnam`); the hint is part of the replica DO id.
-- Diagnostics on every read: `x-ripple-basis-hit`, `x-ripple-basis-reason` (hit|off|miss|expired|min-t),
-  `x-ripple-basis-calls`, `x-ripple-basis-behind`, `x-ripple-cache-mode`.
+- Diagnostics on every read: `x-ramose-basis-hit`, `x-ramose-basis-reason` (hit|off|miss|expired|min-t),
+  `x-ramose-basis-calls`, `x-ramose-basis-behind`, `x-ramose-cache-mode`.
 
 Defaults for this deploy = today's: cache off, mode ttl, hint = continent (`wnam` from IAD).
 e2e on defaults: **9/9** (write smoke 300 tx in 1.39 s → 215 tx/s, max batch 117). Unit suite 91/91.
@@ -375,7 +378,7 @@ e2e on defaults: **9/9** (write smoke 300 tx in 1.39 s → 215 tx/s, max batch 1
 | 8 | 233 | 32 ms | 40 ms | 91 ms | 0 | 1694 / 8 / 1.38 |
 | 64 | 802 | 72 ms | 123 ms | 269 ms | 0 | 597 / 64 / 13.87 |
 
-### Read path (`bun run bench/read-do.bench.ts 5000 200 8` and `5000 100 1`, warm; server p50 = `x-ripple-ms`)
+### Read path (`bun run bench/read-do.bench.ts 5000 200 8` and `5000 100 1`, warm; server p50 = `x-ramose-ms`)
 
 Server p50 per query is identical across the four queries in every row except
 where noted (join at conc 8), so rows are collapsed:
@@ -388,7 +391,7 @@ where noted (join at conc 8), so rows are collapsed:
 | **D2** | cache + peer invalidation, no min-t | cache 1, mode peer, hint wnam | **0 ms** | **0 ms** | 6.5–7.7 ms | 7.5–8.2 ms | 800/800 / 400/400 |
 | **D3** | D2 + colo hint enam | cache 1, mode peer, hint enam | **0 ms** (join 4 ms) | **0 ms** | 6.8–7.6 ms (join 17.6) | 6.7–8.4 ms | 800/800 / 400/400 |
 | A replay (D3 miss path) | cache off, hint enam | cache 0, hint enam | — | **12–13 ms** | — | 20–21 ms | 0 / 0 (off) |
-| **D4** | D2 + `x-ripple-min-t` = t of the bench's last write | cache 1, mode peer, hint wnam, min-t | **0 ms** | **0 ms** | 6.7–9.3 ms | 6.6–6.9 ms | 800/800 / 400/400 |
+| **D4** | D2 + `x-ramose-min-t` = t of the bench's last write | cache 1, mode peer, hint wnam, min-t | **0 ms** | **0 ms** | 6.7–9.3 ms | 6.6–6.9 ms | 800/800 / 400/400 |
 | D4 (enam) | same with hint enam | cache 1, mode peer, hint enam, min-t | **0 ms** (join 3 ms) | **0 ms** | 6.8–7.6 ms (join 15.9) | 7.1–9.4 ms | 800/800 / 400/400 |
 
 Notes:
@@ -453,16 +456,16 @@ dimension where they differ (staleness on isolates that did not write, without
 min-t) could not be measured and is strictly worse for `peer` (10 min vs 5 s).
 `ttl` + `min-t` (min-t is honored in every mode) gives the same read-your-writes
 as `peer` with a 5 s bound for everyone else, so **`ttl` stays the default mode;
-`peer` remains opt-in** (`x-ripple-cache-mode: peer` / `RIPPLE_CACHE_MODE=peer`)
+`peer` remains opt-in** (`x-ramose-cache-mode: peer` / `RAMOSE_CACHE_MODE=peer`)
 until a multi-isolate measurement exists.
 
 ### Defaults flipped (fifth deploy of the same stage, no code changes but the defaults)
 
-`x-ripple-cache-basis` default 1, `x-ripple-replica-hint` default `auto` (colo→hint;
-`continent` restores the old NA→wnam), `x-ripple-cache-mode` default `ttl`. e2e on no
+`x-ramose-cache-basis` default 1, `x-ramose-replica-hint` default `auto` (colo→hint;
+`continent` restores the old NA→wnam), `x-ramose-cache-mode` default `ttl`. e2e on no
 headers: **9/9** (write smoke 300 tx in 1.20 s → 250 tx/s). Unit suite 91/91.
 
-`bun run bench/read-do.bench.ts` with **no headers / no env** (the new default; `x-ripple-replica-hint: enam`, `x-ripple-cache-basis: 1`, `x-ripple-cache-mode: ttl` on every response):
+`bun run bench/read-do.bench.ts` with **no headers / no env** (the new default; `x-ramose-replica-hint: enam`, `x-ramose-cache-basis: 1`, `x-ramose-cache-mode: ttl` on every response):
 
 | query | conc 8 client p50 | conc 8 client p95 | conc 8 server p50 | hits/refetch | conc 1 client p50 | conc 1 client p95 | conc 1 server p50 | hits/refetch |
 |---|---|---|---|---|---|---|---|---|

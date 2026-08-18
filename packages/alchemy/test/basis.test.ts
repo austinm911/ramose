@@ -65,7 +65,7 @@ describe("db.basis()", () => {
     const peer = peerAt(state);
     const c = client(peer, { token: Effect.succeed(redacted("s3cret")) });
 
-    expect(await run(c.ripple.db("movies", Movies).basis())).toEqual({ t: 42 });
+    expect(await run(c.ramose.db("movies", Movies).basis())).toEqual({ t: 42 });
     expect(peer.calls).toHaveLength(1);
     expect(peer.calls[0]).toMatchObject({
       method: "GET",
@@ -80,7 +80,7 @@ describe("db.basis()", () => {
     const peer = peerAt({ t: 42, rows: [] });
     const c = client(peer);
 
-    expect(await run(c.ripple.db("movies", Movies).asOf(5).basis())).toEqual({
+    expect(await run(c.ramose.db("movies", Movies).asOf(5).basis())).toEqual({
       t: 5,
     });
     expect(peer.calls).toHaveLength(0);
@@ -95,7 +95,7 @@ describe("db.basis()", () => {
     const peer = peerAt(state);
     const c = client(peer);
 
-    expect(await run(c.ripple.db("movies", Movies).history.basis())).toEqual({
+    expect(await run(c.ramose.db("movies", Movies).history.basis())).toEqual({
       t: 7,
     });
     expect(peer.calls).toHaveLength(1);
@@ -110,7 +110,7 @@ describe("db.basis()", () => {
     const c = client(peer);
 
     const failure = await run(
-      Effect.flip(c.ripple.db("movies", Movies).basis()),
+      Effect.flip(c.ramose.db("movies", Movies).basis()),
     );
     expect(failure._tag).toBe("DatabaseNotFound");
 
@@ -121,7 +121,7 @@ describe("db.basis()", () => {
     const state = { t: 5, rows: [row("Ada")] };
     const peer = peerAt(state);
     const c = client(peer);
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
     const live = collect(db.live(names));
     await settle();
     expect(live.seen).toEqual([[{ name: "Ada" }]]);

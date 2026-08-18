@@ -1,6 +1,6 @@
-# Contributing to Ripple
+# Contributing to Ramose
 
-Development notes for people changing Ripple itself. Consumer docs live at
+Development notes for people changing Ramose itself. Consumer docs live at
 [ramose.ai](https://ramose.ai)
 (source in `website/`); the short path is [`README.md`](README.md). In-repo
 design notes stay in `docs/` (`API.md`, `AUTH_LAYER.md`, `QUERY.md`,
@@ -20,10 +20,10 @@ port and credential caveats.
 
 ## End-to-end tests
 
-`test/e2e` runs against a live peer and skips when `RIPPLE_URL` is unset:
+`test/e2e` runs against a live peer and skips when `RAMOSE_URL` is unset:
 
 ```sh
-RIPPLE_URL=http://localhost:1337 bun run test:e2e   # local alchemy dev
+RAMOSE_URL=http://localhost:1337 bun run test:e2e   # local alchemy dev
 bun run test:e2e:cf                                 # real Cloudflare (below)
 ```
 
@@ -38,7 +38,7 @@ check.
 1. Deploys a uniquely named Alchemy stage (`e2e-<epoch>-<rand>`, or
    `ALCHEMY_STAGE` if set) with `ALCHEMY_STATE=local` and `CI=1`
 2. Waits for `/health`, then for Durable Objects via `/db/e2e-warmup/info`
-3. Runs `RIPPLE_URL=<url> bun run test:e2e`
+3. Runs `RAMOSE_URL=<url> bun run test:e2e`
 4. Destroys the stage (set `KEEP_STAGE=1` to leave it up)
 
 Required credentials:
@@ -47,14 +47,14 @@ Required credentials:
 |---|---|---|---|
 | `CLOUDFLARE_API_TOKEN` | secret | yes | Workers / DOs / R2 / Analytics Engine |
 | `CLOUDFLARE_ACCOUNT_ID` | variable or secret | yes | Account to deploy into |
-| `RIPPLE_TOKEN` | secret | no | Only if the peer is deployed with bearer auth |
+| `RAMOSE_TOKEN` | secret | no | Only if the peer is deployed with bearer auth |
 
 Token permission groups (account-scoped), at minimum: **Workers Scripts Write**
 (covers Durable Objects), **Workers R2 Storage Write**, **Account Settings
 Read**. Grant **Account Analytics Read/Edit** if a deploy reports an Analytics
 Engine permission error.
 
-The throwaway deploy is an open peer (no `RIPPLE_TOKEN` / `RIPPLE_POLICY`); the
+The throwaway deploy is an open peer (no `RAMOSE_TOKEN` / `RAMOSE_POLICY`); the
 stage name is unguessable and torn down at the end of the run.
 
 ## CI
@@ -69,9 +69,12 @@ stage name is unguessable and torn down at the end of the run.
 The e2e, docs-preview, and docs-publish jobs use the GitHub **Development**
 environment (`environment: Development`). Put `CLOUDFLARE_API_TOKEN` there as
 a secret and `CLOUDFLARE_ACCOUNT_ID` as a variable (or secret). Optional:
-`RIPPLE_DOCS_DOMAIN` (variable) overrides the production docs hostname
+`RAMOSE_DOCS_DOMAIN` (variable) overrides the production docs hostname
 (default `ramose.ai`; the zone must already exist in the account, and the
-token must be able to read the zone and edit its Workers). Cursor Cloud Agents
+token must be able to read the zone and edit its Workers). The existing GitHub
+variable may still be named `RIPPLE_DOCS_DOMAIN` — `docs-publish.yml` maps
+whichever name is set onto `RAMOSE_DOCS_DOMAIN` for the deploy, so rename the
+variable at your convenience. Cursor Cloud Agents
 need the same names in the Cursor secrets panel — see
 [`.cursor/CLOUD.md`](.cursor/CLOUD.md).
 
@@ -103,11 +106,12 @@ Store and edge-preview token scopes beyond that minimal set.
 
 Every push to `master` (or `main`) publishes `website/` as Alchemy stage
 `prod`: an assets-only Worker named `ripple-docs` serving
-[ramose.ai](https://ramose.ai) (the default domain in `website/alchemy.run.ts`;
-Alchemy manages the DNS record and edge certificate on the `ramose.ai` zone).
-The workers.dev URL
+[ramose.ai](https://ramose.ai) — the default domain in `website/alchemy.run.ts`
+(the zone is onboarded in the account; Alchemy manages the DNS record and edge
+certificate). The physical Worker name is pinned so redeploys adopt the same
+script, and its workers.dev hostname
 ([ripple-docs.tvanhens.workers.dev](https://ripple-docs.tvanhens.workers.dev))
-stays up as well. Optional: `RIPPLE_DOCS_DOMAIN` (variable) overrides the
+stays up as well. Optional: `RAMOSE_DOCS_DOMAIN` (variable) overrides the
 hostname — on any stage, which is how the domain-attach path can be tested
 against a scratch stage without touching prod. Re-runs update the same Worker
 (`.alchemy/` is cached; the pinned name plus `--adopt` recovers from a

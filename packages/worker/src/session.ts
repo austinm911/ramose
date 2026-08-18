@@ -1,6 +1,6 @@
 /** Session socket: Worker-accepted WS, frames dispatched into existing HTTP routes. */
 
-import type { Principal } from "@ripple/core";
+import type { Principal } from "@ramose/core";
 
 // ---- wire ------------------------------------------------------------------
 
@@ -41,20 +41,20 @@ export interface TickFrame {
   t: number;
 }
 
-/** Diagnostic response headers worth carrying back on a reply (the `x-ripple-*` set the routes set). */
+/** Diagnostic response headers worth carrying back on a reply (the `x-ramose-*` set the routes set). */
 export const META_HEADERS: readonly string[] = [
-  "x-ripple-ms",
-  "x-ripple-r2-gets",
-  "x-ripple-cache-hits",
-  "x-ripple-basis-t",
-  "x-ripple-basis-hit",
-  "x-ripple-basis-reason",
-  "x-ripple-basis-calls",
-  "x-ripple-basis-behind",
-  "x-ripple-replica-hint",
-  "x-ripple-cache-basis",
-  "x-ripple-cache-mode",
-  "x-ripple-colo",
+  "x-ramose-ms",
+  "x-ramose-r2-gets",
+  "x-ramose-cache-hits",
+  "x-ramose-basis-t",
+  "x-ramose-basis-hit",
+  "x-ramose-basis-reason",
+  "x-ramose-basis-calls",
+  "x-ramose-basis-behind",
+  "x-ramose-replica-hint",
+  "x-ramose-cache-basis",
+  "x-ramose-cache-mode",
+  "x-ramose-colo",
 ];
 
 // ---- seams -----------------------------------------------------------------
@@ -130,9 +130,9 @@ export interface PlanError {
 
 const JSON_CT = { "content-type": "application/json" };
 
-/** `x-ripple-min-t` when the caller carries a fence, nothing otherwise. */
+/** `x-ramose-min-t` when the caller carries a fence, nothing otherwise. */
 const minTHeader = (v: unknown): Record<string, string> =>
-  typeof v === "number" && Number.isFinite(v) && v >= 0 ? { "x-ripple-min-t": String(v) } : {};
+  typeof v === "number" && Number.isFinite(v) && v >= 0 ? { "x-ramose-min-t": String(v) } : {};
 
 const isPlanError = (p: SessionPlan | PlanError): p is PlanError => (p as PlanError).error !== undefined;
 

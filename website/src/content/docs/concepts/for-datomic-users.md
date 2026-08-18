@@ -1,13 +1,13 @@
 ---
 title: For Datomic users
-description: The bones are familiar — an immutable fact store, one writer, views into the past. Here is the mapping, and where Ripple deliberately differs.
+description: The bones are familiar — an immutable fact store, one writer, views into the past. Here is the mapping, and where Ramose deliberately differs.
 ---
 
-You do not need this page to use Ripple. It exists for readers who already
+You do not need this page to use Ramose. It exists for readers who already
 know [Datomic](https://www.datomic.com), because the shapes will look
 familiar and the differences are worth stating plainly.
 
-Ripple takes Datomic's core ideas — an immutable store of facts, a single
+Ramose takes Datomic's core ideas — an immutable store of facts, a single
 transactor, time as a view rather than an export, pull patterns as the
 projection language — and re-homes them on Cloudflare primitives: a Durable
 Object as the writer, more Durable Objects as read replicas, and R2 as the
@@ -16,27 +16,27 @@ create-database call.
 
 ## The mapping
 
-| Datomic | Ripple |
+| Datomic | Ramose |
 | --- | --- |
 | datom `[e a v t]` | the same, and the same total order on `t` |
-| schema transacted as data | a **catalog** of TypeScript values; `Ripple.Database` or `db.install()` upserts it |
+| schema transacted as data | a **catalog** of TypeScript values; `Ramose.Database` or `db.install()` upserts it |
 | `d/transact` with tx-data | `db.transact(function* (tx) { … })` — a generator of `add` / `retract` / `retractEntity` |
 | tempids resolved in the transactor | `tx.entity()` — but the resolved ids are **not** returned; query for them |
 | `:db.unique/identity` upsert, lookup refs | `{ unique: "identity" }`, `[User.email, "…"]` |
 | `:db.cardinality/many` | `{ cardinality: "many" }` |
 | `d/pull` | `db.pull(eid, shape)`, same nesting, `.optional` instead of a `:default` |
-| Datalog query | a typed navigational builder — `Ripple.query(Todo).where(…).orderBy(…).limit(n).select(…)`, run by `db.q` / `db.live`; there is no string-variable escape hatch today |
+| Datalog query | a typed navigational builder — `Ramose.query(Todo).where(…).orderBy(…).limit(n).select(…)`, run by `db.q` / `db.live`; there is no string-variable escape hatch today |
 | `d/as-of`, `d/history` | `db.asOf(t)`, `db.history` — pure functions to a read-only handle |
 | transaction entity for annotations | `report.txEid` |
 | `d/filter` | a compiled **policy**, evaluated per request against JWT claims |
 
 ## Where it differs
 
-- **A database is a name.** `ripple.db("acme", Catalog)` is a pure function
+- **A database is a name.** `ramose.db("acme", Catalog)` is a pure function
   call: no connection, no request, no provisioning. Per-tenant databases cost
   nothing to name.
 - **`asOf` takes a `t`, not a date.** And its reach is bounded: the storage
-  layer keeps the newest `RIPPLE_RETAIN_ROOTS` roots (20 by default) and
+  layer keeps the newest `RAMOSE_RETAIN_ROOTS` roots (20 by default) and
   garbage-collects the segments behind older ones. History is not infinite —
   see [Time travel](/concepts/time-travel/).
 - **Queries are typed, and smaller.** `where` (with `or` / `not` and

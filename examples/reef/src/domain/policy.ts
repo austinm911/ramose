@@ -1,9 +1,9 @@
 /**
  * The workspace policy (docs/AUTH_LAYER.md): rules over catalog attributes and
  * JWT claims, compiled at deploy into the peer Worker's env. One policy serves
- * every workspace — the JWT's `ripple.db` binds a token to one of them.
+ * every workspace — the JWT's `ramose.db` binds a token to one of them.
  *
- * Classes (carried as `ripple.class`, minted from the Better Auth org role):
+ * Classes (carried as `ramose.class`, minted from the Better Auth org role):
  *
  *   admin   workspace owners/admins — bypasses every rule (core `isAdmin`),
  *           which is also what lets the creator run `db.install()` and read
@@ -16,12 +16,12 @@
  * only when identical, so a member can never forge `issue.creator`.
  */
 
-import * as Ripple from "@ripple/alchemy";
+import * as Ramose from "@ramose/alchemy";
 import { allShapes } from "./queries.ts";
 import { Comment, Issue, Reef, User } from "./schema.ts";
 import { CLASSES } from "./shared.ts";
 
-const P = Ripple.Policy;
+const P = Ramose.Policy;
 
 const anyone = P.or(P.class("admin"), P.class("member"), P.class("viewer"));
 const editor = P.or(P.class("admin"), P.class("member"));
@@ -70,7 +70,7 @@ export const policy = P.policy(Reef, {
 });
 
 /**
- * The wire JSON for `RIPPLE_POLICY`. Compiling against the app's pull shapes
+ * The wire JSON for `RAMOSE_POLICY`. Compiling against the app's pull shapes
  * makes "a masked attribute pulled as required" a deploy-time error.
  */
 export const compiledPolicy = (): string =>

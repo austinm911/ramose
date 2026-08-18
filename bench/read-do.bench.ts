@@ -1,32 +1,32 @@
 /**
- * M7 read-path bench against a running Ripple deployment: warm query latency
+ * M7 read-path bench against a running Ramose deployment: warm query latency
  * through the Worker (replica basis + edge datalog over cached segments).
  *
- *   RIPPLE_URL=http://localhost:1337 bun run bench/read-do.bench.ts [people=5000] [runs=200] [concurrency=8]
+ *   RAMOSE_URL=http://localhost:1337 bun run bench/read-do.bench.ts [people=5000] [runs=200] [concurrency=8]
  *
  * Reports client-observed p50/p95 (includes local HTTP RTT) and the server-side
- * `x-ripple-ms` p50 (query execution only). Multi-colo scaling cannot be
+ * `x-ramose-ms` p50 (query execution only). Multi-colo scaling cannot be
  * measured against a local emulator; see bench/RESULTS.md.
  */
-import { attrMap, Peer } from "../test/support/rippleHttp.ts";
+import { attrMap, Peer } from "../test/support/ramoseHttp.ts";
 import { fmt, percentile } from "./lib.ts";
 
-const url = process.env.RIPPLE_URL;
+const url = process.env.RAMOSE_URL;
 if (!url) {
-  console.error("set RIPPLE_URL");
+  console.error("set RAMOSE_URL");
   process.exit(1);
 }
 const people = Number(process.argv[2] ?? 5000);
 const runs = Number(process.argv[3] ?? 200);
 const conc = Number(process.argv[4] ?? 8);
 const headers: Record<string, string> = {};
-if (process.env.RIPPLE_REPLICA_HINT) headers["x-ripple-replica-hint"] = process.env.RIPPLE_REPLICA_HINT;
-if (process.env.RIPPLE_CACHE_BASIS) headers["x-ripple-cache-basis"] = process.env.RIPPLE_CACHE_BASIS;
-if (process.env.RIPPLE_CACHE_MODE) headers["x-ripple-cache-mode"] = process.env.RIPPLE_CACHE_MODE;
-// RIPPLE_MIN_T=1: every read carries x-ripple-min-t = t of the last write this bench made (read fence)
-const fence = process.env.RIPPLE_MIN_T === "1";
-const client = new Peer(url, { token: process.env.RIPPLE_TOKEN, headers });
-console.log(`variant: hint=${process.env.RIPPLE_REPLICA_HINT ?? "(default)"} cacheBasis=${process.env.RIPPLE_CACHE_BASIS ?? "(default)"} cacheMode=${process.env.RIPPLE_CACHE_MODE ?? "(default)"} minT=${fence ? "on" : "off"}`);
+if (process.env.RAMOSE_REPLICA_HINT) headers["x-ramose-replica-hint"] = process.env.RAMOSE_REPLICA_HINT;
+if (process.env.RAMOSE_CACHE_BASIS) headers["x-ramose-cache-basis"] = process.env.RAMOSE_CACHE_BASIS;
+if (process.env.RAMOSE_CACHE_MODE) headers["x-ramose-cache-mode"] = process.env.RAMOSE_CACHE_MODE;
+// RAMOSE_MIN_T=1: every read carries x-ramose-min-t = t of the last write this bench made (read fence)
+const fence = process.env.RAMOSE_MIN_T === "1";
+const client = new Peer(url, { token: process.env.RAMOSE_TOKEN, headers });
+console.log(`variant: hint=${process.env.RAMOSE_REPLICA_HINT ?? "(default)"} cacheBasis=${process.env.RAMOSE_CACHE_BASIS ?? "(default)"} cacheMode=${process.env.RAMOSE_CACHE_MODE ?? "(default)"} minT=${fence ? "on" : "off"}`);
 const db = client.db(`readbench-${Date.now().toString(36)}`);
 
 await db.transact([

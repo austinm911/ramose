@@ -7,11 +7,13 @@
 # website/alchemy.run.ts, so a cache miss still adopts the existing Worker
 # (`--adopt`) instead of minting a new workers.dev hostname.
 #
-# The site serves at https://ramose.ai — the default domain in
-# website/alchemy.run.ts (the zone exists in the Cloudflare account; Alchemy
-# manages the DNS record and certificate). Set RIPPLE_DOCS_DOMAIN as a
-# variable on the Development environment to override the hostname. The
-# workers.dev URL (https://ripple-docs.tvanhens.workers.dev) stays up as well.
+# Custom domain: the site serves at https://ramose.ai — the default domain in
+# website/alchemy.run.ts (the zone is onboarded in the Cloudflare account;
+# Alchemy manages the DNS record and certificate). Set RAMOSE_DOCS_DOMAIN as a
+# variable on the Development environment to override the hostname;
+# RIPPLE_DOCS_DOMAIN is still read as a fallback so an already-configured repo
+# variable keeps working. The workers.dev URL
+# (https://ripple-docs.tvanhens.workers.dev) stays up as well.
 #
 # Credentials come from the GitHub Environment "Development" — same as
 # docs-preview.yml and e2e-cloudflare.yml; see CONTRIBUTING.md.
@@ -53,7 +55,7 @@ jobs:
           CI: "1"
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          RIPPLE_DOCS_DOMAIN: ${{ vars.RIPPLE_DOCS_DOMAIN }}
+          RAMOSE_DOCS_DOMAIN: ${{ vars.RAMOSE_DOCS_DOMAIN || vars.RIPPLE_DOCS_DOMAIN }}
           ALCHEMY_STATE: local
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then

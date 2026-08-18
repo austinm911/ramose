@@ -7,7 +7,7 @@
  */
 
 import * as Data from "effect/Data";
-import { QueryBudgetError } from "@ripple/core";
+import { QueryBudgetError } from "@ramose/core";
 
 /** Intermediate relation would blow the memory budget → 413. */
 export class QueryBudget extends Data.TaggedError("QueryBudget")<{ message: string; code: string; clause: string; cells: number; limit: number }> {}

@@ -5,10 +5,10 @@
 
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll } from "bun:test";
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
 import * as Schema from "effect/Schema";
 import type { ReactNode } from "react";
-import { RippleProvider } from "../src/index.ts";
+import { RamoseProvider } from "../src/index.ts";
 import type { FakePeer } from "./peer.ts";
 
 /** Call at file top level, before any test renders. */
@@ -21,20 +21,20 @@ export const registerDom = (): void => {
   });
 };
 
-export const Todo = Ripple.Namespace("todo", {
-  title: Ripple.Attr(Schema.String),
-  slug: Ripple.Attr(Schema.String, { unique: "identity" }),
+export const Todo = Ramose.Namespace("todo", {
+  title: Ramose.Attr(Schema.String),
+  slug: Ramose.Attr(Schema.String, { unique: "identity" }),
 });
-export const Todos = Ripple.Catalog({ todo: Todo });
-export const titles = Ripple.query(Todo).select({ title: Todo.title });
+export const Todos = Ramose.Catalog({ todo: Todo });
+export const titles = Ramose.query(Todo).select({ title: Todo.title });
 
 /** A provider over the fake peer, as a `renderHook` / `render` wrapper. */
 export const wrapperFor =
   (peer: FakePeer, url = "https://peer.example.com") =>
   ({ children }: { children?: ReactNode }) => (
-    <RippleProvider url={url} fetch={peer.fetch} webSocket={peer.webSocket}>
+    <RamoseProvider url={url} fetch={peer.fetch} webSocket={peer.webSocket}>
       {children}
-    </RippleProvider>
+    </RamoseProvider>
   );
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

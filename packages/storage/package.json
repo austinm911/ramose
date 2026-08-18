@@ -1,10 +1,10 @@
 {
-  "name": "@ripple/storage",
+  "name": "@ramose/storage",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Ripple storage adapters for Cloudflare: R2-backed content-addressed node store (memory → Cache API / SQLite → R2), root records, log chunks.",
+  "description": "Ramose storage adapters for Cloudflare: R2-backed content-addressed node store (memory → Cache API / SQLite → R2), root records, log chunks.",
   "main": "src/index.ts",
   "exports": { ".": "./src/index.ts", "./*": "./src/*" },
-  "dependencies": { "@ripple/core": "workspace:*" }
+  "dependencies": { "@ramose/core": "workspace:*" }
 }

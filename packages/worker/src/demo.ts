@@ -1,6 +1,6 @@
 /** Tiny demo app served at `/`: notes CRUD with an as-of history view. */
 export const DEMO_HTML = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Ripple demo</title>
+<html lang="en"><head><meta charset="utf-8"><title>Ramose demo</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
  body{font:15px/1.4 system-ui,sans-serif;max-width:860px;margin:2rem auto;padding:0 1rem;color:#1a1a1a}
@@ -12,7 +12,7 @@ export const DEMO_HTML = `<!doctype html>
  .muted{color:#777;font-size:.9em} pre{background:#f7f7f7;padding:.6rem;border-radius:6px;overflow:auto;font-size:.85em}
  .row{display:flex;gap:1rem;align-items:center} .row input[type=range]{flex:1}
 </style></head><body>
-<h1>Ripple <small>immutable, Datomic-inspired, on Cloudflare</small></h1>
+<h1>Ramose <small>immutable, Datomic-inspired, on Cloudflare</small></h1>
 <div class="row"><label>Database <input id="db" value="demo" style="width:10em"></label>
 <button onclick="installSchema()">Install schema</button> <button onclick="refresh()">Refresh</button>
 <span id="status" class="muted"></span></div>

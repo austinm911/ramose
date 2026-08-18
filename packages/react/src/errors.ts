@@ -1,7 +1,7 @@
 /**
  * `errorMessage` — the one-liner every toast wants.
  *
- * All of Ripple's `DbError`s carry a human-readable `message` and a `_tag`
+ * All of Ramose's `DbError`s carry a human-readable `message` and a `_tag`
  * discriminator, so `e.message ?? e._tag ?? String(e)` covers the typed
  * failures, bare tagged errors, and anything else that leaks out of an
  * Effect. This is its one home; apps should not restate it.

@@ -139,8 +139,8 @@ const built = layer(options);
 /** Getting a `Databases` cannot fail, and needs nothing else provided. */
 type _layer = Expect<Equal<typeof built, Layer.Layer<Databases, never, never>>>;
 
-declare const ripple: DatabasesShape;
-const movies = ripple.db("movies", Movies);
+declare const ramose: DatabasesShape;
+const movies = ramose.db("movies", Movies);
 type _dbIsDb = Expect<Equal<typeof movies, Db<typeof Movies>>>;
 type _dbCatalog = Expect<Equal<(typeof movies)["catalog"], typeof Movies>>;
 type _dbName = Expect<Equal<(typeof movies)["name"], string>>;
@@ -149,7 +149,7 @@ type _dbName = Expect<Equal<(typeof movies)["name"], string>>;
 const Other = Catalog({
   tag: Namespace("tag", { label: Attr(Schema.String) }),
 });
-const other = ripple.db("other", Other);
+const other = ramose.db("other", Other);
 type _notSame = Expect<Equal<Equal<typeof movies, typeof other>, false>>;
 
 // ── asOf / history preserve the catalog and drop the write half ────────────
@@ -226,7 +226,7 @@ type _caughtErr = Expect<Equal<Effect.Error<typeof caught>, never>>;
 // ── §2 of docs/API.md, name by name ────────────────────────────────────────
 //
 // `db-portable.test.ts` pins that the barrel exports *these names and no
-// others*; `surface.test.ts` does the same for `@ripple/alchemy`. What is left
+// others*; `surface.test.ts` does the same for `@ramose/alchemy`. What is left
 // is the signature each table row promises, which is a compile-time claim.
 
 /** `ClientOptions` — url, a token in either form, and the two injection seams. */

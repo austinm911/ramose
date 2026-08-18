@@ -105,7 +105,7 @@ describe("q and live are two terminals over one query", () => {
     const state = { t: 5, rows: [row("Ada")] };
     const peer = peerAt(state);
     const c = client(peer);
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
 
     expect(await run(db.q(names))).toEqual([{ name: "Ada" }]);
     const live = collect(db.live(names));
@@ -124,7 +124,7 @@ describe("q and live are two terminals over one query", () => {
     const state = { t: 5, rows: [row("Ada"), row("Cy")] };
     const peer = peerAt(state);
     const c = client(peer);
-    const live = collect(c.ripple.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).live(names));
     await settle();
 
     // exactly what the peer sent, reshaped — the client drops nothing
@@ -143,7 +143,7 @@ describe("the basis is the wake", () => {
     const state = { t: 5, rows: [row("Ada")] };
     const peer = peerAt(state);
     const c = client(peer);
-    const live = collect(c.ripple.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).live(names));
     await settle();
     expect(live.seen).toHaveLength(1);
 
@@ -164,7 +164,7 @@ describe("the basis is the wake", () => {
     const state = { t: 5, rows: [row("Ada")] };
     const peer = peerAt(state);
     const c = client(peer);
-    const live = collect(c.ripple.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).live(names));
     await settle();
     expect(live.seen).toHaveLength(1);
 
@@ -192,7 +192,7 @@ describe("the basis is the wake", () => {
     const state = { t: 5, rows: [row("Ada")], ackT: 30 };
     const peer = peerAt(state);
     const c = client(peer);
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
     const live = collect(db.live(names));
     await settle();
     expect(live.seen).toHaveLength(1);
@@ -220,7 +220,7 @@ describe("the basis is the wake", () => {
     const state = { t: 5, rows: [row("Ada")] };
     const peer = peerAt(state);
     const c = client(peer);
-    const live = collect(c.ripple.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).live(names));
     await settle();
     const frames = peer.frames.length;
 
@@ -239,7 +239,7 @@ describe("live survives the network", () => {
     const state = { t: 5, rows: [row("Ada")] };
     const peer = peerAt(state);
     const c = client(peer);
-    const live = collect(c.ripple.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).live(names));
     await settle();
     expect(live.seen).toHaveLength(1);
     expect(peer.sockets).toHaveLength(1);
@@ -269,7 +269,7 @@ describe("live survives the network", () => {
     };
     const peer = peerAt(state);
     const c = client(peer);
-    const live = collect(c.ripple.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).live(names));
 
     await settle();
     expect(live.seen).toHaveLength(0);
@@ -302,7 +302,7 @@ describe("live survives the network", () => {
     const c = client(peer, {
       token: Effect.sync(() => Redacted.make(`token-${++issued}`)),
     });
-    const live = collect(c.ripple.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).live(names));
     await settle();
 
     // the swap happened on the same socket, and the stream never saw it
@@ -322,7 +322,7 @@ describe("live survives the network", () => {
       answer: () => ({ status: 401, body: { error: "no" } }),
     });
     const c = client(peer, { token: Effect.succeed(Redacted.make("stale")) });
-    const live = collect(c.ripple.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).live(names));
     await settle();
 
     expect(live.done).toBe(true);
@@ -337,7 +337,7 @@ describe("live survives the network", () => {
       answer: () => ({ status: 400, body: { error: "unknown attribute" } }),
     });
     const c = client(peer);
-    const live = collect(c.ripple.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).live(names));
     await settle();
 
     expect(live.done).toBe(true);
@@ -352,7 +352,7 @@ describe("a pinned view has no news", () => {
     const state = { t: 5, rows: [row("Ada")] };
     const peer = peerAt(state);
     const c = client(peer);
-    const live = collect(c.ripple.db("movies", Movies).asOf(3).live(names));
+    const live = collect(c.ramose.db("movies", Movies).asOf(3).live(names));
     await settle();
 
     expect(live.seen).toEqual([[{ name: "Ada" }]]);
@@ -369,7 +369,7 @@ describe("a pinned view has no news", () => {
     const state = { t: 5, rows: [row("Ada")] };
     const peer = peerAt(state);
     const c = client(peer);
-    const live = collect(c.ripple.db("movies", Movies).history.live(names));
+    const live = collect(c.ramose.db("movies", Movies).history.live(names));
     await settle();
 
     expect(live.seen).toHaveLength(1);

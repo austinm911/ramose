@@ -1,5 +1,5 @@
 /**
- * @ripple/core — pure TypeScript engine (no Cloudflare dependencies).
+ * @ramose/core — pure TypeScript engine (no Cloudflare dependencies).
  */
 export * from "./datom.ts";
 export * from "./bytes.ts";

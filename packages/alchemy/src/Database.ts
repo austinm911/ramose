@@ -1,12 +1,12 @@
 /**
- * `Ripple.Database` — install this catalog on this name, at deploy.
+ * `Ramose.Database` — install this catalog on this name, at deploy.
  *
- * It is **not** a cloud object. A Ripple database is a *name*: the server
+ * It is **not** a cloud object. A Ramose database is a *name*: the server
  * Worker routes `/db/:name/*` to `idFromName(name)` and the first transaction
  * materializes it, so there is nothing to create and nothing to delete. What
  * this resource owns is the one thing a name does need done once — the
  * catalog. `reconcile` runs `db.install()`, the same idempotent transaction
- * `ripple.db(name, catalog).install()` runs at tenant-creation time; `delete`
+ * `ramose.db(name, catalog).install()` runs at tenant-creation time; `delete`
  * does nothing at all, because forgetting the resource must not erase a log.
  *
  * It replaces the `Alchemy.Action` + local-transport idiom: the provider talks
@@ -14,17 +14,17 @@
  * `alchemy dev` is the local dev server's URL for free.
  *
  * @resource
- * @product Ripple
+ * @product Ramose
  * @category Storage & Databases
  * @section Installing a catalog
  * @example The one place a catalog lands
  * ```typescript
- * const RippleWorker = Cloudflare.Worker("RippleWorker", { main: "@ripple/worker" });
- * export const Server = Ripple.Server("Ripple", { worker: RippleWorker });
- * export const TodosDb = Ripple.Database("todos", { server: Server, catalog: Todos });
+ * const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: "@ramose/worker" });
+ * export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
+ * export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
  * ```
  *
- * One resource is not one tenant: db-per-tenant is `ripple.db(tenant, Todos)`
+ * One resource is not one tenant: db-per-tenant is `ramose.db(tenant, Todos)`
  * plus `db.install()` when the tenant is created. Declare a `Database` for the
  * names you know at deploy time.
  */
@@ -42,20 +42,20 @@ import type { Server } from "./Server.ts";
 
 /** @internal */
 export const isDatabase = (value: unknown): value is Database =>
-  isResourceOfType(value, "Ripple.Database");
+  isResourceOfType(value, "Ramose.Database");
 
 /** @internal The public spelling is the argument of {@link Database}. */
 export type DatabaseProps = {
   /** The server that serves this name. */
   server: Server;
-  /** The catalog to install. `Ripple.Catalog({ … })`, shared with the app. */
+  /** The catalog to install. `Ramose.Catalog({ … })`, shared with the app. */
   catalog: Catalog.Any;
   /** The database name. @default the resource's logical id */
   name?: string;
 };
 
 export type Database = Resource<
-  "Ripple.Database",
+  "Ramose.Database",
   DatabaseProps,
   {
     /** The name the catalog was installed on. */
@@ -69,12 +69,12 @@ export type Database = Resource<
   Providers
 >;
 
-const DatabaseResource = Resource<Database>("Ripple.Database");
+const DatabaseResource = Resource<Database>("Ramose.Database");
 
 /**
  * Declare a database name and install its catalog.
  *
- * `server` may be given as the `Ripple.Server(…)` *declaration* — a yieldable
+ * `server` may be given as the `Ramose.Server(…)` *declaration* — a yieldable
  * Effect, not a resource instance — exactly as `Server` takes a
  * `Cloudflare.Worker` declaration: `yield*`ing it here is what makes the
  * engine order the install after the server and substitute the real URL at
@@ -126,7 +126,7 @@ const resolveServer = (
 /**
  * The install itself: one idempotent transaction over plain HTTPS.
  *
- * An illegal name never reaches the server — `ripple.db(name, catalog)` fails
+ * An illegal name never reaches the server — `ramose.db(name, catalog)` fails
  * the operation with `InvalidRequest` — and a server with no URL is the same
  * kind of mistake, so it fails the deploy rather than the first request.
  */
@@ -136,7 +136,7 @@ const install = Effect.fn(function* (id: string, props: DatabaseProps) {
   if (url === undefined || url === "") {
     return yield* Effect.fail(
       new InvalidRequest({
-        message: `ripple: the server for database ${JSON.stringify(name)} has no URL — deploy it before installing a catalog on it`,
+        message: `ramose: the server for database ${JSON.stringify(name)} has no URL — deploy it before installing a catalog on it`,
       }),
     );
   }

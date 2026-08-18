@@ -35,11 +35,11 @@ const server = (attrs: {
   token?: Redacted.Redacted<string> | undefined;
 }): Server =>
   ({
-    LogicalId: "Ripple",
-    FQN: "app/Ripple",
-    Type: "Ripple.Server",
+    LogicalId: "Ramose",
+    FQN: "app/Ramose",
+    Type: "Ramose.Server",
     url: Output.literal(attrs.url),
-    workerName: Output.literal("ripple-peer"),
+    workerName: Output.literal("ramose-peer"),
     token: Output.literal(attrs.token),
   }) as unknown as Server;
 
@@ -81,7 +81,7 @@ describe("the service-binding source", () => {
   test("dispatches through env[LogicalId] against the synthetic origin", async () => {
     const seen: string[] = [];
     const env = {
-      Ripple: {
+      Ramose: {
         fetch: (url: string) => {
           seen.push(url);
           return Promise.resolve(new Response("{}"));
@@ -114,11 +114,11 @@ describe("the service-binding source", () => {
       ),
     );
     expect(died).toMatchObject({ die: true });
-    expect((died as { message: string }).message).toMatch(/no service binding "Ripple"/);
+    expect((died as { message: string }).message).toMatch(/no service binding "Ramose"/);
 
     await expect(
-      source.fetch("https://ripple.internal/db/movies/info", { method: "GET", headers: {} }),
-    ).rejects.toThrow(/no service binding "Ripple"/);
+      source.fetch("https://ramose.internal/db/movies/info", { method: "GET", headers: {} }),
+    ).rejects.toThrow(/no service binding "Ramose"/);
   });
 
   test("only the token is bound — a server pins no database name", async () => {
@@ -127,10 +127,10 @@ describe("the service-binding source", () => {
       token: Redacted.make("s3cret"),
     });
     const { bound, layer } = runtime();
-    const source = await resolve(makeBindingSource({ Ripple: {} }, srv), layer);
+    const source = await resolve(makeBindingSource({ Ramose: {} }, srv), layer);
 
-    expect(Object.keys(bound).sort()).toEqual(["Ripple_TOKEN"]);
-    expect(Object.keys(bound)).not.toContain("Ripple_DB");
+    expect(Object.keys(bound).sort()).toEqual(["Ramose_TOKEN"]);
+    expect(Object.keys(bound)).not.toContain("Ramose_DB");
     const endpoint = await resolve(source.endpoint, layer);
     expect(Redacted.value(endpoint.token as Redacted.Redacted<string>)).toBe("s3cret");
   });
@@ -147,8 +147,8 @@ describe("the HTTP source", () => {
     expect(endpoint.url).toBe("https://peer.example.com");
     // no token configured → the empty string, which the client reads as "none"
     expect(endpoint.token).toBe("");
-    expect(Object.keys(bound).sort()).toEqual(["Ripple_TOKEN", "Ripple_URL"]);
-    expect(Object.keys(bound)).not.toContain("Ripple_DB");
+    expect(Object.keys(bound).sort()).toEqual(["Ramose_TOKEN", "Ramose_URL"]);
+    expect(Object.keys(bound)).not.toContain("Ramose_DB");
   });
 });
 
@@ -174,7 +174,7 @@ describe("registration happens at bind time", () => {
       layer,
     );
 
-    expect(Object.keys(bound).sort()).toEqual(["Ripple_TOKEN", "Ripple_URL"]);
+    expect(Object.keys(bound).sort()).toEqual(["Ramose_TOKEN", "Ramose_URL"]);
   });
 
   test("an Action captures the outputs during init and reads them at apply", async () => {
@@ -187,7 +187,7 @@ describe("registration happens at bind time", () => {
         Effect.provide(Layer.succeed(RuntimeContext, makeCaptureContext(captures) as never)),
       ),
     );
-    expect(Object.keys(captures).sort()).toEqual(["Ripple_TOKEN", "Ripple_URL"]);
+    expect(Object.keys(captures).sort()).toEqual(["Ramose_TOKEN", "Ramose_URL"]);
 
     // apply: the engine resolves what was captured; the accessors read it back.
     const resolved = Object.fromEntries(
@@ -216,7 +216,7 @@ describe("registration happens at bind time", () => {
         Effect.provide(blind),
       ),
     );
-    expect(error).toMatch(/no value bound under "Ripple_URL"/);
+    expect(error).toMatch(/no value bound under "Ramose_URL"/);
   });
 });
 
@@ -272,7 +272,7 @@ describe("the service binding ServerBinding lowers", () => {
     const bindings = (bound[0] as { bindings: { type: string; name: string }[] }).bindings;
     expect(bindings).toHaveLength(1);
     expect(bindings[0].type).toBe("service");
-    expect(bindings[0].name).toBe("Ripple");
+    expect(bindings[0].name).toBe("Ramose");
   });
 
   test("a bare-URL worker is refused — a service binding needs a script name", async () => {

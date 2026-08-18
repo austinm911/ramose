@@ -33,7 +33,7 @@ describe("the credential on the wire", () => {
       answer: () => ({ body: { t: 2, root: 2, result: [] } }),
     });
     const c = client(peer, { token: Effect.succeed(Redacted.make("s3cret")) });
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
 
     await run(db.q(names));
     await run(db.transact(function* (tx) { yield* tx.retractEntity(1); }));
@@ -56,7 +56,7 @@ describe("the credential on the wire", () => {
     });
     const c = client(peer);
     const e = await runFail(
-      c.ripple.db("movies", Movies).transact(function* (tx) {
+      c.ramose.db("movies", Movies).transact(function* (tx) {
         yield* tx.retractEntity(1);
       }),
     );
@@ -110,7 +110,7 @@ describe("a token swap is not a reconnect", () => {
 
     const seen: unknown[] = [];
     const fiber = Effect.runFork(
-      Stream.runForEach(c.ripple.db("movies", Movies).live(names), (rows) =>
+      Stream.runForEach(c.ramose.db("movies", Movies).live(names), (rows) =>
         Effect.sync(() => {
           seen.push(rows);
         }),

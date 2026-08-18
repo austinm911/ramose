@@ -8,7 +8,7 @@ import {
   HttpError,
   isTransientCf,
   Peer,
-} from "./rippleHttp.ts";
+} from "./ramoseHttp.ts";
 
 const html404 = `<!DOCTYPE html><html><head><title>Page not found</title></head>
 <body><h1>There is nothing here yet</h1>${"<svg></svg>".repeat(200)}</body></html>`;
