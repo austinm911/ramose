@@ -145,9 +145,7 @@ const source = Ripple.token.jwt(() =>
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ workspace: "acme" }),
-  })
-    .then((r) => r.json())
-    .then((body) => body.token),
+  }).then((r) => r.json()),
 );
 
 const runtime = ManagedRuntime.make(
@@ -155,11 +153,15 @@ const runtime = ManagedRuntime.make(
 );
 ```
 
-- `exp` comes from the JWT payload itself — `mint` returns nothing but the
-  token. A payload with no `exp` is minted once and refreshed only by
-  `source.invalidate()` (sign-out, tenant switch).
+- `mint` resolves to the JWT string, or to any object carrying it under
+  `token` — a mint route's JSON body (`{ token, class, exp }`) passes through
+  unwrapped.
+- `exp` comes from the JWT payload itself, never a side channel. A payload
+  with no `exp` is minted once and refreshed only by `source.invalidate()`
+  (sign-out, tenant switch).
 - `source.claims()` is the decoded payload — **not verified**, UI hints only:
-  show `ripple.class` for role-aware chrome, never trust it for access.
+  show `ripple.class` for role-aware chrome, never trust it for access. It is
+  a peek at the cache, not a refresh.
 - A `mint` that throws surfaces as `NetworkError`: `transact` fails typed and
   a standing `live` retries with its usual backoff. Throw an
   `Unauthorized` from `mint` to make `live` fail terminally instead.

@@ -43,7 +43,9 @@ export interface TokenSource {
   readonly token: Effect.Effect<Redacted.Redacted<string>, DbError>;
   /**
    * The current payload, decoded, NOT verified — UI hints only
-   * (`ripple.class`, `sub`, `exp`). Mints if nothing is cached.
+   * (`ripple.class`, `sub`, `exp`). Mints if nothing is cached; otherwise it
+   * answers from the cache as-is, even when the cached token is due for a
+   * refresh — this is a peek, never a refresh.
    */
   readonly claims: () => Promise<Claims>;
   /** Drop the cache: sign-out, tenant switch. The next read mints. */
@@ -116,8 +118,18 @@ interface Cached {
   readonly refreshAtMs: number | undefined;
 }
 
+/**
+ * What `mint` resolves to: the JWT itself, or any object carrying it under
+ * `token` — so a mint route's `r.json()` (`{ token, class, exp }`) passes
+ * straight through without unwrapping.
+ */
+export type Minted = string | { readonly token: string };
+
+const unwrap = (minted: Minted): string =>
+  typeof minted === "string" ? minted : minted.token;
+
 const jwt = (
-  mint: () => Promise<string>,
+  mint: () => Promise<Minted>,
   options?: { readonly refreshMargin?: Duration.Input },
 ): TokenSource => {
   const marginMs = Duration.toMillis(options?.refreshMargin ?? "2 minutes");
@@ -150,7 +162,8 @@ const jwt = (
     const attempt = Promise.resolve()
       .then(() => mint())
       .then(
-        (value) => {
+        (minted) => {
+          const value = unwrap(minted);
           const claims = decodeClaims(value);
           const entry: Cached = {
             value,
@@ -210,9 +223,7 @@ const staticSource = (value: string): TokenSource => ({
  *
  * ```typescript
  * const source = Ripple.token.jwt(() =>
- *   fetch("/api/ripple-token", { method: "POST" })
- *     .then((r) => r.json())
- *     .then((body) => body.token),
+ *   fetch("/api/ripple-token", { method: "POST" }).then((r) => r.json()),
  * );
  * const runtime = ManagedRuntime.make(Ripple.layer({ url, token: source }));
  * ```
@@ -222,10 +233,11 @@ export const token: {
    * A refreshing JWT source. `mint` is called lazily on the first read,
    * single-flight, and again once the cached token is within `refreshMargin`
    * (default 2 minutes) of its `exp`. A payload with no `exp` is static:
-   * minted once, refreshed only by `invalidate()`.
+   * minted once, refreshed only by `invalidate()`. `mint` may resolve to the
+   * JWT or to `{ token }` — a mint route's JSON body passes through.
    */
   readonly jwt: (
-    mint: () => Promise<string>,
+    mint: () => Promise<Minted>,
     options?: { readonly refreshMargin?: Duration.Input },
   ) => TokenSource;
   /** Sugar for a fixed credential. */

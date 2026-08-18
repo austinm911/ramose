@@ -27,7 +27,7 @@ Vite app needs no alias. Import it as `* as Ripple`.
 | `layer` | `(options: ClientOptions) => Layer<Databases>` — for Effect users |
 | `Databases` | `Context.Service<Databases, { db<C>(name: string, catalog: C): Db<C> }>` — the key *is* the client |
 | `ClientOptions` | `{ url: string; token?: Effect<Redacted<string>, DbError> \| TokenSource; fetch?: typeof fetch; webSocket?: typeof WebSocket }` |
-| `token.jwt` | `(mint: () => Promise<string>, options?: { refreshMargin?: Duration.Input }) => TokenSource` — lazy first mint, cached, single-flight; re-mints inside `refreshMargin` (default 2 minutes) of the JWT's `exp` |
+| `token.jwt` | `(mint: () => Promise<string \| { token: string }>, options?: { refreshMargin?: Duration.Input }) => TokenSource` — lazy first mint, cached, single-flight; re-mints inside `refreshMargin` (default 2 minutes) of the JWT's `exp`. A mint route's JSON body (`{ token, … }`) passes through unwrapped |
 | `token.static` | `(value: string) => TokenSource` — a fixed credential |
 | `TokenSource` | `{ token: Effect<Redacted<string>, DbError>; claims(): Promise<Claims>; invalidate(): void }` |
 | `Claims` | the JWT payload, decoded (base64url), **not** verified — UI hints only (`sub`, `exp`, `ripple.class`, …) |

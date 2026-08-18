@@ -111,6 +111,23 @@ describe("token.jwt mints lazily and caches", () => {
     await c.dispose();
   });
 
+  test("mint may resolve to the route's body: { token } passes through", async () => {
+    const jwt = jwtOf({
+      exp: Math.floor((Date.now() + 3_600_000) / 1000),
+      ripple: { db: "acme", class: "member" },
+    });
+    // what reef's /api/ripple-token actually returns
+    const source = token.jwt(async () => ({
+      token: jwt,
+      class: "member",
+      exp: 0,
+    }));
+
+    expect(await read(source)).toBe(jwt);
+    // the claims come from the JWT payload, not the body's side channel
+    expect((await source.claims()).ripple?.class).toBe("member");
+  });
+
   test("concurrent readers share one in-flight mint", async () => {
     let mints = 0;
     const source = token.jwt(async () => {
@@ -178,6 +195,32 @@ describe("token.jwt refreshes on the payload's exp", () => {
     }
   });
 
+  test("refreshMargin is the caller's knob", async () => {
+    try {
+      setSystemTime(new Date(BASE));
+      let mints = 0;
+      // ten-minute token, five-minute margin: refresh at +5 minutes
+      const source = token.jwt(
+        async () => {
+          mints += 1;
+          return jwtOf({ exp: (BASE + 600_000) / 1000 + mints });
+        },
+        { refreshMargin: "5 minutes" },
+      );
+
+      await read(source);
+      setSystemTime(new Date(BASE + 299_000));
+      await read(source);
+      expect(mints).toBe(1);
+
+      setSystemTime(new Date(BASE + 301_000));
+      await read(source);
+      expect(mints).toBe(2);
+    } finally {
+      setSystemTime();
+    }
+  });
+
   test("a payload with no exp is static until invalidate()", async () => {
     try {
       setSystemTime(new Date(BASE));
@@ -217,6 +260,27 @@ describe("token.jwt refreshes on the payload's exp", () => {
     const second = await read(source);
     expect(mints).toBe(2);
     expect(second).not.toBe(first);
+  });
+
+  test("invalidate() during an in-flight mint keeps that result out of the cache", async () => {
+    let mints = 0;
+    const source = token.jwt(async () => {
+      mints += 1;
+      await Bun.sleep(20);
+      return jwtOf({
+        exp: Math.floor((Date.now() + 3_600_000) / 1000),
+        n: mints,
+      });
+    });
+
+    // the old tenant's mint is in flight when the tenant switches
+    const inflight = read(source);
+    source.invalidate();
+    await inflight;
+
+    // the settled mint did not resurrect into the cache: the next read mints
+    await read(source);
+    expect(mints).toBe(2);
   });
 });
 
@@ -277,6 +341,27 @@ describe("failure typing on the wire", () => {
       "the auth endpoint is down",
     );
     // the mint failed before the wire: nothing reached the peer
+    expect(peer.calls).toHaveLength(0);
+
+    await c.dispose();
+  });
+
+  test("a mint that throws Unauthorized fails transact with that tag", async () => {
+    const source = token.jwt(async () => {
+      throw new Unauthorized({ message: "session revoked" });
+    });
+    const peer = fakePeer();
+    const c = client(peer, { token: source });
+    const db = c.ripple.db("movies", Movies);
+
+    const error = await runFail(
+      db.transact(function* (tx) {
+        const ada = yield* tx.entity();
+        yield* ada.add(User.name, "Ada");
+      }),
+    );
+    // the DbError passes through untouched — no NetworkError wrapping
+    expect((error as { _tag?: string })._tag).toBe("Unauthorized");
     expect(peer.calls).toHaveLength(0);
 
     await c.dispose();
