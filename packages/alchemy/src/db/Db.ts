@@ -29,6 +29,7 @@ import {
   type NavQueryBuilder,
 } from "./NavQuery.ts";
 import type { AnyNamespace } from "./Namespace.ts";
+import type { SessionPrincipal } from "./session.ts";
 import {
   type IdentPullPattern,
   lowerPullPattern,
@@ -76,11 +77,27 @@ export interface Wire {
   ): Effect.Effect<unknown, DbError>;
   /** `GET /db/:name/info` — where the basis is. Always HTTPS: cheap, authoritative. */
   info(name: string): Effect.Effect<unknown, DbError>;
+  /**
+   * Who this connection is: `/info`'s `principal`, cached per session
+   * generation — re-read on reconnect, and never cached while `eid` is `null`
+   * (the row may be written at any moment).
+   */
+  principal(name: string): Effect.Effect<SessionPrincipal, DbError>;
   /** This database's session, opened lazily; `undefined` with no `WebSocket`. */
   session(name: string): Session | undefined;
 }
 
 // ── the public shapes ──────────────────────────────────────────────────────
+
+/**
+ * Who a session is, as the peer reports it: the principal's entity — `null`
+ * until the policy's principal attribute has a row for this `sub` — and its
+ * class (`"admin"` on a peer with no policy configured).
+ */
+export interface DbPrincipal<C extends AnyCatalog = AnyCatalog> {
+  readonly eid: Eid<C> | null;
+  readonly class: string;
+}
 
 /** What a committed transaction reports back. `dbAfter` reads your own writes. */
 export interface TxReport<C extends AnyCatalog = AnyCatalog> {
@@ -145,6 +162,15 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
 }
 
 export interface Db<C extends AnyCatalog = AnyCatalog> extends ReadDb<C> {
+  /**
+   * Who this session is — the peer resolves `sub → eid` at its end, so no
+   * query is needed to learn your own entity. `eid` is `null` while the
+   * principal's row does not exist yet; a `null` is never cached, so re-read
+   * it after transacting the row. A non-`null` answer is cached per session
+   * generation and re-read on reconnect.
+   */
+  principal(): Effect.Effect<DbPrincipal<C>, DbError>;
+
   /**
    * The one write. The generator's yielded Effects compose as they do in
    * `Effect.gen`, so a failure in the body aborts before anything is sent.
@@ -497,6 +523,18 @@ export const makeDb = <C extends AnyCatalog>(
 
   return {
     ...makeRead(wire, name, catalog, view, bad),
+
+    principal: () =>
+      bad !== undefined
+        ? Effect.fail<DbError>(bad)
+        : Effect.suspend(() => wire.principal(name)).pipe(
+            Effect.map(
+              (p): DbPrincipal<C> => ({
+                eid: p.eid === null ? null : makeEid<C>(p.eid),
+                class: p.class,
+              }),
+            ),
+          ),
 
     transact: ((body: (tx: Tx<C>) => unknown) =>
       Effect.suspend(() => {

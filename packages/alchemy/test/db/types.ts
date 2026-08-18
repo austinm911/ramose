@@ -23,6 +23,7 @@ import {
   type DatabasesShape,
   type Db,
   type DbError,
+  type DbPrincipal,
   type Eid,
   type Entity,
   type EntityRef,
@@ -261,12 +262,12 @@ void _viaEffect;
 /** `Databases` — the key *is* the client, and it has exactly one method. */
 type _databasesShape = Expect<Equal<keyof DatabasesShape, "db">>;
 
-/** `Db<C>` is `ReadDb<C>` plus `transact` and `install`, and nothing else. */
+/** `Db<C>` is `ReadDb<C>` plus `principal`, `transact` and `install`, and nothing else. */
 type _readDbKeys = Expect<
   Equal<keyof ReadDb<typeof Movies>, "name" | "catalog" | "q" | "pull" | "livePull" | "live" | "basis" | "asOf" | "history">
 >;
 type _dbKeys = Expect<
-  Equal<Exclude<keyof Db<typeof Movies>, keyof ReadDb<typeof Movies>>, "transact" | "install">
+  Equal<Exclude<keyof Db<typeof Movies>, keyof ReadDb<typeof Movies>>, "principal" | "transact" | "install">
 >;
 type _dbExtendsRead = Expect<Extends<Db<typeof Movies>, ReadDb<typeof Movies>>>;
 
@@ -274,6 +275,15 @@ type _dbExtendsRead = Expect<Extends<Db<typeof Movies>, ReadDb<typeof Movies>>>;
 const installed = movies.install();
 type _install = Expect<
   Equal<typeof installed, Effect.Effect<TxReport<typeof Movies>, DbError>>
+>;
+
+/** `db.principal()` — who am I; the eid is typed against this db's catalog. */
+const me = movies.principal();
+type _principal = Expect<
+  Equal<typeof me, Effect.Effect<DbPrincipal<typeof Movies>, DbError>>
+>;
+type _principalEid = Expect<
+  Equal<DbPrincipal<typeof Movies>["eid"], Eid<typeof Movies> | null>
 >;
 
 /** `db.pull` — `null` when a required field is missing, never `undefined`. */

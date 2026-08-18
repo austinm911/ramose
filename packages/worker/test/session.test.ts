@@ -612,6 +612,41 @@ describe("the auth frame", () => {
     expect(subs).toEqual(["ada"]);
   });
 
+  test("with a describe seam the ack names the swapped principal", async () => {
+    const socket = new FakeSocket();
+    const { dispatch } = fakeDispatch();
+    const s = session(socket, {
+      dispatch,
+      principal: who("ada"),
+      authenticate: async () => who("bob"),
+      describe: async (p) => ({ eid: p.sub === "bob" ? 42 : null, class: p.class }),
+    });
+    await s.onMessage(JSON.stringify({ id: 1, op: "auth", token: "next" }));
+    expect(socket.replies()).toEqual([{ id: 1, ok: true, principal: { eid: 42, class: "member" } }]);
+  });
+
+  test("the ack says { eid: null } when the principal's row does not exist, and when describe fails", async () => {
+    const socket = new FakeSocket();
+    const { dispatch } = fakeDispatch();
+    let describes = 0;
+    const s = session(socket, {
+      dispatch,
+      principal: who("ada"),
+      authenticate: async () => who("bob"),
+      describe: async () => {
+        if (++describes === 1) return { eid: null, class: "member" };
+        throw new Error("replica unavailable");
+      },
+    });
+    await s.onMessage(JSON.stringify({ id: 1, op: "auth", token: "next" }));
+    // a transient describe error must not fail the swap: ack, just without an entity
+    await s.onMessage(JSON.stringify({ id: 2, op: "auth", token: "next" }));
+    expect(socket.replies()).toEqual([
+      { id: 1, ok: true, principal: { eid: null, class: "member" } },
+      { id: 2, ok: true, principal: { eid: null, class: "member" } },
+    ]);
+  });
+
   test("a session with no authenticate cannot re-authenticate", async () => {
     const socket = new FakeSocket();
     const { dispatch } = fakeDispatch();

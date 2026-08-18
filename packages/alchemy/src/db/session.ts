@@ -53,6 +53,23 @@ export interface Reply {
   readonly headers?: Record<string, string> | undefined;
 }
 
+/**
+ * Who this session is, as the peer's `auth` ack reports it: the principal's
+ * entity (`null` when the principal attribute has no row yet) and class.
+ */
+export interface SessionPrincipal {
+  readonly eid: number | null;
+  readonly class: string;
+}
+
+/** The ack's `principal` field, parsed; `undefined` when the peer sent none. */
+const sessionPrincipal = (raw: unknown): SessionPrincipal | undefined => {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const p = raw as { eid?: unknown; class?: unknown };
+  if (typeof p.class !== "string") return undefined;
+  return { eid: typeof p.eid === "number" ? p.eid : null, class: p.class };
+};
+
 export interface SessionOptions {
   /**
    * Peer base URL — `http(s)://…` is rewritten to `ws(s)://…`. A thunk,
@@ -77,6 +94,12 @@ export interface Session {
   readonly t: number;
   /** Bumped on every (re)connect, so a waiter can tell a reconnect from a tick. */
   readonly generation: number;
+  /**
+   * The peer's latest word on who this socket is — captured from the `auth`
+   * ack of an in-place swap, cleared when the socket drops. `undefined` until
+   * an ack carries one (the initial principal rides the upgrade unanswered).
+   */
+  readonly principal: SessionPrincipal | undefined;
   /** Sockets this session has opened. Test hook. */
   readonly connects: number;
   /** Move the basis (a local `transact` is the cheapest possible notification). */
@@ -132,6 +155,7 @@ export const openSession = (options: SessionOptions): Session => {
   let generation = 0;
   let connects = 0;
   let closed = false;
+  let principal: SessionPrincipal | undefined;
 
   const wake = (): void => {
     // copy: a waker may unsubscribe itself while being notified
@@ -149,6 +173,7 @@ export const openSession = (options: SessionOptions): Session => {
   const drop = (message: string): void => {
     if (socket === undefined && pending.size === 0) return;
     socket = undefined;
+    principal = undefined; // the next socket authenticates afresh on its upgrade
     const waiting = [...pending.values()];
     pending.clear();
     for (const p of waiting) p.reject(new SocketGone(message));
@@ -170,7 +195,12 @@ export const openSession = (options: SessionOptions): Session => {
       if (p === undefined) return;
       pending.delete(frame.id);
       bump(asRecord(frame.body).t);
-      // an `auth` ack is `{ id, ok: true }` — no status, and not a refusal
+      // an `auth` ack is `{ id, ok: true, principal? }` — no status, and not a
+      // refusal; the principal it names supersedes anything read before it
+      if (frame.ok === true) {
+        const who = sessionPrincipal(frame.principal);
+        if (who !== undefined) principal = who;
+      }
       p.resolve({
         status: typeof frame.status === "number" ? frame.status : 200,
         body: frame.body,
@@ -263,6 +293,9 @@ export const openSession = (options: SessionOptions): Session => {
     },
     get generation() {
       return generation;
+    },
+    get principal() {
+      return principal;
     },
     get connects() {
       return connects;

@@ -23,6 +23,7 @@ import { type Db, makeDb, type Wire } from "./Db.ts";
 import {
   type DbError,
   fromResponse,
+  InternalError,
   isDatabaseError,
   NetworkError,
 } from "./Errors.ts";
@@ -39,6 +40,7 @@ import {
   globalWebSocket,
   openSession,
   type Session,
+  type SessionPrincipal,
   type SocketFactory,
 } from "./session.ts";
 import type { TokenSource } from "./token.ts";
@@ -122,6 +124,13 @@ const networkError = (cause: unknown): NetworkError =>
     message: cause instanceof Error ? cause.message : String(cause),
     cause,
   });
+
+/** `/info`'s `principal` field, parsed; `undefined` when the peer sent none. */
+const parsePrincipal = (raw: unknown): SessionPrincipal | undefined => {
+  const p = record(raw);
+  if (typeof p.class !== "string") return undefined;
+  return { eid: typeof p.eid === "number" ? p.eid : null, class: p.class };
+};
 
 /**
  * @internal Build a client over an arbitrary transport, plus the finalizer
@@ -226,6 +235,80 @@ export const makeDatabases = (
       return result.body;
     });
 
+  const info = (name: string): Effect.Effect<unknown, DbError> =>
+    Effect.gen(function* () {
+      const result = yield* send({
+        fetch: config.fetch,
+        url: yield* config.url,
+        method: "GET",
+        path: dbPath(name, "/info"),
+        token: yield* bearer(config.token),
+        headers: config.headers,
+      });
+      return result.body;
+    });
+
+  /**
+   * `db.principal()`'s answer, cached per session generation — a reconnect
+   * authenticates afresh, so the cache is void with it. A `null` eid is never
+   * cached: the row may be written at any moment, and re-reading after that
+   * write is the whole point. An in-place `auth` swap supersedes both — its
+   * ack names the new principal outright, or says its row does not exist yet,
+   * which voids what `/info` said about the old one (`acked` pins the cache
+   * entry to the ack it was read under, by identity).
+   */
+  const principals = new Map<
+    string,
+    {
+      generation: number;
+      acked: SessionPrincipal | undefined;
+      value: SessionPrincipal;
+    }
+  >();
+
+  const principal = (
+    name: string,
+  ): Effect.Effect<SessionPrincipal, DbError> =>
+    Effect.suspend(() => {
+      const socket = session(name);
+      const acked = socket?.principal;
+      // the swap's ack already named the entity: no request needed
+      if (acked !== undefined && acked.eid !== null) {
+        return Effect.succeed(acked);
+      }
+      const generation = socket?.generation ?? 0;
+      const hit = principals.get(name);
+      if (
+        hit !== undefined &&
+        hit.generation === generation &&
+        hit.acked === acked &&
+        hit.value.eid !== null
+      ) {
+        return Effect.succeed(hit.value);
+      }
+      return info(name).pipe(
+        Effect.flatMap((body) => {
+          const value = parsePrincipal(record(body).principal);
+          if (value === undefined) {
+            return Effect.fail<DbError>(
+              new InternalError({
+                message:
+                  "ripple: the peer's /info reported no principal — it predates db.principal()",
+              }),
+            );
+          }
+          if (value.eid !== null) {
+            principals.set(name, {
+              generation: socket?.generation ?? 0,
+              acked,
+              value,
+            });
+          }
+          return Effect.succeed(value);
+        }),
+      );
+    });
+
   const wire: Wire = {
     session,
     read: (name, op, body, minT) => {
@@ -248,18 +331,8 @@ export const makeDatabases = (
         });
         return result.body;
       }),
-    info: (name) =>
-      Effect.gen(function* () {
-        const result = yield* send({
-          fetch: config.fetch,
-          url: yield* config.url,
-          method: "GET",
-          path: dbPath(name, "/info"),
-          token: yield* bearer(config.token),
-          headers: config.headers,
-        });
-        return result.body;
-      }),
+    info,
+    principal,
   };
 
   return {

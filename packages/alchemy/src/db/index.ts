@@ -61,7 +61,7 @@ export { type Claims, token, type TokenSource } from "./token.ts";
 export { DATABASE_NAME_RE, isDatabaseName } from "./DatabaseName.ts";
 
 // ── the database ───────────────────────────────────────────────────────────
-export type { Db, ReadDb, TxReport } from "./Db.ts";
+export type { Db, DbPrincipal, ReadDb, TxReport } from "./Db.ts";
 export type { Eid } from "./Eid.ts";
 export type { LookupRef } from "./idents.ts";
 export type { Pull } from "./Pull.ts";

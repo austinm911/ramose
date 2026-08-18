@@ -231,18 +231,39 @@ async function verify(st: AuthState, token: string, dbName: string): Promise<Pri
 /** Only *found* entities are cached: a user created moments ago must resolve now. */
 const eids = new Map<string, { eid: number; at: number }>();
 
+/** One AVET lookup on the policy's `principal` attribute, memoized when found. */
+async function resolveEid(policy: CompiledPolicy, sub: string, dbName: string, ruleDb: Db): Promise<number | undefined> {
+  const key = `${sub}|${dbName}`;
+  const now = Date.now();
+  const hit = eids.get(key);
+  if (hit !== undefined && now - hit.at < PRINCIPAL_MEMO_MS) return hit.eid;
+  const eid = await ruleDb.entid([policy.principal, sub] as never);
+  if (eid === undefined) return undefined;
+  if (eids.size > 256) eids.clear();
+  eids.set(key, { eid, at: now });
+  return eid;
+}
+
 /** Resolve the principal entity with one AVET lookup on the policy's `principal` attribute. */
 export async function withEid(policy: CompiledPolicy, principal: Principal, ruleDb: Db): Promise<Principal> {
   if (principal.eid !== undefined || principal.sub === undefined || isAdmin(principal)) return principal;
-  const key = `${principal.sub}|${principal.db}`;
-  const now = Date.now();
-  const hit = eids.get(key);
-  if (hit !== undefined && now - hit.at < PRINCIPAL_MEMO_MS) return { ...principal, eid: hit.eid };
-  const eid = await ruleDb.entid([policy.principal, principal.sub] as never);
-  if (eid === undefined) return principal;
-  if (eids.size > 256) eids.clear();
-  eids.set(key, { eid, at: now });
-  return { ...principal, eid };
+  const eid = await resolveEid(policy, principal.sub, principal.db, ruleDb);
+  return eid === undefined ? principal : { ...principal, eid };
+}
+
+/**
+ * The principal as the wire tells it to its own client — the session `auth`
+ * ack and `/info` carry `{ eid, class }`, `eid: null` when the policy's
+ * `principal` attribute has no row for this `sub` yet (or there is no policy
+ * to resolve one under). Informational, so unlike {@link withEid} it resolves
+ * for admins too: an admin is exempt from filtering, not from having a row.
+ */
+export async function describePrincipal(env: RippleEnv, principal: Principal, store: NodeSource, basis: Basis): Promise<{ eid: number | null; class: string }> {
+  const st = authState(env);
+  if (st.policy === undefined || principal.sub === undefined) return { eid: principal.eid ?? null, class: principal.class };
+  if (principal.eid !== undefined) return { eid: principal.eid, class: principal.class };
+  const eid = await resolveEid(st.policy, principal.sub, principal.db, await dbFromBasis(store, basis));
+  return { eid: eid ?? null, class: principal.class };
 }
 
 // ---------------------------------------------------------------------------
