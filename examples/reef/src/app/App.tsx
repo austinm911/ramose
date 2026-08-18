@@ -1,7 +1,8 @@
 /**
  * Session-gated shell: Better Auth session → workspace picker → board.
- * Plain state routing (SPA, no RSC). The active workspace owns a Ripple
- * client; switching closes it and connects the next one.
+ * Plain state routing (SPA, no RSC). The active workspace's Ripple client is
+ * owned by `<RippleProvider key={slug}>`: switching workspaces changes the
+ * key, which closes the old client and connects the next one.
  *
  * Theme: the StyleX theme class goes on `<html>` (not the app root) so the
  * token overrides also reach UI portaled to `document.body` — dialogs and
@@ -9,19 +10,17 @@
  * match. The choice is persisted; first visit follows the OS.
  */
 
+import { errorMessage, RippleProvider } from "@ripple/react";
 import * as stylex from "@stylexjs/stylex";
-import * as Effect from "effect/Effect";
 import {
   createContext,
   useCallback,
   useContext,
   useLayoutEffect,
-  useRef,
   useState,
 } from "react";
 import { authClient, type SessionUser } from "./auth.ts";
-import { ensureSelf, provisionWorkspace } from "./mutations.ts";
-import { openWorkspace, type Workspace } from "./ripple.ts";
+import { openWorkspace, RIPPLE_URL, type Workspace } from "./ripple.ts";
 import { AuthScreen } from "./screens/AuthScreen.tsx";
 import { BoardScreen } from "./screens/BoardScreen.tsx";
 import { WorkspacesScreen } from "./screens/WorkspacesScreen.tsx";
@@ -115,8 +114,6 @@ interface Open {
   readonly workspace: Workspace;
   /** Display name (the Better Auth organization name); the slug is the db. */
   readonly name: string;
-  /** The caller's `user` eid in this workspace (`undefined` for viewers). */
-  readonly myEid: number | undefined;
 }
 
 const Root = () => {
@@ -124,36 +121,20 @@ const Root = () => {
   const toast = useToast();
   const [open, setOpen] = useState<Open | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
-  const current = useRef<Workspace | null>(null);
 
   const enter = useCallback(
     async (slug: string, name: string, user: SessionUser, provision = false) => {
       setOpening(slug);
       try {
-        const workspace = await openWorkspace(slug);
-        if (provision) {
-          await Effect.runPromise(provisionWorkspace(workspace.db, user));
-        }
-        const myEid = await Effect.runPromise(
-          ensureSelf(workspace.db, user, workspace.cls !== "viewer"),
-        );
-        await current.current?.close();
-        current.current = workspace;
-        setOpen({ workspace, name, myEid });
+        setOpen({ workspace: await openWorkspace(slug, user, provision), name });
       } catch (err) {
-        toast("error", err instanceof Error ? err.message : String(err));
+        toast("error", errorMessage(err));
       } finally {
         setOpening(null);
       }
     },
     [toast],
   );
-
-  const leave = useCallback(async () => {
-    setOpen(null);
-    await current.current?.close();
-    current.current = null;
-  }, []);
 
   if (session.isPending) return <Loading />;
   const user = session.data?.user;
@@ -162,14 +143,18 @@ const Root = () => {
 
   if (open !== null) {
     return (
-      <BoardScreen
+      <RippleProvider
         key={open.workspace.slug}
-        workspace={open.workspace}
-        name={open.name}
-        myEid={open.myEid}
-        user={me}
-        onLeave={() => void leave()}
-      />
+        url={RIPPLE_URL}
+        token={open.workspace.token}
+      >
+        <BoardScreen
+          workspace={open.workspace}
+          name={open.name}
+          user={me}
+          onLeave={() => setOpen(null)}
+        />
+      </RippleProvider>
     );
   }
   return (
