@@ -54,6 +54,9 @@ export const useLive = <A, E>(stream: Stream.Stream<A, E>) => {
 - **A write advances the whole connection.** `transact` bumps the session
   basis to `report.t`, so every standing `live` on that connection re-runs —
   including your own write, immediately.
+- **Only news is emitted.** A re-run whose rows are identical to the last
+  emission is not emitted again, so a write the query does not see is not a
+  re-render.
 - **`live` survives the network.** Dropped sockets, 5xx responses, and
   `NetworkError` are retried with backoff; the socket reconnects in place.
   The stream fails only on terminal errors: `InvalidRequest`, `Unauthorized`,
@@ -66,7 +69,7 @@ export const useLive = <A, E>(stream: Stream.Stream<A, E>) => {
 
 ## Cost model
 
-A live query is a client-side re-run of `q` + `pull` — the peer holds no
-server-side subscription state per query. Frequent small writes coalesce
+A live query is a client-side re-run of the same one-round-trip query — the
+peer holds no server-side subscription state per query. Frequent small writes coalesce
 naturally: re-runs happen at basis ticks, and the read path serves them from
 the replica basis plus cached segments.

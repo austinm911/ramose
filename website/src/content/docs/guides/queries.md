@@ -41,8 +41,11 @@ Ripple.query(Todo)           // scope: entities carrying at least one :todo/* da
   .orderBy(attr, dir?, opts?)
   .limit(n)
   .offset(n)
-  .select(shape)             // result shape; omit for an eid list
+  .select(shape)             // result shape; omit for a list of Eid
 ```
+
+`Todo.id` is the `:db/id` pseudo-attribute — selectable, orderable, and
+comparable (`Todo.id.eq(eid)`).
 
 ### Predicates
 
@@ -71,7 +74,7 @@ omit are absent, not `undefined`.
 ```ts
 .select({
   id: Todo.id,                                     // the entity id
-  title: Todo.title,                               // required — entities missing it are dropped
+  title: Todo.title,                               // required — entities missing it are dropped (on the peer)
   due: Todo.due.optional,                          // Date | undefined; keeps the parent
   owner: Todo.owner.select({ name: User.name }),   // nested object through a ref
 })
@@ -88,10 +91,18 @@ one round trip, not client-side N+1.
 .offset(0)
 ```
 
-`empty: "first" | "last"` says where missing sort keys go (an EAV absence is
-not SQL `NULL`). Today order / limit / offset run client-side on the projected
-rows; server-side ordering is on the roadmap (`docs/QUERY.md` in the
-repository tracks the feature matrix).
+All three run on the peer: rows are sorted, then paged, *then* pulled — so
+`.limit(20)` pulls twenty entities and the client never sees the rows a page
+dropped. Required fields in the shape are also enforced on the peer, before the
+limit, so the page you get is the page you keep.
+
+- `orderBy` takes any card-one path (`Todo.due`, `Todo.owner.name`, `Todo.id`);
+  several calls compose, ties falling through to the next key.
+- `empty: "first" | "last"` (default `"last"`) says where rows **without** a
+  value at that path go — an EAV absence is not SQL `NULL` — and holds in both
+  directions: `desc` does not float missing values to the top.
+- A path across a **cardinality-many** attribute (`User.friends.name`) is
+  rejected when the query is built: the sort key would be a set, not a value.
 
 ## Running
 
@@ -102,10 +113,9 @@ db.asOf(t).q(openTodos)    // pinned basis
 db.asOf(t).live(openTodos) // emits once and completes
 ```
 
-Scalars decode through Effect Schema (`Instant` → `Date`, and so on). Both
-runners also still accept the legacy callback builder
-(`db.q((q) => q.where("?e", Todo.title, "?t").find("?t"))`) — prefer the
-navigational form for new code.
+Scalars decode through Effect Schema (`Instant` → `Date`, and so on). A query
+with no `.select` yields `readonly Eid<C>[]`. `db.live` re-emits only when the
+rows changed — a tick the query's rows did not notice is not a re-render.
 
 ## `pull` — one entity, one shape
 

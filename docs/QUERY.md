@@ -1,12 +1,10 @@
 # Query
 
-Ripple’s primary read surface is a **typed navigational query value**. You build it
+Ripple’s read surface is a **typed navigational query value**. You build it
 from catalog attributes (`Todo.done.eq(false)`, `Todo.owner.name`), run it with
 `db.q` / `db.live`, and the client lowers it to the datalog + pull IR the engine
-already evaluates.
-
-The legacy callback builder (`db.q((q) => q.where("?e", Todo.title, "?t").find("?t"))`)
-still works. Prefer the navigational form for new code.
+already evaluates — filters, shape, order and paging all run on the peer, in one
+round trip.
 
 ```ts
 import * as Ripple from "@ripple/alchemy/db";
@@ -24,7 +22,7 @@ yield* db.q(openTodos);
 // Effect<readonly { title: string; owner: { name: string } }[], DbError>
 
 db.live(openTodos);
-// Stream<…, LiveError> — same value
+// Stream<…, DbError> — same value
 
 yield* db.asOf(t).q(openTodos);
 // same value, pinned basis
@@ -74,9 +72,12 @@ Ripple.query(Todo)           // scope: entities that carry at least one :todo/* 
   .orderBy(attr, dir?, opts?)
   .limit(n)
   .offset(n)
-  .select(shape)             // result shape; omit for eid list (see completeness)
+  .select(shape)             // result shape; omit for a list of Eid
   .build()                   // optional — db.q / db.live accept the builder too
 ```
+
+`Todo.id` is the `:db/id` pseudo-attribute: selectable, orderable, and
+comparable (`Todo.id.eq(eid)`, `Todo.id.gt(n)`).
 
 ### Scope
 
@@ -116,11 +117,15 @@ are absent, not `undefined`.
 ```
 
 - **Required field** (bare attr): entities missing that datom are dropped from
-  the result (pull required-field filtering).
+  the result — on the peer, as a `where` clause, so a `.limit` counts only the
+  rows you keep.
 - **`.optional`**: types `T | undefined` and keeps the parent when the attr is
   absent.
 - **Card-one ref `.select({…})`**: nested object; unfiltered nested shapes lower
-  to `(pull ?e …)` inside `:find` (server-side, not client N+1).
+  to `(pull ?e …)` inside `:find` (server-side, not client N+1). A required
+  nested select is required through the ref: the parent is dropped when the
+  ref is missing or the nested object fails *its* required fields.
+- **Card-many `.select({…})`**: an array; a missing many is `[]`, never a drop.
 
 ### Order, limit, offset
 
@@ -130,10 +135,20 @@ are absent, not `undefined`.
 .offset(0)
 ```
 
-`empty: "first" | "last"` controls where missing sort keys go (EAV absence is
-not SQL `NULL`). Today **order / limit / offset run client-side** on the
-projected rows after pull; the core query AST does not yet carry top-level
-order/limit (see [Roadmap](#roadmap)).
+All three lower to the query AST (`:order` / `:limit` / `:offset`) and run on
+the peer: rows are sorted, then paged, *then* pulled, so a `:limit 20` pulls
+twenty entities and the client never sees the rows a page dropped.
+
+- `orderBy` takes any card-one path — `Todo.due`, `Todo.owner.name`, `Todo.id`.
+  Several `orderBy` calls compose in order; ties fall through to the next key.
+- `empty: "first" | "last"` (default `"last"`) says where rows **without** a
+  value at that path go — an EAV absence is not SQL `NULL`. It holds in *both*
+  directions: `desc` does not float missing values to the top. Multi-hop paths
+  keep such rows too (no owner, or an owner with no name, are both "empty").
+- Mixed value types sort by a deterministic total order (numbers, then strings,
+  booleans, instants, the rest).
+- A path that crosses a **cardinality-many** attribute (`User.friends.name`) is
+  rejected when you build the query: the sort key would be a set, not a value.
 
 ---
 
@@ -146,12 +161,14 @@ db.asOf(t).q(openTodos)    // pinned basis
 db.asOf(t).live(openTodos) // emits once and completes
 ```
 
-Both `db.q` and `db.live` accept:
+Both `db.q` and `db.live` take a navigational query value or its builder.
+Scalars decode through Effect Schema (`Instant` → `Date`, etc.). A query with
+no `.select` yields `readonly Eid<C>[]`, typed against the catalog of the `db`
+that ran it.
 
-1. a navigational query / builder, or
-2. the legacy `(q) => …` callback builder.
-
-Scalars decode through Effect Schema (`Instant` → `Date`, etc.).
+`db.live` re-runs the query at every basis tick and after a local `transact`.
+A pass whose rows are identical to the last emission is **not** emitted again —
+a write the query does not see is not a re-render.
 
 `db.pull(eid, pattern)` remains the entity-by-id door. Prefer a navigational
 query when you need filters, live, or `asOf` on the same artifact:
@@ -166,14 +183,38 @@ Ripple.query(Todo).where(/* … */).select(shape)
 
 A navigational query compiles to a find-pull query:
 
-1. **Where** → datalog clauses (path joins become fresh vars; predicates become
-   ground clauses or function calls).
-2. **Namespace scope** → `or` over `:n/*` attributes binding the root var.
-3. **Select** → pull pattern embedded in `:find` as `(pull ?e pattern)`.
-4. **Order / limit / offset** → applied on the client to the reshaped rows.
+1. **Namespace scope** → `or` over `:n/*` attributes binding the root var `?e`.
+2. **Where** → datalog clauses (path joins become fresh vars; predicates become
+   ground clauses or function calls; `:db/id` predicates unify or compare `?e`
+   itself).
+3. **Required fields** → one `[?e :attr _]` clause per required card-one field
+   of the shape (recursively through required nested selects), so the peer's
+   row set is already the one the client keeps.
+4. **Order** → each sort key binds a fresh variable through an `or-join`: one
+   branch walks the path, the other proves it absent (`not`) and grounds `null`,
+   which the engine places per `empty`. The `:order` vector names those
+   variables; `:limit` / `:offset` pass through.
+5. **Select** → pull pattern embedded in `:find` as `(pull ?e pattern)`.
 
-So filtered + projected reads are one round trip. Nested `select` on refs is the
-same pull grammar the engine already supports.
+The engine sorts the joined relation, pages it, and only then resolves the
+pulls. The client's `finalizeNavResult` reshapes rows (pull maps into the
+selected shape, bare ids into `Eid`s) and changes neither their number nor
+their order.
+
+For example, `query(Todo).orderBy(Todo.owner.name).limit(2).select({ title: Todo.title })`
+lowers to:
+
+```clojure
+{:find  [(pull ?e [:todo/title])]
+ :where [(or [?e :todo/title _] [?e :todo/done _] [?e :todo/due _] [?e :todo/owner _])
+         [?e :todo/title _]
+         (or-join [?e ?o0]
+           (and [?e :todo/owner ?j1] [?j1 :user/name ?o0])
+           (and (not [?e :todo/owner ?j2] [?j2 :user/name _])
+                [(ground [nil]) [?o0 ...]]))]
+ :order [[?o0 :asc :last]]
+ :limit 2}
+```
 
 ---
 
@@ -190,9 +231,9 @@ Status of the navigational surface relative to the intended design.
 | Shape | nested `ref.select`, `.optional` (same grammar for `db.pull`) | `.reverse`, nested `where` / `orderBy` / `limit` on collections, `.expand`, `.orDefault`, `Ripple.all(N)` |
 | Aggregates | — | `count` `sum` `avg` `min` `max` `countDistinct`, `having` |
 | Graph | — | `.traverse` `.paths` `attr.reaches` `Ripple.either` |
-| Runners | `db.q` / `db.live` on query values; find-pull lowering; legacy builder | identical-result suppression; `db.changes`; `Ripple.explain` / `withBasis` |
-| Order/limit | client-side after pull | AST + engine `order` / `limit` / `offset`; server-side before `limit` required-field filter |
-| IR hatch | legacy string-var builder | `@ripple/alchemy/db/datalog` typed IR, rules |
+| Runners | `db.q` / `db.live` on query values; find-pull lowering; identical-result suppression on `live` | `db.changes`; `Ripple.explain` / `withBasis` |
+| Order/limit | AST + engine `order` / `limit` / `offset`; required-field filtering on the peer, before `limit`; card-many `orderBy` rejected | — |
+| IR hatch | — (the string-var callback builder is retired) | `@ripple/alchemy/db/datalog` typed IR, rules |
 
 ---
 
@@ -203,15 +244,11 @@ cut.
 
 ### Next (engine / client gaps that unblock everyday queries)
 
-- Top-level **`order` / `limit` / `offset` in the core AST**, with `{ empty }` via
-  `get-else` sentinels — remove client-side sorting/paging.
-- **Required-field filtering before `limit`** on the server (today pull filtering
-  can disagree with a client `limit`).
 - **`some` / `every` / `none`**, `Ripple.or` / `Ripple.not`, and card-many path
   sugar.
 - **Reverse refs** (`Todo.owner.reverse`) and **filtered nested shapes**
   (correlated nested relation / `pull*`-style operator).
-- Suppress **identical consecutive `live` emissions** client-side.
+- **`in`**, ref `is`, `endsWith` / `matches`.
 
 ### Later
 
@@ -239,6 +276,5 @@ cut.
 ## Relation to `docs/API.md`
 
 `docs/API.md` describes the portable client (`Db`, catalog, tx, errors). This
-doc is the query language that sits on `db.q` / `db.live`. Until API.md’s
-signatures are updated to list navigational queries beside the callback builder,
-treat this file as the source of truth for how reads are meant to be written.
+doc is the query language that sits on `db.q` / `db.live`; for how reads are
+meant to be written, this file is the source of truth.

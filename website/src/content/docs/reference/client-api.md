@@ -37,7 +37,7 @@ refresh needs no client surface — return the current token from the Effect.
 | --- | --- |
 | `Db<C>` | `ReadDb<C> & { transact; install }` |
 | `ReadDb<C>` | `{ name; catalog; q; pull; live; asOf; history }` |
-| `db.q` | `(query) => Effect<R, DbError>` — takes a navigational query value (`Ripple.query(N)…`) or the legacy callback builder |
+| `db.q` | `(query) => Effect<R, DbError>` — takes a navigational query value (`Ripple.query(N)…`); with no `.select`, `R` is `readonly Eid<C>[]` |
 | `db.live` | same input as `db.q` → `Stream<R, DbError>` |
 | `db.pull` | `<const P>(subject: Eid<C> \| LookupRef<C>, shape: P) => Effect<Pull<C, P> \| null, DbError>` |
 | `db.transact` | `<A, E, R>(body: (tx: Tx<C>) => Generator<Effect<unknown, E, R>, A>) => Effect<TxReport<C>, DbError \| E, R>` |
@@ -49,12 +49,11 @@ refresh needs no client surface — return the current token from the Effect.
 
 | name | signature |
 | --- | --- |
-| `query` | `Ripple.query(N)` — the navigational builder: `.where(...predicates)` `.orderBy(attr, dir?, opts?)` `.limit(n)` `.offset(n)` `.select(shape)`. A query is a value; see [Query and pull](/guides/queries/) |
+| `query` | `Ripple.query(N)` — the navigational builder: `.where(...predicates)` `.orderBy(attr, dir?, opts?)` `.limit(n)` `.offset(n)` `.select(shape)`. Order and paging run on the peer. A query is a value; see [Query and pull](/guides/queries/) |
 | predicates | on attributes: `eq` `ne` `lt` `lte` `gt` `gte` `exists` `missing`; strings add `startsWith` `includes`; paths join through targeted refs (`Todo.owner.name.startsWith("A")`) |
 | `Pull<C, P>` | result of shape `P`. Shapes nest (`Todo.owner.select({…})`) and go optional (`Todo.due.optional`) — the same grammar for `select` and `db.pull` |
 | `Eid<C>` | `{ readonly id: number }`, catalog-branded. Data — no methods, no I/O |
 | `LookupRef<C>` | `[AttrRef, value]` on a unique attribute |
-| legacy builder | `db.q((q) => q.where("?e", Todo.title, "?t").find("?t"))` still works; prefer `Ripple.query` for new code |
 
 ## Transactions
 
