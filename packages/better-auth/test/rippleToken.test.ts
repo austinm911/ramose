@@ -218,7 +218,7 @@ describe("rippleToken", () => {
 
   test("without the jwt plugin, init fails with a pointed error", async () => {
     const auth = makeAuth({ withJwt: false });
-    expect(
+    await expect(
       auth.api.rippleToken({ body: { db: "acme" } }),
     ).rejects.toThrow(/requires Better Auth's jwt plugin/);
   });

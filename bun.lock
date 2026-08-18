@@ -42,10 +42,10 @@
       "version": "0.1.0",
       "dependencies": {
         "@ripple/alchemy": "workspace:*",
-        "@ripple/core": "workspace:*",
         "zod": "^4.3.6",
       },
       "devDependencies": {
+        "@ripple/core": "workspace:*",
         "better-auth": "^1.6.30",
         "effect": ">=4.0.0-beta.105",
         "jose": "^6.1.3",
