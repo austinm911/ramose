@@ -25,6 +25,7 @@ import type { AnyNamespace } from "./Namespace.ts";
 import {
   assertDirectField,
   inspectPullField,
+  isAllShape,
   isPullDefault,
   isPullNested,
   isPullOptional,
@@ -33,6 +34,8 @@ import {
   optional,
   pullDefault,
   reshapePullResult,
+  type AllRow,
+  type AllShape,
   type PullDefault,
   type PullNestedConstraints,
 } from "./Pull.ts";
@@ -284,7 +287,8 @@ export interface NavQuerySpec {
   /** Attribute idents that define membership in `ns` (for bare scope). */
   readonly nsIdents: readonly string[];
   readonly where: readonly WhereNode[];
-  readonly shape: Shape | undefined;
+  /** A selected shape, the wildcard (`all(N)`), or neither — bare ids. */
+  readonly shape: Shape | AllShape | undefined;
   readonly orderBy: readonly OrderBy[];
   readonly limit: number | undefined;
   readonly offset: number | undefined;
@@ -1256,10 +1260,28 @@ export const isSelectNested = (x: unknown): x is SelectNested =>
   x !== null &&
   (x as { _tag?: unknown })._tag === "select";
 
+/**
+ * `all(N)` is the whole shape of a query, never one field of one: the peer
+ * answers a wildcard rooted at the *matched* entity, and a nested `[*]` — which
+ * the engine does support — would key its map by the target's idents inside a
+ * row keyed by the caller's names. Say so rather than lowering the marker's own
+ * properties as if they were fields.
+ */
+const assertNotAll = (shape: unknown, key?: string): void => {
+  if (!isAllShape(shape)) return;
+  throw new Error(
+    key === undefined
+      ? "ripple/query: all(N) is the whole shape of a query — write `.select(Ripple.all(N))` on the query itself, not inside a shape"
+      : `ripple/query: select field "${key}": all(N) is the whole shape of a query, not a nested one — select the fields you want through the ref, or run a second query`,
+  );
+};
+
 /** Convert a navigational shape into the literate pull map `lowerPullPattern` knows. */
 export const shapeToPullMap = (shape: Shape): Record<string, unknown> => {
+  assertNotAll(shape);
   const out: Record<string, unknown> = {};
   for (const [key, field] of Object.entries(shape)) {
+    assertNotAll(field, key);
     out[key] = shapeFieldToPull(field);
   }
   return out;
@@ -1351,6 +1373,13 @@ export interface NavQueryBuilder<
 
   where(...preds: WhereNode[]): NavQueryBuilder<N, R>;
   /**
+   * `select(Ripple.all(N))` — every attribute the matched entity has, as the
+   * peer's wildcard pull. The row is ident-keyed ({@link AllRow}), not the
+   * named shape a field map gives. The namespace must be the one the query is
+   * scoped to: `query(Todo).select(all(User))` is a type error.
+   */
+  select(shape: AllShape<N>): NavQueryBuilder<N, readonly AllRow<N>[]>;
+  /**
    * Each field is a **direct** attribute of the queried namespace (or a
    * nested `.select` through one of its refs). A flattened path —
    * `{ ownerName: Todo.owner.name }` — is rejected: see {@link ValidShape}.
@@ -1422,11 +1451,10 @@ const builder = <N extends AnyNamespace, R>(
       for (const p of preds) assertNoLooseElem(p);
       return builder(ns, { ...spec, where: [...spec.where, ...preds] });
     },
-    select: (shape) =>
-      builder(ns, { ...spec, shape }) as unknown as NavQueryBuilder<
-        N,
-        readonly SelectResult<typeof shape>[]
-      >,
+    // both overloads carry the same value: the shape (or the wildcard marker)
+    // travels on the spec, and lowering reads which one it is
+    select: ((shape: Shape | AllShape) =>
+      builder(ns, { ...spec, shape })) as NavQueryBuilder<N, R>["select"],
     orderBy: (attr, dir = "asc", opts) => {
       const path = pathOf(attr);
       if (attr.__each !== undefined) {
@@ -1512,7 +1540,11 @@ export const lowerNavQuery = (
   q: NavQuery,
 ): {
   readonly query: LoweredQuery;
-  readonly pullMap: Record<string, unknown> | undefined;
+  /**
+   * The pull pattern this query's rows are reshaped against: the literate map
+   * a `.select` shape becomes, or the already-lowered `["*"]` of `all(N)`.
+   */
+  readonly pullMap: Record<string, unknown> | readonly unknown[] | undefined;
 } => {
   resetGensym();
   const root = "?e";
@@ -1530,8 +1562,14 @@ export const lowerNavQuery = (
     where.push(...lowerWhere(root, p));
   }
 
+  // the wildcard is the peer's own pattern, so it is already lowered: there is
+  // nothing to expand, and nothing in it can drop a row (every key is optional)
   const pullMap =
-    q.spec.shape !== undefined ? shapeToPullMap(q.spec.shape) : undefined;
+    q.spec.shape === undefined
+      ? undefined
+      : isAllShape(q.spec.shape)
+        ? (["*"] as readonly unknown[])
+        : shapeToPullMap(q.spec.shape);
   if (pullMap !== undefined) where.push(...requiredClauses(root, pullMap));
 
   const order: OrderClause[] = [];
@@ -1919,7 +1957,7 @@ const lowerIdPredicate = (
  */
 export const finalizeNavResult = (
   raw: unknown,
-  pullMap: Record<string, unknown> | undefined,
+  pullMap: Record<string, unknown> | readonly unknown[] | undefined,
 ): unknown => {
   const rows: unknown[] = Array.isArray(raw) ? raw : [];
   // find-pull → [[map], ...]; bare find → [[eid], ...]. Unwrap the one cell.

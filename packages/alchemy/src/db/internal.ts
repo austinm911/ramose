@@ -22,6 +22,8 @@ export * from "./Namespace.ts";
 export * from "./NavQuery.ts";
 export * from "./Eid.ts";
 export {
+  type AllRow,
+  type AllShape,
   type AttrPull,
   type IdentPullAttr,
   type IdentPullIdents,
@@ -33,6 +35,8 @@ export {
   type PullOptional,
   type StructPullResult,
   type ValidatePull,
+  all,
+  isAllShape,
   isPullDefault,
   isPullNested,
   isPullOptional,

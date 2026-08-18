@@ -5,8 +5,8 @@ import type * as Schema from "effect/Schema";
 import type { AnyAttribute } from "./Attribute.ts";
 import { isAttrRef } from "./attrRef.ts";
 import type { AnyCatalog } from "./Catalog.ts";
-import type { CatalogIdent, ReadAtIdent } from "./idents.ts";
-import type { AttributeMap } from "./Namespace.ts";
+import type { AttrAtIdent, CatalogIdent, Ident } from "./idents.ts";
+import type { AnyNamespace, AttributeMap } from "./Namespace.ts";
 
 // ── markers ────────────────────────────────────────────────────────────────
 
@@ -132,6 +132,41 @@ export const pick = <
   };
 };
 
+// ── the wildcard ───────────────────────────────────────────────────────────
+
+/**
+ * `Ripple.all(Todo)` — the peer's wildcard pull (`[*]`), as a client term.
+ *
+ * It is **not** a shape the client expands into a map of every attribute:
+ * lowering emits the literal `["*"]` and the peer answers it, so what comes
+ * back is every datom the entity carries, keyed by ident (`":todo/title"`),
+ * refs as `{":db/id": n}` and cardinality-many attributes as arrays.
+ *
+ * The namespace is what the *type* is read against — see {@link AllRow} — and
+ * what the query is already scoped to; the value it carries is unused at
+ * runtime.
+ */
+export interface AllShape<N extends AnyNamespace = AnyNamespace> {
+  readonly _tag: "all";
+  readonly ns: N;
+}
+
+/**
+ * Every attribute of the matched entity: `query(Todo).select(all(Todo))`, or
+ * `db.pull(eid, all(Todo))`. The same wildcard `db.pull(eid, ["*"])` asks for,
+ * with the namespace's idents typed.
+ */
+export const all = <const N extends AnyNamespace>(ns: N): AllShape<N> => ({
+  _tag: "all",
+  ns,
+});
+
+export const isAllShape = (value: unknown): value is AllShape =>
+  typeof value === "object" &&
+  value !== null &&
+  (value as { _tag?: unknown })._tag === "all" &&
+  "ns" in value;
+
 export const isPullOptional = (value: unknown): value is PullOptional =>
   typeof value === "object" &&
   value !== null &&
@@ -219,6 +254,29 @@ export type IdentPullIdents<
   P extends IdentPullPattern<C>,
 > = IdentOfPull<C, P[number]>;
 
+/**
+ * One value in a pull result, from the attribute that carries it.
+ *
+ * A ref reads as the entity it points at — `{":db/id": n}` — not as the
+ * number a `:db.type/ref` datom stores: with no nested pattern to expand, the
+ * engine answers a ref (wildcard or named) with a one-key map. That is why
+ * this is not `ReadAtIdent`, which is the *write* value of the same ident.
+ */
+type PullValue<A> = A extends { readonly cardinality: "many" }
+  ? readonly PullValueOne<A>[]
+  : PullValueOne<A>;
+
+type PullValueOne<A> = A extends { readonly valueType: ":db.type/ref" }
+  ? { readonly ":db/id": number }
+  : A extends { readonly schema: infer S }
+    ? SchemaType<S>
+    : never;
+
+/** {@link PullValue} at one catalog ident. */
+type PullReadAtIdent<C extends AnyCatalog, I extends string> = PullValue<
+  AttrAtIdent<C, I>
+>;
+
 export type IdentPullResult<
   C extends AnyCatalog,
   P extends IdentPullPattern<C>,
@@ -226,16 +284,36 @@ export type IdentPullResult<
   ? {
       readonly ":db/id": number;
     } & {
-      readonly [I in CatalogIdent<C>]?: ReadAtIdent<C, I>;
+      readonly [I in CatalogIdent<C>]?: PullReadAtIdent<C, I>;
     }
   : {
       readonly ":db/id"?: number;
     } & {
-      readonly [I in IdentPullIdents<C, P> & CatalogIdent<C>]?: ReadAtIdent<
+      readonly [I in IdentPullIdents<C, P> & CatalogIdent<C>]?: PullReadAtIdent<
         C,
         I
       >;
     };
+
+/**
+ * A wildcard row, read against one namespace: `:db/id` — the wildcard always
+ * carries it — and every `:ns/attr` of `N`, each optional, because a datom the
+ * entity does not have is a key the map does not have.
+ *
+ * **A lower bound, not an exact type.** The runtime map is a superset: query
+ * scope is "at least one `:ns/*` datom", so a matched entity may carry any
+ * other namespace's attributes too, and the peer returns those keys as well.
+ * Typing them would mean naming a catalog, which a namespace-scoped query
+ * does not have — so the keys named here are the ones you may rely on.
+ */
+export type AllRow<N extends AnyNamespace> = {
+  readonly ":db/id": number;
+} & {
+  readonly [A in keyof N["attributes"] & string as Ident<
+    N["ns"],
+    A
+  >]?: PullValue<N["attributes"][A]>;
+};
 
 // ── catalog constraint ─────────────────────────────────────────────────────
 
@@ -277,24 +355,34 @@ type IdentsInFields<F> = F extends object
 /**
  * `P` when every named ident is in the catalog (or `*`); otherwise a
  * string literal so the call is a type error.
+ *
+ * {@link AllShape} names a whole namespace rather than fields, so it is
+ * checked the same way, against the idents that namespace stamps.
  */
-export type ValidatePull<C extends AnyCatalog, P> = [IdentsIn<P>] extends [
-  CatalogIdent<C> | "*",
+export type ValidatePull<C extends AnyCatalog, P> = [P] extends [
+  { readonly _tag: "all"; readonly ns: { readonly attributes: infer A } },
 ]
-  ? P
-  : "unknown attribute in pull pattern";
+  ? [IdentsIn<A>] extends [CatalogIdent<C>]
+    ? P
+    : "namespace is not in this database's catalog"
+  : [IdentsIn<P>] extends [CatalogIdent<C> | "*"]
+    ? P
+    : "unknown attribute in pull pattern";
 
 /**
  * Inferred result of `eid.pull(pattern)`. Fields object → caller
  * keys, required vs optional honored. Array → ident keys, all optional.
+ * `all(N)` → the wildcard map, keyed by `N`'s idents ({@link AllRow}).
  */
 export type Pull<C extends AnyCatalog, P> = [P] extends [
-  readonly unknown[],
+  { readonly _tag: "all"; readonly ns: infer N extends AnyNamespace },
 ]
-  ? P extends IdentPullPattern<C>
-    ? IdentPullResult<C, P>
-    : never
-  : StructPullResult<P>;
+  ? AllRow<N>
+  : [P] extends [readonly unknown[]]
+    ? P extends IdentPullPattern<C>
+      ? IdentPullResult<C, P>
+      : never
+    : StructPullResult<P>;
 
 // ── wire lowering ──────────────────────────────────────────────────────────
 
@@ -613,8 +701,12 @@ const lowerIdentPull = (pattern: readonly unknown[]): unknown[] =>
 /**
  * Lower a literate pull map (or ident-keyed array escape) to a peer pull
  * pattern. Literate maps become AST specs with `:as` / nested `sub`.
+ *
+ * `all(N)` is the peer's own wildcard, so it lowers to exactly that — the
+ * client never expands it into a map of the namespace's attributes.
  */
 export const lowerPullPattern = (pattern: unknown): unknown[] => {
+  if (isAllShape(pattern)) return ["*"];
   if (Array.isArray(pattern)) return lowerIdentPull(pattern);
   return lowerLiterateMap(pattern);
 };
@@ -628,12 +720,12 @@ export const lowerPullPattern = (pattern: unknown): unknown[] => {
  * same answer for a result that arrived without one).
  * Required `.select` drops the parent when the ref is missing or the nested
  * object fails *its* required fields. Cardinality-many `.select` filters the
- * array (empty `[]` is still a valid many). Ident-keyed arrays are left as
- * the peer returned them (all optional in the type).
+ * array (empty `[]` is still a valid many). Ident-keyed arrays and the
+ * wildcard are left as the peer returned them (all optional in the type).
  */
 export const reshapePullResult = (pattern: unknown, result: unknown): unknown => {
   if (result === null || result === undefined) return null;
-  if (Array.isArray(pattern)) return result;
+  if (isAllShape(pattern) || Array.isArray(pattern)) return result;
   const filtered = filterPull(pattern, result);
   return filtered === undefined ? null : filtered;
 };
@@ -651,7 +743,8 @@ const isPresent = (value: unknown): boolean =>
  */
 const filterPull = (pattern: unknown, result: unknown): unknown => {
   if (!isPresent(result)) return undefined;
-  if (Array.isArray(pattern)) return result;
+  // a wildcard row has no required field to fail: every key is optional
+  if (isAllShape(pattern) || Array.isArray(pattern)) return result;
   if (typeof result !== "object") return undefined;
 
   const fields = fieldsOf(pattern);
