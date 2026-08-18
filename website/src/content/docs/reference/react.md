@@ -1,6 +1,6 @@
 ---
 title: React
-description: "@ripple/react — RippleProvider owns one Client per subtree; useRipple, useDb and useLive hand it back as hooks."
+description: "@ripple/react — RippleProvider owns one Client per subtree; useDb, useLive, useQuery, usePull, useBasis and useTransact work from it."
 ---
 
 `@ripple/react` is the React binding: hooks only, no UI. Named imports, not a
@@ -69,6 +69,57 @@ const TodoList = () => {
 };
 ```
 
+## useQuery, usePull, useBasis
+
+| name | signature |
+| --- | --- |
+| `useQuery` | `(db: ReadDb<C>, query: QueryInput<R>) => Async<R>` — one-shot `db.q` |
+| `usePull` | `(db: ReadDb<C>, subject: Eid<C> \| LookupRef<C>, pattern: P) => Live<Pull<C, P> \| null>` — standing `db.livePull` |
+| `useBasis` | `(db: ReadDb<C>) => number \| undefined` — where the basis is |
+| `Async` | `{ data: A \| undefined; error: Cause.Cause<E> \| undefined; loading: boolean }` |
+
+Every hook takes `db` explicitly, so it composes with `db.asOf(t)` /
+`db.history` views — and the view is compared **structurally**: `db.asOf(t)`
+is pure and builds a new object per call, and an inline
+`useQuery(db.asOf(t), q)` re-runs per `t`, not per render. `usePull`'s
+`subject` is structural too (`{ id: 17 }` or a lookup ref written inline is
+fine). `query` and `pattern` are compared by identity: hoist them.
+
+**`useQuery`** runs one `db.q` per view/query pair. The in-flight state is
+`loading: true` over the **previous** `data` — a scrub over a time-travel
+slider never flashes to `undefined`. Stale results are dropped
+last-write-wins by issue order, not by resolution order: a slower answer to
+an older run can never overwrite a newer run's rows. `error` is the failed
+run's `Cause`, cleared when a new run starts, with the last `data` kept.
+
+```tsx
+const board = useQuery(db.asOf(t), boardQuery); // one query per slider move
+```
+
+**`usePull`** is `db.livePull(subject, pattern)` through `useLive`'s stream
+engine — the same `Live` shape, over one entity. `rows` is the projection or
+`null` (a retracted entity is a legitimate emission; the subscription keeps
+standing), and over a pinned view the stream emits once, completes, and
+keeps its rows.
+
+```tsx
+const issue = usePull(db, { id: issueId }, { title: Issue.title, done: Issue.done });
+if (issue.rows === null) return <Gone />;
+```
+
+**`useBasis`** is `db.basis()` once on mount, then again on every wake of the
+db's session — a basis tick, a local `transact`, a reconnect — one
+`GET /db/:name/info` each; observing the basis bumps the session, so a
+standing `live` that missed a tick re-runs too. On an `asOf(t)` view the
+answer is `t` itself, synchronously on the first render, with no request. On
+an HTTPS-only client (no `WebSocket`) there is no session to tick and the
+read is one-shot. `undefined` until the first answer lands.
+
+```tsx
+const max = useBasis(db);            // the slider's upper bound, live
+const pinned = useBasis(db.asOf(t)); // t, immediately, no request
+```
+
 ## useTransact
 
 | name | signature |
@@ -91,5 +142,3 @@ const tx = useTransact({ onError: (e) => toast(errorMessage(e)) });
 
 <button disabled={tx.pending} onClick={() => void tx.run(addTodo(db, title))} />;
 ```
-
-Later slices extend this page with `useQuery` / `usePull` / `useBasis`.

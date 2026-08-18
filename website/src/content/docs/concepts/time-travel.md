@@ -32,7 +32,30 @@ an exact past view.
 
 `db.basis()` answers `{ t }`: for a live db, the peer's current basis (one
 `GET /db/:name/info`); for `asOf(t)`, just `t`, with no request. That makes a
-time-travel slider two lines — the max is the basis, the value is `asOf`:
+time-travel slider two hooks — the max is the basis, the value is `asOf`
+([React reference](/reference/react/)):
+
+```tsx
+import { useBasis, useDb, useQuery } from "@ripple/react";
+
+const Scrubber = () => {
+  const db = useDb("todos", Todos);
+  const max = useBasis(db);              // live: re-read on every tick
+  const [t, setT] = useState<number>();
+
+  // one query per slider move; the previous rows stay while it loads
+  const { data, loading } = useQuery(t === undefined ? db : db.asOf(t), titles);
+
+  return (
+    <>
+      <input type="range" min={1} max={max ?? 1} onChange={(e) => setT(e.target.valueAsNumber)} />
+      <TodoList rows={data} dimmed={loading} />
+    </>
+  );
+};
+```
+
+Effect users spell the same two reads directly:
 
 ```ts
 const { t: max } = yield* db.basis();  // the slider's upper bound
