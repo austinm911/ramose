@@ -1,16 +1,11 @@
 /**
- * `usePull` — a standing `db.livePull(subject, pattern)` as React state.
+ * `usePull` — a standing `db.livePull(subject, pattern)` as `Live` state:
+ * `rows` is the projection or `null` (a retract is an emission, not an end),
+ * and a pinned view emits once, completes, and keeps its rows.
  *
- * The same `Live` shape (and the same engine) as `useLive`: `rows` is the
- * projection or `null` (a retracted entity is a legitimate emission, not an
- * end), `ticks` counts the re-emissions, `error` is the stream's terminal
- * failure. Over a pinned view (`asOf` / `history`) the stream emits once
- * and completes, and the last `rows` stay.
- *
- * The subscription re-keys on the view (structural, via the seam), on the
- * `subject` compared **structurally** — `{ id: 17 }` or a lookup ref written
- * inline is fine — and on `pattern` identity, so hoist the pattern exactly
- * as you hoist a query.
+ * Two rules for callers: the view and the `subject` are structural —
+ * `db.asOf(t)` and `{ id: 17 }` written inline are fine — while `pattern`
+ * is identity, so hoist it exactly as you hoist a query.
  */
 
 import type {

@@ -12,13 +12,7 @@ import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import { useEffect } from "react";
 import { renderHook, waitFor } from "@testing-library/react";
-import {
-  registerDom,
-  sleep,
-  Todos,
-  titles,
-  wrapperFor,
-} from "./harness.tsx";
+import { registerDom, Todos, titles, wrapperFor } from "./harness.tsx";
 import { fakePeer, type Call } from "./peer.ts";
 import { useBasis, useDb } from "../src/index.ts";
 

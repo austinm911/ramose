@@ -1,17 +1,10 @@
 /**
- * `useBasis` — where the database's basis is, as React state.
- *
- * On a live view: `db.basis()` once on mount, then again on every wake of
- * the db's session — a basis tick, a local `transact`, a reconnect. Each
- * re-read is one `GET /db/:name/info`, the cheapest question the peer
- * answers, and observing the basis bumps the session, so a standing `live`
- * that missed a tick re-runs too. On an HTTPS-only client (no `WebSocket`)
- * there is no session to tick and the read is one-shot.
- *
- * On an `asOf(t)` view the answer is `t` itself, synchronously on the first
- * render, with no request — the seam carries the pinned coordinate.
- *
- * `undefined` until the first answer lands (or after a terminal failure).
+ * `useBasis` — where the database's basis is: `db.basis()` on mount, then
+ * again on every wake of the db's session (a tick, a local `transact`, a
+ * reconnect) — one `GET /db/:name/info` each. An `asOf(t)` view answers `t`
+ * synchronously on the first render, with no request; an HTTPS-only client
+ * has no session to tick, so the read is one-shot. `undefined` until the
+ * first answer lands.
  */
 
 import type { Catalog, ReadDb } from "@ripple/alchemy/db";

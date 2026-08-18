@@ -1,21 +1,17 @@
 /**
  * `useQuery` — one-shot `db.q(query)` as React state.
  *
- * Re-runs when the *view* or the query changes: the view is compared
- * structurally (the seam's key), so `useQuery(db.asOf(t), q)` built inline
- * re-runs per `t` and only per `t` — a scrub over a time-travel slider is
- * exactly one query per slider move. `query` is compared by identity; pass
- * a hoisted value (a query value is a stable object — the docs already say
- * so for `live`).
+ * Two rules for callers:
  *
- * The in-flight state is `loading: true` over the *previous* `data` — a
- * scrub never flashes to `undefined`. Stale results are dropped
- * last-write-wins by issue order, not by resolution order: a slower answer
- * to an older run can never overwrite a newer run's rows.
+ * - The view is structural: `useQuery(db.asOf(t), q)` built inline re-runs
+ *   per `t`, not per render. `query` is identity — hoist it.
+ * - The in-flight state is `loading: true` over the *previous* `data` (no
+ *   flash to `undefined` on scrub); stale answers are dropped last-write-wins
+ *   by issue order, not by resolution order.
  */
 
 import type { Catalog, DbError, QueryInput, ReadDb } from "@ripple/alchemy/db";
-import type * as Cause from "effect/Cause";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import { useEffect, useRef, useState } from "react";
@@ -67,9 +63,12 @@ export const useQuery = <C extends Catalog.Any, R>(
           ),
         ),
         Effect.catchCause((error) =>
-          Effect.sync(() =>
-            land((prev) => ({ data: prev.data, error, loading: false })),
-          ),
+          // the cleanup's own interrupt is not a failure to surface
+          Cause.hasInterruptsOnly(error)
+            ? Effect.void
+            : Effect.sync(() =>
+                land((prev) => ({ data: prev.data, error, loading: false })),
+              ),
         ),
       ),
     );

@@ -1,16 +1,11 @@
 /**
  * @internal The reader half of the seam `Db.ts` attaches under
- * `Symbol.for("ripple.db.seam")` (see `DbSeam` in
- * `packages/alchemy/src/db/Db.ts` — the two shapes must stay compatible,
- * and `test/db-seam.test.ts` over there pins the contract).
- *
- * Why hooks need it: `db.asOf(t)` and `db.history` are pure and build a
- * *new* view object per call, so an inline `useQuery(db.asOf(t), q)` would
- * change identity every render. Keying an effect on that identity does not
- * just re-subscribe too often — the effect's own `setState` re-renders,
- * which builds another view, which re-fires the effect: a loop. The seam's
- * `key` is equal iff two views read the same coordinates over the same
- * client, which is the dependency a hook actually means.
+ * `Symbol.for("ripple.db.seam")` — see `DbSeam` there; the shapes must stay
+ * compatible, and `packages/alchemy/test/db-seam.test.ts` pins the contract.
+ * It exists because `db.asOf(t)` is pure and builds a new object per call:
+ * keyed by identity, an inline view would re-subscribe — and, through the
+ * effect's own `setState`, loop — every render. The `key` is the structural
+ * dependency a hook actually means.
  */
 
 import type { Catalog, ReadDb } from "@ripple/alchemy/db";

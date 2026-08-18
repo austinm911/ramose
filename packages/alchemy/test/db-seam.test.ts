@@ -1,9 +1,8 @@
 /**
- * The `DB_SEAM` contract `@ripple/react` rides (see `DbSeam` in `Db.ts` and
- * `packages/react/src/seam.ts`): a structural key for a view, the pinned
- * `asOf` coordinate, and the session's wake. Not public API — the public
- * barrel is untouched (`db-portable.test.ts` still passes name-by-name) —
- * but a contract all the same, so it gets a test on this side of the seam.
+ * The `DB_SEAM` contract `@ripple/react` rides (`DbSeam` in `Db.ts`,
+ * `packages/react/src/seam.ts` the reader): a structural view key, the
+ * pinned `asOf` coordinate, and the session's wake. Not public API, but a
+ * contract all the same.
  */
 
 import { describe, expect, test } from "bun:test";

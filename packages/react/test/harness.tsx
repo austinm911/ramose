@@ -1,7 +1,6 @@
 /**
- * Shared per-file setup: the happy-dom globals (guarded, so any file order
- * works — each file registers on load and unregisters after itself) and the
- * one fixture catalog the hook tests share.
+ * Shared per-file setup: the happy-dom globals (guarded, so file order does
+ * not matter) and the one fixture catalog the hook tests share.
  */
 
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
