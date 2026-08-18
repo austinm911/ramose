@@ -1,16 +1,16 @@
 ---
 title: Permissions in 10 minutes
-description: One policy, one denied write, one filtered read — how Ripple decides who may see and change each fact.
+description: One policy, one denied write, one filtered read — how Ramose decides who may see and change each fact.
 ---
 
-Ripple can decide, per fact, who may read it and who may change it. The rules
+Ramose can decide, per fact, who may read it and who may change it. The rules
 live with your catalog, compile at deploy time, and run inside the database —
 so a query returns fewer rows rather than trusting your UI to filter, and a
 forbidden write is refused rather than logged.
 
-**Ripple verifies tokens; it never issues them.** Bring Clerk, Auth0, WorkOS,
+**Ramose verifies tokens; it never issues them.** Bring Clerk, Auth0, WorkOS,
 Firebase Auth, or anything else that signs JWTs and publishes public keys.
-Ripple checks the signature, the issuer, the audience, and the expiry, then
+Ramose checks the signature, the issuer, the audience, and the expiry, then
 maps the token onto your rules. Login, refresh, and password reset stay in your
 identity provider.
 
@@ -21,10 +21,10 @@ A peer picks its mode from two environment variables. Nothing else changes.
 | mode | environment | who gets in |
 | --- | --- | --- |
 | **Open** | neither set | everyone, with full rights. Correct for your laptop, dangerous anywhere else |
-| **Shared token** | `RIPPLE_TOKEN` | one bearer token, full rights on every database. Fits a backend that is itself the authority |
-| **Policy** | `RIPPLE_POLICY` (plus a verifier) | every caller presents a JWT; reads are filtered and writes are checked per fact |
+| **Shared token** | `RAMOSE_TOKEN` | one bearer token, full rights on every database. Fits a backend that is itself the authority |
+| **Policy** | `RAMOSE_POLICY` (plus a verifier) | every caller presents a JWT; reads are filtered and writes are checked per fact |
 
-Setting `RIPPLE_POLICY` changes the meaning of `RIPPLE_TOKEN`: its holder gets
+Setting `RAMOSE_POLICY` changes the meaning of `RAMOSE_TOKEN`: its holder gets
 a class no rule can name, so it reaches `/health` and nothing else. That is
 usually the surprise behind "my token stopped working when I turned on
 permissions".
@@ -36,10 +36,10 @@ Rules are written against the catalog attributes you already have, using the
 
 ```ts title="policy.ts"
 // `Policy` is deploy-time, so it comes from the root entry, not `/db`
-import * as Ripple from "@ripple/alchemy";
+import * as Ramose from "@ramose/alchemy";
 import { Todo, Todos, User } from "./schema.ts";
 
-const P = Ripple.Policy;
+const P = Ramose.Policy;
 
 /** this todo belongs to the caller */
 const mine = P.eq(Todo.owner, P.principal);
@@ -100,10 +100,10 @@ These are files you create — `scripts/local-jwt.ts`, `policy.ts` and the
 import (`todoDetail`, `openTodos`) are the ones you added to `src/todos.ts` in
 [Query and pull](/guides/queries/). `examples/todos` ships without a policy.
 
-Ripple ships no token minter and no CLI, so a local loop is: generate a key
+Ramose ships no token minter and no CLI, so a local loop is: generate a key
 pair, hand the public half to the peer, and sign your own tokens with it. That
 is about fifteen lines of [`jose`](https://github.com/panva/jose), and it is
-exactly what Ripple's own tests do. (In production, `Ripple.claims` builds the
+exactly what Ramose's own tests do. (In production, `Ramose.claims` builds the
 payload from the same `AuthConfig` the peer verifies against — see
 [Minting](/guides/auth/#minting); here a hand-written payload is enough.)
 
@@ -114,19 +114,19 @@ const { privateKey, publicKey } = await generateKeyPair("ES256", {
   extractable: true,
 });
 
-// 1. the peer's verifier — set this as RIPPLE_JWKS_JSON
+// 1. the peer's verifier — set this as RAMOSE_JWKS_JSON
 console.log(
   JSON.stringify({
     keys: [{ ...(await exportJWK(publicKey)), alg: "ES256", kid: "local" }],
   }),
 );
 
-// 2. a token for one user of one database — set this as VITE_RIPPLE_TOKEN
+// 2. a token for one user of one database — set this as VITE_RAMOSE_TOKEN
 console.log(
-  await new SignJWT({ ripple: { db: "todos", class: "member" } })
+  await new SignJWT({ ramose: { db: "todos", class: "member" } })
     .setProtectedHeader({ alg: "ES256", kid: "local" })
     .setIssuer("https://local.test")
-    .setAudience("ripple:local")
+    .setAudience("ramose:local")
     .setSubject("user_ada")
     .setIssuedAt()
     .setExpirationTime("5m")
@@ -137,7 +137,7 @@ console.log(
 Wire the policy and that key set into the peer Worker:
 
 ```ts title="resources.ts"
-import * as Ripple from "@ripple/alchemy";
+import * as Ramose from "@ramose/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { policy } from "./policy.ts";
 import { todoDetail } from "./src/todos.ts";
@@ -150,24 +150,24 @@ const Replica = Cloudflare.DurableObject("QueryReplicaDO", {
   className: "QueryReplicaDO",
 });
 
-export const RippleWorker = Cloudflare.Worker("Peer", {
+export const RamoseWorker = Cloudflare.Worker("Peer", {
   main: "./packages/worker/src/index.ts",
   compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
   env: {
     STORE: Store,
     TRANSACTOR: Transactor,
     REPLICA: Replica,
-    ...Ripple.authEnv({
-      policy: Ripple.Policy.compile(policy, { pulls: [todoDetail] }),
+    ...Ramose.authEnv({
+      policy: Ramose.Policy.compile(policy, { pulls: [todoDetail] }),
       issuers: "https://local.test",
-      aud: "ripple:local",
+      aud: "ramose:local",
     }),
     // local only: a literal key set instead of a URL to fetch
-    RIPPLE_JWKS_JSON: process.env.RIPPLE_JWKS_JSON ?? "",
+    RAMOSE_JWKS_JSON: process.env.RAMOSE_JWKS_JSON ?? "",
   },
 });
 
-export const Server = Ripple.Server("Ripple", { worker: RippleWorker });
+export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
 ```
 
 Then run it in two terminals. This is the manual form rather than `bun run
@@ -181,7 +181,7 @@ bun run scripts/local-jwt.ts > .local-jwt.txt
 CI=1 ALCHEMY_STATE=local \
   CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef \
   CLOUDFLARE_API_TOKEN=x \
-  RIPPLE_JWKS_JSON="$(head -1 .local-jwt.txt)" \
+  RAMOSE_JWKS_JSON="$(head -1 .local-jwt.txt)" \
   bun alchemy dev examples/todos/alchemy.run.ts
 ```
 
@@ -189,20 +189,20 @@ That stack starts its own Vite on :5173 with no token, so give your
 authenticated one a different port:
 
 ```sh title="Terminal 2 — the app"
-VITE_RIPPLE_URL=http://localhost:1337 \
-  VITE_RIPPLE_TOKEN="$(tail -1 .local-jwt.txt)" \
+VITE_RAMOSE_URL=http://localhost:1337 \
+  VITE_RAMOSE_TOKEN="$(tail -1 .local-jwt.txt)" \
   bunx vite examples/todos --port 5174
 ```
 
 Open `http://localhost:5174` — that is the tab whose requests carry the token.
 
 :::note[Deploying, not just running]
-Passing `auth` to `Ripple.Server` turns on a deploy-time check: a policy with
+Passing `auth` to `Ramose.Server` turns on a deploy-time check: a policy with
 no `jwksUrl`, `issuers`, or `aud` fails the deploy rather than silently denying
-every request at runtime. The local recipe above uses `RIPPLE_JWKS_JSON`, which
+every request at runtime. The local recipe above uses `RAMOSE_JWKS_JSON`, which
 that check does not know about, so it configures the Worker's environment
 directly. For a real deployment, publish a JWKS URL and pass the same `auth`
-object to both the Worker and `Ripple.Server`.
+object to both the Worker and `Ramose.Server`.
 :::
 
 ## What a denial looks like
@@ -211,7 +211,7 @@ Writes are checked twice, and the two checks fail differently. Handle both:
 
 ```ts title="src/todos.ts"
 import * as Effect from "effect/Effect";
-import type { Db } from "@ripple/alchemy/db";
+import type { Db } from "@ramose/alchemy/db";
 import { Todo, type Todos } from "../schema.ts";
 
 export const tryFinish = (db: Db<typeof Todos>, id: number) =>
@@ -245,7 +245,7 @@ Reads do not fail. They shrink.
 
 ```ts title="src/reads.ts"
 import * as Effect from "effect/Effect";
-import type { Db } from "@ripple/alchemy/db";
+import type { Db } from "@ramose/alchemy/db";
 import type { Todos } from "../schema.ts";
 import { openTodos, todoDetail } from "./todos.ts";
 
@@ -267,14 +267,14 @@ drops that entity. That is deliberate: an error message that distinguishes
 ## The deploy-time leak check
 
 Because a masked required field deletes the row instead of hiding the field,
-Ripple can catch the mistake before it ships — if you hand your pull patterns
+Ramose can catch the mistake before it ships — if you hand your pull patterns
 to the compiler:
 
 ```ts title="resources.ts"
 const userCard = { name: User.name, email: User.email } as const;
 
-Ripple.Policy.compile(policy, { pulls: [todoDetail, userCard] });
-// ripple/policy: pulls[1].email: :user/email has a narrowed read rule
+Ramose.Policy.compile(policy, { pulls: [todoDetail, userCard] });
+// ramose/policy: pulls[1].email: :user/email has a narrowed read rule
 // and must be pulled as `.optional`
 ```
 
@@ -282,7 +282,7 @@ The fix is to say what you meant — `email: User.email.optional` — so a calle
 without permission sees a row with no email instead of no row at all.
 
 :::caution[The check is opt-in]
-`Ripple.Policy.compile(policy)` with no `pulls` skips it entirely. Pass every
+`Ramose.Policy.compile(policy)` with no `pulls` skips it entirely. Pass every
 shape your app pulls, from one module, so the list cannot fall behind.
 :::
 

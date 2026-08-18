@@ -1,4 +1,4 @@
-# Ripple — what actually ships
+# Ramose — what actually ships
 
 Ground truth for docs writers. Every code block below is **copied verbatim from the repo**
 with `file:line` provenance. If an API is not in here, it does not exist — do not invent it.
@@ -15,26 +15,26 @@ Legend: ✅ = shipped and verified in source · ⚠️ = shipped but with a shar
 
 ### 1.1 Nothing is published to npm
 
-All six workspace packages are `"private": true`. There is no `npm install @ripple/...`,
+All six workspace packages are `"private": true`. There is no `npm install @ramose/...`,
 no registry entry, no `dist/`, and no build step.
 
 | package | dir | `private` | `main` / `types` |
 |---|---|---|---|
-| `@ripple/core` | `packages/core` | `true` (`packages/core/package.json:4`) | `src/index.ts` |
-| `@ripple/storage` | `packages/storage` | `true` (`:4`) | `src/index.ts` |
-| `@ripple/transactor` | `packages/transactor` | `true` (`:4`) | `src/index.ts` |
-| `@ripple/replica` | `packages/replica` | `true` (`:4`) | `src/index.ts` |
-| `@ripple/worker` | `packages/worker` | `true` (`:4`) | `src/index.ts` |
-| `@ripple/alchemy` | `packages/alchemy` | `true` (`:4`) | `src/index.ts` |
+| `@ramose/core` | `packages/core` | `true` (`packages/core/package.json:4`) | `src/index.ts` |
+| `@ramose/storage` | `packages/storage` | `true` (`:4`) | `src/index.ts` |
+| `@ramose/transactor` | `packages/transactor` | `true` (`:4`) | `src/index.ts` |
+| `@ramose/replica` | `packages/replica` | `true` (`:4`) | `src/index.ts` |
+| `@ramose/worker` | `packages/worker` | `true` (`:4`) | `src/index.ts` |
+| `@ramose/alchemy` | `packages/alchemy` | `true` (`:4`) | `src/index.ts` |
 
 The root package is also private:
 
 ```json
 {
-  "name": "ripple",
+  "name": "ramose",
   "version": "0.1.0",
   "private": true,
-  "description": "Ripple — an immutable, Datomic-inspired database for Cloudflare (Workers + Durable Objects + R2).",
+  "description": "Ramose — an immutable, Datomic-inspired database for Cloudflare (Workers + Durable Objects + R2).",
   "type": "module",
   "workspaces": [
     "packages/*",
@@ -47,7 +47,7 @@ The root package is also private:
 (Bun, Vite, a bundler). There is no compiled output. Do not write "install the package" docs.
 
 ⚠️ `examples/*` are **not** workspaces (`workspaces` is `["packages/*", "website"]`). They
-resolve `@ripple/alchemy` through the root `node_modules` links that `bun install` creates
+resolve `@ramose/alchemy` through the root `node_modules` links that `bun install` creates
 at the repo root, which is why every command in the repo is run *from the repo root*.
 
 ### 1.2 The two import specifiers a consumer actually types
@@ -60,18 +60,18 @@ at the repo root, which is why every command in the repo is run *from the repo r
 ```
 — `packages/alchemy/package.json:9-12`
 
-- **`@ripple/alchemy/db`** — the portable half. Browser, Worker, Node/Bun, tests. Nothing
-  reachable from it imports `alchemy` (the deploy engine) or the `@ripple/core` barrel;
+- **`@ramose/alchemy/db`** — the portable half. Browser, Worker, Node/Bun, tests. Nothing
+  reachable from it imports `alchemy` (the deploy engine) or the `@ramose/core` barrel;
   `packages/alchemy/test/db-portable.test.ts` fails the build if that stops being true.
-- **`@ripple/alchemy`** — all of `/db`, plus the deploy-time half (resources, capabilities,
+- **`@ramose/alchemy`** — all of `/db`, plus the deploy-time half (resources, capabilities,
   transports, `Policy`, `authEnv`).
 
-`@ripple/core`, `@ripple/worker`, `@ripple/transactor`, `@ripple/replica`, `@ripple/storage`
-are internals. The only place a user names `@ripple/worker` in practice is the Worker's `main`,
+`@ramose/core`, `@ramose/worker`, `@ramose/transactor`, `@ramose/replica`, `@ramose/storage`
+are internals. The only place a user names `@ramose/worker` in practice is the Worker's `main`,
 and both examples spell it as a **repo-relative path**, not a package specifier:
 
 ```typescript
-export const RippleWorker = Cloudflare.Worker("Peer", {
+export const RamoseWorker = Cloudflare.Worker("Peer", {
   main: "./packages/worker/src/index.ts",
   compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
   env: { STORE: Store, TRANSACTOR: Transactor, REPLICA: Replica },
@@ -80,7 +80,7 @@ export const RippleWorker = Cloudflare.Worker("Peer", {
 — `examples/todos/resources.ts:8-12` (identical at `examples/kv-style/resources.ts:44-48`)
 
 ⚠️ `docs/API.md:106`, `packages/alchemy/src/index.ts:20` and `packages/alchemy/src/Database.ts:22`
-show `main: "@ripple/worker"`. That form is not exercised anywhere in the repo — the two runnable
+show `main: "@ramose/worker"`. That form is not exercised anywhere in the repo — the two runnable
 examples both use the relative path. Prefer the relative path in docs.
 
 ### 1.3 The whole getting-started path
@@ -88,7 +88,7 @@ examples both use the relative path. Prefer the relative path in docs.
 ```sh
 bun install
 bun alchemy dev examples/todos/alchemy.run.ts
-VITE_RIPPLE_URL=http://localhost:8787 bunx vite examples/todos
+VITE_RAMOSE_URL=http://localhost:8787 bunx vite examples/todos
 ```
 — `README.md:29-33` — ❌ **the port is wrong here**, see §9.4.
 
@@ -99,13 +99,13 @@ CI=1 ALCHEMY_STATE=local \
   CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef \
   CLOUDFLARE_API_TOKEN=x \
   bun alchemy dev examples/todos/alchemy.run.ts          # peer on :1337
-VITE_RIPPLE_URL=http://localhost:1337 bunx vite examples/todos   # UI on :5173
+VITE_RAMOSE_URL=http://localhost:1337 bunx vite examples/todos   # UI on :5173
 ```
 — `examples/todos/README.md:6-12`
 
 ### 1.4 The exact public surface (pinned by a test)
 
-`@ripple/alchemy/db` exports exactly these (`packages/alchemy/src/db/index.ts:31-64`):
+`@ramose/alchemy/db` exports exactly these (`packages/alchemy/src/db/index.ts:31-64`):
 
 `Attr`, `Attribute` (type), `Catalog`, `Namespace`, `Bytes`, `Instant`, `Long`, `Ref`, `Uuid`,
 `UuidString`, `query`, `NavQuery`/`NavQueryBuilder`/`Predicate`/`Shape` (types),
@@ -114,7 +114,7 @@ VITE_RIPPLE_URL=http://localhost:1337 bunx vite examples/todos   # UI on :5173
 `DatabaseNotFound`, `DbError` (type), `InternalError`, `InvalidRequest`, `NetworkError`,
 `QueryBudgetExceeded`, `TxRejected`, `Unauthorized`, `Unavailable`.
 
-`@ripple/alchemy` = all of the above **plus exactly** (`packages/alchemy/test/surface.test.ts:13-33`):
+`@ramose/alchemy` = all of the above **plus exactly** (`packages/alchemy/test/surface.test.ts:13-33`):
 
 ```javascript
 const ADDS = [
@@ -252,7 +252,7 @@ type RefFn = {
   /** Self-ref; `Namespace` substitutes the enclosing attr map. */
   readonly self: TargetedRef<SelfMarker>;
 } & typeof RefUntargeted &
-  RippleVt<":db.type/ref">;
+  RamoseVt<":db.type/ref">;
 ```
 — `packages/alchemy/src/db/valueTypes.ts:85-95`
 
@@ -273,26 +273,26 @@ Every namespace carries `.id`, usable in `where` / `select` / `orderBy`:
 ### 2.5 The real todos catalog (whole file, verbatim)
 
 ```typescript
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
 import * as Schema from "effect/Schema";
 
-export const Todo = Ripple.Namespace("todo", {
-  title: Ripple.Attr(Schema.String),
-  done: Ripple.Attr(Schema.Boolean),
-  createdAt: Ripple.Attr(Ripple.Instant),
+export const Todo = Ramose.Namespace("todo", {
+  title: Ramose.Attr(Schema.String),
+  done: Ramose.Attr(Schema.Boolean),
+  createdAt: Ramose.Attr(Ramose.Instant),
 });
 
-export const Todos = Ripple.Catalog({ todo: Todo });
+export const Todos = Ramose.Catalog({ todo: Todo });
 ```
 — `examples/todos/schema.ts:1-10`
 
 And the kv-style one, showing `unique`:
 
 ```typescript
-export const User = Ripple.Namespace("user", {
-  name: Ripple.Attr(Schema.String, { unique: "identity" }),
+export const User = Ramose.Namespace("user", {
+  name: Ramose.Attr(Schema.String, { unique: "identity" }),
 });
-export const Movies = Ripple.Catalog({ user: User });
+export const Movies = Ramose.Catalog({ user: User });
 ```
 — `examples/kv-style/schema.ts:10-13`
 
@@ -300,7 +300,7 @@ export const Movies = Ripple.Catalog({ user: User });
 
 ## 3. Getting a db handle
 
-### 3.1 `ripple.db(name, catalog)` — pure
+### 3.1 `ramose.db(name, catalog)` — pure
 
 ```typescript
 /** One method, because a database is a name. */
@@ -316,13 +316,13 @@ It is **pure**: no request, no schema ensure, no socket
 Names are validated client-side; a bad name never reaches the peer:
 
 ```typescript
-/** A Ripple database name, as the peer Worker validates it (`validDbName`). */
+/** A Ramose database name, as the peer Worker validates it (`validDbName`). */
 export const DATABASE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 ```
 — `packages/alchemy/src/DatabaseName.ts:14-15`. A non-matching name makes **every** operation
 on that db fail `InvalidRequest` (`Db.ts:443-446`).
 
-### 3.2 Client construction — `Ripple.layer` + `Ripple.Databases`
+### 3.2 Client construction — `Ramose.layer` + `Ramose.Databases`
 
 ```typescript
 export interface ClientOptions {
@@ -356,23 +356,23 @@ URL or a missing `fetch` is `Effect.die`, i.e. a defect, not a `DbError`
 /**
  * One runtime for the page, disposed with it.
  *
- * `Ripple.layer` is scoped — the session socket is its finalizer — and getting
+ * `Ramose.layer` is scoped — the session socket is its finalizer — and getting
  * a `Databases` out of it cannot fail, so `runSync` is honest here.
- * `ripple.db("todos", Todos)` is pure: naming a database costs no request, and
+ * `ramose.db("todos", Todos)` is pure: naming a database costs no request, and
  * a browser never installs schema (`alchemy.run.ts` does that at deploy).
  */
 
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
 import * as Effect from "effect/Effect";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
 import { Todos } from "../schema.ts";
 
-const token = import.meta.env.VITE_RIPPLE_TOKEN;
+const token = import.meta.env.VITE_RAMOSE_TOKEN;
 
 const runtime = ManagedRuntime.make(
-  Ripple.layer({
-    url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:8787",
+  Ramose.layer({
+    url: import.meta.env.VITE_RAMOSE_URL ?? "http://localhost:8787",
     token:
       token === undefined || token === ""
         ? undefined
@@ -381,29 +381,29 @@ const runtime = ManagedRuntime.make(
 );
 
 export const run = runtime.runPromise;
-export const db = runtime.runSync(Ripple.Databases).db("todos", Todos);
+export const db = runtime.runSync(Ramose.Databases).db("todos", Todos);
 ```
 — `examples/todos/src/db.ts:1-29`
 
 ⚠️ The `http://localhost:8787` fallback on line 20 is stale (see §9.4). In practice the example
-is always run with `VITE_RIPPLE_URL=http://localhost:1337`.
+is always run with `VITE_RAMOSE_URL=http://localhost:1337`.
 
 ### 3.4 From a Worker: the binding *is* the client
 
 ```typescript
-    const ripple = yield* Ripple.ReadWriteDatabases(Server);
+    const ramose = yield* Ramose.ReadWriteDatabases(Server);
 ```
 — `examples/kv-style/app.ts:33`, inside `Cloudflare.Worker(..., Effect.gen(...))`, with
-`.pipe(Effect.provide(Ripple.ServerBinding))` at `app.ts:146`.
+`.pipe(Effect.provide(Ramose.ServerBinding))` at `app.ts:146`.
 
-`Ripple.ReadDatabases` is the least-privilege half: its `db()` returns `ReadDb<C>` —
+`Ramose.ReadDatabases` is the least-privilege half: its `db()` returns `ReadDb<C>` —
 no `transact`, no `install` (`packages/alchemy/src/ReadDatabases.ts:1-8`).
-Transports: `Ripple.ServerBinding` (Worker service binding, synthetic origin
-`https://ripple.internal`, `ServerBinding.ts:35`) or `Ripple.ServerHttp` (public URL over the
+Transports: `Ramose.ServerBinding` (Worker service binding, synthetic origin
+`https://ramose.internal`, `ServerBinding.ts:35`) or `Ramose.ServerHttp` (public URL over the
 ambient `fetch`; also what `Alchemy.Action` and `alchemy dev` use, `ServerHttp.ts:1-19`).
 
 ⚠️ **`ServerBinding` supplies no `webSocket`**, so `db.live` is unavailable under it
-(`Databases.ts:82-85`, `Db.ts:369-378`). Live queries are a browser/`Ripple.layer` feature.
+(`Databases.ts:82-85`, `Db.ts:369-378`). Live queries are a browser/`Ramose.layer` feature.
 
 ---
 
@@ -550,7 +550,7 @@ Read-your-own-write via `dbAfter`:
         });
         // `dbAfter` carries the min-`t` floor, so this reads its own write
         const names = yield* dbAfter.q(
-          Ripple.query(User).select({ name: User.name }),
+          Ramose.query(User).select({ name: User.name }),
         );
 ```
 — `examples/kv-style/app.ts:61-68`
@@ -584,7 +584,7 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
 ```
 — `packages/alchemy/src/db/Db.ts:97-102`
 
-### 5.2 `Ripple.query` — the navigational builder
+### 5.2 `Ramose.query` — the navigational builder
 
 ```typescript
 export interface NavQueryBuilder<N extends AnyNamespace, R = unknown> {
@@ -632,7 +632,7 @@ export type PredTag =
 Nested shapes come from `attr.select({...})` on a `:db.type/ref` attribute, and optionality from
 `attr.optional` (`NavQuery.ts:126-132`).
 
-Scope: `Ripple.query(N)` means "entity carries at least one `:n/*` datom" — lowered as an
+Scope: `Ramose.query(N)` means "entity carries at least one `:n/*` datom" — lowered as an
 `or` over the namespace's idents (`NavQuery.ts:424-430`).
 
 ### 5.3 Real query (verbatim)
@@ -654,7 +654,7 @@ export type TodoRow = {
 };
 
 /** Standing list query — a value, not a callback builder. */
-export const todoQuery = Ripple.query(Todo)
+export const todoQuery = Ramose.query(Todo)
   .orderBy(Todo.createdAt, "asc")
   .select(todoShape);
 ```
@@ -783,7 +783,7 @@ navigational form for new code." Document it as legacy, not as removed.
               queue,
               Cause.die(
                 new Error(
-                  "ripple: db.live needs the session socket — pass `webSocket` to Ripple.layer (or run where a global WebSocket exists)",
+                  "ramose: db.live needs the session socket — pass `webSocket` to Ramose.layer (or run where a global WebSocket exists)",
                 ),
               ),
             );
@@ -863,7 +863,7 @@ const todos = db.live(todoQuery);
 ```
 — `examples/todos/src/App.tsx:6-7`
 
-**There is no React package, no `@ripple/react`, no provider component, no `useQuery`.**
+**There is no React package, no `@ramose/react`, no provider component, no `useQuery`.**
 
 ---
 
@@ -905,7 +905,7 @@ export const DEFAULT_CONFIG: TransactorConfig = {
 ```
 — `packages/transactor/src/host.ts:55-64`
 
-- `RIPPLE_RETAIN_ROOTS` (default **20**) — how many published roots survive GC
+- `RAMOSE_RETAIN_ROOTS` (default **20**) — how many published roots survive GC
   (`transactor-do.ts:32`).
 - The retention function is literally "keep the newest N":
 
@@ -919,10 +919,10 @@ export function retainNewest(n: number): (ts: number[]) => number[] {
 ⚠️ Note the docstring mentions a `maxAgeT` the body does not implement — the shipped behaviour
 is purely "newest N".
 
-- `RIPPLE_GC_EVERY_N_INDEXES` (default **50**) — GC cadence; the sweep is mark-and-sweep against
+- `RAMOSE_GC_EVERY_N_INDEXES` (default **50**) — GC cadence; the sweep is mark-and-sweep against
   the retained roots (`indexer.ts:154`).
 - A root is published per index run, so "20 roots" is roughly "the last 20 index runs", i.e.
-  a function of `RIPPLE_INDEX_TX_THRESHOLD` (500) / `RIPPLE_INDEX_INTERVAL_MS` (5000), **not**
+  a function of `RAMOSE_INDEX_TX_THRESHOLD` (500) / `RAMOSE_INDEX_INTERVAL_MS` (5000), **not**
   a wall-clock window. Do not promise users "N days of history".
 - Manual sweep: `POST /db/:name/admin/gc` (`docs/RUNBOOK.md:117-119`).
 
@@ -933,22 +933,22 @@ is purely "newest N".
 ### 8.1 Three modes, selected by env
 
 ```
- *   unset  legacy — open, or a shared `RIPPLE_TOKEN` if one is set; class `admin`
- *   set    JWT only; `RIPPLE_TOKEN` is not a data-plane principal on `/db/:name`
+ *   unset  legacy — open, or a shared `RAMOSE_TOKEN` if one is set; class `admin`
+ *   set    JWT only; `RAMOSE_TOKEN` is not a data-plane principal on `/db/:name`
 ```
 — `packages/worker/src/auth.ts:3-5`
 
-| `RIPPLE_POLICY` | `RIPPLE_TOKEN` | result |
+| `RAMOSE_POLICY` | `RAMOSE_TOKEN` | result |
 |---|---|---|
 | unset | unset | **open** — every caller is `service`/`admin` |
 | unset | set | shared-token mode — matching bearer = one service principal, class `admin`; anything else `Unauthorized` |
-| set | either | **JWT only.** `RIPPLE_TOKEN` becomes class `$token` and reaches only `/health` and the no-op `ensure` case |
+| set | either | **JWT only.** `RAMOSE_TOKEN` becomes class `$token` and reaches only `/health` and the no-op `ensure` case |
 
 ```typescript
-export async function principalForToken(env: RippleEnv, token: string | undefined, dbName: string): Promise<Principal> {
+export async function principalForToken(env: RamoseEnv, token: string | undefined, dbName: string): Promise<Principal> {
   const st = authState(env);
   if (!st.configured) {
-    if (!env.RIPPLE_TOKEN || token === env.RIPPLE_TOKEN) return serviceAdmin(dbName);
+    if (!env.RAMOSE_TOKEN || token === env.RAMOSE_TOKEN) return serviceAdmin(dbName);
     throw new Unauthorized({});
   }
   if (st.broken !== undefined || st.policy === undefined || st.keys === undefined) throw new Unauthorized({});
@@ -956,7 +956,7 @@ export async function principalForToken(env: RippleEnv, token: string | undefine
     if (st.policy.classes.includes(ANONYMOUS_CLASS)) return anonymousPrincipal(dbName);
     throw new Unauthorized({});
   }
-  if (env.RIPPLE_TOKEN && token === env.RIPPLE_TOKEN) return tokenOnly(dbName);
+  if (env.RAMOSE_TOKEN && token === env.RAMOSE_TOKEN) return tokenOnly(dbName);
   return verify(st, token, dbName);
 }
 ```
@@ -969,16 +969,16 @@ Tokenless callers get in **only** if the policy declares an `anonymous` class
 
 ```typescript
 export const AUTH_ENV_KEYS = {
-  policy: "RIPPLE_POLICY",
-  jwksUrl: "RIPPLE_JWKS_URL",
-  issuers: "RIPPLE_JWT_ISS",
-  aud: "RIPPLE_JWT_AUD",
-  maxTtl: "RIPPLE_JWT_MAX_TTL",
-  allowedOrigins: "RIPPLE_ALLOWED_ORIGINS",
-  internalSecret: "RIPPLE_INTERNAL_SECRET",
+  policy: "RAMOSE_POLICY",
+  jwksUrl: "RAMOSE_JWKS_URL",
+  issuers: "RAMOSE_JWT_ISS",
+  aud: "RAMOSE_JWT_AUD",
+  maxTtl: "RAMOSE_JWT_MAX_TTL",
+  allowedOrigins: "RAMOSE_ALLOWED_ORIGINS",
+  internalSecret: "RAMOSE_INTERNAL_SECRET",
 } as const satisfies Record<keyof PeerAuth, string>;
 
-/** Cap on a token's lifetime when `RIPPLE_JWT_MAX_TTL` is unset, in seconds. */
+/** Cap on a token's lifetime when `RAMOSE_JWT_MAX_TTL` is unset, in seconds. */
 export const DEFAULT_JWT_MAX_TTL = 900;
 ```
 — `packages/alchemy/src/Server.ts:139-151`
@@ -986,8 +986,8 @@ export const DEFAULT_JWT_MAX_TTL = 900;
 Plus, only on the Worker side (not in `AUTH_ENV_KEYS`, not settable via `authEnv`):
 
 ```typescript
-  /** test/offline seam: a literal JWK Set, used when RIPPLE_JWKS_URL is unset */
-  RIPPLE_JWKS_JSON?: string;
+  /** test/offline seam: a literal JWK Set, used when RAMOSE_JWKS_URL is unset */
+  RAMOSE_JWKS_JSON?: string;
 ```
 — `packages/transactor/src/env.ts:18-19`
 
@@ -995,13 +995,13 @@ Verifier: algorithms are pinned, never taken from the token header —
 `const ALGS = ["RS256", "ES256", "EdDSA"];` (`auth.ts:31`). Verified principals are memoized
 per isolate for `PRINCIPAL_MEMO_MS = 60_000` (`auth.ts:35`).
 
-Fail-closed at deploy: `Ripple.Server`'s `checkAuth` refuses a stack where `auth.policy` is set
+Fail-closed at deploy: `Ramose.Server`'s `checkAuth` refuses a stack where `auth.policy` is set
 but `jwksUrl` / `issuers` / `aud` are not (`Server.ts:223-237`). Fail-closed at runtime:
 a malformed policy or incomplete verifier sets `broken` and denies every `/db/*`
 (`auth.ts:77-97`), and the writer substitutes a `DENY_ALL` policy
 (`packages/transactor/src/policy.ts:42-53`).
 
-CORS: with no policy, today's `*`. With a policy, `RIPPLE_ALLOWED_ORIGINS` narrows it; an empty
+CORS: with no policy, today's `*`. With a policy, `RAMOSE_ALLOWED_ORIGINS` narrows it; an empty
 list means **no** `access-control-allow-origin` header at all (`auth.ts:321-332`).
 
 A configured policy also disables the demo console at `/` (`packages/worker/src/index.ts:348`).
@@ -1015,7 +1015,7 @@ export const Claims = Schema.Struct({
   aud: Schema.String,
   exp: Schema.Number,
   iat: Schema.optional(Schema.Number),
-  ripple: Schema.Struct({
+  ramose: Schema.Struct({
     db: Schema.String,
     class: Schema.String,
     attrs: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
@@ -1024,13 +1024,13 @@ export const Claims = Schema.Struct({
 ```
 — `packages/alchemy/src/db/Policy.ts:105-116`
 
-`ripple.db` must equal the `/db/:name` in the route (`auth.ts:221`, `allows`). `ripple.class`
+`ramose.db` must equal the `/db/:name` in the route (`auth.ts:221`, `allows`). `ramose.class`
 must be one the policy declared, else `Unauthorized` with
 `"token class is not declared by this peer's policy"` (`auth.ts:204`).
 
 ### 8.4 The policy DSL — exact API
 
-`Ripple.Policy` (deploy-time only; not on `@ripple/alchemy/db`).
+`Ramose.Policy` (deploy-time only; not on `@ramose/alchemy/db`).
 
 | export | signature | source |
 |---|---|---|
@@ -1082,21 +1082,21 @@ over-deep `ref` nesting all `throw PolicyError` (`Policy.ts:300-384`).
 From `docs/AUTH_LAYER.md:30-60` (the design doc; this is the canonical authoring example):
 
 ```typescript
-import * as Ripple from "@ripple/alchemy";   // `Policy` is deploy-time, so it is not on `@ripple/alchemy/db`
+import * as Ramose from "@ramose/alchemy";   // `Policy` is deploy-time, so it is not on `@ramose/alchemy/db`
 
-const User    = Ripple.Namespace("user", { sub: Ripple.Attr(Schema.String, { unique: "identity" }) });
-const Org     = Ripple.Namespace("org",  { members: Ripple.Attr(Ripple.Ref, { cardinality: "many" }) });
-const Project = Ripple.Namespace("project", { org: Ripple.Attr(Ripple.Ref) });
-const Doc     = Ripple.Namespace("doc", { title: Ripple.Attr(Schema.String), owner: Ripple.Attr(Ripple.Ref),
-                                            project: Ripple.Attr(Ripple.Ref), audit: Ripple.Attr(Schema.String) });
-export const App = Ripple.Catalog({ user: User, org: Org, project: Project, doc: Doc });
+const User    = Ramose.Namespace("user", { sub: Ramose.Attr(Schema.String, { unique: "identity" }) });
+const Org     = Ramose.Namespace("org",  { members: Ramose.Attr(Ramose.Ref, { cardinality: "many" }) });
+const Project = Ramose.Namespace("project", { org: Ramose.Attr(Ramose.Ref) });
+const Doc     = Ramose.Namespace("doc", { title: Ramose.Attr(Schema.String), owner: Ramose.Attr(Ramose.Ref),
+                                            project: Ramose.Attr(Ramose.Ref), audit: Ramose.Attr(Schema.String) });
+export const App = Ramose.Catalog({ user: User, org: Org, project: Project, doc: Doc });
 
-const P = Ripple.Policy;
+const P = Ramose.Policy;
 const inOrg = P.ref(Doc.project, P.ref(Project.org, Org.members));   // doc → project → org → members ∋ principal
 export const policy = P.policy(App, {
   principal: User.sub,                              // JWT `sub` → eid
   classes: ["anonymous", "member", "admin"],
-  claims:  Schema.Struct({ org: Schema.String }),   // shape of `ripple.attrs`
+  claims:  Schema.Struct({ org: Schema.String }),   // shape of `ramose.attrs`
   ns: {
     doc: {
       read:          P.allow(P.or(P.eq(Doc.owner, P.principal), inOrg)),
@@ -1116,22 +1116,22 @@ export const policy = P.policy(App, {
 Wiring it into a deploy (`packages/alchemy/src/Server.ts:186-192`):
 
 ```typescript
- * export const RippleWorker = Cloudflare.Worker("RippleWorker", {
+ * export const RamoseWorker = Cloudflare.Worker("RamoseWorker", {
  *   main: "./packages/worker/src/index.ts",
- *   env: { STORE: Store, ...Ripple.authEnv({ policy, jwksUrl, issuers, aud }) },
+ *   env: { STORE: Store, ...Ramose.authEnv({ policy, jwksUrl, issuers, aud }) },
  * });
 ```
 
 The root stack does it from the environment (`alchemy.run.ts:53-64`, `:83`):
 
 ```typescript
-const auth: Ripple.PeerAuth = {
-  policy: process.env.RIPPLE_POLICY,
-  jwksUrl: process.env.RIPPLE_JWKS_URL,
-  issuers: process.env.RIPPLE_JWT_ISS,
-  aud: process.env.RIPPLE_JWT_AUD,
-  maxTtl: process.env.RIPPLE_JWT_MAX_TTL === undefined ? undefined : Number(process.env.RIPPLE_JWT_MAX_TTL),
-  allowedOrigins: process.env.RIPPLE_ALLOWED_ORIGINS,
+const auth: Ramose.PeerAuth = {
+  policy: process.env.RAMOSE_POLICY,
+  jwksUrl: process.env.RAMOSE_JWKS_URL,
+  issuers: process.env.RAMOSE_JWT_ISS,
+  aud: process.env.RAMOSE_JWT_AUD,
+  maxTtl: process.env.RAMOSE_JWT_MAX_TTL === undefined ? undefined : Number(process.env.RAMOSE_JWT_MAX_TTL),
+  allowedOrigins: process.env.RAMOSE_ALLOWED_ORIGINS,
 ```
 
 ### 8.6 Enforcement points
@@ -1141,7 +1141,7 @@ const auth: Ripple.PeerAuth = {
 
 ```typescript
 export async function viewDb(
-  env: RippleEnv,
+  env: RamoseEnv,
   principal: Principal,
   store: NodeSource,
   basis: Basis,
@@ -1160,7 +1160,7 @@ export async function viewDb(
 2. **Writes, stage (a) — ingress pre-check**, best-effort, against the replica basis:
 
 ```typescript
-export async function checkWrite(env: RippleEnv, principal: Principal, store: NodeSource, basis: Basis, tx: unknown[]): Promise<WriteCheck> {
+export async function checkWrite(env: RamoseEnv, principal: Principal, store: NodeSource, basis: Basis, tx: unknown[]): Promise<WriteCheck> {
 ```
 — `packages/worker/src/auth.ts:295`, denial at `:313`:
 ```typescript
@@ -1217,7 +1217,7 @@ export const compile = (p: Policy, options?: CompileOptions): string => {
 ```
 — `packages/alchemy/src/db/Policy.ts:474-476`
 
-⚠️ It is **opt-in**: `Ripple.Policy.compile(policy)` without `{ pulls: [...] }` skips it entirely.
+⚠️ It is **opt-in**: `Ramose.Policy.compile(policy)` without `{ pulls: [...] }` skips it entirely.
 Docs should show `compile(policy, { pulls: [todoShape, ...] })`.
 
 `compile` also round-trips the JSON through core's `parsePolicy` and fails if core rejects it
@@ -1225,7 +1225,7 @@ Docs should show `compile(policy, { pulls: [todoShape, ...] })`.
 
 ### 8.9 Running a policy locally / minting a test JWT
 
-❌ **There is no shipped helper to mint a JWT.** Ripple verifies, never issues
+❌ **There is no shipped helper to mint a JWT.** Ramose verifies, never issues
 (`docs/AUTH_LAYER.md:130`). The only minting code in the repo is a test fixture:
 
 ```typescript
@@ -1243,14 +1243,14 @@ beforeAll(async () => {
 
 /** A token for `db` with `class` (and optional app attrs). */
 const token = (db: string, cls: string, sub = "user_ada", attrs?: Record<string, unknown>, over?: Record<string, unknown>) =>
-  sign({ ripple: { db, class: cls, ...(attrs === undefined ? {} : { attrs }) } }, { sub, ...over });
+  sign({ ramose: { db, class: cls, ...(attrs === undefined ? {} : { attrs }) } }, { sub, ...over });
 ```
 — `packages/worker/test/auth.test.ts:22-36`
 
-The offline path it uses is the shipped `RIPPLE_JWKS_JSON` seam: set it to a literal JWK Set
-instead of `RIPPLE_JWKS_URL` (`auth.ts:72-75`). That is the honest "run a policy locally"
+The offline path it uses is the shipped `RAMOSE_JWKS_JSON` seam: set it to a literal JWK Set
+instead of `RAMOSE_JWKS_URL` (`auth.ts:72-75`). That is the honest "run a policy locally"
 recipe — write ~15 lines with `jose`, feed the public JWK to the peer, and hand-sign tokens.
-There is no `ripple mint-token` CLI, and there is no CLI at all.
+There is no `ramose mint-token` CLI, and there is no CLI at all.
 
 ---
 
@@ -1260,7 +1260,7 @@ There is no `ripple mint-token` CLI, and there is no CLI at all.
 
 ```typescript
 export type Server = Resource<
-  "Ripple.Server",
+  "Ramose.Server",
   ServerProps,
   {
     /** Base URL, no trailing slash. */
@@ -1299,7 +1299,7 @@ never under `alchemy dev` (`Server.ts:398-408`).
 export type DatabaseProps = {
   /** The server that serves this name. */
   server: Server;
-  /** The catalog to install. `Ripple.Catalog({ … })`, shared with the app. */
+  /** The catalog to install. `Ramose.Catalog({ … })`, shared with the app. */
   catalog: Catalog.Any;
   /** The database name. @default the resource's logical id */
   name?: string;
@@ -1307,37 +1307,37 @@ export type DatabaseProps = {
 ```
 — `packages/alchemy/src/Database.ts:47-55`
 
-`Ripple.Database` provisions nothing — its `reconcile` runs `db.install()` (one idempotent
+`Ramose.Database` provisions nothing — its `reconcile` runs `db.install()` (one idempotent
 transaction) and its `delete` is a **no-op** so forgetting the resource never erases a log
 (`Database.ts:160-176`). Outputs: `{ name, server, t }` (`Database.ts:57-70`).
 
 ### 9.2 The full runnable stack (verbatim)
 
 ```typescript
-import * as Ripple from "@ripple/alchemy";
+import * as Ramose from "@ramose/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 
 const Store = Cloudflare.R2.Bucket("Store");
 const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "TransactorDO" });
 const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
 
-export const RippleWorker = Cloudflare.Worker("Peer", {
+export const RamoseWorker = Cloudflare.Worker("Peer", {
   main: "./packages/worker/src/index.ts",
   compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
   env: { STORE: Store, TRANSACTOR: Transactor, REPLICA: Replica },
 });
 
-export const Server = Ripple.Server("Ripple", { worker: RippleWorker });
+export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
 ```
 — `examples/todos/resources.ts:1-14` (whole file)
 
 ```typescript
-export const TodosDb = Ripple.Database("todos", { server: Server, catalog: Todos });
+export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
 
 export default Alchemy.Stack(
   "ripple-todos",
   {
-    providers: Layer.mergeAll(Cloudflare.providers(), Ripple.providers()),
+    providers: Layer.mergeAll(Cloudflare.providers(), Ramose.providers()),
     state: Alchemy.localState(),
   },
   Effect.gen(function* () {
@@ -1349,7 +1349,7 @@ export default Alchemy.Stack(
 ```
 — `examples/todos/alchemy.run.ts:18-31`
 
-Note `Ripple.providers()` **must** be merged alongside `Cloudflare.providers()`
+Note `Ramose.providers()` **must** be merged alongside `Cloudflare.providers()`
 (`packages/alchemy/src/Providers.ts:28-32`).
 
 ⚠️ The examples pin `state: Alchemy.localState()` unconditionally; the root stack switches on
@@ -1392,7 +1392,7 @@ export const DEFAULT_DEV_PORT = 1337;
 | `examples/todos/README.md:10-11` | `README.md:32` |
 | `CONTRIBUTING.md:24` | `examples/todos/alchemy.run.ts:2` |
 | `bench/read-do.bench.ts:5` | `examples/todos/src/db.ts:20` (fallback) |
-| | `test/e2e/ripple.e2e.test.ts:5` |
+| | `test/e2e/ramose.e2e.test.ts:5` |
 | | `bench/write-do.bench.ts:5` |
 
 **For `examples/todos`: use `http://localhost:1337`.** The Vite UI is on `:5173`.
@@ -1428,7 +1428,7 @@ Classification is by the DO-supplied `tag` field first, then by status
 
 ```typescript
 /** Tagged failure → status + body fields. Pure; index.ts turns it into a `Response`. */
-export function toHttp(err: RippleError): HttpError {
+export function toHttp(err: RamoseError): HttpError {
   switch (err._tag) {
     case "NotFound":
       return { status: 404, body: { error: text(err.message, "not found") } };
@@ -1496,8 +1496,8 @@ them as things a user catches. The eight in §10.1 are what users see.
 ```
 — `packages/worker/src/index.ts:11-19`
 
-Read-path request headers (`packages/worker/src/index.ts:4-9`): `x-ripple-replica-hint`,
-`x-ripple-cache-basis`, `x-ripple-cache-mode`, `x-ripple-min-t`. Response header `x-ripple-ms`.
+Read-path request headers (`packages/worker/src/index.ts:4-9`): `x-ramose-replica-hint`,
+`x-ramose-cache-basis`, `x-ramose-cache-mode`, `x-ramose-min-t`. Response header `x-ramose-ms`.
 
 ---
 
@@ -1518,7 +1518,7 @@ Put these in the docs; they are all load-bearing.
    — `docs/RUNBOOK.md:67-69`. Also: no cross-database policy rules
    (`docs/AUTH_LAYER.md:130`).
 
-3. **Query memory budget → 413.** `RIPPLE_QUERY_MAX_CELLS`, default **1,572,864 cells (~48 MB)**
+3. **Query memory budget → 413.** `RAMOSE_QUERY_MAX_CELLS`, default **1,572,864 cells (~48 MB)**
    (`packages/core/src/query/engine.ts:60`, `docs/RUNBOOK.md:85`). Over-budget queries fail
    `QueryBudgetExceeded` and are **terminal for `live`** — the stream will not retry them
    (`Db.ts:160-164`).
@@ -1542,7 +1542,7 @@ Put these in the docs; they are all load-bearing.
 
 8. **Tempids are not returned.** See §4.2.
 
-9. **`asOf` reach is bounded by `RIPPLE_RETAIN_ROOTS` (20 roots)**, not by time. See §7.
+9. **`asOf` reach is bounded by `RAMOSE_RETAIN_ROOTS` (20 roots)**, not by time. See §7.
 
 10. **Against an uninstalled database**, behaviours differ per operation:
     > `q` fails `InvalidRequest`, `transact` fails `TxRejected`, `pull` silently omits the
@@ -1563,13 +1563,13 @@ Put these in the docs; they are all load-bearing.
 
 15. **The engine's aggregate/graph surface is not exposed navigationally.** No `count`, `sum`,
     `groupBy`, `traverse`, reverse refs, `in`, `some`/`every`/`none`, `endsWith`/`matches`,
-    `Ripple.or`/`not`/`when`/`params`, `db.changes` — all listed under "Not yet"
+    `Ramose.or`/`not`/`when`/`params`, `db.changes` — all listed under "Not yet"
     (`docs/QUERY.md:184-196`).
 
 16. **One policy per deployed Worker**, one catalog. Per-db policy variants are an open question
     (`docs/AUTH_LAYER.md:74`, `:136`).
 
-17. **Deleting a `Ripple.Database` or `Ripple.Server` resource deletes no data.** Dropping data
+17. **Deleting a `Ramose.Database` or `Ramose.Server` resource deletes no data.** Dropping data
     is a separate manual act — empty the bucket, delete the DO namespaces
     (`Database.ts:171-175`, `Server.ts:389-395`).
 
@@ -1584,11 +1584,11 @@ the defects, worst first.
 ### 12.1 🔴 Blocker — the quickstart's client snippet crashes on the default open peer
 
 ```ts
-    token: Effect.succeed(Redacted.make(import.meta.env.VITE_RIPPLE_TOKEN)),
+    token: Effect.succeed(Redacted.make(import.meta.env.VITE_RAMOSE_TOKEN)),
 ```
 — `website/src/content/docs/getting-started/quickstart.md:104`
 
-With no `VITE_RIPPLE_TOKEN` set (the documented default — the local peer is open), this is
+With no `VITE_RAMOSE_TOKEN` set (the documented default — the local peer is open), this is
 `Redacted.make(undefined)`. The client then does:
 
 ```typescript
@@ -1602,7 +1602,7 @@ With no `VITE_RIPPLE_TOKEN` set (the documented default — the local peer is op
 `undefined.length` → **TypeError on the first request**. The real example guards for it:
 
 ```typescript
-const token = import.meta.env.VITE_RIPPLE_TOKEN;
+const token = import.meta.env.VITE_RAMOSE_TOKEN;
 ...
     token:
       token === undefined || token === ""
@@ -1616,8 +1616,8 @@ inherited it from there.)
 
 ### 12.2 🔴 Wrong port — 8787 should be 1337
 
-- `quickstart.md:20` — `VITE_RIPPLE_URL=http://localhost:8787 bunx vite examples/todos`
-- `quickstart.md:103` — `url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:8787"`
+- `quickstart.md:20` — `VITE_RAMOSE_URL=http://localhost:8787 bunx vite examples/todos`
+- `quickstart.md:103` — `url: import.meta.env.VITE_RAMOSE_URL ?? "http://localhost:8787"`
 
 `alchemy dev` defaults to **1337** (`node_modules/alchemy/src/Cloudflare/Workers/ViteChild.shared.ts:17`,
 `.../Worker.ts:898-903`). 8787 is wrangler's default. See §9.4 for the full table of which repo
@@ -1638,7 +1638,7 @@ is the (design-doc) source of this error. See §8.7.
 ### 12.4 🟠 `guides/workers.md` snippet does not compile
 
 `website/src/content/docs/guides/workers.md:13-37`:
-- imports `{ Movies }` but the body uses **`Movie`** (`Movie.title` at :26, `Ripple.query(Movie)` at :30) — never imported.
+- imports `{ Movies }` but the body uses **`Movie`** (`Movie.title` at :26, `Ramose.query(Movie)` at :30) — never imported.
 - uses `HttpServerRequest.HttpServerRequest` (:25) and `HttpServerResponse.json` (:34) with no imports.
 
 The working original imports both explicitly (`examples/kv-style/app.ts:18-21`). Either import
@@ -1646,12 +1646,12 @@ them or elide the body with a comment; do not ship a snippet that fails `tsc`.
 
 ### 12.5 🟠 `guides/workers.md:48` overstates `ReadWriteDatabases`
 
-> `Ripple.ReadWriteDatabases(Server)` grants `q`, `pull`, `live`, `asOf`, `history`, `transact`, `install`
+> `Ramose.ReadWriteDatabases(Server)` grants `q`, `pull`, `live`, `asOf`, `history`, `transact`, `install`
 
-`live` is in the *type*, but under `Ripple.ServerBinding` (the transport that same page
+`live` is in the *type*, but under `Ramose.ServerBinding` (the transport that same page
 recommends at :59) there is no `webSocket`, so calling it **dies** with
-`"ripple: db.live needs the session socket"` (`Db.ts:369-378`, `Databases.ts:82-85`). Add the
-caveat: live queries are a browser / `Ripple.layer` feature.
+`"ramose: db.live needs the session socket"` (`Db.ts:369-378`, `Databases.ts:82-85`). Add the
+caveat: live queries are a browser / `Ramose.layer` feature.
 
 ### 12.6 🟠 Wrong type signatures in `reference/alchemy-resources.md`
 
@@ -1683,23 +1683,23 @@ stage (a) can spuriously deny a write stage (b) would allow (`docs/AUTH_LAYER.md
 ### 12.9 🟡 `guides/auth.md:124-126` — the masked-attribute check is opt-in
 
 It only runs when you pass `pulls` to `compile` (`packages/alchemy/src/db/Policy.ts:474-476`).
-`Ripple.Policy.compile(policy)` alone silently skips it. The page implies it is automatic. Show
+`Ramose.Policy.compile(policy)` alone silently skips it. The page implies it is automatic. Show
 `compile(policy, { pulls: [shape1, shape2] })`.
 
 ### 12.10 🟡 `guides/auth.md:138` mints an internal secret unconditionally
 
 ```ts
-  internalSecret: Ripple.internalSecret(process.env.RIPPLE_INTERNAL_SECRET),
+  internalSecret: Ramose.internalSecret(process.env.RAMOSE_INTERNAL_SECRET),
 ```
 
 The repo guards it on a policy being configured:
 
 ```typescript
-  internalSecret: process.env.RIPPLE_POLICY === undefined ? undefined : Ripple.internalSecret(process.env.RIPPLE_INTERNAL_SECRET),
+  internalSecret: process.env.RAMOSE_POLICY === undefined ? undefined : Ramose.internalSecret(process.env.RAMOSE_INTERNAL_SECRET),
 ```
 — `alchemy.run.ts:63`
 
-As written, an unpinned `RIPPLE_INTERNAL_SECRET` mints a fresh random secret on **every deploy**
+As written, an unpinned `RAMOSE_INTERNAL_SECRET` mints a fresh random secret on **every deploy**
 even with no policy, arming the Worker→DO gate (`Server.ts:212-216`). Harmless in the
 single-script layout but it is not what the repo does.
 
@@ -1719,13 +1719,13 @@ decorative. Even on a landing page, ship the flags or mark the block as elided.
 
 ### 12.12 🟡 `reference/configuration.md:29-30` — "no default" is wrong
 
-`RIPPLE_CACHE_BASIS`, `RIPPLE_CACHE_MODE` and `RIPPLE_REPLICA_HINT` all have effective defaults:
+`RAMOSE_CACHE_BASIS`, `RAMOSE_CACHE_MODE` and `RAMOSE_REPLICA_HINT` all have effective defaults:
 
 ```
- * `x-ripple-replica-hint: wnam|enam|…|auto|continent` picks the replica DO placement
- * (hint is part of the DO id; default `auto` = colo→hint); `x-ripple-cache-basis: 0|1`
+ * `x-ramose-replica-hint: wnam|enam|…|auto|continent` picks the replica DO placement
+ * (hint is part of the DO id; default `auto` = colo→hint); `x-ramose-cache-basis: 0|1`
  * (default 1) reuses an isolate-cached basis instead of calling the replica each read;
- * `x-ripple-cache-mode: ttl|peer` (default ttl = 5 s) picks the cache's consistency story;
+ * `x-ramose-cache-mode: ttl|peer` (default ttl = 5 s) picks the cache's consistency story;
 ```
 — `packages/worker/src/index.ts:5-8`
 
@@ -1742,7 +1742,7 @@ Likewise `reference/client-api.md:52` omits `.build()` from the query builder.
   (`docs/RUNBOOK.md:117`).
 - `guides/live-queries.md:33` says `useLive` is "twelve lines"; the function is 13
   (`examples/todos/src/useLive.ts:15-27`). The repo says twelve too — leave it or say "a dozen".
-- `reference/alchemy-resources.md` and `reference/client-api.md` never mention `Ripple.Policy`,
+- `reference/alchemy-resources.md` and `reference/client-api.md` never mention `Ramose.Policy`,
   though `guides/auth.md` uses ~12 of its combinators. Add it to the exported-name table.
 
 ### 12.15 ✅ Claims I checked that are correct (don't "fix" these)
@@ -1793,30 +1793,30 @@ Ranked by how much pain the omission causes.
    is no documented way to get the eid of an entity you just created other than querying for it.
    `guides/transactions.md` should say so outright. See §4.2.
 
-6. **`asOf` reach is bounded by `RIPPLE_RETAIN_ROOTS` (20 roots), and it is roots, not days.**
+6. **`asOf` reach is bounded by `RAMOSE_RETAIN_ROOTS` (20 roots), and it is roots, not days.**
    `concepts/time-travel.md:46-47` mentions the var but not that GC *deletes* the segments
    behind older roots, that retention is literally `ts.slice(-n)`
    (`packages/storage/src/index.ts:414-417`), or that "20 roots" ≈ "the last 20 index runs",
-   which depends on `RIPPLE_INDEX_TX_THRESHOLD`. Users will assume history is forever.
+   which depends on `RAMOSE_INDEX_TX_THRESHOLD`. Users will assume history is forever.
 
 7. **`db.asOf` takes a transaction number, not a `Date`.** Nowhere stated. `asOf(date)` is
    roadmap only (`docs/QUERY.md:227`).
 
-8. **`Ripple.query(...).offset(n)` and `.build()`** exist and are absent from the reference
+8. **`Ramose.query(...).offset(n)` and `.build()`** exist and are absent from the reference
    table (`reference/client-api.md:52`). `offset` appears in `guides/queries.md:44` but with no
    explanation that it too is client-side.
 
 9. **The `Attr` options nobody documents**: `index`, `isComponent`, `doc`, `valueType`.
    `guides/catalog.md:60-66` covers only `unique` and `cardinality`. Notably `index` defaults to
    *"true iff `unique` is set"* (`Attribute.ts:78`), and `valueType` is **required** for any
-   Schema that is not string/number/boolean or a Ripple helper (`valueTypes.ts:194-202` throws).
+   Schema that is not string/number/boolean or a Ramose helper (`valueTypes.ts:194-202` throws).
    A user who writes `Attr(Schema.Struct({...}))` gets a runtime throw with no doc coverage.
 
 10. **`attrName`, not `name`.** Navigational attribute metadata uses `attrName` so a path like
     `Todo.owner.name` isn't shadowed by the attribute's own name field (`docs/QUERY.md:61-63`).
     Anyone with a `name` attribute needs to know this.
 
-11. **`Ripple.Policy`'s exported surface is undocumented as a reference.** `guides/auth.md`
+11. **`Ramose.Policy`'s exported surface is undocumented as a reference.** `guides/auth.md`
     uses `P.policy`, `P.allow`, `P.deny`, `P.eq`, `P.ref`, `P.or`, `P.and`, `P.not`, `P.class`,
     `P.preset`, `P.attr`, `P.principal`, `P.claims` — none appear in any reference table.
     Missing entirely: `P.constant`, `P.lit`, `P.claimsOf(struct)`, `P.Claims`, `P.checkPulls`,
@@ -1824,7 +1824,7 @@ Ranked by how much pain the omission causes.
 
 12. **There is no way to mint a JWT and no CLI.** `guides/auth.md` explains policies at length
     but never tells a reader how to actually get a token to test with. The shipped seam is
-    `RIPPLE_JWKS_JSON` (a literal JWK Set, `auth.ts:72-75`) plus ~15 lines of `jose`. A
+    `RAMOSE_JWKS_JSON` (a literal JWK Set, `auth.ts:72-75`) plus ~15 lines of `jose`. A
     "run a policy locally" recipe based on `packages/worker/test/auth.test.ts:22-36` would be
     high-value. See §8.9.
 
@@ -1833,24 +1833,24 @@ Ranked by how much pain the omission causes.
     `:168-171`). `guides/auth.md:48-49` mentions it in passing; it deserves to be a callout,
     because it is how you build public-read apps.
 
-14. **`$token` is also magic.** Under a policy, `RIPPLE_TOKEN`'s holder gets class `$token`,
+14. **`$token` is also magic.** Under a policy, `RAMOSE_TOKEN`'s holder gets class `$token`,
     which is deliberately undeclarable, so every rule denies it (`auth.ts:38-42`). Explains the
-    otherwise-baffling "my `RIPPLE_TOKEN` stopped working when I turned on a policy".
+    otherwise-baffling "my `RAMOSE_TOKEN` stopped working when I turned on a policy".
 
 15. **Deploy-time fail-closed check.** Setting `auth.policy` without `jwksUrl`/`issuers`/`aud`
     **fails the deploy** with a specific message (`Server.ts:223-237`). Worth documenting as a
     feature so the error is recognisable.
 
-16. **`Ripple.Server`'s health probe defaults** — 30 attempts × 2000 ms, `probe: false` to skip
+16. **`Ramose.Server`'s health probe defaults** — 30 attempts × 2000 ms, `probe: false` to skip
     (`Server.ts:83-89`, `:341-350`). A slow first workers.dev propagation looks like a hang
     otherwise.
 
-17. **Destroying a resource destroys no data.** `Ripple.Database.delete` and
-    `Ripple.Server.delete` are deliberate no-ops (`Database.ts:171-175`, `Server.ts:389-395`).
+17. **Destroying a resource destroys no data.** `Ramose.Database.delete` and
+    `Ramose.Server.delete` are deliberate no-ops (`Database.ts:171-175`, `Server.ts:389-395`).
     Both a safety guarantee and a footgun (`alchemy destroy` leaves R2 + DOs behind, and you pay
     for them). Not mentioned on `guides/deploy.md`.
 
-18. **`Ripple.ReadDatabases` has no write-only twin, by design** (`ReadDatabases.ts:5-8`) — a
+18. **`Ramose.ReadDatabases` has no write-only twin, by design** (`ReadDatabases.ts:5-8`) — a
     one-line answer to an obvious question.
 
 19. **Legacy builder extras.** `explain(...)` and `find(...).pull(pattern)` exist on the callback
@@ -1862,7 +1862,7 @@ Ranked by how much pain the omission causes.
     bound you need for catalog-generic helper functions (`Catalog.ts:23-26`), which is the first
     thing anyone writing a shared utility hits.
 
-21. **The `x-ripple-min-t` / `x-ripple-cache-*` request headers** are documented as *response*
+21. **The `x-ramose-min-t` / `x-ramose-cache-*` request headers** are documented as *response*
     headers only (`reference/http-api.md:48-52`). They are inbound knobs
     (`packages/worker/src/index.ts:4-9`), which matters for anyone tuning read freshness.
 
@@ -1907,14 +1907,14 @@ Site pages that carried the stale claims were swept in cycle 2 (`guides/queries.
 
 ### Also after #49, #53, #54 (second rebase)
 
-- **#54 `Ripple.connect(options): Client`** — `{ db(name, catalog), close() }`, the promise-land
-  entry over the same factory as `Ripple.layer`; no `ManagedRuntime`, no `run`. Every `Db`
+- **#54 `Ramose.connect(options): Client`** — `{ db(name, catalog), close() }`, the promise-land
+  entry over the same factory as `Ramose.layer`; no `ManagedRuntime`, no `run`. Every `Db`
   method has `R = never`, so `Effect.runPromise(db.transact(…))` is the browser idiom.
   `examples/todos/src/db.ts` exports only `db` now (`packages/alchemy/src/db/Databases.ts`,
   `db/index.ts`). Anything on the site that taught `run(…)` from `db.ts` was ported.
 - **#49 query slice** — predicates `in`, `endsWith`, `matches` (RegExp, no flags — flagged
   patterns are rejected), ref `is`; quantifiers `some` / `every` / `none` on card-many refs;
-  `Ripple.or` / `Ripple.not` (exported from `@ripple/alchemy/db`, `db/index.ts:36`); `.reverse`
+  `Ramose.or` / `Ramose.not` (exported from `@ramose/alchemy/db`, `db/index.ts:36`); `.reverse`
   backlinks in `where` and `select` (always many; `[]` when none; bare `.reverse` in a shape is
   rejected; `orderBy` across one is rejected). Source: `NavQuery.ts:104-114`, `:418-447`,
   `docs/QUERY.md`.
@@ -1924,17 +1924,18 @@ Site pages that carried the stale claims were swept in cycle 2 (`guides/queries.
 
 ### Also after #50–#57, #62 (third rebase)
 
-- **#51 `Ripple.Row<Q>` / `Ripple.Rows<Q>`** — row type named from a query value or builder
-  (`NavQuery.ts:624-637`, exported from `@ripple/alchemy/db`). `examples/todos/src/todos.ts`
-  now defines `TodoRow = Ripple.Row<typeof todoQuery>`.
+- **#51 `Ramose.Row<Q>` / `Ramose.Rows<Q>`** — row type named from a query value or builder
+  (`NavQuery.ts:624-637`, exported from `@ramose/alchemy/db`). `examples/todos/src/todos.ts`
+  now defines `TodoRow = Ramose.Row<typeof todoQuery>`.
 - **#52 `db.livePull(eid, shape)`** — the live terminal for `pull`, same contract as `db.live`;
   emits the projection or `null` (`Db.ts:128`).
-- **#56 `Ripple.token.jwt(mint, { refreshMargin })`** — a `TokenSource` (`{ token, claims(),
-  invalidate() }`) accepted by `ClientOptions.token`, so `Ripple.connect({ url, token: source })`
-  and `Ripple.layer(...)` both take it (`Databases.ts:70-74`, `token.ts`).
-- **#57 `Ripple.AuthConfig` + `Ripple.claims(auth, input, compiledPolicy?)`** — from
-  `@ripple/alchemy` (`Auth.ts`); `PeerAuth.auth?: AuthConfig` replaces the loose `issuers` /
+- **#56 `Ramose.token.jwt(mint, { refreshMargin })`** — a `TokenSource` (`{ token, claims(),
+  invalidate() }`) accepted by `ClientOptions.token`, so `Ramose.connect({ url, token: source })`
+  and `Ramose.layer(...)` both take it (`Databases.ts:70-74`, `token.ts`).
+- **#57 `Ramose.AuthConfig` + `Ramose.claims(auth, input, compiledPolicy?)`** — from
+  `@ramose/alchemy` (`Auth.ts`); `PeerAuth.auth?: AuthConfig` replaces the loose `issuers` /
   `aud` / `maxTtl` (which still work and win when set) (`Server.ts:119`).
-- **#50** exports the database-name rule from `@ripple/alchemy/db`; **#55** per-session basis
+- **#50** exports the database-name rule from `@ramose/alchemy/db`; **#55** per-session basis
   watchers on the worker (no doc surface); **#62** deploys `website/` to Cloudflare on merge —
-  `astro.config.mjs` `site` is now `https://ripple-docs.tvanhens.workers.dev`.
+  `astro.config.mjs` `site` is now `https://ramose.ai` (the Worker keeps its physical
+  name, `ripple-docs`).

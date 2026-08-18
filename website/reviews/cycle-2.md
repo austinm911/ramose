@@ -29,7 +29,7 @@ Checked against the site as it stands (`cycle-1.md` §3, items 1–16).
 
 | # | Cycle-1 fix | Status |
 | --- | --- | --- |
-| 1 | Hero states a job, not a topology | **Landed** — H1 is "The typed, realtime database for apps you ship on Cloudflare"; no Durable Object / R2 / Datalog above the fold. Residual: the H1 does not contain the word "Ripple" (D2/C15), and the tagline's "no server to run" overclaims (A3/A8). |
+| 1 | Hero states a job, not a topology | **Landed** — H1 is "The typed, realtime database for apps you ship on Cloudflare"; no Durable Object / R2 / Datalog above the fold. Residual: the H1 does not contain the word "Ramose" (D2/C15), and the tagline's "no server to run" overclaims (A3/A8). |
 | 2 | Safety on the first screen with a mechanism | **Landed** — the third code moment is policy + a denied write + `Policy.compile(policy, { pulls })`. Residual: the deploy-time check is only a code comment (A9), and the deny-by-default sentence is factually wrong (A3). |
 | 3 | A working demo / screenshot on the landing | **Not landed** — replaced by a CSS-drawn two-pane mock (`index.mdx:18-36`). Still zero images (C6/A10). |
 | 4 | Real copyable try-it command + honest pre-release status | **Partially** — the fake terminal strip is gone and pre-release is stated, but the block is a 4-env-var, two-process, 9-line paste that PR-phase-0 has now made obsolete (C1). |
@@ -42,7 +42,7 @@ Checked against the site as it stands (`cycle-1.md` §3, items 1–16).
 | 11 | "Before production" page | **Landed** — `guides/before-production.md`. Residual: one checklist item is stale after #30 (A5/F2). |
 | 12 | Introduction: mental model, Datomic moved out | **Landed** — `concepts/for-datomic-users.md` exists. Residual: that page still advertises the retired callback builder and client-side paging (A9/F14/A7-appeal); the Introduction contradicts the landing on time-to-first-run (A12-appeal). |
 | 13 | Client API reference with examples | **Not landed** — `reference/client-api.md` still has zero code fences. Out of scope for cycle 2 (see "Deliberately not doing"). |
-| 14 | Site looks like a product | **Landed** — brand code theme (`everforest-dark`), `title=` on fences, `<Steps>`, `og.png`, splash template, `<title>` contains "Ripple". Residual: `og:type` is `article` on the home page (D12); no footer. |
+| 14 | Site looks like a product | **Landed** — brand code theme (`everforest-dark`), `title=` on fences, `<Steps>`, `og.png`, splash template, `<title>` contains "Ramose". Residual: `og:type` is `article` on the home page (D12); no footer. |
 | 15 | Examples section, React binding, llms.txt | **Partially** — an Examples sidebar group exists, but it lists two of the three examples and omits the flagship (C2/A1/F10/D12); no React package, no `llms.txt`. |
 | 16 | Honest limits stated where relevant | **Partially** — retention sits next to time travel on the landing and the write ceiling is in the limits line. Residual: the ceiling is stated without its escape hatch (A11), and the Introduction promises "a free audit trail" with no retention caveat (A13). |
 
@@ -61,8 +61,8 @@ make was reproduced:
 | `git clone` (local) | 0.2 s | clean (from GitHub expect 10–30 s) |
 | `bun install` at root | 3.1 s | 1540 packages, no errors, `node_modules/` at root as documented |
 | `CI=1 ALCHEMY_STATE=local CLOUDFLARE_ACCOUNT_ID=… CLOUDFLARE_API_TOKEN=x bun alchemy dev examples/todos/alchemy.run.ts` | 4 s | `[Peer] ready at http://localhost:1337`, `Done: 8 succeeded` |
-| `curl http://localhost:1337/health` | — | `200 {"ok":true,"service":"ripple","stage":"dev","time":…}` — byte-for-byte the documented shape |
-| `VITE_RIPPLE_URL=http://localhost:1337 bunx vite examples/todos` | 0.6 s | `Local: http://localhost:5173/`, all modules transform 200 |
+| `curl http://localhost:1337/health` | — | `200 {"ok":true,"service":"ramose","stage":"dev","time":…}` — byte-for-byte the documented shape |
+| `VITE_RAMOSE_URL=http://localhost:1337 bunx vite examples/todos` | 0.6 s | `Local: http://localhost:5173/`, all modules transform 200 |
 | write + read through the example's own `addTodo`/`todoQuery` | — | `[{"id":1003,"title":"buy milk","done":false,…}]`; peer logged `subscriber.connect`, `replica.connect`, `indexer index.run` |
 | browser at :5173 | — | heading, textbox, live list rendering the row written outside the browser |
 | `bun test examples/todos` | 0.3 s | **4 pass / 0 fail / 17 expect()** |
@@ -83,7 +83,7 @@ copy-paste. Friction found, in order of how much it hurts:
    the local emulator reaping a live-query socket, not a crash — but the docs
    told the reader to watch that terminal and never mention it.
 5. **No `--strictPort`** on the documented Vite command, so a busy :5173 would
-   have silently become :5174 with `VITE_RIPPLE_URL` still pointing correctly and
+   have silently become :5174 with `VITE_RAMOSE_URL` still pointing correctly and
    the reader on the wrong page.
 6. **`bun test examples/todos` is invisible** — a free four-second "is my machine
    OK" checkpoint driving the exact `todoQuery`/`addTodo` the page documents.
@@ -98,7 +98,7 @@ exists. `package.json` gained a `dev:todos` script mirroring `dev:reef` (each en
 var defaulted only when unset); `examples/todos/alchemy.run.ts` gained a
 `Command.Dev` `Ui` resource that yields `Server`, runs
 `bunx vite examples/todos --port 5173 --strictPort`, and passes
-`VITE_RIPPLE_URL: server.url` — so the resource graph orders Vite after the peer
+`VITE_RAMOSE_URL: server.url` — so the resource graph orders Vite after the peer
 and the URL is never hand-set. Verified in the real repo: `Plan: 5 to create`,
 `[Peer] ready at http://localhost:1337`, `[Ui] ready at http://localhost:5173/`,
 `Done: 10 succeeded`, health 200, browser rendered the app, `bun run typecheck`
@@ -139,7 +139,7 @@ The sidebar's Examples group has exactly two entries; `quickstart.mdx:209` says
 "**Both** examples in the repository" while `ls examples/` returns
 `kv-style reef todos`. Meanwhile `examples/reef/README.md`: "The flagship demo: a
 Linear-style, multi-tenant, real-time issue tracker where **every workspace is
-its own Ripple database**… One command: `bun run dev:reef`." A senior dev judges
+its own Ramose database**… One command: `bun run dev:reef`." A senior dev judges
 a database by the largest thing built on it; the site's only artifact is a todo
 list. **Fix:** one line on the landing after the try-it block, a first sidebar
 Examples entry, a third bullet in the quickstart's example list, and a line in
@@ -191,7 +191,7 @@ See §5.
 list.** *(confirmed, sev 2, Landing)*
 The two concrete-use sentences on the page are "add a todo" (`:57`) and "Clone
 it, run the todo app, change one row" (`:329`). **Fix:** one sentence naming the
-shape Ripple is differentiated for — multi-tenant apps with a database per
+shape Ramose is differentiated for — multi-tenant apps with a database per
 workspace — plus the Reef pointer from C2.
 
 **C8 — Zero trust signals.** *(revised, sev 1, Landing)*
@@ -219,7 +219,7 @@ restart. A correct setup fails its own stated checkpoint.
 **C11 / A14 — Two paragraphs apologising for a stale port, and no stated
 prerequisite.** *(confirmed, sev 2, Docs)*
 `quickstart.mdx:65-68` and `:160-162`. `examples/todos/alchemy.run.ts` now runs
-`--port 5173 --strictPort` and always injects `VITE_RIPPLE_URL`, so the 8787
+`--port 5173 --strictPort` and always injects `VITE_RAMOSE_URL`, so the 8787
 fallback in `examples/todos/src/db.ts:20` is unreachable. Meanwhile the one thing
 that can stop a reader at line 1 — not having Bun — is unmentioned.
 
@@ -236,11 +236,11 @@ driving the same `todoQuery`/`addTodo` the page documents.
 repo)" is doing scanner work inside the comparison list, not apologising. Change
 only the closing secondary button, to Reef.
 
-**C15 / D2 — The word "Ripple" never appears above the fold.**
-*(confirmed, sev 1–3, Landing)* `astro.config.mjs:9` renders "ripplegraph.ai";
+**C15 / D2 — The word "Ramose" never appears above the fold.**
+*(confirmed, sev 1–3, Landing)* `astro.config.mjs:9` renders "ramose.ai";
 the H1 (60 chars, capped at `18ch` → ~4 wrapped lines) and the 158-char tagline
-contain no "Ripple". First rendered occurrence is inside the pre-release caveat
-at `:43`. A visitor arriving from a tweet that said "Ripple" cannot confirm they
+contain no "Ramose". First rendered occurrence is inside the pre-release caveat
+at `:43`. A visitor arriving from a tweet that said "Ramose" cannot confirm they
 are in the right place.
 
 ### Lens B — Product appeal
@@ -249,7 +249,7 @@ are in the right place.
 competitors — is missing from the landing.** *(confirmed, sev 3, Landing)*
 The four benefit cards are typed writes, live queries, per-user rows,
 immutability. Nothing about tenancy. `concepts/databases-are-names.md` carries
-it: `ripple.db("acme", Catalog)` is pure and does zero network; one deployed peer
+it: `ramose.db("acme", Catalog)` is pure and does zero network; one deployed peer
 serves every name, each with its own writer and key prefix. Every competitor
 makes per-tenant isolation an ops project. **Fix:** a benefit card (using the
 slot freed by C5) plus one clause in the Supabase/Convex comparison rows.
@@ -280,7 +280,7 @@ write an Effect combinator" — `db.ts` builds a `ManagedRuntime` and
 `useLive.ts` uses `Effect.runFork` / `Stream.runForEach` / `Fiber.interrupt`.
 Name Effect, explain `run`, and stop there.
 
-**A5 — "Ripple ships no React package" is framed as a virtue.**
+**A5 — "Ramose ships no React package" is framed as a virtue.**
 *(revised, sev 2, Landing)* True (`packages/` = alchemy, core, replica, storage,
 transactor, worker) but spun. **Revision:** the file is **not** shown on the
 landing (only `App.tsx` is), and the hook body is 13 lines
@@ -302,7 +302,7 @@ Drizzle.** *(confirmed, sev 2, Landing)*
 The hero is Cloudflare-specific; the four comparison rows address people who have
 not chosen Cloudflare yet. The developer who already wrote a DO with
 `ctx.storage.sql` is the highest-intent reader on the page and is never told what
-Ripple replaces in the code they have.
+Ramose replaces in the code they have.
 
 **A9(appeal) — The deploy-time policy×pull check is delivered as a code
 comment.** *(confirmed, sev 2, Landing)*
@@ -324,7 +324,7 @@ of this finding is taste and would churn copy cycle 1 just set. The reframe must
 keep the price visible (no joins across databases, already in the same list).
 
 **A12(appeal) — The Introduction contradicts the landing and never positions
-Ripple against anything.** *(confirmed, sev 2, Docs)*
+Ramose against anything.** *(confirmed, sev 2, Docs)*
 `introduction.md:51-53` "ten minutes"; "Start here" lists Quickstart,
 Permissions, Define your data — no comparison, no Reef. The Introduction is the
 one page a skeptic reads before deciding, and "is this Convex?" goes unanswered
@@ -346,7 +346,7 @@ performance claim, and the wrong half is the scary one.
 `quickstart.mdx:133-162` prints `?? "http://localhost:1337"` under the title
 `examples/todos/src/db.ts`, where the file reads `8787`, and then apologises for
 it in prose. **Revision:** nobody is broken (`dev:todos` always injects
-`VITE_RIPPLE_URL`), so this is credibility, not failure. Cheapest honest fix is
+`VITE_RAMOSE_URL`), so this is credibility, not failure. Cheapest honest fix is
 docs-only: print the file as it actually reads and delete the apology — the
 fallback is unreachable and needs no commentary.
 
@@ -354,9 +354,9 @@ fallback is unreachable and needs no commentary.
 `guides/permissions.md:100-178` shows `scripts/local-jwt.ts`, `policy.ts` and a
 `resources.ts` importing `./src/queries.ts` — `examples/todos` has no
 `policy.ts`, no `src/queries.ts` (the module is `src/todos.ts`), and its
-`resources.ts` has no `Ripple.authEnv` block. `Ripple.authEnv` itself is real
+`resources.ts` has no `Ramose.authEnv` block. `Ramose.authEnv` itself is real
 (`packages/alchemy/src/index.ts`); only the file mapping is fictional.
-**Revision:** do **not** propose `VITE_RIPPLE_TOKEN=… bun run dev:todos` —
+**Revision:** do **not** propose `VITE_RAMOSE_TOKEN=… bun run dev:todos` —
 unverified, and `dev:todos` starts its own Vite on `--strictPort 5173`, so it
 would collide. Frame the snippets as files the reader creates, fix the bogus
 import, and keep the manual two-terminal form here, labelled as the manual form
@@ -413,8 +413,8 @@ frame shows.
 **D6 — Body-copy grey fails WCAG AA on the two asides that carry the most
 credibility.** *(confirmed, sev 2, Landing)*
 `--sl-color-gray-4: #6c6a61` on `#0b0b09` = **3.63:1** (AA needs 4.5:1 at
-0.875 rem). The strings dimmed this way are "Ripple ships no React package…" and
-"Ripple verifies tokens, it never issues them…" — the two sentences that pre-empt
+0.875 rem). The strings dimmed this way are "Ramose ships no React package…" and
+"Ramose verifies tokens, it never issues them…" — the two sentences that pre-empt
 a senior dev's biggest objections — plus the try-it caveat. `gray-3` (`#a09d92`)
 measures ~7.3:1.
 
@@ -429,7 +429,7 @@ but no `wrap`. At `codeFontSize: 0.8125rem` inside `.rg-run`'s
 `clamp(1.75rem, 4vw, 2.75rem)` padding, the 57-character clone line overflows a
 375 px viewport. `wrap` is supported by the installed Expressive Code 0.41.7.
 
-**D9 — "What Ripple does not have" is a middot run-on that hides its own worst
+**D9 — "What Ramose does not have" is a middot run-on that hides its own worst
 item.** *(confirmed, sev 2, Landing)* Six unlike items in one wrapping sentence;
 the only quantitative claim on the page is buried mid-string and phrased as a
 double negative ("does not have … more than low thousands").
@@ -480,11 +480,11 @@ good; the overclaim is checkable and cheap to lose credibility on.
 loads".** *(confirmed, sev 2, Docs)*
 `guides/catalog.md:85-91`. Verified: `Attribute.ts` uses `tryInferDbValueType`,
 which returns `undefined` for anything unmapped; the throw is `inferDbValueType`
-(`valueTypes.ts`, message `ripple/schema: cannot infer :db.type/* from this
+(`valueTypes.ts`, message `ramose/schema: cannot infer :db.type/* from this
 Schema`) reached from `ensure.ts` — i.e. at catalog install / deploy. The docs
 point the reader at the wrong moment for the most expensive failure.
 
-**A10 — Cost headers are named without their `x-ripple-` prefix.**
+**A10 — Cost headers are named without their `x-ramose-` prefix.**
 *(confirmed, sev 1, Docs)* `guides/queries.md:206` and `reference/http-api.md:50-52`
 say `r2-gets`, `cache-hits`. Wire names verified:
 `packages/replica/src/replica-do.ts:334-335` and
@@ -524,7 +524,7 @@ components, `public/`, the og script, `astro.config.mjs` *except* the sidebar.
 
 | # | Fix | Owner | Findings |
 | --- | --- | --- | --- |
-| 0 | **`bun run dev:todos` exists.** Root `package.json` script + `Command.Dev` `Ui` resource in `examples/todos/alchemy.run.ts` (`--port 5173 --strictPort`, `VITE_RIPPLE_URL: server.url`) + `examples/todos/README.md` rewritten to lead with the one command. Verified end to end; `bun run typecheck` clean. | **Example — DONE** | phase 0 |
+| 0 | **`bun run dev:todos` exists.** Root `package.json` script + `Command.Dev` `Ui` resource in `examples/todos/alchemy.run.ts` (`--port 5173 --strictPort`, `VITE_RAMOSE_URL: server.url`) + `examples/todos/README.md` rewritten to lead with the one command. Verified end to end; `bun run typecheck` clean. | **Example — DONE** | phase 0 |
 | 1 | **Replace the landing try-it block with the three-line one-command form**, and add the "one command starts the database and the app together" clause. | Landing | C1 |
 | 2 | **Rebuild quickstart steps 2–3 into one `bun run dev:todos` step**, promote `curl /health` to its own checkpoint, add `bun test examples/todos`, add the Bun prerequisite, fix the "empty list" checkpoint, add the Ctrl-C stop line, add the workerd-scare note, delete both 8787 paragraphs, demote the env-var form to a collapsed aside. | Docs | C9, C10, C11, C12, F1, F3, F11, F12, A2, A14 |
 | 3 | **Surface Reef.** Landing: one line after the try-it block + closing secondary CTA. Docs: first Examples sidebar entry, third bullet in the quickstart's example list ("Both" → "The"), one line in the Introduction's "Start here". | Landing + Docs | C2, A1, F10, C13, A11, D12 |
@@ -534,7 +534,7 @@ components, `public/`, the og script, `astro.config.mjs` *except* the sidebar.
 | 7 | **Reconcile the time promise**: two minutes on the landing, the quickstart and the Introduction. | Landing + Docs | C4, A12 |
 | 8 | **One two-tab wording, reused verbatim** in `index.mdx`, `quickstart.mdx` and `live-queries.md`: lead with what works locally, then the limit and the remedy. | Landing + Docs | C3, A6, D3, F13 |
 | 9 | **Add the tenancy benefit card** ("one database per customer is a function call") in the slot freed by deleting the duplicated permissions card, and add the clause to the Convex/Supabase comparison rows. | Landing | A2, C5, D4 |
-| 10 | **Reframe the hero tagline and the frontmatter description** away from "there is no server to run" toward "runs in your own Cloudflare account, from one deploy", and put "Ripple" in the visible hero. Widen `.hero h1` to `22ch`. | Landing | A3, A8, C15, D2 |
+| 10 | **Reframe the hero tagline and the frontmatter description** away from "there is no server to run" toward "runs in your own Cloudflare account, from one deploy", and put "Ramose" in the visible hero. Widen `.hero h1` to `22ch`. | Landing | A3, A8, C15, D2 |
 | 11 | **Promote the deploy-time policy×pull check** from a code comment to a sentence in the section body plus a card headline. | Landing | A9 |
 | 12 | **Add the Cloudflare-native comparison row** (Durable Objects + SQLite / D1 + Drizzle), placed first. | Landing | A8 |
 | 13 | **Name Effect once, on the landing and in the quickstart**, and define `run`. No claim that the reader never touches Effect. | Landing + Docs | A4, F7 |
@@ -544,7 +544,7 @@ components, `public/`, the og script, `astro.config.mjs` *except* the sidebar.
 | 17 | **Make moment 3's copy column sticky and add three anchor lines**; keep all three frames. | Landing | D5 |
 | 18 | **Fix the guides' file-mapping and runnability errors**: `live-queries.md` snippet retitled `src/App.tsx`; `queries.md` "Running a query" actually runs one; `permissions.md` framed as files you create, with the bogus `./src/queries.ts` import fixed; `catalog.md` snippet given its real path plus the `bun test examples/todos` checkpoint. | Docs | F5, F8, F9, F4 |
 | 19 | **Define "peer" once** in the Introduction and gloss it on first use in the quickstart. | Docs | F6 |
-| 20 | **Small accuracy sweep**: `x-ripple-` header prefixes; catalog value-type throw timing; "a free audit trail" → bounded by retained roots; "a dozen lines" for `useLive` everywhere; `React package` framed as an owned gap plus a `rg-limits` entry. | Docs + Landing | A10, A6, A13, A12, A5 |
+| 20 | **Small accuracy sweep**: `x-ramose-` header prefixes; catalog value-type throw timing; "a free audit trail" → bounded by retained roots; "a dozen lines" for `useLive` everywhere; `React package` framed as an owned gap plus a `rg-limits` entry. | Docs + Landing | A10, A6, A13, A12, A5 |
 | 21 | **`og:type: website` on the home page only**, via `index.mdx` frontmatter `head`. | Landing | D12 |
 | 22 | **Root `README.md`**: lead with `bun run dev:todos`, mention `bun run dev:reef`, keep the long form as the expansion. Do not call the env vars required — the bare command works. | Docs | A1 |
 | 23 | **Polish**: reduced-motion dot position; CTA labels ("Run it locally" / "Open the quickstart" / "Browse the source"); `01/02/03` → `writes` / `storage` / `reads`. | Landing | D11, D7, D10 |
@@ -565,7 +565,7 @@ components, `public/`, the og script, `astro.config.mjs` *except* the sidebar.
   *link* carries the credibility (fix #3).
 - **Publishing to npm, or writing the site as though it were published.** Every
   package is `"private": true`. The pre-release statement stays exactly as it is.
-- **A `@ripple/react` package.** Does not exist; the honest framing (an owned
+- **A `@ramose/react` package.** Does not exist; the honest framing (an owned
   gap, one copied file) is in fix #20.
 - **Editing `examples/todos/src/db.ts`** to change the `8787` fallback. The
   fallback is unreachable under `dev:todos`, and the docs-only fix (print the
@@ -597,5 +597,5 @@ components, `public/`, the og script, `astro.config.mjs` *except* the sidebar.
   plan's 1,450 target. The additions that pushed it over (Reef screenshot, the grown catalog the
   policy frame needs, the DO+SQLite comparison row) each answer a top-ranked finding, so length
   is now a taste call rather than a defect. Also a brand call: the header lockup now reads
-  "Ripple" instead of "ripplegraph.ai" (`SiteTitle.astro`, `astro.config.mjs` title) — one-line
+  "Ramose" instead of "ramose.ai" (`SiteTitle.astro`, `astro.config.mjs` title) — one-line
   revert if the domain-as-brand was intentional.

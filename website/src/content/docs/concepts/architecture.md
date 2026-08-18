@@ -3,7 +3,7 @@ title: Architecture
 description: How a write becomes a fact, and a fact becomes a query result — one writer, immutable storage, replicas at the edge.
 ---
 
-A Ripple deployment is four parts and four invariants. The parts are one peer
+A Ramose deployment is four parts and four invariants. The parts are one peer
 Worker, one Transactor Durable Object per logical database, N QueryReplica
 Durable Objects per database, and one R2 bucket. The invariants are the
 product.
@@ -41,7 +41,7 @@ Queries run in the peer Worker, at the edge:
   through a cache and merges novelty from the replica's basis.
 - `q`, `pull`, and `live` all read through the same basis, so a query never
   sees a half-applied transaction.
-- A per-query memory guardrail (`RIPPLE_QUERY_MAX_CELLS`) rejects over-budget
+- A per-query memory guardrail (`RAMOSE_QUERY_MAX_CELLS`) rejects over-budget
   queries with a 413 rather than degrading the isolate.
 
 ## Storage layout
@@ -56,9 +56,9 @@ database (`db/<name>/…`):
 | `db/<name>/root/current` | the only mutable key: the latest root after an index run |
 
 The indexer runs inside the Transactor on a threshold/interval
-(`RIPPLE_INDEX_TX_THRESHOLD` / `RIPPLE_INDEX_INTERVAL_MS`), folding novelty
+(`RAMOSE_INDEX_TX_THRESHOLD` / `RAMOSE_INDEX_INTERVAL_MS`), folding novelty
 into new segment trees and flipping the root. Old roots are retained
-(`RIPPLE_RETAIN_ROOTS`) so `asOf` stays cheap, and a mark-and-sweep GC reclaims
+(`RAMOSE_RETAIN_ROOTS`) so `asOf` stays cheap, and a mark-and-sweep GC reclaims
 unreachable segments.
 
 ## The invariants

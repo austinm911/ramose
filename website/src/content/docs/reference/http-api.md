@@ -12,7 +12,7 @@ key must be a fully-qualified ident (e.g. `:todo/title`) — a bare key like
 
 | route | method | purpose |
 | --- | --- | --- |
-| `/health` | GET | liveness; reachable with `RIPPLE_TOKEN` under a policy |
+| `/health` | GET | liveness; reachable with `RAMOSE_TOKEN` under a policy |
 | `/` | GET | a small demo console (disabled once a policy is configured) |
 
 ## Per database — `/db/:name`
@@ -23,11 +23,11 @@ key must be a fully-qualified ident (e.g. `:todo/title`) — a bare key like
 | `/db/:name/query` | POST | run a datalog query at the current basis |
 | `/db/:name/pull` | POST | pull a pattern for one entity or lookup ref |
 | `/db/:name/info` | GET | database status: top-level `t` (the current basis, for every principal); admins also get `transactor.metrics`, `replica.*`, `indexer.*`, `peerMetrics` |
-| `/db/:name/session` | GET | WebSocket upgrade — the session socket behind `Ripple.connect` / `Ripple.layer` and `db.live` |
+| `/db/:name/session` | GET | WebSocket upgrade — the session socket behind `Ramose.connect` / `Ramose.layer` and `db.live` |
 
 Auth is `Authorization: Bearer <token>`, or `?token=` on the socket upgrade
 (a browser cannot set headers there). Under a policy, the token must be a JWT
-whose `ripple.db` claim equals `:name`; `/info` reduces to `{ db, t }` for
+whose `ramose.db` claim equals `:name`; `/info` reduces to `{ db, t }` for
 non-admin principals.
 
 ## Admin — `/db/:name/admin`
@@ -47,9 +47,9 @@ Every read carries its cost:
 
 | header | meaning |
 | --- | --- |
-| `x-ripple-ms` | server-side time for the request |
-| `x-ripple-r2-gets` | R2 object reads this query performed |
-| `x-ripple-cache-hits` | segment-cache hits |
+| `x-ramose-ms` | server-side time for the request |
+| `x-ramose-r2-gets` | R2 object reads this query performed |
+| `x-ramose-cache-hits` | segment-cache hits |
 
 All three are listed in `access-control-expose-headers`, so a browser can read
 them.
@@ -64,6 +64,6 @@ transactor returns 503 with `retry-after`.
 :::note
 The Durable Objects are not on this surface at all: Transactor and Replica
 DOs are reachable only from the Worker, and every internal hop carries a
-deploy-minted secret header (`RIPPLE_INTERNAL_SECRET`), `/subscribe`
+deploy-minted secret header (`RAMOSE_INTERNAL_SECRET`), `/subscribe`
 included. Browser sockets terminate in the Worker isolate.
 :::

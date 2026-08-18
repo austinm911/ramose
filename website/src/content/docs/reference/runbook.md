@@ -1,16 +1,16 @@
 ---
 title: Runbook
-description: Operating a Ripple deployment — what to watch, the write ceiling, and recovery notes.
+description: Operating a Ramose deployment — what to watch, the write ceiling, and recovery notes.
 ---
 
-Operational notes for one Ripple deployment (one Worker, one Transactor DO per
+Operational notes for one Ramose deployment (one Worker, one Transactor DO per
 logical database, N QueryReplica DOs per database, one R2 bucket).
 
 ## What to look at
 
 Every component emits one JSON object per line; read them with
 `wrangler tail`, Logpush, or the `alchemy dev` console. Set
-`RIPPLE_LOG_LEVEL=debug` for per-batch / per-query events.
+`RAMOSE_LOG_LEVEL=debug` for per-batch / per-query events.
 
 | question | where |
 | --- | --- |
@@ -18,7 +18,7 @@ Every component emits one JSON object per line; read them with
 | is the transactor rejecting or dead? | events `transactor/tx.rejected` (schema/unique errors, per tx) and `transactor/tx.aborted` (storage write failed → DO resets; clients get 503 + `retry-after`) |
 | index lag / run cost | `/info` → `transactor.txsSinceIndex`, `indexer.lastRun`; events `indexer/index.run` (`txs`, `datoms`, `ms`, `r2Puts`, `remainingTxs`) |
 | replica health / novelty size | `/info` → `replica.novelty`, `replica.connected`, `replica.stats.gaps`; events `replica/replica.connect`, `replica.root`, `replica.gap` |
-| read latency at the edge | `/info` → `peerMetrics.queryMs`; events `peer/query` (`ms`, `rows`, `r2Gets`, `cacheHits`, `peakCells`); header `x-ripple-ms` |
+| read latency at the edge | `/info` → `peerMetrics.queryMs`; events `peer/query` (`ms`, `rows`, `r2Gets`, `cacheHits`, `peakCells`); header `x-ramose-ms` |
 | queries hitting the memory guardrail | events `peer/query.budget-exceeded` (413, names the clause and the cell count) |
 
 ## The write ceiling
@@ -48,7 +48,7 @@ of tx/s per logical database, full stop.**
 - Do **not** add a second writer, shard `t`, or let two DOs accept writes for
   the same database. There is no supported configuration for it and none is
   planned.
-- Do not raise `RIPPLE_MAX_BATCH` — 0 (unbounded) already batches everything
+- Do not raise `RAMOSE_MAX_BATCH` — 0 (unbounded) already batches everything
   in flight; a cap only trades throughput for latency fairness.
 
 ### What to do: split the logical database
@@ -82,7 +82,7 @@ partitions.
   (`resume` from its watermark, `gap` → `log/` chunks in R2). Force it with
   `POST /db/:name/admin/replica/reconnect`.
 - **Indexer stuck** (`remainingTxs` never drops): lower
-  `RIPPLE_INDEX_MAX_TXS_PER_RUN`, or trigger `POST /db/:name/admin/index`
+  `RAMOSE_INDEX_MAX_TXS_PER_RUN`, or trigger `POST /db/:name/admin/index`
   and read the `index.error` event.
 - **Bucket bloat**: `POST /db/:name/admin/gc` sweeps `seg/` and `n/` objects
   unreachable from retained roots. Keys are namespaced per database, so a

@@ -8,7 +8,7 @@ Match with `Effect.catchTags`:
 
 ```ts
 const rows = yield* db
-  .q(Ripple.query(Todo).select({ title: Todo.title }))
+  .q(Ramose.query(Todo).select({ title: Todo.title }))
   .pipe(
     Effect.catchTags({
       QueryBudgetExceeded: () => Effect.succeed([]),
@@ -26,7 +26,7 @@ const rows = yield* db
 | `InvalidRequest` | the request is malformed | bad ident, invalid query shape, bad database name, querying an uninstalled catalog |
 | `DatabaseNotFound` | the name does not resolve | wrong name on a policy-bound route |
 | `Unauthorized` | the principal may not do this (401/403) | missing/expired token, policy denial — carries a `code` and the attribute ident, never values |
-| `QueryBudgetExceeded` | the query blew the memory guardrail (413) | names the clause and the cell count; restructure or raise `RIPPLE_QUERY_MAX_CELLS` |
+| `QueryBudgetExceeded` | the query blew the memory guardrail (413) | names the clause and the cell count; restructure or raise `RAMOSE_QUERY_MAX_CELLS` |
 | `InternalError` | the peer failed | a bug or storage fault; logged server-side |
 | `NetworkError` | the request never completed | fetch failure, dropped connection |
 | `DbError` | the union of all of the above | — |
@@ -50,17 +50,17 @@ const rows = yield* db
 
 ## Rendering an error
 
-Every error above carries a human-readable `message`, and `@ripple/react`
+Every error above carries a human-readable `message`, and `@ramose/react`
 exports the one-liner every toast wants:
 
 ```ts
-import { errorMessage } from "@ripple/react";
+import { errorMessage } from "@ramose/react";
 
 errorMessage(e); // e.message ?? e._tag ?? String(e)
 ```
 
 A policy denial (`Unauthorized`) toasts its server-written message; a bare
-tagged error falls back to its tag. `useTransact` (also in `@ripple/react`)
+tagged error falls back to its tag. `useTransact` (also in `@ramose/react`)
 surfaces the failing error on `error` / `onError` in exactly the shape this
 function expects.
 

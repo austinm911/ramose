@@ -19,14 +19,14 @@ been verified against `packages/` or `examples/` in cycle 2; do not extend it.
 Replace `title`, `description` and `hero.title` / `hero.tagline` with exactly:
 
 ```yaml
-title: Ripple — the typed, realtime database for Cloudflare
-description: Ripple is a typed, realtime database for apps you ship on Cloudflare. Write TypeScript, get queries that update themselves and per-user permissions, all running in your own Cloudflare account.
+title: Ramose — the typed, realtime database for Cloudflare
+description: Ramose is a typed, realtime database for apps you ship on Cloudflare. Write TypeScript, get queries that update themselves and per-user permissions, all running in your own Cloudflare account.
 hero:
-  title: Ripple — the typed, realtime database for Cloudflare
+  title: Ramose — the typed, realtime database for Cloudflare
   tagline: Define your schema in TypeScript. Queries update themselves as data changes, every user only sees their own rows, and one deploy puts it all in your own Cloudflare account.
 ```
 
-Why: the visible hero never contained the word "Ripple" (first rendered
+Why: the visible hero never contained the word "Ramose" (first rendered
 occurrence was inside the pre-release caveat), and "there is no server to run" is
 contradicted by the page's own "How it works" band, by the quickstart's step 2,
 and by `guides/before-production.md`. The `description` carried the same phrase
@@ -80,7 +80,7 @@ Trim `rg-run-note` (`:43`) to one sentence — the second half is now redundant
 with the block:
 
 ```html
-<p class="rg-run-note"><strong>Ripple is pre-release and not on npm yet</strong> — you run it from the repository. One command starts the database and the app together.</p>
+<p class="rg-run-note"><strong>Ramose is pre-release and not on npm yet</strong> — you run it from the repository. One command starts the database and the app together.</p>
 ```
 
 Replace the `rg-run-after` paragraph (`:57`) with — **this exact two-tab
@@ -145,11 +145,11 @@ Replace the `rg-aside` at `index.mdx:118-122` with:
 
 ```html
 <p class="rg-aside">
-  Ripple is built on <a href="https://effect.website">Effect</a>: a transaction
+  Ramose is built on <a href="https://effect.website">Effect</a>: a transaction
   is a generator, and <code>await run(…)</code> above is the runtime you set up
   once in the example's <code>db.ts</code>. There is no
-  <code>@ripple/react</code> package yet — <a href="https://github.com/tvanhens/ripple/blob/master/examples/todos/src/useLive.ts"><code>useLive</code></a>
-  is about a dozen lines you copy once, and it is the only React glue Ripple needs.
+  <code>@ramose/react</code> package yet — <a href="https://github.com/tvanhens/ripple/blob/master/examples/todos/src/useLive.ts"><code>useLive</code></a>
+  is about a dozen lines you copy once, and it is the only React glue Ramose needs.
 </p>
 ```
 
@@ -173,7 +173,7 @@ Replace the copy paragraph at `index.mdx:161-167` with:
 </p>
 <p>
   Because the policy and the shapes your app reads are both values,
-  <code>Ripple.Policy.compile</code> checks them against each other at deploy
+  <code>Ramose.Policy.compile</code> checks them against each other at deploy
   time: tighten a rule a screen depends on and the deploy fails, instead of that
   screen quietly going empty for one customer.
 </p>
@@ -231,7 +231,7 @@ Supabase or Postgres:
   <div class="rg-benefit">
     <h3>One database per customer, for free</h3>
     <p>
-      <code>ripple.db("acme", Catalog)</code> is a pure function call — no
+      <code>ramose.db("acme", Catalog)</code> is a pure function call — no
       create, no provisioning, no request. One deployed peer serves every name,
       each with its own writer and its own key prefix in storage. Tenant count
       is a namespace, not an ops problem.
@@ -245,7 +245,7 @@ moment 1, so cut it to two sentences ending "…not a row in production."
 
 ## 9. "Instead of what?" — add the Cloudflare-native row, first
 
-`index.mdx:269-271` lede: delete "on purpose" so it reads "Ripple is small and
+`index.mdx:269-271` lede: delete "on purpose" so it reads "Ramose is small and
 pre-release. Here is the honest trade against what you are probably using
 today."
 
@@ -269,7 +269,7 @@ Replace the `rg-limits` paragraph (`index.mdx:292-296`) with:
 
 ```html
 <div class="rg-limits">
-  <strong>What Ripple does not have</strong>
+  <strong>What Ramose does not have</strong>
   <ul>
     <li>SQL, or joins across databases</li>
     <li>An npm package — you clone the repo</li>
@@ -309,7 +309,7 @@ per batch), and R2 segments are published later by the indexer:
 
 ```html
 <div class="rg-closing">
-  <p class="rg-eyebrow">Changes ripple.</p>
+  <p class="rg-eyebrow">Changes ramose.</p>
   <p class="rg-big">Clone it, run the todo app in one command, then run Reef.</p>
   <p class="rg-closing-note">The repository ships 48 test files; <code>bun run test</code> runs the suite across the packages and the example apps.</p>
   <div class="rg-actions">
