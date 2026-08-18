@@ -198,7 +198,60 @@ describe("the basis is the wake", () => {
   });
 });
 
-describe("livePull fails like live", () => {
+describe("livePull survives the network like live", () => {
+  test("a dropped socket reconnects in place and the stream keeps emitting", async () => {
+    const state = { t: 5, entity: { name: "Ada", age: 36 } as unknown };
+    const peer = peerAt(state);
+    const c = client(peer);
+    const live = collect(c.ripple.db("movies", Movies).livePull(ada, shape));
+    await settle();
+    expect(live.seen).toHaveLength(1);
+    expect(peer.sockets).toHaveLength(1);
+
+    state.entity = { name: "Ada", age: 37 };
+    peer.drop();
+    await settle(60);
+
+    expect(peer.sockets).toHaveLength(2);
+    expect(live.seen.at(-1)).toEqual({ name: "Ada", age: 37 });
+    expect(live.error).toBeUndefined();
+
+    await live.stop();
+    await c.dispose();
+  });
+
+  test("Unauthorized re-reads the token and re-authenticates in place; the stream never sees it", async () => {
+    let issued = 0;
+    let refusals = 1;
+    const state = {
+      t: 5,
+      entity: { name: "Ada", age: 36 },
+      answer: (frame: Frame) => {
+        if (frame.op === "auth") return { ok: true };
+        if (frame.op === "pull" && refusals > 0) {
+          refusals -= 1;
+          return { status: 401, body: { error: "token expired" } };
+        }
+        return undefined;
+      },
+    };
+    const peer = peerAt(state);
+    const c = client(peer, {
+      token: Effect.sync(() => Redacted.make(`token-${++issued}`)),
+    });
+    const live = collect(c.ripple.db("movies", Movies).livePull(ada, shape));
+    await settle();
+
+    // the swap happened on the same socket, and the stream never saw it
+    expect(peer.sockets).toHaveLength(1);
+    expect(peer.frames.map((f) => f.op)).toEqual(["pull", "auth", "pull"]);
+    expect(live.seen).toEqual([{ name: "Ada", age: 36 }]);
+    expect(live.error).toBeUndefined();
+
+    await live.stop();
+    await c.dispose();
+  });
+
   test("a refusal that survives the fresh token fails the stream", async () => {
     const peer = peerAt({
       t: 5,
@@ -232,6 +285,21 @@ describe("a pinned view has no news", () => {
     peer.push({ op: "t", t: 99 });
     await settle();
     expect(live.seen).toHaveLength(1);
+    await c.dispose();
+  });
+
+  test("livePull over history emits once and completes", async () => {
+    const state = { t: 5, entity: { name: "Ada", age: 36 } };
+    const peer = peerAt(state);
+    const c = client(peer);
+    const live = collect(
+      c.ripple.db("movies", Movies).history.livePull(ada, shape),
+    );
+    await settle();
+
+    expect(live.seen).toEqual([{ name: "Ada", age: 36 }]);
+    expect(live.done).toBe(true);
+    expect(peer.frameOps("pull")[0].history).toBe(true);
     await c.dispose();
   });
 });
