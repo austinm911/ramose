@@ -2,7 +2,7 @@
 
 A modern Effect-native graph database on Cloudflare.
 
-Docs: **[ripplegraph.ai](https://ripplegraph.ai)**.
+Docs: **[ripple-docs.tvanhens.workers.dev](https://ripple-docs.tvanhens.workers.dev)**.
 
 One Durable Object writes. Immutable segment trees live in R2. Datalog runs
 at the edge, next to your app. A database is a name — `ripple.db("acme",
@@ -19,7 +19,7 @@ Catalog)` and you're in. No provision step.
 - **Db-per-tenant is a function call.** One Alchemy resource, one
   `RIPPLE_TOKEN` (unset = open), or a `RIPPLE_POLICY` that turns JWT
   claims into a per-request filtered `Db` (see
-  [Auth and policy](https://ripplegraph.ai/guides/auth/)).
+  [Auth and policy](https://ripple-docs.tvanhens.workers.dev/guides/auth/)).
   Every name shares the peer.
 - **The invariants are the product.** Single writer. Dense `t`.
   Persist-before-ack. QueryReplicas are first-class — workers never read
@@ -68,7 +68,7 @@ UI connects. Per-tenant names call `db.install()` at tenant-creation instead. `R
 one bearer token; leave it unset and the peer is open. Set `RIPPLE_POLICY` and
 the peer verifies JWTs, ties each token to one database, and filters reads /
 checks writes against the policy in
-[Auth and policy](https://ripplegraph.ai/guides/auth/).
+[Auth and policy](https://ripple-docs.tvanhens.workers.dev/guides/auth/).
 
 An app Worker binds the same server (`yield* Ripple.ReadWriteDatabases(Server)`,
 under `Ripple.ServerBinding` or `Ripple.ServerHttp`) and calls
@@ -147,7 +147,7 @@ views.
 - Immutable EAVT graph. Time travel is a view, not a dump.
 - Seek-driven datalog at the edge. `Ripple.query` builds a typed value;
   `db.q` and `db.live` run it — once or as a `Stream` on the session socket.
-  See [Query and pull](https://ripplegraph.ai/guides/queries/).
+  See [Query and pull](https://ripple-docs.tvanhens.workers.dev/guides/queries/).
 - One writer per name, dense `t`, persist-before-ack.
 - QueryReplicas hold novelty; workers read through them.
 - Privilege is the capability you bind: `Ripple.ReadWriteDatabases` or
@@ -166,7 +166,8 @@ bun alchemy deploy              # $USER stage
 bun alchemy deploy --stage prod
 ```
 
-Docs: [ripplegraph.ai](https://ripplegraph.ai). Contributing (tests, CI,
-Cloudflare e2e): [`CONTRIBUTING.md`](CONTRIBUTING.md). Ops:
-[Runbook](https://ripplegraph.ai/reference/runbook/). Recorded benches:
+Docs: [ripple-docs.tvanhens.workers.dev](https://ripple-docs.tvanhens.workers.dev).
+Contributing (tests, CI, Cloudflare e2e): [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Ops: [Runbook](https://ripple-docs.tvanhens.workers.dev/reference/runbook/).
+Recorded benches:
 [`bench/RESULTS.md`](bench/RESULTS.md).

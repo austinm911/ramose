@@ -8,11 +8,11 @@
  *   bun alchemy deploy website/alchemy.run.ts --stage prod
  *   bun alchemy destroy website/alchemy.run.ts
  *
- * `--stage prod` pins the Worker name to `ripple-docs` so the workers.dev
- * URL stays stable across deploys (and after CI cache eviction). Set
- * `RIPPLE_DOCS_DOMAIN` (e.g. `ripplegraph.ai`) to attach a custom domain;
- * the zone must already exist in the account. Merges to master publish
- * this stage via `.github/workflows/docs-publish.yml`.
+ * `--stage prod` pins the Worker name to `ripple-docs` so the URL
+ * https://ripple-docs.tvanhens.workers.dev stays stable across deploys
+ * (and after CI cache eviction). Set `RIPPLE_DOCS_DOMAIN` to attach a
+ * custom domain; the zone must already exist in the account. Merges to
+ * master publish this stage via `.github/workflows/docs-publish.yml`.
  *
  * No `main` is provided, so no Worker script is uploaded: Cloudflare's asset
  * layer answers every request, with Starlight's built 404.html serving misses.

@@ -38,9 +38,10 @@ Requires `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (see
 
 PRs that touch `website/` get an automatic preview deployment (stage
 `pr-<number>`) with the URL commented on the PR; the preview is destroyed when
-the PR closes. Merges to `master` / `main` publish the `prod` stage (Worker
-`ripple-docs`); set `RIPPLE_DOCS_DOMAIN=ripplegraph.ai` on the Development
-environment to attach the custom domain. See `.github/workflows/docs-preview.yml`,
+the PR closes. Merges to `master` / `main` publish the `prod` stage at
+[ripple-docs.tvanhens.workers.dev](https://ripple-docs.tvanhens.workers.dev).
+Set `RIPPLE_DOCS_DOMAIN` on the Development environment later if a custom
+domain should be attached. See `.github/workflows/docs-preview.yml`,
 `.github/workflows/docs-publish.yml`, and the "Docs previews" / "Docs
 production" sections of `CONTRIBUTING.md`.
 

@@ -1,9 +1,10 @@
 # Contributing to Ripple
 
 Development notes for people changing Ripple itself. Consumer docs live at
-[ripplegraph.ai](https://ripplegraph.ai) (source in `website/`); the short
-path is [`README.md`](README.md). In-repo design notes stay in `docs/`
-(`API.md`, `AUTH_LAYER.md`, `QUERY.md`, `RUNBOOK.md`).
+[ripple-docs.tvanhens.workers.dev](https://ripple-docs.tvanhens.workers.dev)
+(source in `website/`); the short path is [`README.md`](README.md). In-repo
+design notes stay in `docs/` (`API.md`, `AUTH_LAYER.md`, `QUERY.md`,
+`RUNBOOK.md`).
 
 ## Local checks
 
@@ -100,9 +101,9 @@ Store and edge-preview token scopes beyond that minimal set.
 ### Docs production
 
 Every push to `master` (or `main`) publishes `website/` as Alchemy stage
-`prod`: an assets-only Worker named `ripple-docs`. The public URL is
-[ripplegraph.ai](https://ripplegraph.ai) once `RIPPLE_DOCS_DOMAIN` is set
-and DNS points at the Worker; until then the site is
-`https://ripple-docs.<account>.workers.dev`. Re-runs update the same Worker
+`prod`: an assets-only Worker named `ripple-docs` at
+[ripple-docs.tvanhens.workers.dev](https://ripple-docs.tvanhens.workers.dev).
+Optional: `RIPPLE_DOCS_DOMAIN` (e.g. `ripplegraph.ai`) attaches a custom
+hostname once the zone exists in the account. Re-runs update the same Worker
 (`.alchemy/` is cached; the pinned name plus `--adopt` recovers from a
 cache miss). Manual republish: **Actions → Docs publish → Run workflow**.

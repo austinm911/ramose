@@ -7,10 +7,10 @@
 # website/alchemy.run.ts, so a cache miss still adopts the existing Worker
 # (`--adopt`) instead of minting a new workers.dev hostname.
 #
-# Optional: set RIPPLE_DOCS_DOMAIN (e.g. ripplegraph.ai) as a variable on the
-# Development environment to attach a custom domain. The zone must already
-# exist in the Cloudflare account; without it the site is served at
-# https://ripple-docs.<account>.workers.dev.
+# Optional: set RIPPLE_DOCS_DOMAIN as a variable on the Development
+# environment to attach a custom domain. The zone must already exist in
+# the Cloudflare account. Until then the site is
+# https://ripple-docs.tvanhens.workers.dev.
 #
 # Credentials come from the GitHub Environment "Development" — same as
 # docs-preview.yml and e2e-cloudflare.yml; see CONTRIBUTING.md.
