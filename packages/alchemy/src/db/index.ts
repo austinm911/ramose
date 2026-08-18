@@ -53,6 +53,7 @@ export {
   Databases,
   layer,
 } from "./Databases.ts";
+export { type Claims, token, type TokenSource } from "./token.ts";
 // the peer's database-name rule, so an app can validate a user-minted name
 // (multi-tenant "create workspace") before the peer does — not a slugify
 export { DATABASE_NAME_RE, isDatabaseName } from "./DatabaseName.ts";

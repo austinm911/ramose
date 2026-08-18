@@ -126,6 +126,44 @@ masked *required* attribute would drop the entity from the result instead of
 redacting the field. The policy compiler makes this a deploy-time error.
 :::
 
+## From the browser
+
+Your auth Worker mints workspace-scoped JWTs; the client's job is only to
+hand the current one to `Ripple.layer`. `Ripple.token.jwt(mint)` is the
+shipped source for that: it calls `mint` lazily on the first read, caches the
+token, shares one in-flight mint between concurrent readers, and re-mints once
+the cached token is within two minutes of its `exp` (configurable via
+`refreshMargin`). The layer re-reads its token on every (re)connect and every
+`/transact`, so short-lived tokens refresh themselves with no other plumbing.
+
+```ts
+import * as Ripple from "@ripple/alchemy/db";
+import * as ManagedRuntime from "effect/ManagedRuntime";
+
+const source = Ripple.token.jwt(() =>
+  fetch("/api/ripple-token", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ workspace: "acme" }),
+  })
+    .then((r) => r.json())
+    .then((body) => body.token),
+);
+
+const runtime = ManagedRuntime.make(
+  Ripple.layer({ url: RIPPLE_URL, token: source }),
+);
+```
+
+- `exp` comes from the JWT payload itself — `mint` returns nothing but the
+  token. A payload with no `exp` is minted once and refreshed only by
+  `source.invalidate()` (sign-out, tenant switch).
+- `source.claims()` is the decoded payload — **not verified**, UI hints only:
+  show `ripple.class` for role-aware chrome, never trust it for access.
+- A `mint` that throws surfaces as `NetworkError`: `transact` fails typed and
+  a standing `live` retries with its usual backoff. Throw an
+  `Unauthorized` from `mint` to make `live` fail terminally instead.
+
 ## Wiring it up
 
 ```ts

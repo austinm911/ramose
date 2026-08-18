@@ -17,9 +17,15 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
+import * as Result from "effect/Result";
 import type { AnyCatalog } from "./Catalog.ts";
 import { type Db, makeDb, type Wire } from "./Db.ts";
-import { type DbError, fromResponse, NetworkError } from "./Errors.ts";
+import {
+  type DbError,
+  fromResponse,
+  isDatabaseError,
+  NetworkError,
+} from "./Errors.ts";
 import {
   type FetchLike,
   fromStandardFetch,
@@ -35,6 +41,7 @@ import {
   type Session,
   type SocketFactory,
 } from "./session.ts";
+import type { TokenSource } from "./token.ts";
 
 /** One method, because a database is a name. */
 export interface DatabasesShape {
@@ -57,11 +64,15 @@ export interface ClientOptions {
   /** Peer base URL (trailing slashes are trimmed). */
   readonly url: string;
   /**
-   * The bearer credential, in the one form the client takes. It is re-read on
-   * every (re)connect and every `/transact`, so a refresh needs no API of its
-   * own. Static: `Effect.succeed(Redacted.make(t))`.
+   * The bearer credential. It is re-read on every (re)connect and every
+   * `/transact`, so a refresh needs no API of its own. Static:
+   * `Effect.succeed(Redacted.make(t))` or `token.static(t)`; a refreshing
+   * JWT: `token.jwt(mint)` — a {@link TokenSource} is read via its `.token`.
    */
-  readonly token?: Effect.Effect<Redacted.Redacted<string>> | undefined;
+  readonly token?:
+    | Effect.Effect<Redacted.Redacted<string>, DbError>
+    | TokenSource
+    | undefined;
   /** Injection seam — defaults to the ambient `fetch`. */
   readonly fetch?: typeof fetch | undefined;
   /** Injection seam — defaults to the ambient `WebSocket`. */
@@ -79,7 +90,9 @@ export interface ClientOptions {
 export interface DatabasesConfig {
   /** Where to send. An Effect, so a deploy-time Output can be read per call. */
   readonly url: Effect.Effect<string>;
-  readonly token?: Effect.Effect<Redacted.Redacted<string>> | undefined;
+  readonly token?:
+    | Effect.Effect<Redacted.Redacted<string>, DbError>
+    | undefined;
   /** `env.Peer.fetch` in a Worker, the ambient `fetch` everywhere else. */
   readonly fetch: FetchLike;
   /** Omit for an HTTPS-only client: reads fall back to POST, `live` is unavailable. */
@@ -90,8 +103,8 @@ export interface DatabasesConfig {
 
 /** The credential as the wire wants it: a string, or nothing. */
 const bearer = (
-  token: Effect.Effect<Redacted.Redacted<string>> | undefined,
-): Effect.Effect<string | undefined> =>
+  token: Effect.Effect<Redacted.Redacted<string>, DbError> | undefined,
+): Effect.Effect<string | undefined, DbError> =>
   token === undefined
     ? Effect.succeed(undefined)
     : token.pipe(
@@ -126,10 +139,16 @@ export const makeDatabases = (
   const sessions = new Map<string, Session>();
   let closed = false;
 
+  // rejects with the typed DbError itself (not a FiberFailure), so the
+  // session's caller can tell a thrown Unauthorized from a transport failure
   const token = (): Promise<Redacted.Redacted<string> | undefined> =>
-    Effect.runPromise(config.token ?? Effect.succeed(undefined)).then(
-      (t) => t as Redacted.Redacted<string> | undefined,
-    );
+    config.token === undefined
+      ? Promise.resolve(undefined)
+      : Effect.runPromise(Effect.result(config.token)).then((result) =>
+          Result.isFailure(result)
+            ? Promise.reject(result.failure)
+            : Promise.resolve(result.success),
+        );
 
   const session = (name: string): Session | undefined => {
     if (config.webSocket === undefined) return undefined;
@@ -169,7 +188,10 @@ export const makeDatabases = (
             ...record(toJson(body)),
             ...(minT === undefined ? {} : { minT }),
           }),
-        catch: networkError,
+        // a token source that failed typed keeps its tag (an Unauthorized
+        // mint stays terminal); everything else here is transport
+        catch: (cause) =>
+          isDatabaseError(cause) ? cause : networkError(cause),
       }).pipe(
         Effect.flatMap((reply) =>
           reply.status >= 200 && reply.status < 300
@@ -277,9 +299,14 @@ const configure = (
       options.webSocket === undefined
         ? globalWebSocket()
         : (url) => new options.webSocket!(url) as never;
+    // a TokenSource is its `.token` Effect; the layer never sees the rest
+    const token =
+      options.token === undefined || Effect.isEffect(options.token)
+        ? options.token
+        : options.token.token;
     return Effect.succeed({
       url: Effect.succeed(options.url.replace(/\/+$/, "")),
-      token: options.token,
+      token,
       fetch:
         options.fetch === undefined ? globalFetch : fromStandardFetch(chosen),
       webSocket: socket,

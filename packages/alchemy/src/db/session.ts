@@ -61,7 +61,11 @@ export interface SessionOptions {
   readonly url: () => Promise<string>;
   /** Ripple database name — the `:name` in `/db/:name/session`. */
   readonly name: string;
-  /** Re-read on every (re)connect and every re-auth. */
+  /**
+   * Re-read on every (re)connect and every re-auth. A rejection is the token
+   * source's own failure (a `DbError` from a refreshing mint) and surfaces
+   * from `request` untouched.
+   */
   readonly token?: (() => Promise<Redacted.Redacted<string> | undefined>) | undefined;
   readonly connect: SocketFactory;
 }
