@@ -59,7 +59,7 @@ const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" v
     <circle cx="462" cy="462" r="4"/>
   </g>
 
-  <text x="80" y="556" font-family="${SANS}" font-size="26" font-weight="bold" fill="${MOSS}">ripplegraph.ai</text>
+  <text x="80" y="556" font-family="${SANS}" font-size="26" font-weight="bold" fill="${MOSS}">ramose.ai</text>
 </svg>`;
 
 await mkdir(dirname(out), { recursive: true });

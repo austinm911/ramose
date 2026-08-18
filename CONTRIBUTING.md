@@ -1,7 +1,7 @@
 # Contributing to Ripple
 
 Development notes for people changing Ripple itself. Consumer docs live at
-[ripple-docs.tvanhens.workers.dev](https://ripple-docs.tvanhens.workers.dev)
+[ramose.ai](https://ramose.ai)
 (source in `website/`); the short path is [`README.md`](README.md). In-repo
 design notes stay in `docs/` (`API.md`, `AUTH_LAYER.md`, `QUERY.md`,
 `RUNBOOK.md`).
@@ -69,8 +69,9 @@ stage name is unguessable and torn down at the end of the run.
 The e2e, docs-preview, and docs-publish jobs use the GitHub **Development**
 environment (`environment: Development`). Put `CLOUDFLARE_API_TOKEN` there as
 a secret and `CLOUDFLARE_ACCOUNT_ID` as a variable (or secret). Optional:
-`RIPPLE_DOCS_DOMAIN` (variable) attaches a custom hostname to the production
-docs Worker (the zone must already exist in the account). Cursor Cloud Agents
+`RIPPLE_DOCS_DOMAIN` (variable) overrides the production docs hostname
+(default `ramose.ai`; the zone must already exist in the account, and the
+token must be able to read the zone and edit its Workers). Cursor Cloud Agents
 need the same names in the Cursor secrets panel — see
 [`.cursor/CLOUD.md`](.cursor/CLOUD.md).
 
@@ -101,9 +102,13 @@ Store and edge-preview token scopes beyond that minimal set.
 ### Docs production
 
 Every push to `master` (or `main`) publishes `website/` as Alchemy stage
-`prod`: an assets-only Worker named `ripple-docs` at
-[ripple-docs.tvanhens.workers.dev](https://ripple-docs.tvanhens.workers.dev).
-Optional: `RIPPLE_DOCS_DOMAIN` (e.g. `ripplegraph.ai`) attaches a custom
-hostname once the zone exists in the account. Re-runs update the same Worker
+`prod`: an assets-only Worker named `ripple-docs` serving
+[ramose.ai](https://ramose.ai) (the default domain in `website/alchemy.run.ts`;
+Alchemy manages the DNS record and edge certificate on the `ramose.ai` zone).
+The workers.dev URL
+([ripple-docs.tvanhens.workers.dev](https://ripple-docs.tvanhens.workers.dev))
+stays up as well. Optional: `RIPPLE_DOCS_DOMAIN` (variable) overrides the
+hostname — on any stage, which is how the domain-attach path can be tested
+against a scratch stage without touching prod. Re-runs update the same Worker
 (`.alchemy/` is cached; the pinned name plus `--adopt` recovers from a
 cache miss). Manual republish: **Actions → Docs publish → Run workflow**.

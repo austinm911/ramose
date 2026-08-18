@@ -1,7 +1,7 @@
-# ripplegraph.ai — the docs site
+# ramose.ai — the docs site
 
 The static documentation site for Ripple: [Astro](https://astro.build) +
-[Starlight](https://starlight.astro.build), branded per the ripplegraph.ai
+[Starlight](https://starlight.astro.build), branded per the Ripple
 brand guide (warm white on void black, signal moss as the one accent, Manrope
 as the Avenir Next web fallback), deployed to Cloudflare with Alchemy — the
 same pattern [alchemy.run](https://alchemy.run) uses for its own website.
@@ -39,9 +39,10 @@ Requires `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (see
 PRs that touch `website/` get an automatic preview deployment (stage
 `pr-<number>`) with the URL commented on the PR; the preview is destroyed when
 the PR closes. Merges to `master` / `main` publish the `prod` stage at
-[ripple-docs.tvanhens.workers.dev](https://ripple-docs.tvanhens.workers.dev).
-Set `RIPPLE_DOCS_DOMAIN` on the Development environment later if a custom
-domain should be attached. See `.github/workflows/docs-preview.yml`,
+[ramose.ai](https://ramose.ai) (the default domain in `alchemy.run.ts`;
+[ripple-docs.tvanhens.workers.dev](https://ripple-docs.tvanhens.workers.dev)
+stays up as well). Set `RIPPLE_DOCS_DOMAIN` on the Development environment to
+override the hostname. See `.github/workflows/docs-preview.yml`,
 `.github/workflows/docs-publish.yml`, and the "Docs previews" / "Docs
 production" sections of `CONTRIBUTING.md`.
 

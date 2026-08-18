@@ -2,7 +2,7 @@
 import starlight from "@astrojs/starlight";
 import { defineConfig } from "astro/config";
 
-const site = "https://ripple-docs.tvanhens.workers.dev";
+const site = "https://ramose.ai";
 
 export default defineConfig({
   site,

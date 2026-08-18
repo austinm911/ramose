@@ -10,9 +10,11 @@
  *
  * `--stage prod` pins the Worker name to `ripple-docs` so the URL
  * https://ripple-docs.tvanhens.workers.dev stays stable across deploys
- * (and after CI cache eviction). Set `RIPPLE_DOCS_DOMAIN` to attach a
- * custom domain; the zone must already exist in the account. Merges to
- * master publish this stage via `.github/workflows/docs-publish.yml`.
+ * (and after CI cache eviction), and serves the site at https://ramose.ai
+ * (the zone must exist in the account; Alchemy manages the DNS record and
+ * certificate). `RIPPLE_DOCS_DOMAIN` overrides the hostname — on any stage,
+ * which is also how the domain-attach path is tested without touching prod.
+ * Merges to master publish this stage via `.github/workflows/docs-publish.yml`.
  *
  * No `main` is provided, so no Worker script is uploaded: Cloudflare's asset
  * layer answers every request, with Starlight's built 404.html serving misses.
@@ -31,7 +33,10 @@ export const Website = Cloudflare.Website.StaticSite(
   "Website",
   Effect.gen(function* () {
     const stage = yield* Alchemy.Stage;
-    const domain = process.env.RIPPLE_DOCS_DOMAIN;
+    // `||` (not `??`): CI passes the variable through unconditionally, so an
+    // unset GitHub variable arrives as "" and must still mean "the default".
+    const domain =
+      process.env.RIPPLE_DOCS_DOMAIN || (stage === "prod" ? "ramose.ai" : undefined);
     return {
       cwd: here,
       command: "bun run build",
@@ -42,7 +47,7 @@ export const Website = Cloudflare.Website.StaticSite(
       // Stable physical name on prod only — preview stages keep Alchemy's
       // per-stage name so `pr-<n>` Workers never collide with production.
       ...(stage === "prod" ? { name: "ripple-docs" } : {}),
-      ...(stage === "prod" && domain ? { domain } : {}),
+      ...(domain ? { domain } : {}),
     };
   }),
 );
