@@ -50,11 +50,19 @@ const db = useDb("todos", Todos); // inside <App />
   Effect with `R = never`, really) from event handlers:
 
   ```tsx
+  // src/todos.ts — the write is a generator over the tx builder
+  export const addTodo = (db: TodosDb, title: string) =>
+    db.transact(function* (tx) {
+      const t = yield* tx.entity();
+      yield* t.add(Todo.title, title);
+    });
+
+  // in the component
   const tx = useTransact({ onError: (e) => toast(errorMessage(e)) });
 
   <button
     disabled={tx.pending}
-    onClick={() => void tx.run(db.transact([{ ":todo/title": title }]))}
+    onClick={() => void tx.run(addTodo(db, title))}
   />;
   ```
 

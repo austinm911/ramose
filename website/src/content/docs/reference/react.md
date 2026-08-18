@@ -101,10 +101,14 @@ const board = useQuery(db.asOf(t), boardQuery); // one query per slider move
 engine — the same `Live` shape, over one entity. `rows` is the projection or
 `null` (a retracted entity is a legitimate emission; the subscription keeps
 standing), and over a pinned view the stream emits once, completes, and
-keeps its rows.
+keeps its rows. The `pattern` is identity — hoist it, or a fresh object
+every render re-keys the subscription — while the `subject` is structural,
+so `{ id: issueId }` written inline is fine.
 
 ```tsx
-const issue = usePull(db, { id: issueId }, { title: Issue.title, done: Issue.done });
+const issuePattern = { title: Issue.title, done: Issue.done };
+
+const issue = usePull(db, { id: issueId }, issuePattern);
 if (issue.rows === null) return <Gone />;
 ```
 

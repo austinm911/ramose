@@ -65,18 +65,34 @@ interruption:
 ```tsx
 useEffect(() => {
   setState(INITIAL); // new inputs, blank slate
+  let cancelled = false;
   const fiber = Effect.runFork(
-    Stream.runForEach(stream, (rows) => Effect.sync(() => setState({ rows, … }))).pipe(
-      Effect.catchCause((error) => Effect.sync(() => setState((p) => ({ ...p, error })))),
+    Stream.runForEach(stream, (rows) =>
+      Effect.sync(() => {
+        if (!cancelled) setState({ rows, … });
+      }),
+    ).pipe(
+      Effect.catchCause((error) =>
+        Effect.sync(() => {
+          // an interrupt reaching here is teardown, never news
+          if (cancelled || Cause.hasInterrupts(error)) return;
+          setState((prev) => ({ ...prev, error }));
+        }),
+      ),
     ),
   );
-  return () => void Effect.runFork(Fiber.interrupt(fiber));
+  return () => {
+    cancelled = true;
+    void Effect.runFork(Fiber.interrupt(fiber));
+  };
 }, [stream]);
 ```
 
-Only a terminal failure reaches the `catchCause`: interruption skips
-recovery, and completion (a pinned `asOf` / `history` view emitted its one
-pass) is not a `Cause` — the last `rows` stay.
+The guard is the point: `catchCause` recovers from interruption too, so
+teardown's own interrupt would otherwise be written into `error`. An
+interrupt cause is dropped, a write after cleanup is dropped, and
+completion (a pinned `asOf` / `history` view emitted its one pass) is not a
+`Cause` — the last `rows` stay.
 
 </details>
 
