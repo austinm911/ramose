@@ -196,6 +196,69 @@ interface View {
   readonly minT?: number | undefined;
 }
 
+// ── the hook seam ──────────────────────────────────────────────────────────
+
+/**
+ * @internal What `@ripple/react`'s hooks need that the public surface
+ * deliberately does not say: a **structural** identity for a view (so
+ * `db.asOf(t)` built inline in a render compares equal across renders
+ * instead of re-subscribing — or looping — on every one), the pinned
+ * coordinate (so `useBasis` answers an `asOf` view with no request), and the
+ * session's wake (so `useBasis` re-reads the basis on every tick).
+ *
+ * It rides a registry symbol rather than an export so the public barrel
+ * stays exactly what `db-portable.test.ts` asserts. The reader lives in
+ * `packages/react/src/seam.ts` and must stay shape-compatible with this.
+ */
+export interface DbSeam {
+  /** Equal iff two views read the same coordinates over the same client. */
+  readonly key: string;
+  /** `asOf(t)`'s `t`; `undefined` on a live (or history) view. */
+  readonly asOf: number | undefined;
+  /**
+   * Subscribe to the session's wakes (basis ticks, local writes, drops).
+   * Returns the unsubscribe, or `undefined` on an HTTPS-only client, where
+   * there is nothing to wake on.
+   */
+  readonly onWake: (cb: () => void) => (() => void) | undefined;
+  /**
+   * The highest basis the session has seen, `undefined` without a session —
+   * so a waker can tell a wake that carries news from one it caused itself
+   * (observing the basis bumps the session).
+   */
+  readonly t: () => number | undefined;
+}
+
+/** @internal The registry key {@link DbSeam} is attached under. */
+export const DB_SEAM: symbol = Symbol.for("ripple.db.seam");
+
+/** One token per client, so views over different clients never compare equal. */
+const clientTokens = new WeakMap<Wire, number>();
+let nextClientToken = 1;
+
+const attachSeam = (
+  db: object,
+  wire: Wire,
+  name: string,
+  view: View,
+): void => {
+  let client = clientTokens.get(wire);
+  if (client === undefined) {
+    client = nextClientToken++;
+    clientTokens.set(wire, client);
+  }
+  const seam: DbSeam = {
+    key:
+      `${client}/${name}` +
+      `?asOf=${view.asOf ?? ""}&history=${view.history === true}` +
+      `&minT=${view.minT ?? ""}`,
+    asOf: view.asOf,
+    onWake: (cb) => wire.session(name)?.onWake(cb),
+    t: () => wire.session(name)?.t,
+  };
+  (db as Record<symbol, unknown>)[DB_SEAM] = seam;
+};
+
 /**
  * One pass of a standing read: the emission, the raw wire result it is
  * digested from, and the basis `t` the peer answered at (the wake fence).
@@ -460,6 +523,8 @@ const makeRead = <C extends AnyCatalog>(
       return makeRead(wire, name, catalog, { ...view, history: true }, bad);
     },
   };
+  // enumerable, so `makeDb`'s spread carries it onto the writable db too
+  attachSeam(read, wire, name, view);
   return read;
 };
 

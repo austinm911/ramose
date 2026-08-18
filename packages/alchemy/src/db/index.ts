@@ -61,10 +61,12 @@ export { type Claims, token, type TokenSource } from "./token.ts";
 export { DATABASE_NAME_RE, isDatabaseName } from "./DatabaseName.ts";
 
 // ── the database ───────────────────────────────────────────────────────────
-export type { Db, DbPrincipal, ReadDb, TxReport } from "./Db.ts";
+export type { Db, DbPrincipal, QueryInput, ReadDb, TxReport } from "./Db.ts";
 export type { Eid } from "./Eid.ts";
 export type { LookupRef } from "./idents.ts";
-export type { Pull } from "./Pull.ts";
+// the pattern-side types too, so `@ripple/react`'s `usePull` can accept
+// exactly what `db.pull` accepts (type-only: the runtime surface is unchanged)
+export type { IdentPullPattern, Pull, ValidatePull } from "./Pull.ts";
 export type { Entity, Tx } from "./Tx.ts";
 
 // ── errors ─────────────────────────────────────────────────────────────────

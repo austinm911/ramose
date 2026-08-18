@@ -48,6 +48,22 @@ const rows = yield* db
   current database value (or denied by policy); retrying unchanged will
   reject again.
 
+## Rendering an error
+
+Every error above carries a human-readable `message`, and `@ripple/react`
+exports the one-liner every toast wants:
+
+```ts
+import { errorMessage } from "@ripple/react";
+
+errorMessage(e); // e.message ?? e._tag ?? String(e)
+```
+
+A policy denial (`Unauthorized`) toasts its server-written message; a bare
+tagged error falls back to its tag. `useTransact` (also in `@ripple/react`)
+surfaces the failing error on `error` / `onError` in exactly the shape this
+function expects.
+
 ## Defects are not errors
 
 Provisioning mistakes — a missing service binding, a malformed peer URL — are
