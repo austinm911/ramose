@@ -5,9 +5,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { parsePolicy } from "@ripple/core/policy/ast.ts";
-import * as Ripple from "@ripple/alchemy";
-import { classOfRole } from "@ripple/better-auth";
+import { parsePolicy } from "@ramose/core/policy/ast.ts";
+import * as Ramose from "@ramose/alchemy";
+import { classOfRole } from "@ramose/better-auth";
 import { compiledPolicy, policy } from "../src/domain/policy.ts";
 import { allShapes, boardShape } from "../src/domain/queries.ts";
 import { Issue, Reef } from "../src/domain/schema.ts";
@@ -65,18 +65,18 @@ describe("reef policy", () => {
   test("a masked attribute pulled as required is a compile error", () => {
     const badShape = { note: Issue.privateNote };
     expect(() =>
-      Ripple.Policy.compile(policy, { pulls: [...allShapes, badShape] }),
+      Ramose.Policy.compile(policy, { pulls: [...allShapes, badShape] }),
     ).toThrow(/privateNote/);
   });
 
   test("the app's own shapes pass the masked-read check", () => {
     expect(() =>
-      Ripple.Policy.compile(policy, { pulls: [boardShape, ...allShapes] }),
+      Ramose.Policy.compile(policy, { pulls: [boardShape, ...allShapes] }),
     ).not.toThrow();
   });
 });
 
-// The mapping lives in `@ripple/better-auth` now (the mint plugin's
+// The mapping lives in `@ramose/better-auth` now (the mint plugin's
 // default); pinned here so it stays in step with what the policy declares.
 describe("role → class mapping", () => {
   test("owner and admin mint the admin class", () => {

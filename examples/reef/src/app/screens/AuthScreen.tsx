@@ -178,7 +178,7 @@ export const AuthScreen = () => {
         </h1>
         <p {...stylex.props(styles.tagline)}>
           A live, multi-tenant issue tracker where every workspace is its own
-          Ripple database.
+          Ramose database.
         </p>
         {mode === "up" && (
           <Field label="Name">

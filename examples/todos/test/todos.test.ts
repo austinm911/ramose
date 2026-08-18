@@ -1,6 +1,6 @@
 /**
  * The consumer proof: the app's own query and writes against a real
- * `@ripple/core` `Connection`, over the two wires the client actually uses —
+ * `@ramose/core` `Connection`, over the two wires the client actually uses —
  * writes as `POST /db/todos/transact`, reads and `t` ticks as session frames.
  *
  * What it pins is the loop the UI depends on: a write moves the live stream
@@ -8,8 +8,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import * as Ripple from "@ripple/alchemy/db";
-import { Connection, fromJson, pull, query, toJson } from "@ripple/core";
+import * as Ramose from "@ramose/alchemy/db";
+import { Connection, fromJson, pull, query, toJson } from "@ramose/core";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -96,12 +96,12 @@ const inProcessPeer = async () => {
 
   // the shipped client, exactly as `src/db.ts` builds it — only the
   // transport seams (`fetch`, `webSocket`) point at the in-process peer
-  const ripple = Ripple.connect({
+  const ramose = Ramose.connect({
     url: "https://peer.local",
     fetch: fetchImpl,
     webSocket: WebSocketImpl as unknown as typeof WebSocket,
   });
-  const db: TodosDb = ripple.db("todos", Todos);
+  const db: TodosDb = ramose.db("todos", Todos);
   await Effect.runPromise(db.install());
   return {
     conn,
@@ -109,12 +109,12 @@ const inProcessPeer = async () => {
     tick: () => {
       for (const push of pushes) push({ op: "t", t: conn.t });
     },
-    dispose: () => ripple.close(),
+    dispose: () => ramose.close(),
   };
 };
 
-/** What `@ripple/react`'s `useLive` does, minus React: drain on a fiber, interrupt to stop. */
-const live = (stream: Stream.Stream<readonly TodoRow[], Ripple.DbError>) => {
+/** What `@ramose/react`'s `useLive` does, minus React: drain on a fiber, interrupt to stop. */
+const live = (stream: Stream.Stream<readonly TodoRow[], Ramose.DbError>) => {
   let rows: readonly TodoRow[] | undefined;
   let error: unknown;
   let changes = 0;
@@ -216,7 +216,7 @@ describe("the app's writes move the app's live stream", () => {
     // `dbAfter` is floored at the write, so this reads its own write
     const rows = await Effect.runPromise(
       report.dbAfter.q(
-        Ripple.query(Todo).where(Todo.title.eq("pull me")).select({ id: Todo.id }),
+        Ramose.query(Todo).where(Todo.title.eq("pull me")).select({ id: Todo.id }),
       ),
     );
     const row = await Effect.runPromise(pullTodo(peer.db, { id: rows[0]!.id }));
