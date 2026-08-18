@@ -1,6 +1,6 @@
 ---
 title: Client API
-description: Every name @ripple/alchemy/db exports — schema constructors, the layer, the Db value, queries, transactions, and errors.
+description: Every name @ripple/alchemy/db exports — schema constructors, connect and the layer, the Db value, queries, transactions, and errors.
 ---
 
 `@ripple/alchemy/db` is the portable client: browser, Node/Bun, tests. It is a
@@ -22,14 +22,27 @@ Vite app needs no alias. Import it as `* as Ripple`.
 
 | name | signature |
 | --- | --- |
-| `layer` | `(options: ClientOptions) => Layer<Databases>` |
+| `connect` | `(options: ClientOptions) => Client` |
+| `Client` | `{ db<C>(name: string, catalog: C): Db<C>; close(): Promise<void> }` |
+| `layer` | `(options: ClientOptions) => Layer<Databases>` — for Effect users |
 | `Databases` | `Context.Service<Databases, { db<C>(name: string, catalog: C): Db<C> }>` — the key *is* the client |
 | `ClientOptions` | `{ url: string; token?: Effect<Redacted<string>>; fetch?: typeof fetch; webSocket?: typeof WebSocket }` |
 
-A static token is `Effect.succeed(Redacted.make(t))`. The layer is scoped and
-the session socket is its finalizer; getting a `Databases` cannot fail. The
-token Effect is re-read on every (re)connect and every `/transact`, so token
-refresh needs no client surface — return the current token from the Effect.
+`connect` is the promise-land entry: a plain handle, no runtime to build.
+`db` is pure — the same call as `Databases.db` — and every `Db` method needs
+no environment, so `Effect.runPromise(db.q(…))` runs it; a `Client` carries
+no `run`. `close()` closes every session socket the client opened and is
+idempotent; after `close`, reads fail rather than silently changing
+transport. A provisioning mistake (malformed URL, no `fetch`) throws
+synchronously from `connect`.
+
+Effect users take `layer`: the same client as a scoped `Layer<Databases>`,
+whose finalizer is the session socket — `connect` is a thin wrapper over the
+same factory, not a second client. Getting a `Databases` cannot fail.
+
+A static token is `Effect.succeed(Redacted.make(t))`. The token Effect is
+re-read on every (re)connect and every `/transact`, so token refresh needs no
+client surface — return the current token from the Effect.
 
 ## The database value
 
@@ -88,3 +101,4 @@ the union `DbError`. See [Errors](/reference/errors/).
   `db.install()` at tenant creation; `ripple.db(name, catalog)` is pure.
 - **Provisioning mistakes are defects.** A missing binding or malformed URL
   is `Effect.die`, not a `DbError` — every signature's `R` is `never`.
+  `connect` surfaces the same defects as synchronous throws.

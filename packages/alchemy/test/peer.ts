@@ -50,6 +50,8 @@ export interface FakeSocket {
   readonly sent: Frame[];
   /** The handshake url, token query param included. */
   readonly url: string;
+  /** `true` once the client closed it (or it dropped). */
+  readonly closed: boolean;
   /** Push an unsolicited server frame (`{ op: "t", t }`). */
   push(frame: unknown): void;
   /** The isolate died. */
@@ -126,6 +128,10 @@ export const fakePeer = (options: PeerOptions = {}): FakePeer => {
     }
 
     readonly readyState = 0;
+
+    get closed(): boolean {
+      return this.dead;
+    }
 
     emit(type: string, ev: unknown): void {
       for (const cb of this.listeners.get(type) ?? []) cb(ev);

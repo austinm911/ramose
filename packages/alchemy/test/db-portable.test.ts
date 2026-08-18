@@ -150,6 +150,7 @@ describe("the `/db` barrel's public names", () => {
         "or",
         "not",
         // connecting
+        "connect",
         "layer",
         "Databases",
         // errors
