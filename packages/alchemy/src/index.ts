@@ -54,7 +54,6 @@ export { ServerBinding } from "./ServerBinding.ts";
 export { ServerHttp } from "./ServerHttp.ts";
 export { providers, Providers } from "./Providers.ts";
 
-// `DatabaseName.ts`, `ServerRuntime.ts` and `Source.ts` are internal
-// scaffolding and are deliberately NOT re-exported (mirrors
-// `alchemy/Cloudflare/KV/index.ts`): HTTP is Worker internals, not a second
-// public API.
+// `ServerRuntime.ts` and `Source.ts` are internal scaffolding and are
+// deliberately NOT re-exported (mirrors `alchemy/Cloudflare/KV/index.ts`):
+// HTTP is Worker internals, not a second public API.

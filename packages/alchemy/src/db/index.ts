@@ -53,6 +53,9 @@ export {
   Databases,
   layer,
 } from "./Databases.ts";
+// the peer's database-name rule, so an app can validate a user-minted name
+// (multi-tenant "create workspace") before the peer does — not a slugify
+export { DATABASE_NAME_RE, isDatabaseName } from "./DatabaseName.ts";
 
 // ── the database ───────────────────────────────────────────────────────────
 export type { Db, ReadDb, TxReport } from "./Db.ts";

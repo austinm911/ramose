@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { RANK_GAP, rankAfter, rankAt, rankBetween } from "../src/domain/rank.ts";
-import { SLUG_RE, slugify } from "../src/domain/shared.ts";
+import { isWorkspaceSlug, slugify } from "../src/domain/shared.ts";
 
 describe("fractional ranks", () => {
   test("appending walks forward in fixed gaps", () => {
@@ -39,12 +39,12 @@ describe("workspace slugs", () => {
   test("slugify produces valid Ripple database names", () => {
     for (const name of ["Coral Team", "  Deep  Sea!  ", "Ops/2026", "élan vital"]) {
       const slug = slugify(name);
-      expect(SLUG_RE.test(slug)).toBe(true);
+      expect(isWorkspaceSlug(slug)).toBe(true);
     }
   });
 
   test("degenerate names fail the check instead of reaching the peer", () => {
-    expect(SLUG_RE.test(slugify("!!!"))).toBe(false);
-    expect(SLUG_RE.test(slugify("a"))).toBe(false);
+    expect(isWorkspaceSlug(slugify("!!!"))).toBe(false);
+    expect(isWorkspaceSlug(slugify("a"))).toBe(false);
   });
 });

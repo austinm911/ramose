@@ -9,7 +9,7 @@ and like a client in a browser — same names, same `Db<C>`, different transport
 Everything that exists only because the implementation grew that way (`SchemaFx`,
 `RuntimeContext`, `create` vs `connect`, the capability trio, nine transport
 layers, the untyped `Client.*` twin, the `/schema` Vite alias) is deleted rather
-than renamed. What is left is **39 names** across two entry points, both
+than renamed. What is left is **41 names** across two entry points, both
 imported as `* as Ripple`.
 
 ## 2. The names a consumer imports
@@ -39,6 +39,7 @@ imported as `* as Ripple`.
 | `layer` | `(options: ClientOptions) => Layer<Databases>` |
 | `Databases` | `Context.Service<Databases, { db<C>(name: string, catalog: C): Db<C> }>` — the key *is* the client |
 | `ClientOptions` | `{ url: string; token?: Effect<Redacted<string>>; fetch?: typeof fetch; webSocket?: typeof WebSocket }` |
+| `DATABASE_NAME_RE` `isDatabaseName` | the peer's database-name rule (`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`), as a `RegExp` and a predicate — validate a user-minted name before the peer does. Not a slugify |
 
 Static token: `Effect.succeed(Redacted.make(t))`. The layer is scoped, the socket a finalizer; getting a `Databases` cannot fail.
 
@@ -215,7 +216,8 @@ export const useLive = <A, E>(stream: Stream.Stream<A, E>) => {
 | `ReadSystem`, `WriteSystem`, `ReadWriteSystem` | → `ReadWriteDatabases`; `ReadDatabases` returns with #14 |
 | 9 × `{Read,Write,ReadWrite}System{Binding,Http,Local}` | → `ServerBinding`, `ServerHttp` |
 | `System`, `SystemProps`, `SystemPeer`, `SystemProbe` | → `Ripple.Server`, prop `worker` |
-| `isSystem`, `DATABASE_NAME_RE`, `resolvePeer`, `ProviderLive`, `ProviderLocal`, `SystemProvider` | internal; bad name is `InvalidRequest` |
+| `isSystem`, `resolvePeer`, `ProviderLive`, `ProviderLocal`, `SystemProvider` | internal; bad name is `InvalidRequest` |
+| `DATABASE_NAME_RE` | public again, on `/db` with `isDatabaseName` (#37) |
 | `openSession`, `Session`, `SessionOptions`, `sessionUrl`, `TypedSession`, `TypedSessionOptions`, `Session.connect`'s `{ session, db }` | internal; `layer` provides `Databases` |
 | `SchemaFx` (the namespace name) | deleted; flattened into `/db` |
 | `create` / `connect` on a system | → `ripple.db(name, catalog)`, pure |
