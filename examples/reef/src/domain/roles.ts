@@ -2,7 +2,8 @@
  * Better Auth organization access control, shared by the auth Worker and the
  * browser client (the module is isomorphic). Built-in owner/admin/member
  * permission sets plus a custom `viewer` role with no permissions at all —
- * the role decides the `ripple.class` claim (shared.ts `classOfRole`), and
+ * the role decides the `ripple.class` claim (`@ripple/better-auth`'s
+ * `classOfRole`, the mint plugin's default mapping), and
  * the compiled Ripple policy is what enforces it on the data plane.
  */
 

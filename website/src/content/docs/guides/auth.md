@@ -60,7 +60,7 @@ Verified principals are memoized per isolate for 60 seconds.
 
 Ripple verifies tokens; it never issues them. But the shape it verifies is a
 contract with two consumers — the peer's env and your mint route — so declare
-it once as an `AuthConfig` and let `Ripple.claims` build the payload:
+it once as an `AuthConfig`:
 
 ```ts title="auth.ts"
 import * as Ripple from "@ripple/alchemy";
@@ -73,8 +73,50 @@ export const AUTH: Ripple.AuthConfig = {
 ```
 
 The mint route's contract is `POST → { token }`, and the JWT itself carries
-`exp`. `claims` is pure — no signing, no I/O — so sign the payload with
-whatever you have (Better Auth's `signJWT`, `jose`, …):
+`exp`. There are two ways to get that route.
+
+### With Better Auth: the shipped plugin
+
+If your auth provider is [Better Auth](https://better-auth.com),
+`@ripple/better-auth` ships the mint route as a server plugin. It requires
+Better Auth's `jwt` plugin (it signs with the same JWKS the peer's
+`RIPPLE_JWKS_URL` reads — point that at the jwt plugin's `/jwks` endpoint)
+and leaves your app exactly one decision, `classOf`: the caller's policy
+class for the requested database, or `null` for 403.
+
+```ts title="auth-worker.ts"
+import { orgClassOf, rippleToken } from "@ripple/better-auth";
+import { jwt } from "better-auth/plugins/jwt";
+import { organization } from "better-auth/plugins/organization";
+
+betterAuth({
+  plugins: [
+    organization(),
+    jwt({ jwt: { issuer: AUTH.issuer, audience: AUTH.audience,
+                 expirationTime: `${AUTH.ttl}s` } }),
+    rippleToken({
+      auth: AUTH,             // the same AuthConfig authEnv pins
+      policy: compiledPolicy, // optional: fail an undeclared class at mint
+      classOf: orgClassOf(),  // or your own ({ session, db, ctx }) => class | null
+    }),
+  ],
+});
+```
+
+That serves `POST {basePath}/ripple/token { db }` → `{ token, class, exp }`
+behind the session cookie. `orgClassOf()` is the opt-in default for apps
+where an organization's slug *is* the database name: the caller's member row
+decides the class (`owner`/`admin` → `admin`, `member` → `member`, anything
+else → `viewer` — the exported `classOfRole`); no org and no membership are
+the same 403, so the route never leaks whether a workspace exists.
+
+The paired client plugin gives the auth client one action that feeds
+`Ripple.token.jwt` directly; see [From the browser](#from-the-browser).
+
+### With anything else: `Ripple.claims`
+
+`claims` builds the payload the peer verifies. It is pure — no signing, no
+I/O — so sign it with whatever you have (Better Auth's `signJWT`, `jose`, …):
 
 ```ts title="mint-route.ts"
 const payload = Ripple.claims(
@@ -87,10 +129,10 @@ const payload = Ripple.claims(
 const { token } = await auth.api.signJWT({ body: { payload: { ...payload } } });
 ```
 
-It validates at mint what the peer would reject anyway: `db` must be a valid
-database name, and — when the compiled policy is passed — `class` must be one
-the policy declares, because an undeclared class grants nothing, never an
-outage. `exp - iat` is exactly `ttl`, and `authEnv({ auth: AUTH })` pins
+Either way, what the peer would reject is validated at mint: `db` must be a
+valid database name, and — when the compiled policy is passed — `class` must
+be one the policy declares, because an undeclared class grants nothing, never
+an outage. `exp - iat` is exactly `ttl`, and `authEnv({ auth: AUTH })` pins
 `RIPPLE_JWT_MAX_TTL` to the same `ttl`, so the cap holds by construction.
 
 On the client, wrap the mint call in `Ripple.token.jwt(mint)` — see
@@ -313,9 +355,32 @@ cached token is within two minutes of its `exp` (configurable via
 `refreshMargin`). The client re-reads its token on every (re)connect and every
 `/transact`, so short-lived tokens refresh themselves with no other plumbing.
 
+With the Better Auth plugin, the client half is one line each way —
+`rippleTokenClient()` adds `authClient.ripple.token({ db })`, which resolves
+the mint route's body, exactly what `token.jwt` accepts:
+
 ```ts title="src/db.ts"
 import * as Ripple from "@ripple/alchemy/db";
+import { rippleTokenClient } from "@ripple/better-auth/client";
+import { createAuthClient } from "better-auth/client";
 
+const authClient = createAuthClient({ plugins: [rippleTokenClient()] });
+
+const source = Ripple.token.jwt(() => authClient.ripple.token({ db: "acme" }));
+
+const ripple = Ripple.connect({ url: RIPPLE_URL, token: source });
+// Effect users: Ripple.layer({ url: RIPPLE_URL, token: source }) — same client
+```
+
+A 401/403 from the mint route (signed out, not a member) throws Ripple's
+`Unauthorized` through `token.jwt`, so a standing `live` fails terminally
+instead of retrying a mint that cannot succeed; any other failure is
+`NetworkError` and retries as transient.
+
+Any other mint route slots in the same way — `token.jwt` only wants a
+promise of the JWT or of `{ token }`:
+
+```ts title="src/db.ts"
 const source = Ripple.token.jwt(() =>
   fetch("/api/ripple-token", {
     method: "POST",
@@ -323,9 +388,6 @@ const source = Ripple.token.jwt(() =>
     body: JSON.stringify({ workspace: "acme" }),
   }).then((r) => r.json()),
 );
-
-const ripple = Ripple.connect({ url: RIPPLE_URL, token: source });
-// Effect users: Ripple.layer({ url: RIPPLE_URL, token: source }) — same client
 ```
 
 - `mint` resolves to the JWT string, or to any object carrying it under

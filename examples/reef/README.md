@@ -45,7 +45,7 @@ account to watch writes propagate live.
 ```
 browser SPA (Vite + React 19 + StyleX)
   ├── cookies ──────────► auth Worker   BetterAuth on D1: sign-in, orgs,
-  │                       (:1338)       JWKS, POST /api/ripple-token
+  │                       (:1338)       JWKS, POST /api/auth/ripple/token
   └── JWT per request ──► Ripple peer   RIPPLE_POLICY + JWKS verify,
                           (:1337)       Transactor/QueryReplica DOs, R2
 ```
@@ -56,7 +56,8 @@ auth Worker's URL (for `RIPPLE_JWKS_URL`), and the auth Worker needs nothing
 back.
 
 A workspace is born entirely from the browser: Better Auth org create →
-`POST /api/ripple-token` mints a 15-minute JWT with
+`POST /api/auth/ripple/token` (the `@ripple/better-auth` mint plugin) mints a
+15-minute JWT with
 `ripple: { db: <slug>, class: <role> }` → `ripple.db(slug, Reef).install()` →
 seed labels + the creator's `user` row. No resource, no deploy — a database is
 a name.
@@ -84,9 +85,9 @@ examples/reef/
 | `src/domain/queries.ts` | every navigational query and pull shape; compiled against the policy in tests |
 | `src/domain/rank.ts` | fractional ranking — a drag writes one `:issue/rank` double |
 | `src/domain/roles.ts` / `shared.ts` | Better Auth access-control roles and the constants both Workers and the SPA share |
-| `src/infra/api.ts` | the auth Worker: BetterAuth (organization + jwt plugins) on D1, `POST /api/ripple-token` → `{ token }`, and the built SPA as Worker assets |
+| `src/infra/api.ts` | the auth Worker: BetterAuth (organization + jwt + `@ripple/better-auth` mint plugins) on D1 and the built SPA as Worker assets |
 | `src/infra/resources.ts` / `alchemy.run.ts` | the peer (R2 + DOs + compiled policy via `Ripple.authEnv`) and the one stack wiring both Workers plus the dev-only `Ui` (`Command.Dev` running Vite) |
-| `src/app/ripple.ts` | the whole client wiring, 30 lines: `Ripple.token.jwt` over the mint route + `Ripple.connect`, exposed to screens as `{ slug, cls, db, close }` |
+| `src/app/ripple.ts` | the whole client wiring, ~20 lines: `Ripple.token.jwt` over `authClient.ripple.token` + `Ripple.connect`, exposed to screens as `{ slug, cls, db, close }` |
 | `src/app/` | the SPA: `ui.tsx` primitives (icons, buttons, dialog, toasts, priority glyph), auth screen, workspace picker, live kanban board, issue detail, time travel |
 | `test/` | policy compilation + masked-pull checks, role→class mapping, ranking — part of `bun run test` |
 

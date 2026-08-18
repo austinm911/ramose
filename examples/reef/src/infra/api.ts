@@ -1,19 +1,20 @@
 /**
  * The Reef auth Worker — Better Auth on Cloudflare D1 via
- * `@alchemy.run/better-auth`, plus the one custom route that bridges it to
- * Ripple: `POST /api/ripple-token`.
+ * `@alchemy.run/better-auth`. The bridge to Ripple is not a custom route any
+ * more: it is `@ripple/better-auth`'s `rippleToken` plugin.
  *
  * What it serves:
  *
  *   /api/auth/*         Better Auth: email+password sign-in, the organization
  *                       plugin (a Reef workspace *is* an org; its slug is the
- *                       Ripple database name), and the jwt plugin (JWKS at
- *                       /api/auth/jwks — the peer's `RIPPLE_JWKS_URL`).
- *   /api/ripple-token   Mints the workspace-scoped JWT the Ripple peer
- *                       verifies: `sub` is the Better Auth user id and
+ *                       Ripple database name), the jwt plugin (JWKS at
+ *                       /api/auth/jwks — the peer's `RIPPLE_JWKS_URL`), and
+ *                       the rippleToken plugin: POST /api/auth/ripple/token
+ *                       mints the workspace-scoped JWT the Ripple peer
+ *                       verifies — `sub` is the Better Auth user id,
  *                       `ripple: { db, class }` comes from the caller's org
- *                       membership (role → class). Signed with the same
- *                       managed JWKS key via the server-only `signJWT`.
+ *                       membership (role → class via `orgClassOf`), signed
+ *                       with the same managed JWKS key.
  *   /*                  The built SPA (examples/reef/dist), assets-first with
  *                       single-page-app fallback. `bunx vite build` fills it;
  *                       during local dev the Vite dev server is used instead.
@@ -28,7 +29,7 @@
 
 import { BetterAuth } from "@alchemy.run/better-auth";
 import { CloudflareD1 } from "@alchemy.run/better-auth/CloudflareD1";
-import { claims } from "@ripple/alchemy";
+import { orgClassOf, rippleToken } from "@ripple/better-auth";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { jwt } from "better-auth/plugins/jwt";
 import { organization } from "better-auth/plugins/organization";
@@ -42,8 +43,6 @@ import {
   DEV_API_PORT,
   DEV_UI_ORIGIN,
   REEF_AUTH,
-  classOfRole,
-  isWorkspaceSlug,
 } from "../domain/shared.ts";
 
 /** Better Auth's tables (user/session/org/member/invitation/jwks) live here. */
@@ -105,70 +104,21 @@ export const Api = Cloudflare.Worker(
             expirationTime: `${REEF_AUTH.ttl}s`,
           },
         }),
+        // `POST /api/auth/ripple/token { db }` → `{ token, class, exp }`.
+        // The session cookie authenticates the caller; `orgClassOf` maps
+        // their membership in the org whose slug is `db` to a policy class
+        // (owner|admin → admin, member → member, else viewer; no org and no
+        // membership are the same 403); `Ripple.claims` builds the claim set
+        // the peer verifies from the same REEF_AUTH the peer's env pins,
+        // validated against the compiled policy; signing uses the same JWKS
+        // key the /api/auth/jwks endpoint publishes.
+        rippleToken({
+          auth: REEF_AUTH,
+          policy: compiledPolicy(),
+          classOf: orgClassOf(),
+        }),
       ],
     });
-
-    /**
-     * `POST /api/ripple-token { workspace }` → `{ token }`.
-     *
-     * The session cookie authenticates the caller; their membership in the
-     * org whose slug is `workspace` decides the class; `Ripple.claims` builds
-     * the claim set the Ripple peer verifies (docs/AUTH_LAYER.md §1) and
-     * `signJWT` (server-only, same JWKS key the /api/auth/jwks endpoint
-     * publishes) signs it. The class and `exp` ride inside the JWT —
-     * `Ripple.token.jwt` decodes them client-side (`source.claims()`), so
-     * the body carries nothing else.
-     */
-    const rippleToken = Effect.gen(function* () {
-      const session = yield* auth.getSession();
-      if (session === null) {
-        return yield* json({ error: "not signed in" }, 401);
-      }
-      const request = yield* HttpServerRequest.HttpServerRequest;
-      const body = (yield* request.json.pipe(
-        Effect.catchCause(() => Effect.succeed(null)),
-      )) as { workspace?: unknown } | null;
-      const workspace = body?.workspace;
-      if (typeof workspace !== "string" || !isWorkspaceSlug(workspace)) {
-        return yield* json({ error: "workspace must be a valid slug" }, 400);
-      }
-
-      const webRequest = yield* HttpServerRequest.toWeb(request).pipe(Effect.orDie);
-      // Requires membership: a non-member gets a Better Auth error, mapped
-      // to 403 below — the token route never leaks whether the org exists.
-      const org = yield* auth.api
-        .getFullOrganization({
-          query: { organizationSlug: workspace },
-          headers: webRequest.headers,
-        })
-        .pipe(Effect.catchTag("BetterAuthApiError", () => Effect.succeed(null)));
-      const member = org?.members.find((m) => m.userId === session.user.id);
-      if (member === undefined) {
-        return yield* json({ error: "not a member of this workspace" }, 403);
-      }
-
-      const cls = classOfRole(member.role);
-      // One contract: `Ripple.claims` builds the payload the peer verifies
-      // from the same REEF_AUTH the peer's env pins, validating the db name
-      // and that the class is one the compiled policy declares.
-      const payload = claims(
-        REEF_AUTH,
-        { sub: session.user.id, db: workspace, class: cls },
-        compiledPolicy(),
-      );
-      // Spread: `signJWT` wants jose's index-signed `JWTPayload`, which a
-      // named interface is not assignable to.
-      const { token } = yield* auth.api
-        .signJWT({ body: { payload: { ...payload } } })
-        .pipe(Effect.orDie);
-      return yield* json({ token });
-    }).pipe(
-      // Session-lookup failures (bad cookie, storage hiccough) render as the
-      // API error they are instead of escaping the Worker's HttpEffect type.
-      Effect.catchTag("BetterAuthApiError", (error) =>
-        json({ error: error.body?.message ?? "auth error" }, error.statusCode),
-      ),
-    );
 
     return {
       fetch: Effect.gen(function* () {
@@ -176,9 +126,6 @@ export const Api = Cloudflare.Worker(
         const path = request.url.split("?")[0] ?? "/";
         if (path.startsWith(`${AUTH_BASE_PATH}/`)) {
           return yield* auth.fetch;
-        }
-        if (path === "/api/ripple-token" && request.method === "POST") {
-          return yield* rippleToken;
         }
         if (path === "/api/health") {
           return yield* json({ ok: true });
