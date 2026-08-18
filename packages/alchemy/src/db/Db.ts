@@ -148,7 +148,7 @@ interface View {
   readonly minT?: number | undefined;
 }
 
-/** The live retry backoff bounds, in ms. */
+/** The pause between `live` passes that failed non-terminally, in ms. */
 const RETRY_MIN = 250;
 const RETRY_MAX = 5000;
 
@@ -259,7 +259,14 @@ const makeRead = <C extends AnyCatalog>(
       };
     });
 
-  /** Retry the transient half of `DbError` with the live backoff. */
+  /**
+   * Keep a standing query alive: re-run a pass that failed non-terminally
+   * until it succeeds. This is not a transient policy — the wire's
+   * `retryTransient` ladder already retried each Unavailable / NetworkError
+   * attempt and only surfaces once spent — it is what happens *after* that
+   * (an outage longer than the ladder), and for the failures the ladder does
+   * not touch (a 5xx `InternalError`). Exponential pause, capped.
+   */
   const withBackoff = <A>(
     attempt: Effect.Effect<A, DbError>,
   ): Effect.Effect<A, DbError> => {
@@ -306,6 +313,8 @@ const makeRead = <C extends AnyCatalog>(
           let last: string | undefined;
           for (;;) {
             const seen = session?.t ?? 0;
+            // one pass; the wire ladder retries its transient attempts, and
+            // withBackoff only re-runs the pass once that ladder is spent
             const pass = yield* withBackoff(runQuery(input, seen || undefined));
             // a tick the query's rows did not notice is not news
             const digest = JSON.stringify(pass.raw) ?? "";

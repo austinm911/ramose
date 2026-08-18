@@ -82,16 +82,15 @@ export interface SendOptions {
   readonly body?: unknown;
 }
 
-/** Attempts a transient failure gets before it is the caller's. */
+/** How many times one request is attempted before a transient failure surfaces. */
 const TRANSIENT_ATTEMPTS = 6;
 
 /**
- * Retry the transient half of `DbError` — `Unavailable`, `NetworkError` — on a
- * jittered exponential ladder (~150ms doubling to 2s; ~4s of sleep before the
- * last attempt). Every transport goes through here, HTTPS and the session
- * socket alike, so a read does not lose its resilience by taking the socket.
- * `attempt` receives the attempt index; the first is `0`. `while` can call
- * the ladder off early — a closed client, say, where nothing will reopen.
+ * The one transient-retry policy, for every transport. `Unavailable` and
+ * `NetworkError` are retried on a jittered exponential ladder (~150ms
+ * doubling to 2s; ~4s of sleep in total); anything else surfaces at once.
+ * `attempt` receives the attempt index, `0` first. `while` ends the ladder
+ * early when a retry cannot help — a closed client, where nothing reopens.
  */
 export const retryTransient = <A>(
   attempt: (n: number) => Effect.Effect<A, DbError>,
