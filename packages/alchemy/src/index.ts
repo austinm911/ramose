@@ -36,6 +36,12 @@ export * from "./db/index.ts";
 // ── typed policy: deploy-time, so it is not on `/db` ────────────────────────
 export * as Policy from "./db/Policy.ts";
 
+// ── the verifier/minter contract ─────────────────────────────────────────
+// (`MintedClaims`, not `Claims`: the portable barrel already exports `Claims`
+// as the decoded-but-unverified payload of a `TokenSource` — same shape,
+// different trust level — and a shadow would silently change its meaning.)
+export { type AuthConfig, claims, type ClaimsInput, type MintedClaims } from "./Auth.ts";
+
 // ── resources ──────────────────────────────────────────────────────────────
 export { Database } from "./Database.ts";
 export {
