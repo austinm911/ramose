@@ -188,3 +188,5 @@ Contributing (tests, CI, Cloudflare e2e): [`CONTRIBUTING.md`](CONTRIBUTING.md).
 Ops: [Runbook](https://ramose.ai/reference/runbook/).
 Recorded benches:
 [`bench/RESULTS.md`](bench/RESULTS.md).
+Brand assets (mark, on-dark mark, horizontal and stacked lockups, app icon):
+[`website/public/brand/`](website/public/brand/).
