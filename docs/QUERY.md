@@ -204,9 +204,10 @@ Ripple.query(User)
   });
 ```
 
-- A backlink is always **cardinality-many** — any number of entities may point
-  at one — so quantifiers apply to it, and `orderBy` across one is rejected when
-  the query is built, like any many hop.
+- A backlink is **cardinality-many** — any number of entities may point at one
+  — so quantifiers apply to it, and `orderBy` across one is rejected when the
+  query is built, like any many hop. The single exception is a component ref,
+  below.
 - In a shape it is a **possibly-empty array**: an entity with zero backlinks
   comes back with `[]`, never dropped. It is never turned into a required
   `where` clause.
@@ -214,12 +215,49 @@ Ripple.query(User)
   `{":db/id": n}` objects, which is neither a scalar nor a shape. Ask for the
   shape you want with `.reverse.select({ … })`.
 - `.reverse` works on targeted, untargeted and self-refs, and part-way along a
-  path. It does not model a `:db/isComponent` ref, whose backlink is
-  single-valued; `.reverse` on one throws rather than typing an array the peer
-  will not send.
+  path.
 - A path that walks on **through** a backlink keeps that hop backwards:
   `Todo.owner.reverse.owner.name` is "the todos that point at me, then their
   owner, then that owner's name" — one reversed hop, then two forward ones.
+
+#### The backlink of a `:db/isComponent` ref
+
+A component ref owns what it points at, so at most one entity points *back*:
+that backlink is **cardinality-one**, and the peer answers it with a single
+nested object rather than a collection (`cardMany = !attr.isComponent`, in the
+core pull). Componenthood is part of the attribute's *type* —
+`Attr(Ref(() => N), { isComponent: true })` infers `isComponent: true` — so
+`.reverse` reads it and types the hop accordingly.
+
+```ts
+export const Address = Ripple.Namespace("address", {
+  city: Ripple.Attr(Schema.String),
+});
+export const Person = Ripple.Namespace("person", {
+  name: Ripple.Attr(Schema.String),
+  address: Ripple.Attr(Ripple.Ref(() => Address), { isComponent: true }),
+});
+
+Ripple.query(Address).select({
+  city: Address.city,
+  owner: Person.address.reverse.select({ name: Person.name }),
+});
+// readonly { city: string; owner: { name: string } }[]
+```
+
+- One nested object, not an array — `{ name: "Ada" }`, never `[{ … }]`.
+- **Required, like any card-one field**: an orphan — a component nobody points
+  at — is dropped, on the peer, by a required clause that reads the datom
+  backwards (`[?r :person/address ?e]`), so `.limit` still counts only the rows
+  you keep. `.optional` types `… | undefined` and keeps the row.
+- Being card-one it has **no elements**: `.some` / `.every` / `.none` /
+  `.each`, and the collection constraints `.where` / `.orderBy` / `.limit` /
+  `.offset`, are unavailable on it.
+- It *is* a legal `orderBy` key, which a many backlink never is:
+  `.orderBy(Person.address.reverse.name)` sorts addresses by their owner's
+  name, and the ownerless one is placed by `empty`.
+- A **bare** component backlink still needs a shape, exactly like a many one.
+- Every other ref's backlink is unchanged: many, and an array in a shape.
 
 ### Shape (`select`)
 
@@ -230,6 +268,7 @@ are absent, not `undefined`.
 .select({
   title: Todo.title,
   due: Todo.due.optional,                              // Date | undefined
+  done: Todo.done.orDefault(false),                    // boolean — never undefined
   owner: Todo.owner.select({ name: User.name }),       // nested object
 })
 ```
@@ -239,6 +278,8 @@ are absent, not `undefined`.
   rows you keep.
 - **`.optional`**: types `T | undefined` and keeps the parent when the attr is
   absent.
+- **`.orDefault(v)`** (card-one scalar): reads a missing datom as `v`, and the
+  field's type is the attribute's own — see below.
 - **A select field is a direct attribute.** Every key names an attribute of the
   namespace being pulled (or a nested `.select` through one of its refs). A
   flattened path is rejected — at compile time and when the query lowers:
@@ -258,7 +299,89 @@ are absent, not `undefined`.
   bare `.reverse` without a shape is rejected. A `.reverse` hop is the ref read
   backwards, so the element is the *referring* entity (a `Todo`, for
   `Todo.owner.reverse` from a `User`) — that is what the shape and the nested
-  constraints below are written against.
+  constraints below are written against. The backlink of a `:db/isComponent`
+  ref is the exception: one nested object, required unless `.optional`.
+
+#### `.orDefault`: a stand-in for the missing datom
+
+`attr.orDefault(value)` reads a missing card-one scalar as `value` rather than
+`undefined`. Unlike a client-side `??` after the fact, the substitution is the
+**peer's**: it lowers to the pull spec's `default`, which the engine already
+answers.
+
+```ts
+Ripple.query(Todo)
+  .limit(2)
+  .select({ title: Todo.title, done: Todo.done.orDefault(false) });
+// readonly { title: string; done: boolean }[]
+```
+
+- **Card-one non-ref attributes only.** A card-many attribute has no missing
+  value to stand in for — it is `[]`, which is already an answer — and a ref
+  reaches an entity, whose stand-in would have to be a whole shape rather than
+  a value. `:db/id` is a ref here, and is never missing.
+- **No required clause is emitted** — which is the point: the entity without
+  the datom is exactly the row the default exists to keep, so `.limit(2)` above
+  counts it, where the same field asked for *bare* would have paged past it.
+- **Not stackable with `.optional`**: a defaulted field always reads, so
+  `.orDefault(0).optional` and `.optional.orDefault(0)` are both type errors.
+- `.orDefault(null)` is a real default — the value travels verbatim, and
+  lowering asks *whether* there is a default rather than comparing to
+  `undefined`.
+- The default is **read, never written**: the datom stays absent, and the same
+  entity asked for with `.optional` still reads `undefined`.
+- A flattened path with a default is still a flattened path:
+  `select({ ownerName: Todo.owner.name.orDefault("") })` is rejected like any
+  other multi-hop select field.
+- **`orderBy` does not see the default.** Ordering is query-phase and the
+  default is pull-phase, so a row missing the datom sorts as *empty* — placed
+  by `empty: "first" | "last"` — not at the default's value.
+- **`Policy.checkPulls` treats a defaulted field as required.** A read-masked
+  attribute must still be pulled `.optional`; the deploy-time check fails
+  closed rather than letting a default stand in for a value the policy hides.
+
+The same spelling works on `db.pull`:
+`db.pull(eid, { age: User.age.orDefault(0) })`.
+
+#### `Ripple.all(N)`: the peer's wildcard row
+
+`select(Ripple.all(N))` asks for **every attribute the matched entity has**. It
+is not a shape the client expands into a map of the namespace's attributes:
+lowering emits the peer's own `["*"]` wildcard pull, so what comes back is
+ident-keyed rather than named by you.
+
+```ts
+const rows = yield* db.q(
+  Ripple.query(Todo).where(Todo.done.eq(false)).select(Ripple.all(Todo)),
+);
+rows[0][":db/id"];      // number — the wildcard always carries it
+rows[0][":todo/title"]; // string | undefined
+rows[0][":todo/owner"]; // { ":db/id": number } | undefined — a ref is the entity
+```
+
+- The row type is `AllRow<N>`: required `":db/id"`, every `":ns/attr"` of `N`
+  optional (a datom the entity does not have is a key the map does not have),
+  refs as `{":db/id": n}`, cardinality-many as arrays.
+- It is a **lower bound, not an exact type.** Scope is "at least one `:ns/*`
+  datom", so a matched entity may also carry other namespaces' attributes and
+  the peer returns those keys too. The keys named above are the ones you may
+  rely on; typing the rest would mean naming a catalog, which a
+  namespace-scoped query does not have.
+- `where` / `orderBy` / `limit` / `offset` compose with it as with any select,
+  and nothing in a wildcard can drop a row — every key is optional, so no
+  required clause is emitted.
+- **Not nestable**: `all(N)` is the whole shape of a query, never one field of
+  one. `select({ everything: Ripple.all(Todo) })` is a type error, and it and a
+  nested `Todo.owner.select(Ripple.all(User))` are both rejected when the query
+  lowers — the engine does answer a nested `[*]`, but it would key that map by
+  the *target's* idents inside a row keyed by your names. Select the fields you
+  want through the ref, or run a second query.
+- The namespace must be the query's own: `query(Todo).select(all(User))` is a
+  type error (only — both lower to the same wildcard).
+- Same term on `db.pull`: `db.pull(eid, Ripple.all(Todo))` is exactly what
+  `db.pull(eid, ["*"])` answers, with `Todo`'s idents typed. The ident-array
+  form types a bare ref the same way — `db.pull(eid, [":user/friends"])` reads
+  as `{":db/id": n}` objects, which is what the peer sends.
 
 #### Filtering a nested collection
 
@@ -352,7 +475,9 @@ twenty entities and the client never sees the rows a page dropped.
   booleans, instants, the rest).
 - A path that crosses a **cardinality-many** attribute (`User.friends.name`) is
   rejected when you build the query: the sort key would be a set, not a value.
-  A backlink (`Todo.owner.reverse`) is a many hop, so it is rejected too.
+  A backlink (`Todo.owner.reverse`) is a many hop, so it is rejected too —
+  except the backlink of a `:db/isComponent` ref, which reaches one entity and
+  is a legal key like any card-one path.
 
 ---
 
@@ -400,7 +525,10 @@ A navigational query compiles to a find-pull query:
    chain bound: `[(starts-with? ?x "a")]`.
 3. **Required fields** → one `[?e :attr _]` clause per required card-one field
    of the shape (recursively through required nested selects), so the peer's
-   row set is already the one the client keeps.
+   row set is already the one the client keeps. A component backlink is
+   card-one, so its clause is the datom the other way, `[?r :attr ?e]` — the
+   entity that must exist is the owner pointing at this row. A `.orDefault`
+   field emits nothing: it exists to keep the row that has no such datom.
 4. **Order** → each sort key binds a fresh variable through an `or-join`: one
    branch walks the path, the other proves it absent (`not`) and grounds `null`,
    which the engine places per `empty`. The `:order` vector names those
@@ -448,15 +576,15 @@ Status of the navigational surface relative to the intended design.
 
 | Area | Shipped | Not yet |
 |---|---|---|
-| Schema | `Ref(() => N)`, `Ref.self`, navigable attrs | namespace-branded `Eid<N>` cleanup |
+| Schema | `Ref(() => N)`, `Ref.self`, navigable attrs, componenthood in the attribute's type (`isComponent`) | namespace-branded `Eid<N>` cleanup (blocked — see Later) |
 | Build | `Ripple.query(N)`, `.where`, `.select`, `.orderBy`, `.limit`, `.offset`, `.build` | `Ripple.params`, `.one` / `.oneOrFail`, `.groupBy`, `.after(cursor)` |
 | Predicates | `eq` `ne` `lt` `lte` `gt` `gte` `in` `startsWith` `endsWith` `includes` `matches` `exists` `missing`, ref `is`, card-many `some` / `every` / `none` on refs **and scalars** (`attr.each` names the element) | — |
 | Combinators | `Ripple.or` `Ripple.not`, nestable | `Ripple.when` (waits on `Ripple.params`) |
-| Shape | nested `ref.select`, `.optional`, backlink `.reverse.select` (same grammar for `db.pull`), nested `where` / `orderBy` / `limit` / `offset` on every card-many collection — refs, backlinks and *scalars* (via `attr.each`) — including `every` and `not` under `some` inside one | `.expand`, `.orDefault`, `Ripple.all(N)`, `.reverse` on `:db/isComponent` refs. Rejected by design: a **flattened path** as a select field (`{ ownerName: Todo.owner.name }` — write the nested select), constraints on a card-one ref select (one entity, not a collection), and an element cursor outside its collection |
+| Shape | nested `ref.select`, `.optional`, `.orDefault(v)` on a card-one scalar, `Ripple.all(N)` (the peer's wildcard row), backlink `.reverse.select` — many, or **one** for a `:db/isComponent` ref (same grammar for `db.pull`), nested `where` / `orderBy` / `limit` / `offset` on every card-many collection — refs, backlinks and *scalars* (via `attr.each`) — including `every` and `not` under `some` inside one | `.expand`. Rejected by design: a **flattened path** as a select field (`{ ownerName: Todo.owner.name }` — write the nested select), a nested `all(N)` (it is the whole shape of a query), constraints on a card-one ref select (one entity, not a collection), and an element cursor outside its collection |
 | Aggregates | — | `count` `sum` `avg` `min` `max` `countDistinct`, `having` |
 | Graph | — | `.traverse` `.paths` `attr.reaches` `Ripple.either` |
 | Runners | `db.q` / `db.live` on query values; find-pull lowering; identical-result suppression on `live` | `db.changes`; `Ripple.explain` / `withBasis` |
-| Order/limit | AST + engine `order` / `limit` / `offset`; required-field filtering on the peer, before `limit`; card-many and backlink `orderBy` rejected | — |
+| Order/limit | AST + engine `order` / `limit` / `offset`; required-field filtering on the peer, before `limit`; card-many `orderBy` rejected, many backlinks with it (a component backlink is card-one, so it is a legal key) | — |
 | IR hatch | — (the string-var callback builder is retired) | `@ripple/alchemy/db/datalog` typed IR, rules |
 
 ---
@@ -468,18 +596,18 @@ cut.
 
 ### Next (engine / client gaps that unblock everyday queries)
 
-- **`.orDefault`** in a shape, so a missing scalar reads as a value rather than
-  `undefined` — the pull spec's `default` is already there, the client has no
-  spelling for it.
-- **`Ripple.all(N)`** / a default `select`: a query with no shape yields ids
-  today, and the wildcard pull the peer already answers has no client term.
-- **`.reverse` on a `:db/isComponent` ref**, whose backlink is single-valued:
-  it throws rather than typing an array the peer will not send.
-- **Namespace-branded `Eid<N>`** cleanup, so a row cell handed to the next
-  query carries the namespace it came from.
+Nothing queued; see Later.
 
 ### Later
 
+- **Namespace-branded `Eid<N>`** cleanup, so a row cell handed to the next
+  query carries the namespace it came from. The blocker is that `TargetedRef`
+  (`valueTypes.ts`) carries the target's attribute *map* but not its namespace
+  name, so a brand would have to be threaded as a second type argument through
+  `Ref` / `ResolveRefTarget` / `ForwardStamp` / `NavStamp` / `Hopped` /
+  `HopAttr` / `StampedMap` — the depth-capped recursion this doc already notes
+  — and past `QueryRows`, which decides "did the caller select?" structurally
+  with `Equal<R, readonly Eid[]>`. Start at `TargetedRef`.
 - **`Ripple.params` + `Ripple.when`** for stable, serializable parameterized
   queries. `when` is deliberately not a build-time boolean today: the doc files
   it under parameterization, and that design comes first.
@@ -497,8 +625,13 @@ cut.
 - Attribute values + lexical shadowing vs lambdas-everywhere for scope.
 - Whether `/db/datalog` is promised public API or an unpromised hatch.
 - Unbounded `.expand` typing vs literal-`max` type unrolling.
-- Default `select` (eids only today) vs implicit `Ripple.all(N)`.
 - Named error for schema-drift decode failures on long-lived clients.
+
+Resolved: **default `select` vs implicit `Ripple.all(N)`** — a query with no
+shape still yields ids, and the wildcard is explicit. `Ripple.all(N)` lowers to
+the peer's `["*"]` rather than a client-side enumeration of the namespace's
+attributes, and its ident-keyed row type is a documented **lower bound**: the
+matched entity may carry other namespaces' keys too.
 
 ---
 
