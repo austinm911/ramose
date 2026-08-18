@@ -4,6 +4,8 @@
  * - The first emission populates `rows`; `ticks` stays 0.
  * - A `t` tick re-runs the query, updates `rows`, and increments `ticks`.
  * - Changing the query resets to the blank state and re-subscribes.
+ * - Teardown's interrupt is not an error: after a query change or an
+ *   unmount, `error` stays `undefined`.
  * - Over `db.asOf(t)` the stream completes; the last `rows` stay and
  *   completion is not an error.
  * - A terminal `Unauthorized` lands in `error`; the last `rows` stay.
@@ -141,6 +143,31 @@ describe("useLive (query form)", () => {
     }
   });
 
+  test("teardown's interrupt never lands on error — not after a query change, not after unmount", async () => {
+    const { db, close } = setup();
+    try {
+      const { result, rerender, unmount } = renderHook(
+        ({ query }: { query: Ripple.QueryInput<readonly Ripple.Eid[]> }) =>
+          useLive(db, query),
+        { initialProps: { query: allTodos } },
+      );
+      await waitFor(() => expect(result.current.rows).toEqual(ids(1)));
+
+      // the old subscription's interrupt lands *after* the new one reset —
+      // it must not stamp an Interrupt cause onto the fresh state
+      rerender({ query: oneTodo });
+      await waitFor(() => expect(result.current.rows).toEqual(ids(1)));
+      await settle();
+      expect(result.current.error).toBeUndefined();
+
+      unmount();
+      await settle();
+      expect(result.current.error).toBeUndefined();
+    } finally {
+      await close();
+    }
+  });
+
   test("over db.asOf(t) the stream completes and the last rows stay", async () => {
     const { db, peer, answer, qFrames, close } = setup();
     try {
@@ -219,6 +246,8 @@ describe("useLive (query form)", () => {
       expect(result.current.ticks).toBe(1);
       await settle();
       expect(qFrames().length).toBe(before + 1);
+      // the first mount's interrupt landed mid-churn and left no error
+      expect(result.current.error).toBeUndefined();
     } finally {
       await close();
     }
@@ -233,6 +262,16 @@ describe("useLive (stream form)", () => {
     // three emissions: two after the first
     expect(result.current.ticks).toBe(2);
     expect(result.current.error).toBeUndefined();
+  });
+
+  test("an interrupt cause is teardown, not news — error stays undefined", async () => {
+    // `catchCause` in Effect 4 recovers from interruption too; the hook must
+    // not surface an Interrupt as a terminal failure
+    const stream: Stream.Stream<number> = Stream.failCause(Cause.interrupt());
+    const { result } = renderHook(() => useLive(stream));
+    await settle();
+    expect(result.current.error).toBeUndefined();
+    expect(result.current.rows).toBeUndefined();
   });
 
   test("re-subscribes when the stream identity changes", async () => {

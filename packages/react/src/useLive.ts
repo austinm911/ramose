@@ -1,22 +1,16 @@
 /**
- * `useLive` — a standing read as React state.
+ * `useLive` — a standing read as React state: `{ rows, error, ticks }`,
+ * reset when the inputs change.
  *
- * Two forms, one contract:
+ * Two rules for consumers:
  *
- * ```tsx
- * const { rows, error, ticks } = useLive(db, todoQuery);   // query form
- * const { rows } = useLive(stream);                        // stream form
- * ```
- *
- * The query form memoises `db.live(query)` on `[db, query]` — the memo every
- * consumer was hand-rolling. Both arguments must be stable values: the `Db`
- * from `useDb` (already memoised) or a `db.asOf(t)` view held in a memo, and
- * a hoisted query (a query is a stable object; build it at module scope).
- * The stream form takes any `Stream` an Effect user built themselves and
- * re-subscribes when its identity changes. Neither form needs a provider:
- * `live` requires nothing (`R = never`), so the drain is a plain
- * `Effect.runFork`. Taking `db` explicitly is what lets the query form
- * compose with `asOf(t)` / `history` views.
+ * - Query form or stream form. `useLive(db, query)` memoises `db.live(query)`
+ *   on `[db, query]`; `useLive(stream)` takes a stream built elsewhere and
+ *   re-subscribes when its identity changes. Neither needs a provider.
+ * - Both inputs must be stable values: a hoisted query (a query is a stable
+ *   object; build it at module scope) and the `Db` from `useDb` — or an
+ *   `asOf(t)` / `history` view held in a `useMemo`, which is why the query
+ *   form takes `db` explicitly instead of reaching for context.
  */
 
 import type {
@@ -25,7 +19,7 @@ import type {
   QueryInput,
   ReadDb,
 } from "@ripple/alchemy/db";
-import type * as Cause from "effect/Cause";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
@@ -80,24 +74,33 @@ export function useLive(
     // `useState` already holds, so React bails out without a render.
     setState(INITIAL);
     let emissions = 0;
+    let cancelled = false;
     const fiber = Effect.runFork(
       Stream.runForEach(stream, (rows) =>
         Effect.sync(() => {
+          if (cancelled) return;
           const ticks = emissions;
           emissions += 1;
           setState({ rows, error: undefined, ticks });
         }),
       ).pipe(
-        // Only a terminal failure reaches this: interruption (the cleanup
-        // below) skips recovery, and completion is not a Cause.
         Effect.catchCause((error) =>
-          Effect.sync(() => setState((prev) => ({ ...prev, error }))),
+          Effect.sync(() => {
+            // `catchCause` recovers from interruption too, not only failure
+            // and defect. An interrupt reaching here is teardown — the
+            // cleanup below, or an interrupted fiber inside the stream —
+            // never news: drop it, and write nothing once the cleanup ran,
+            // so a dead subscription cannot stamp state onto the next one.
+            if (cancelled || Cause.hasInterrupts(error)) return;
+            setState((prev) => ({ ...prev, error }));
+          }),
         ),
       ),
     );
-    // Interrupting the fork is the whole teardown; StrictMode's
-    // mount → interrupt → mount leaves exactly the second subscription.
-    return () => void Effect.runFork(Fiber.interrupt(fiber));
+    return () => {
+      cancelled = true;
+      void Effect.runFork(Fiber.interrupt(fiber));
+    };
   }, [stream]);
 
   return state;
