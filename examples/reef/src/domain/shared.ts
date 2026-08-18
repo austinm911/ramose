@@ -58,7 +58,7 @@ export const classOfRole = (role: string): RippleClass => {
  * guard, so a slug that passes here can never be rejected as a database
  * name.
  */
-export const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,39}$/;
+const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,39}$/;
 
 export const isWorkspaceSlug = (slug: string): boolean =>
   isDatabaseName(slug) && SLUG_RE.test(slug);

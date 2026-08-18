@@ -9,7 +9,7 @@ and like a client in a browser — same names, same `Db<C>`, different transport
 Everything that exists only because the implementation grew that way (`SchemaFx`,
 `RuntimeContext`, `create` vs `connect`, the capability trio, nine transport
 layers, the untyped `Client.*` twin, the `/schema` Vite alias) is deleted rather
-than renamed. What is left is **39 names** across two entry points, both
+than renamed. What is left is **41 names** across two entry points, both
 imported as `* as Ripple`.
 
 ## 2. The names a consumer imports
