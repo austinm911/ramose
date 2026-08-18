@@ -3,7 +3,7 @@ title: Quickstart
 description: Run a Ripple peer and a live-query UI locally, then deploy the same stack to Cloudflare.
 ---
 
-The shortest path is the todos app — React, `Ripple.layer`, `db.live`.
+The shortest path is the todos app — React, `Ripple.connect`, `db.live`.
 
 ## Run it locally
 
@@ -88,23 +88,21 @@ UI connects.
 
 ## Connect from the browser
 
-One runtime, disposed with the page; the session socket is its finalizer:
+One client, closed with the page. `Ripple.connect` returns a plain handle —
+no runtime to build, nothing to dispose but `close`:
 
 ```ts
 import * as Ripple from "@ripple/alchemy/db";
 import * as Effect from "effect/Effect";
-import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
 import { Todos } from "./schema.ts";
 
-const runtime = ManagedRuntime.make(
-  Ripple.layer({
-    url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:8787",
-    token: Effect.succeed(Redacted.make(import.meta.env.VITE_RIPPLE_TOKEN)),
-  }),
-);
-export const run = runtime.runPromise;
-export const db = runtime.runSync(Ripple.Databases).db("todos", Todos);
+const ripple = Ripple.connect({
+  url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:8787",
+  token: Effect.succeed(Redacted.make(import.meta.env.VITE_RIPPLE_TOKEN)),
+});
+export const db = ripple.db("todos", Todos);
+// page unload / tenant switch: await ripple.close()
 ```
 
 Write and react:
@@ -122,7 +120,7 @@ const todoQuery = Ripple.query(Todo)
 const todos = db.live(todoQuery);
 // Stream<readonly { id, title, done, createdAt }[], DbError>
 
-await run(
+await Effect.runPromise(
   db.transact(function* (tx) {
     const t = yield* tx.entity();
     yield* t.add(Todo.title, "ship it");
@@ -131,6 +129,11 @@ await run(
   }),
 );
 ```
+
+Every `Db` method needs no environment, so `Effect.runPromise` runs anything
+the handle returns. Effect users: `Ripple.layer(options)` is the same client
+as a scoped `Layer<Databases>` — the sockets close with the layer's scope,
+and `connect` is a thin wrapper over the same factory, not a second client.
 
 `@ripple/alchemy/db` is a real `exports` entry and nothing it reaches imports
 the deploy engine, so the Vite app needs no alias.

@@ -1,29 +1,28 @@
 /**
- * One runtime for the page, disposed with it.
+ * One client for the page, closed with it.
  *
- * `Ripple.layer` is scoped — the session socket is its finalizer — and getting
- * a `Databases` out of it cannot fail, so `runSync` is honest here.
- * `ripple.db("todos", Todos)` is pure: naming a database costs no request, and
- * a browser never installs schema (`alchemy.run.ts` does that at deploy).
+ * `Ripple.connect` throws only on a provisioning mistake (a malformed URL),
+ * and the session socket is opened lazily by the first read, so module scope
+ * is honest — no runtime to build, nothing to dispose but `ripple.close()`.
+ * `ripple.db("todos", Todos)` is pure: naming a database costs no request,
+ * and a browser never installs schema (`alchemy.run.ts` does that at deploy).
+ * Every `Db` method needs no environment, so writes run with
+ * `Effect.runPromise(db.transact(…))`.
  */
 
 import * as Ripple from "@ripple/alchemy/db";
 import * as Effect from "effect/Effect";
-import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
 import { Todos } from "../schema.ts";
 
 const token = import.meta.env.VITE_RIPPLE_TOKEN;
 
-const runtime = ManagedRuntime.make(
-  Ripple.layer({
-    url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:8787",
-    token:
-      token === undefined || token === ""
-        ? undefined
-        : Effect.succeed(Redacted.make(token)),
-  }),
-);
+const ripple = Ripple.connect({
+  url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:8787",
+  token:
+    token === undefined || token === ""
+      ? undefined
+      : Effect.succeed(Redacted.make(token)),
+});
 
-export const run = runtime.runPromise;
-export const db = runtime.runSync(Ripple.Databases).db("todos", Todos);
+export const db = ripple.db("todos", Todos);

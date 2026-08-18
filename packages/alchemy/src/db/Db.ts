@@ -314,7 +314,7 @@ const makeRead = <C extends AnyCatalog>(
               queue,
               Cause.die(
                 new Error(
-                  "ripple: db.live needs the session socket — pass `webSocket` to Ripple.layer (or run where a global WebSocket exists)",
+                  "ripple: db.live needs the session socket — pass `webSocket` to Ripple.connect or Ripple.layer (or run where a global WebSocket exists)",
                 ),
               ),
             );

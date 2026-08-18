@@ -13,7 +13,6 @@
  *
  * ```typescript
  * import * as Ripple from "@ripple/alchemy/db";
- * import * as ManagedRuntime from "effect/ManagedRuntime";
  * import * as Schema from "effect/Schema";
  *
  * export const Todo = Ripple.Namespace("todo", {
@@ -22,8 +21,10 @@
  * });
  * export const Todos = Ripple.Catalog({ todo: Todo });
  *
- * const runtime = ManagedRuntime.make(Ripple.layer({ url, token }));
- * export const db = runtime.runSync(Ripple.Databases).db("todos", Todos);
+ * const ripple = Ripple.connect({ url, token });
+ * export const db = ripple.db("todos", Todos);
+ * // Effect users: `Ripple.layer({ url, token })` is the same client as a
+ * // scoped Layer<Databases>.
  * ```
  */
 
@@ -45,7 +46,13 @@ export type {
 } from "./NavQuery.ts";
 
 // ── connecting ─────────────────────────────────────────────────────────────
-export { type ClientOptions, Databases, layer } from "./Databases.ts";
+export {
+  type Client,
+  type ClientOptions,
+  connect,
+  Databases,
+  layer,
+} from "./Databases.ts";
 
 // ── the database ───────────────────────────────────────────────────────────
 export type { Db, ReadDb, TxReport } from "./Db.ts";

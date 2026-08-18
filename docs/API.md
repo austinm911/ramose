@@ -136,17 +136,15 @@ export default Cloudflare.Worker("App", { main: import.meta.url },
 **Browser** — no `run`, no `RuntimeContext.phantom`, no Vite alias, no `await`.
 
 ```ts
-// db.ts — one runtime, disposed with the page
+// db.ts — one client, closed with the page
 import * as Ripple from "@ripple/alchemy/db";
-import * as ManagedRuntime from "effect/ManagedRuntime";
 import { Todos } from "./schema.ts";
 
 const token = Effect.succeed(Redacted.make(import.meta.env.VITE_RIPPLE_TOKEN));
-const runtime = ManagedRuntime.make(
-  Ripple.layer({ url: import.meta.env.VITE_RIPPLE_URL, token }),
-);
-export const run = runtime.runPromise;
-export const db = runtime.runSync(Ripple.Databases).db("todos", Todos);
+const ripple = Ripple.connect({ url: import.meta.env.VITE_RIPPLE_URL, token });
+export const db = ripple.db("todos", Todos);
+// Effect users: Ripple.layer({ url, token }) is the same client as a scoped
+// Layer<Databases>.
 ```
 
 ```tsx
@@ -161,14 +159,16 @@ const todos = db.live(todoQuery);
 //    Stream<readonly { id; title; done; createdAt }[], Ripple.DbError>
 
 const add = (title: string) =>
-  run(db.transact(function* (tx) {
+  Effect.runPromise(db.transact(function* (tx) {
     const todo = yield* tx.entity();
     yield* todo.add(Todo.title, title);
     yield* todo.add(Todo.createdAt, new Date());
   }));
 
 const one = (e: Ripple.Eid<typeof Todos>) =>
-  run(db.pull(e, { title: Todo.title, done: Todo.done, createdAt: Todo.createdAt }));
+  Effect.runPromise(
+    db.pull(e, { title: Todo.title, done: Todo.done, createdAt: Todo.createdAt }),
+  );
 ```
 
 ```tsx

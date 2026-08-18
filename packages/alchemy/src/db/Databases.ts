@@ -268,7 +268,9 @@ const configure = (
     const chosen = options.fetch ?? ambient;
     if (chosen === undefined) {
       return Effect.die(
-        new Error("ripple: no global fetch — pass `fetch` to Ripple.layer({ … })"),
+        new Error(
+          "ripple: no global fetch — pass `fetch` to Ripple.connect({ … }) or Ripple.layer({ … })",
+        ),
       );
     }
     const socket: SocketFactory | undefined =
@@ -298,3 +300,43 @@ export const layer = (options: ClientOptions): Layer.Layer<Databases> =>
       return databases;
     }),
   );
+
+/**
+ * The handle {@link connect} returns: the same pure `db` as {@link Databases},
+ * plus the close `layer` performs as its finalizer — and nothing else. In
+ * particular no `run`: every `Db` method has `R = never`, so
+ * `Effect.runPromise(db.q(…))` is how its Effects run.
+ */
+export interface Client {
+  /** Pure — the same call as `Databases.db`: no network, no ensure, no socket. */
+  db<C extends AnyCatalog>(name: string, catalog: C): Db<C>;
+  /**
+   * Close every session socket this client opened; resolves once they are.
+   * Idempotent, and after `close` reads fail rather than silently changing
+   * transport (they do not fall back to POST).
+   */
+  close(): Promise<void>;
+}
+
+/**
+ * A `Client` for non-Effect callers — a browser app, a script — so nothing
+ * outside Effect land needs a `ManagedRuntime` just to build the client and
+ * close its sockets. A thin wrapper over the factory `layer` uses, not a
+ * second client; `layer` stays the Effect-native entry.
+ *
+ * A provisioning mistake (malformed URL, no `fetch`) throws synchronously:
+ * the same defects `layer` dies with.
+ */
+export const connect = (options: ClientOptions): Client => {
+  // `configure` is synchronous — suspend + succeed/die — so `runSync` is honest
+  const { databases, close } = makeDatabases(
+    Effect.runSync(configure(options)),
+  );
+  return {
+    db: (name, catalog) => databases.db(name, catalog),
+    close: () => {
+      close();
+      return Promise.resolve();
+    },
+  };
+};
