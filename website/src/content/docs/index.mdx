@@ -135,9 +135,10 @@ await Effect.runPromise(
     <p class="rg-aside">
       Ripple is built on <a href="https://effect.website">Effect</a>: a
       transaction is a generator, and <code>Effect.runPromise(…)</code> runs
-      anything a <code>db</code> returns — no runtime to set up. There is no
-      <code>@ripple/react</code> package yet — <a href="https://github.com/tvanhens/ripple/blob/master/examples/todos/src/useLive.ts"><code>useLive</code></a>
-      is about a dozen lines you copy once, and the only React glue Ripple needs.
+      anything a <code>db</code> returns — no runtime to set up. In React the
+      glue is shipped: <a href="/reference/react/"><code>useLive</code></a> turns
+      a standing query into state, and <code>useTransact</code> runs writes from
+      event handlers.
     </p>
   </div>
   <div class="rg-moment-code">

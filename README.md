@@ -117,11 +117,8 @@ export const Todos = Ripple.Catalog({ todo: Todo });
 const token = import.meta.env.VITE_RIPPLE_TOKEN;
 const ripple = Ripple.connect({
   url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:1337",
-  // an open peer has no token: wrapping `undefined` fails on the first request
-  token:
-    token === undefined || token === ""
-      ? undefined
-      : Effect.succeed(Redacted.make(token)),
+  // an open peer has no token: pass nothing rather than an empty credential
+  token: token ? Ripple.token.static(token) : undefined,
 });
 const db = ripple.db("todos", Todos);
 
@@ -148,9 +145,10 @@ await Effect.runPromise(
 ```
 
 Every signature's `R` is `never`, so `Effect.runPromise` runs anything a
-`Db` returns; see `examples/todos/src/db.ts` and its dozen-line `useLive`.
-`@ripple/alchemy/db` is a real `exports` entry and nothing it reaches imports
-the deploy engine, so the Vite app needs no alias.
+`Db` returns; in React the shipped hooks do it for you — `useLive(db, todoQuery)`
+and `useTransact()` from `@ripple/react`, exactly as `examples/todos/src/App.tsx`
+uses them. `@ripple/alchemy/db` is a real `exports` entry and nothing it
+reaches imports the deploy engine, so the Vite app needs no alias.
 
 From a Worker the code is identical: `ripple.db("movies", Movies)`, then the
 same `transact` / `q` / `pull`. `transact` returns a `TxReport`, and its

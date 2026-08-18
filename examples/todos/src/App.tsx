@@ -1,11 +1,7 @@
-import * as Effect from "effect/Effect";
+import { useLive, useTransact } from "@ripple/react";
 import { useState } from "react";
 import { db } from "./db.ts";
 import { addTodo, deleteTodo, setDone, todoQuery, type TodoRow } from "./todos.ts";
-import { useLive } from "./useLive.ts";
-
-// hoisted, so the hook's dependency is stable across renders
-const todos = db.live(todoQuery);
 
 export const App = () => (
   <main>
@@ -16,7 +12,7 @@ export const App = () => (
 );
 
 const TodoList = () => {
-  const { rows, error } = useLive(todos);
+  const { rows, error } = useLive(db, todoQuery);
   if (error !== undefined) return <p>offline…</p>;
   if (rows === undefined) return <p>loading…</p>;
   return (
@@ -28,31 +24,30 @@ const TodoList = () => {
   );
 };
 
-const TodoRowView = ({ row }: { row: TodoRow }) => (
-  <li>
-    <label>
-      <input
-        type="checkbox"
-        checked={row.done}
-        onChange={(e) =>
-          void Effect.runPromise(setDone(db, { id: row.id }, e.target.checked))
-        }
-      />
-      <span style={{ textDecoration: row.done ? "line-through" : undefined }}>
-        {row.title}
-      </span>
-    </label>
-    <button
-      type="button"
-      onClick={() => void Effect.runPromise(deleteTodo(db, { id: row.id }))}
-    >
-      delete
-    </button>
-  </li>
-);
+const TodoRowView = ({ row }: { row: TodoRow }) => {
+  const { run } = useTransact();
+  return (
+    <li>
+      <label>
+        <input
+          type="checkbox"
+          checked={row.done}
+          onChange={(e) => void run(setDone(db, { id: row.id }, e.target.checked))}
+        />
+        <span style={{ textDecoration: row.done ? "line-through" : undefined }}>
+          {row.title}
+        </span>
+      </label>
+      <button type="button" onClick={() => void run(deleteTodo(db, { id: row.id }))}>
+        delete
+      </button>
+    </li>
+  );
+};
 
 const NewTodo = () => {
   const [title, setTitle] = useState("");
+  const { run } = useTransact();
   return (
     <form
       onSubmit={(e) => {
@@ -60,7 +55,7 @@ const NewTodo = () => {
         const value = title.trim();
         if (value === "") return;
         setTitle("");
-        void Effect.runPromise(addTodo(db, value));
+        void run(addTodo(db, value));
       }}
     >
       <input

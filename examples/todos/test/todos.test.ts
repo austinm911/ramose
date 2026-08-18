@@ -13,7 +13,6 @@ import { Connection, fromJson, pull, query, toJson } from "@ripple/core";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Stream from "effect/Stream";
 import { Todo, Todos } from "../schema.ts";
 import {
@@ -95,14 +94,14 @@ const inProcessPeer = async () => {
     return socket;
   }
 
-  const runtime = ManagedRuntime.make(
-    Ripple.layer({
-      url: "https://peer.local",
-      fetch: fetchImpl,
-      webSocket: WebSocketImpl as unknown as typeof WebSocket,
-    }),
-  );
-  const db: TodosDb = runtime.runSync(Ripple.Databases).db("todos", Todos);
+  // the shipped client, exactly as `src/db.ts` builds it — only the
+  // transport seams (`fetch`, `webSocket`) point at the in-process peer
+  const ripple = Ripple.connect({
+    url: "https://peer.local",
+    fetch: fetchImpl,
+    webSocket: WebSocketImpl as unknown as typeof WebSocket,
+  });
+  const db: TodosDb = ripple.db("todos", Todos);
   await Effect.runPromise(db.install());
   return {
     conn,
@@ -110,11 +109,11 @@ const inProcessPeer = async () => {
     tick: () => {
       for (const push of pushes) push({ op: "t", t: conn.t });
     },
-    dispose: () => runtime.dispose(),
+    dispose: () => ripple.close(),
   };
 };
 
-/** The example's own `useLive`, minus React. */
+/** What `@ripple/react`'s `useLive` does, minus React: drain on a fiber, interrupt to stop. */
 const live = (stream: Stream.Stream<readonly TodoRow[], Ripple.DbError>) => {
   let rows: readonly TodoRow[] | undefined;
   let error: unknown;

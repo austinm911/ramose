@@ -160,30 +160,26 @@ export const TodosDb = Ripple.Database("todos", {
 ```
 
 Ripple is built on [Effect](https://effect.website). Its API returns Effect
-values — descriptions of work — so `Effect.runPromise(…)` executes one of
-those values from the browser (nothing a `Db` returns needs an environment),
-and `yield*` inside `db.transact` sequences the steps of a write. That is all
-the Effect the rest of this path needs.
+values — descriptions of work — and nothing a `Db` returns needs an
+environment, so the shipped React hooks run them for you and `yield*` inside
+`db.transact` sequences the steps of a write. That is all the Effect the rest
+of this path needs.
 
 **The client** is one `Ripple.connect` handle for the page: a plain object, no
 runtime to build, nothing to dispose but `ripple.close()`. Copy this file as it
-stands — the token guard matters, because your local peer has no token and
-wrapping an undefined one crashes on the first request:
+stands — the token guard matters, because your local peer has no token, and
+you pass nothing rather than an empty credential:
 
 ```ts title="examples/todos/src/db.ts"
 import * as Ripple from "@ripple/alchemy/db";
-import * as Effect from "effect/Effect";
-import * as Redacted from "effect/Redacted";
 import { Todos } from "../schema.ts";
 
 const token = import.meta.env.VITE_RIPPLE_TOKEN;
 
 const ripple = Ripple.connect({
   url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:8787",
-  token:
-    token === undefined || token === ""
-      ? undefined
-      : Effect.succeed(Redacted.make(token)),
+  // an open peer has no token: pass nothing rather than an empty credential
+  token: token ? Ripple.token.static(token) : undefined,
 });
 
 export const db = ripple.db("todos", Todos);
@@ -227,9 +223,31 @@ export const addTodo = (db: TodosDb, title: string) =>
 The shipped file also exports `pullTodo`, `setDone`, and `deleteTodo`, cut here
 for length; the code above is as shipped, comments aside.
 
-`db.live(todoQuery)` in `src/App.tsx` is what redrew the list, and the
-`useLive` hook in `src/useLive.ts` — about a dozen lines — is all it takes to
-turn that stream into React state.
+**The React glue is shipped.** `src/App.tsx` imports its hooks from
+[`@ripple/react`](/reference/react/): `useLive(db, todoQuery)` is what redrew
+the list, and `useTransact().run` is what ran each write from its event
+handler:
+
+```tsx title="examples/todos/src/App.tsx (the list)"
+import { useLive, useTransact } from "@ripple/react";
+
+const TodoList = () => {
+  const { rows, error } = useLive(db, todoQuery);
+  if (error !== undefined) return <p>offline…</p>;
+  if (rows === undefined) return <p>loading…</p>;
+  return (
+    <ul>
+      {rows.map((row) => (
+        <TodoRowView key={row.id} row={row} />
+      ))}
+    </ul>
+  );
+};
+```
+
+There is no hand-rolled subscription code anywhere in the example: the hook
+memoises `db.live(todoQuery)` on `[db, query]`, resets when the inputs change,
+and tears down by interrupting its fiber on unmount.
 
 ## Next
 
