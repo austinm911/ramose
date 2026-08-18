@@ -40,6 +40,8 @@ export type {
   Not,
   Or,
   Predicate,
+  Row,
+  Rows,
   Shape,
   WhereNode,
 } from "./NavQuery.ts";

@@ -607,6 +607,31 @@ export interface NavQueryBuilder<
   build(): NavQuery<R>;
 }
 
+/**
+ * The row type a query yields — so an app names it once, from the query,
+ * instead of restating the shape by hand:
+ *
+ * ```ts
+ * const boardQuery = Ripple.query(Issue).select({ id: Issue.id, ... });
+ * type BoardRow = Ripple.Row<typeof boardQuery>;   // one row
+ * type BoardRows = Ripple.Rows<typeof boardQuery>; // the readonly array
+ * ```
+ *
+ * Takes the builder or the frozen {@link NavQuery} — the same inputs `db.q`
+ * takes. With no `.select`, the row is the matched entity id.
+ */
+export type Row<Q> = Q extends NavQuery<infer R>
+  ? RowOf<R>
+  : Q extends NavQueryBuilder<AnyNamespace, infer R>
+    ? RowOf<R>
+    : never;
+
+/** What `db.q` resolves to: the readonly array of {@link Row}. */
+export type Rows<Q> = readonly Row<Q>[];
+
+/** The phantom result is the rows array; the row is its element. */
+type RowOf<R> = R extends readonly (infer E)[] ? E : never;
+
 const freeze = <R>(spec: NavQuerySpec): NavQuery<R> => ({
   _tag: "NavQuery",
   spec,

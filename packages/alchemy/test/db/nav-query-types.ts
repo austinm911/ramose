@@ -22,6 +22,8 @@ import {
   query,
   type ReadDb,
   Ref,
+  type Row,
+  type Rows,
 } from "../../src/db/internal.ts";
 
 import { Movie, Movies, User } from "./fixture.ts";
@@ -297,6 +299,56 @@ query(Person).where(Person.boss.boss.name.eq(3));
 
 // @ts-expect-error a self-ref exposes only the namespace's attributes
 Person.boss.nope;
+
+// ── `Row` / `Rows` name the inferred row type ───────────────────────────────
+
+const boardQuery = query(User).select({
+  name: User.name,
+  age: User.age.optional,
+  best: User.bestFriend.select({ name: User.name }),
+  friends: User.friends.select({ name: User.name }),
+  maybeBest: User.bestFriend.select({ age: User.age }).optional,
+});
+
+type BoardRow = Row<typeof boardQuery>;
+type _boardRow = Expect<
+  Equal<
+    BoardRow,
+    {
+      readonly name: string;
+      readonly age: number | undefined;
+      readonly best: { readonly name: string };
+      readonly friends: readonly { readonly name: string }[];
+      readonly maybeBest: { readonly age: number } | undefined;
+    }
+  >
+>;
+
+/** `Rows` is the readonly array of `Row` — exactly what `db.q` resolves to. */
+type _boardRows = Expect<Equal<Rows<typeof boardQuery>, readonly BoardRow[]>>;
+const boardRows = db.q(boardQuery);
+type _boardRowsMatchQ = Expect<
+  Equal<Effect.Success<typeof boardRows>, Rows<typeof boardQuery>>
+>;
+
+/** the builder and the frozen query value name the same row */
+const builtBoard = boardQuery.build();
+type _builtRow = Expect<Equal<Row<typeof builtBoard>, BoardRow>>;
+
+/** a hoisted query factory names its row through `ReturnType` */
+const byName = (name: string) =>
+  query(User).where(User.name.eq(name)).select({ age: User.age });
+type _factoryRow = Expect<
+  Equal<Row<ReturnType<typeof byName>>, { readonly age: number }>
+>;
+
+/** with no `.select`, the row is the matched entity id */
+const bare = query(User);
+type _bareRow = Expect<Equal<Row<typeof bare>, Eid>>;
+type _bareRows = Expect<Equal<Rows<typeof bare>, readonly Eid[]>>;
+
+/** not a query — no row */
+type _notAQuery = Expect<Equal<Row<{ rows: readonly string[] }>, never>>;
 
 // ── the query value and its builder are the same input ─────────────────────
 

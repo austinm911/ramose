@@ -14,18 +14,13 @@ export const todoShape = {
   createdAt: Todo.createdAt,
 } as const;
 
-/** One row from {@link todoQuery}. */
-export type TodoRow = {
-  readonly id: number;
-  readonly title: string;
-  readonly done: boolean;
-  readonly createdAt: Date;
-};
-
 /** Standing list query — a value, not a callback builder. */
 export const todoQuery = Ripple.query(Todo)
   .orderBy(Todo.createdAt, "asc")
   .select(todoShape);
+
+/** One row from {@link todoQuery} — inferred from the query, never restated. */
+export type TodoRow = Ripple.Row<typeof todoQuery>;
 
 /** One row, straight from its eid — the same shape, no query. */
 export const pullTodo = (db: TodosDb, eid: TodoEid) =>
