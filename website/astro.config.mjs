@@ -75,6 +75,7 @@ export default defineConfig({
           label: "Reference",
           items: [
             { label: "Client API", slug: "reference/client-api" },
+            { label: "React", slug: "reference/react" },
             { label: "Alchemy resources", slug: "reference/alchemy-resources" },
             { label: "HTTP API", slug: "reference/http-api" },
             { label: "Errors", slug: "reference/errors" },
