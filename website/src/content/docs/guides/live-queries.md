@@ -48,8 +48,9 @@ export const TodoList = () => {
 };
 ```
 
-It owns the memoisation (keyed on `[db, query]`, so nothing re-subscribes per
-render), resets when the inputs change, and exposes `ticks` — the number of
+It owns the memoisation (keyed on the view's structural key and `query`, so
+nothing re-subscribes per render — an inline `db.asOf(t)` included), resets
+when the inputs change, and exposes `ticks` — the number of
 emissions after the first, i.e. how many times the basis moved under this
 subscription. Effect users who built the stream themselves pass it directly:
 `useLive(stream)` re-subscribes when the stream's identity changes.

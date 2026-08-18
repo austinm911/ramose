@@ -27,10 +27,10 @@ const db = useDb("todos", Todos); // inside <App />
   and memo deps.
 - `useLive(db, query): Live` / `useLive(stream): Live` — a standing read as
   state: `{ rows, error, ticks }`. The query form memoises `db.live(query)`
-  on `[db, query]` (pass a hoisted query and the `Db` from `useDb`, or an
-  `asOf(t)` / `history` view held in a memo); the stream form takes a stream
-  built elsewhere and re-subscribes when its identity changes — no provider
-  needed. `rows` is `undefined` until the first emission and resets when the
+  on the *view* (structural, so an inline `db.asOf(t)` keeps one
+  subscription per `t`, not per render) and `query` identity; the stream
+  form takes a stream built elsewhere and re-subscribes when its identity
+  changes — no provider needed. `rows` is `undefined` until the first emission and resets when the
   inputs change; `error` is the terminal failure only (completion of a
   pinned view keeps the last `rows`); `ticks` counts emissions after the
   first.
@@ -87,8 +87,7 @@ const db = useDb("todos", Todos); // inside <App />
 ## One rule the hooks impose
 
 Queries and pull patterns are compared by **identity** — hoist them (they
-are stable values), or the run / subscription re-keys every render. For
-`useQuery` / `usePull` / `useBasis` the `db` argument and `usePull`'s
-`subject` are the exceptions: both are compared structurally, so
-`db.asOf(t)` and `{ id: 17 }` written inline are fine. `useLive` keys on
-`[db, query]` identity — hold an `asOf(t)` view in a memo there.
+are stable values), or the run / subscription re-keys every render. The
+`db` argument and `usePull`'s `subject` are the exceptions: both are
+compared structurally across `useLive` / `useQuery` / `usePull` /
+`useBasis`, so `db.asOf(t)` and `{ id: 17 }` written inline are fine.
