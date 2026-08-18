@@ -290,6 +290,16 @@ describe("a select field is a direct attribute, never a flattened path", () => {
     ).toThrow(/multi-hop|nested select/);
   });
 
+  test("`.orDefault` does not make a hop a direct attribute either", () => {
+    expect(() =>
+      lowerNavQuery(
+        query(Todo)
+          .select({ ownerName: hopped(Todo.owner.name.orDefault("")) })
+          .build(),
+      ),
+    ).toThrow(/multi-hop|nested select/);
+  });
+
   test("a nested select rooted two hops in is rejected too", () => {
     expect(() =>
       lowerNavQuery(
@@ -516,6 +526,14 @@ describe("lowering: everything that changes the row set is the peer's", () => {
         .build(),
     );
     expect(bareRef.query.where).toEqual([todoScope, ["?e", ":todo/owner", "_"]]);
+    // …and neither does a defaulted one: the row without the datom is exactly
+    // the row `.orDefault` exists to keep
+    const defaulted = lowerNavQuery(
+      query(Todo)
+        .select({ title: Todo.title, done: Todo.done.orDefault(false) })
+        .build(),
+    );
+    expect(defaulted.query.where).toEqual([todoScope, ["?e", ":todo/title", "_"]]);
   });
 
   test("orderBy across a cardinality-many attribute is rejected at build time", () => {
@@ -556,6 +574,184 @@ describe("lowering: everything that changes the row set is the peer's", () => {
       { id: 10 },
       { id: 20 },
     ]);
+  });
+});
+
+describe("`.orDefault`: a missing card-one scalar reads as a value", () => {
+  /** A default the attribute's type does not admit — `null` is still one. */
+  const anyValue = <T>(value: T) => value as never;
+
+  test("it lowers to the pull's `default`, not to a required clause", () => {
+    const { query: q } = lowerNavQuery(
+      query(Todo)
+        .select({ title: Todo.title, done: Todo.done.orDefault(false) })
+        .build(),
+    );
+    expect(q.find).toEqual([
+      [
+        "pull",
+        "?e",
+        [
+          { kind: "attr", attr: ":todo/title", reverse: false, as: "title" },
+          {
+            kind: "attr",
+            attr: ":todo/done",
+            reverse: false,
+            as: "done",
+            default: false,
+          },
+        ],
+      ],
+    ]);
+    // the defaulted field emits no `["?e", ":todo/done", "_"]`: it would drop
+    // exactly the rows the default is for, and `:limit` would page a lie
+    expect(q.where).toEqual([todoScope, ["?e", ":todo/title", "_"]]);
+  });
+
+  test("a falsy default is a default — including `null`", () => {
+    const specOf = (field: unknown) =>
+      (
+        lowerNavQuery(
+          query(Todo).select({ done: field as never }).build(),
+        ).query.find[0] as unknown[]
+      )[2] as Record<string, unknown>[];
+
+    expect(specOf(Todo.due.orDefault(anyValue(null)))[0]).toEqual({
+      kind: "attr",
+      attr: ":todo/due",
+      reverse: false,
+      as: "done",
+      default: null,
+    });
+    expect(specOf(Todo.title.orDefault(""))[0]).toHaveProperty("default", "");
+    // no `.orDefault` at all is no `default` key, not `default: undefined`
+    expect("default" in specOf(Todo.title)[0]!).toBe(false);
+  });
+
+  const seeded = async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ripple.db("todos", Todos);
+    await run(db.install());
+    await run(
+      db.transact(function* (tx) {
+        const a = yield* tx.entity();
+        yield* a.add(Todo.title, "a");
+        yield* a.add(Todo.done, true);
+        // "b" has no `:todo/done` datom at all — the row `.orDefault` is for
+        const b = yield* tx.entity();
+        yield* b.add(Todo.title, "b");
+        const c = yield* tx.entity();
+        yield* c.add(Todo.title, "c");
+        yield* c.add(Todo.done, true);
+      }),
+    );
+    return { peer, db };
+  };
+
+  test("the missing value reads as the default, the present one wins", async () => {
+    const { peer, db } = await seeded();
+
+    const rows = await run(
+      db.q(
+        query(Todo)
+          .orderBy(Todo.title)
+          .select({ title: Todo.title, done: Todo.done.orDefault(false) }),
+      ),
+    );
+    expect(rows).toEqual([
+      { title: "a", done: true },
+      { title: "b", done: false },
+      { title: "c", done: true },
+    ]);
+    // the row type is the attribute's, so this needs no narrowing
+    const stillOpen: boolean = rows[1]!.done;
+    expect(stillOpen).toBe(false);
+
+    await peer.dispose();
+  });
+
+  test("the default is read, never written: the datom is still absent", async () => {
+    const { peer, db } = await seeded();
+
+    await run(
+      db.q(
+        query(Todo).select({ title: Todo.title, done: Todo.done.orDefault(false) }),
+      ),
+    );
+
+    // the same entity, asked without a default: the attribute is still missing
+    const maybe = await run(
+      db.q(
+        query(Todo)
+          .orderBy(Todo.title)
+          .select({ title: Todo.title, done: Todo.done.optional }),
+      ),
+    );
+    expect(maybe).toEqual([
+      { title: "a", done: true },
+      { title: "b", done: undefined },
+      { title: "c", done: true },
+    ]);
+    // …and the peer's own index agrees
+    const missing = await run(
+      db.q(query(Todo).where(Todo.done.missing()).select({ title: Todo.title })),
+    );
+    expect(missing).toEqual([{ title: "b" }]);
+
+    await peer.dispose();
+  });
+
+  test("`null` is a default like any other, end to end", async () => {
+    const { peer, db } = await seeded();
+
+    const rows = await run(
+      db.q(
+        query(Todo)
+          .orderBy(Todo.title)
+          .select({ title: Todo.title, done: Todo.done.orDefault(anyValue(null)) }),
+      ),
+    );
+    expect(rows).toEqual([
+      { title: "a", done: true },
+      { title: "b", done: null as never },
+      { title: "c", done: true },
+    ]);
+
+    await peer.dispose();
+  });
+
+  test("`.limit` counts the defaulted row, where a required field drops it", async () => {
+    const { peer, db } = await seeded();
+
+    const defaulted = await run(
+      db.q(
+        query(Todo)
+          .orderBy(Todo.title)
+          .limit(2)
+          .select({ title: Todo.title, done: Todo.done.orDefault(false) }),
+      ),
+    );
+    expect(defaulted).toEqual([
+      { title: "a", done: true },
+      { title: "b", done: false },
+    ]);
+
+    // the same page, asked for the datom itself: "b" is not a row, so the
+    // limit reaches past it
+    const required = await run(
+      db.q(
+        query(Todo)
+          .orderBy(Todo.title)
+          .limit(2)
+          .select({ title: Todo.title, done: Todo.done }),
+      ),
+    );
+    expect(required).toEqual([
+      { title: "a", done: true },
+      { title: "c", done: true },
+    ]);
+
+    await peer.dispose();
   });
 });
 

@@ -403,6 +403,62 @@ query(Author).where(Book.title.reverse.eq("x"));
 // @ts-expect-error a backlink exposes the *owning* namespace's attributes
 query(Author).where(Book.author.reverse.name.eq("Ada"));
 
+// ── `.orDefault`: a missing card-one scalar reads as a value ───────────────
+
+/**
+ * `.orDefault(v)` is the pull's `:default`, not a client-side `??`: the peer
+ * substitutes `v` for the entity that has no such datom, so the row is kept
+ * and the field reads as the attribute's own type — never `| undefined`.
+ */
+const defaulted = db.q(
+  query(User).select({ name: User.name, age: User.age.orDefault(0) }),
+);
+type _defaulted = Expect<
+  Equal<
+    Effect.Success<typeof defaulted>,
+    readonly { readonly name: string; readonly age: number }[]
+  >
+>;
+/** …which is exactly the difference from `.optional` */
+type _defaultedIsNotMaybe = Expect<
+  Equal<
+    Equal<Effect.Success<typeof defaulted>, Effect.Success<typeof maybeAge>>,
+    false
+  >
+>;
+library.q(query(Book).select({ title: Book.title.orDefault("untitled") }));
+blog.q(query(Post).select({ title: Post.title.orDefault("") }));
+
+// @ts-expect-error `:user/age` is a number attribute, and so is its stand-in
+query(User).select({ age: User.age.orDefault("none") });
+
+// @ts-expect-error `:book/published` is an Instant, not a string
+query(Book).select({ published: Book.published.orDefault("2026-01-01") });
+
+// @ts-expect-error a card-many scalar is `[]` when it has no values
+query(Post).select({ tags: Post.tags.orDefault(["a"]) });
+
+// @ts-expect-error a card-many ref is `[]` too — and an entity is not a value
+query(User).select({ friends: User.friends.orDefault([]) });
+
+// @ts-expect-error a card-one ref reaches an entity, whose stand-in is a shape
+query(User).select({ best: User.bestFriend.orDefault(1) });
+
+// @ts-expect-error `:db/id` is the entity itself, and is never missing
+query(Movie).select({ id: Movie.id.orDefault(0) });
+
+// @ts-expect-error `.orDefault` does not make a hop a direct attribute
+query(Book).select({ authorName: Book.author.name.orDefault("") });
+
+// @ts-expect-error … nor is an element cursor a select field
+query(Post).select({ tags: Post.tags.each.orDefault("") });
+
+// @ts-expect-error a defaulted field always reads, so there is no `.optional`
+query(User).select({ age: User.age.orDefault(0).optional });
+
+// @ts-expect-error … and a maybe field has no value to default
+query(User).select({ age: User.age.optional.orDefault(0) });
+
 // ── `.orderBy` takes an attribute, including one across a ref ──────────────
 
 const ordered = library.q(
