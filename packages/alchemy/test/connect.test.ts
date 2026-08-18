@@ -95,6 +95,22 @@ describe("close()", () => {
     expect(peer.sockets.map((s) => s.closed)).toEqual([true, true]);
   });
 
+  test("close during the first read's connect opens no socket at all", async () => {
+    // React StrictMode's mount → close → mount closes the client while the
+    // first read's socket connect is still resolving its token/url; the
+    // in-flight open must lose, or the socket leaks with no handle to close
+    const peer = fakePeer({
+      answer: () => ({ body: { t: 1, root: 1, result: [] } }),
+    });
+    const c = ripple(peer);
+
+    const doomed = runFail(c.db("movies", Movies).q(names));
+    await c.close();
+
+    expect((await doomed)._tag).toBe("NetworkError");
+    expect(peer.sockets).toEqual([]);
+  });
+
   test("a read after close fails — it does not fall back to POST", async () => {
     const peer = fakePeer({
       answer: () => ({ body: { t: 1, root: 1, result: [] } }),
