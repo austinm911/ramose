@@ -34,6 +34,18 @@ const db = useDb("todos", Todos); // inside <App />
   inputs change; `error` is the terminal failure only (completion of a
   pinned view keeps the last `rows`); `ticks` counts emissions after the
   first.
+- `useQuery(db, query): Async<R>` — one-shot `db.q(query)`. Re-runs when the
+  *view* changes (structural, so an inline `db.asOf(t)` re-runs per `t`, not
+  per render) or `query` identity changes. `loading: true` over the previous
+  `data` is the in-flight state — no flash to `undefined` on scrub — and
+  stale results are dropped last-write-wins by issue order.
+- `usePull(db, subject, pattern): Live<Pull | null>` — standing
+  `db.livePull`. `subject` is compared structurally (`{ id }` or a lookup
+  ref written inline is fine); `null` (entity retracted) is an emission, not
+  an end; over a pinned view the stream emits once and completes.
+- `useBasis(db): number | undefined` — `db.basis()` on mount, re-read on
+  every session wake (a tick, a local write, a reconnect); on `asOf(t)`
+  views answers `t` on the first render with no request.
 - `useTransact(options?): Transact` — one hook for running writes (any
   Effect with `R = never`, really) from event handlers:
 
@@ -71,3 +83,11 @@ const db = useDb("todos", Todos); // inside <App />
 - **Multi-tenant remount is React's `key`.** `<RippleProvider key={tenant}
   url={…}>` closes the old tenant's client and connects the new one when
   `tenant` changes.
+
+## One rule the hooks impose
+
+Queries and pull patterns are compared by **identity** — hoist them (they
+are stable values), or the run / subscription re-keys every render. The
+`db` argument and `usePull`'s `subject` are the exceptions: both are
+compared structurally, so `db.asOf(t)` and `{ id: 17 }` written inline are
+fine.
