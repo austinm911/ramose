@@ -346,6 +346,13 @@ type _factoryRow = Expect<
 const bare = query(User);
 type _bareRow = Expect<Equal<Row<typeof bare>, Eid>>;
 type _bareRows = Expect<Equal<Rows<typeof bare>, readonly Eid[]>>;
+/**
+ * …which is looser than `db.q` there: the db re-brands ids to its catalog
+ * (`Eid<typeof Movies>`), a query — scoped to a namespace — cannot.
+ */
+type _bareRowsUnbranded = Expect<
+  Equal<Equal<Rows<typeof bare>, Effect.Success<typeof eids>>, false>
+>;
 
 /** not a query — no row */
 type _notAQuery = Expect<Equal<Row<{ rows: readonly string[] }>, never>>;

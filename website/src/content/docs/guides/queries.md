@@ -144,8 +144,13 @@ export type BoardRows = Ripple.Rows<typeof boardQuery>;
 Both take the builder or its `.build()` value — the same inputs `db.q` takes.
 A nested `.select` is part of the row (`BoardRow["creator"]` names it),
 `.optional` surfaces as `| undefined`, and with no `.select` the row is the
-entity id. Change the query and every consumer's type moves with it — no cast
-at the use site.
+entity id (unbranded `Eid` — `db.q` on a catalog-typed db additionally brands
+the ids `Eid<C>`). Change the query and every consumer's type moves with it —
+no cast at the use site.
+
+The two result-naming helpers pair up: `Row<Q>` names what a **query** yields,
+`Pull<C, P>` names what a **shape** pulls — reach for `Row` when you hold the
+query, `Pull` when you only hold the shape.
 
 ## `pull` — one entity, one shape
 

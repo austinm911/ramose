@@ -52,8 +52,8 @@ refresh needs no client surface — return the current token from the Effect.
 | --- | --- |
 | `query` | `Ripple.query(N)` — the navigational builder: `.where(...predicates)` `.orderBy(attr, dir?, opts?)` `.limit(n)` `.offset(n)` `.select(shape)`. Order and paging run on the peer. A query is a value; see [Query and pull](/guides/queries/) |
 | predicates | on attributes: `eq` `ne` `lt` `lte` `gt` `gte` `exists` `missing`; strings add `startsWith` `includes`; paths join through targeted refs (`Todo.owner.name.startsWith("A")`) |
-| `Row<Q>` | the row a query yields: `type BoardRow = Ripple.Row<typeof boardQuery>`. Takes the builder or its `.build()` value; with no `.select` the row is the entity id |
-| `Rows<Q>` | `readonly Row<Q>[]` — what `db.q` resolves to and `db.live` emits |
+| `Row<Q>` | the row a query yields: `type BoardRow = Ripple.Row<typeof boardQuery>`. Takes the builder or its `.build()` value; with no `.select` the row is the entity id. `Row` names a query's result the way `Pull<C, P>` names a shape's |
+| `Rows<Q>` | `readonly Row<Q>[]` — what `db.q` resolves to and `db.live` emits (with no `.select` it is unbranded `readonly Eid[]`; `db.q` brands the ids to the db's catalog, `Eid<C>`) |
 | `Pull<C, P>` | result of shape `P`. Shapes nest (`Todo.owner.select({…})`) and go optional (`Todo.due.optional`) — the same grammar for `select` and `db.pull` |
 | `Eid<C>` | `{ readonly id: number }`, catalog-branded. Data — no methods, no I/O |
 | `LookupRef<C>` | `[AttrRef, value]` on a unique attribute |

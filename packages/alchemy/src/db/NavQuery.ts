@@ -166,8 +166,9 @@ export interface NavQuerySpec {
 }
 
 /**
- * A navigational query value. Phantom `R` is the row element type inferred
- * from `.select`.
+ * A navigational query value. Phantom `R` is the **rows array** the query
+ * resolves to (`readonly SelectResult<S>[]` after `.select`, `readonly Eid[]`
+ * without) — {@link Row} unwraps it to the element.
  */
 export interface NavQuery<R = unknown> {
   readonly _tag: "NavQuery";
@@ -626,7 +627,13 @@ export type Row<Q> = Q extends NavQuery<infer R>
     ? RowOf<R>
     : never;
 
-/** What `db.q` resolves to: the readonly array of {@link Row}. */
+/**
+ * The readonly array of {@link Row}. For a `.select` query this is exactly
+ * what `db.q` resolves to. With no `.select` it is `readonly Eid[]`, one
+ * shade looser than `db.q`: a catalog-typed db re-brands the ids to
+ * `Eid<C>`, which a query — scoped to a namespace, not a catalog — cannot
+ * know.
+ */
 export type Rows<Q> = readonly Row<Q>[];
 
 /** The phantom result is the rows array; the row is its element. */
