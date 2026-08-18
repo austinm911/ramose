@@ -4,6 +4,8 @@
  * the auth Worker bundle.
  */
 
+import { isDatabaseName } from "@ripple/alchemy/db";
+
 /**
  * The `iss` every Reef JWT carries and the peer pins (`RIPPLE_JWT_ISS`). An
  * opaque agreed string — verification keys come from the JWKS URL, not from
@@ -50,10 +52,16 @@ export const classOfRole = (role: string): RippleClass => {
 };
 
 /**
- * Workspace slug = Ripple database name, so it must satisfy the peer's
- * `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`. The UI keeps it to the friendly subset.
+ * Workspace slug = Ripple database name. `SLUG_RE` is Reef's friendlier
+ * subset (lowercase, hyphens, at least two characters); `isDatabaseName` —
+ * the peer's own rule, exported by `@ripple/alchemy/db` — is the outer
+ * guard, so a slug that passes here can never be rejected as a database
+ * name.
  */
-export const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,39}$/;
+const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,39}$/;
+
+export const isWorkspaceSlug = (slug: string): boolean =>
+  isDatabaseName(slug) && SLUG_RE.test(slug);
 
 export const slugify = (name: string): string =>
   name

@@ -13,7 +13,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
-import { DATABASE_NAME_RE, invalidDatabaseName } from "../DatabaseName.ts";
+import { DATABASE_NAME_RE, invalidDatabaseName } from "./DatabaseName.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import { type Eid, makeEid } from "./Eid.ts";
 import { schemaTx } from "./ensure.ts";
@@ -314,7 +314,7 @@ const makeRead = <C extends AnyCatalog>(
               queue,
               Cause.die(
                 new Error(
-                  "ripple: db.live needs the session socket — pass `webSocket` to Ripple.layer (or run where a global WebSocket exists)",
+                  "ripple: db.live needs the session socket — pass `webSocket` to Ripple.connect or Ripple.layer (or run where a global WebSocket exists)",
                 ),
               ),
             );

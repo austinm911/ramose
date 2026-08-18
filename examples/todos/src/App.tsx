@@ -1,5 +1,6 @@
+import * as Effect from "effect/Effect";
 import { useState } from "react";
-import { db, run } from "./db.ts";
+import { db } from "./db.ts";
 import { addTodo, deleteTodo, setDone, todoQuery, type TodoRow } from "./todos.ts";
 import { useLive } from "./useLive.ts";
 
@@ -33,13 +34,18 @@ const TodoRowView = ({ row }: { row: TodoRow }) => (
       <input
         type="checkbox"
         checked={row.done}
-        onChange={(e) => void run(setDone(db, { id: row.id }, e.target.checked))}
+        onChange={(e) =>
+          void Effect.runPromise(setDone(db, { id: row.id }, e.target.checked))
+        }
       />
       <span style={{ textDecoration: row.done ? "line-through" : undefined }}>
         {row.title}
       </span>
     </label>
-    <button type="button" onClick={() => void run(deleteTodo(db, { id: row.id }))}>
+    <button
+      type="button"
+      onClick={() => void Effect.runPromise(deleteTodo(db, { id: row.id }))}
+    >
       delete
     </button>
   </li>
@@ -54,7 +60,7 @@ const NewTodo = () => {
         const value = title.trim();
         if (value === "") return;
         setTitle("");
-        void run(addTodo(db, value));
+        void Effect.runPromise(addTodo(db, value));
       }}
     >
       <input

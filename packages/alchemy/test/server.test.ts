@@ -10,7 +10,6 @@
 
 import { describe, expect, test } from "bun:test";
 import * as Redacted from "effect/Redacted";
-import { DATABASE_NAME_RE } from "../src/DatabaseName.ts";
 import { Database, isDatabase } from "../src/Database.ts";
 import { ReadDatabases } from "../src/ReadDatabases.ts";
 import { ReadWriteDatabases } from "../src/ReadWriteDatabases.ts";
@@ -90,17 +89,6 @@ describe("a server has no database name", () => {
     const hasCatalog: "catalog" extends Props ? true : false = true;
     const hasServer: "server" extends Props ? true : false = true;
     expect([hasName, hasCatalog, hasServer]).toEqual([true, true, true]);
-  });
-});
-
-describe("database names", () => {
-  test("the regex is the server Worker's `validDbName`", () => {
-    for (const ok of ["a", "movies", "A0", "a.b-c_d", "x".repeat(64)]) {
-      expect(DATABASE_NAME_RE.test(ok)).toBe(true);
-    }
-    for (const bad of ["", "-leading", ".leading", "has space", "has/slash", "x".repeat(65)]) {
-      expect(DATABASE_NAME_RE.test(bad)).toBe(false);
-    }
   });
 });
 

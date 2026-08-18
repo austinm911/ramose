@@ -19,12 +19,11 @@ installed Bun and run `bun install`, so dependencies are ready when an agent sta
   `RIPPLE_URL` is set (otherwise the tests skip). Point it at a local peer
   (`RIPPLE_URL=http://localhost:1337 bun run test:e2e`) or use
   `bun run test:e2e:cf` for a real Cloudflare deploy (below).
-  - Known local caveat: against a local `alchemy dev` (miniflare) peer, the single
-    e2e case "a write on another connection wakes db.live" fails consistently
-    (cross-connection novelty over WebSockets does not propagate across isolates in
-    miniflare local). Same-connection live queries work — the todos UI updates live
-    on write. The remaining e2e cases pass. Don't chase this against a local peer —
-    run it against real Cloudflare (below) to see the full suite pass.
+  - The full e2e suite passes against a local `alchemy dev` (miniflare) peer,
+    including the cross-connection "a write on another connection wakes db.live"
+    case. (An earlier local caveat about that case failing was issue #28 — the
+    shared basis watcher's cross-context fan-out killing sessions — fixed in
+    `packages/worker/src/session.ts`.)
 - There is no production "build" step for local dev; the app runs via `alchemy dev`
   (miniflare) and Vite.
 

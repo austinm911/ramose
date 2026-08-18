@@ -298,4 +298,84 @@ d("ripple session socket e2e", () => {
     },
     120_000,
   );
+
+  /**
+   * Regression for #28: two session sockets on one db. The shared basis
+   * watcher used to run in the first session's request context; the fan-out to
+   * the second socket was illegal cross-context I/O in workerd, so the second
+   * session zombied after the first write (no ticks, frames dropped with no
+   * reply, socket never closed).
+   *
+   * Raw sockets on purpose: the client's reconnect-on-close would mask a
+   * zombied session. Under local miniflare both sockets share one isolate —
+   * the exact #28 shape; on real Cloudflare they may land apart, which only
+   * makes the test weaker, never wrongly red.
+   */
+  test(
+    "two session sockets on one db both tick on every write; both keep answering (#28)",
+    async () => {
+      const twoDb = `${dbName}-two-socks`;
+      const http = new Peer(url, { token, retryTransientMs: 30_000 }).db(twoDb);
+      const wsUrl = `${url.replace(/^http/, "ws")}/db/${encodeURIComponent(twoDb)}/session${token === undefined ? "" : `?token=${encodeURIComponent(token)}`}`;
+
+      interface RawSock {
+        ws: WebSocket;
+        frames: any[];
+        closed: boolean;
+        next: number;
+      }
+      const openSock = (): Promise<RawSock> =>
+        new Promise((resolve, reject) => {
+          const ws = new WebSocket(wsUrl);
+          const s: RawSock = { ws, frames: [], closed: false, next: 1 };
+          ws.addEventListener("open", () => resolve(s));
+          ws.addEventListener("error", (ev) => reject(new Error(`session socket error: ${String((ev as { message?: unknown }).message ?? ev)}`)));
+          ws.addEventListener("close", () => {
+            s.closed = true;
+          });
+          ws.addEventListener("message", (ev) => s.frames.push(JSON.parse(String(ev.data))));
+        });
+      const until = async (cond: () => boolean, ms: number): Promise<boolean> => {
+        const t0 = Date.now();
+        while (!cond() && Date.now() - t0 < ms) await Bun.sleep(100);
+        return cond();
+      };
+      const ticksOf = (s: RawSock): number[] => s.frames.filter((f) => f.op === "t").map((f) => f.t as number);
+      /** send one `info` frame; resolve to its reply (a zombie never answers) */
+      const answers = async (s: RawSock): Promise<boolean> => {
+        const id = s.next++;
+        s.ws.send(JSON.stringify({ id, op: "info" }));
+        return until(() => s.frames.some((f) => f.id === id && f.status === 200), 15_000);
+      };
+
+      // the db must exist before a socket can watch it move
+      const t0 = (await http.transact([attrMap(":two/a", "string")])).t;
+      const s1 = await openSock();
+      const s2 = await openSock();
+      try {
+        expect(await answers(s1)).toBe(true);
+        expect(await answers(s2)).toBe(true);
+        // let each session's watcher take its seed reading before the write moves the basis
+        await Bun.sleep(2_500);
+
+        const w1 = await http.transact([attrMap(":two/b", "string")]);
+        expect(w1.t).toBeGreaterThan(t0);
+        // the non-polling session reads the shared basis one interval later; real CF adds edge lag
+        expect(await until(() => ticksOf(s1).some((t) => t >= w1.t) && ticksOf(s2).some((t) => t >= w1.t), 20_000)).toBe(true);
+
+        // the second write is the #28 regression: the old fan-out had killed one session by now
+        const w2 = await http.transact([attrMap(":two/c", "string")]);
+        expect(await until(() => ticksOf(s1).some((t) => t >= w2.t) && ticksOf(s2).some((t) => t >= w2.t), 20_000)).toBe(true);
+
+        expect(await answers(s1)).toBe(true);
+        expect(await answers(s2)).toBe(true);
+        expect(s1.closed).toBe(false);
+        expect(s2.closed).toBe(false);
+      } finally {
+        s1.ws.close();
+        s2.ws.close();
+      }
+    },
+    120_000,
+  );
 });

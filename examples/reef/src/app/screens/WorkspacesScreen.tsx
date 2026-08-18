@@ -17,7 +17,7 @@ import {
   type OrgSummary,
   type SessionUser,
 } from "../auth.ts";
-import { SLUG_RE, slugify } from "../../domain/shared.ts";
+import { isWorkspaceSlug, slugify } from "../../domain/shared.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
 import {
   Avatar,
@@ -206,7 +206,7 @@ export const WorkspacesScreen = ({
   }, []);
 
   const create = async () => {
-    if (!SLUG_RE.test(slug)) {
+    if (!isWorkspaceSlug(slug)) {
       toast("error", "workspace names need at least two letters or digits");
       return;
     }

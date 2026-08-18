@@ -25,9 +25,9 @@ RIPPLE_URL=http://localhost:1337 bun run test:e2e   # local alchemy dev
 bun run test:e2e:cf                                 # real Cloudflare (below)
 ```
 
-Against local miniflare, the cross-connection `db.live` wake case fails
-consistently (novelty does not propagate across isolates). Same-connection live
-queries work. Run against real Cloudflare to exercise the full suite.
+The full suite, including the cross-connection `db.live` wake case, passes
+against local miniflare. Run against real Cloudflare for the production-shaped
+check.
 
 ### Against real Cloudflare
 

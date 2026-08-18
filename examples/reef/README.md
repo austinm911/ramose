@@ -35,11 +35,10 @@ Sign up (accounts are auto-verified — the demo ships no mailer), create a
 workspace, and you are on the board. Open a second browser window on the same
 account to watch writes propagate live.
 
-> Local caveat (also noted in `.cursor/CLOUD.md`): under miniflare,
-> cross-*connection* novelty does not propagate between isolates, so two
-> different sign-ins see each other's writes on reconnect rather than live.
-> Same-connection live — every board interaction — works locally; the full
-> cross-tab story needs a real Cloudflare deploy.
+> Cross-connection live updates (two windows, two sign-ins) work locally under
+> miniflare too. An earlier caveat here about writes only showing up on
+> reconnect was issue #28 — sessions sharing a database in one isolate dying on
+> the basis fan-out — fixed in `packages/worker/src/session.ts`.
 
 ## The architecture
 

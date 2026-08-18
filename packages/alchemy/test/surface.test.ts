@@ -43,7 +43,6 @@ const KILLED = [
   "ProviderLive",
   "ProviderLocal",
   "SystemProvider",
-  "DATABASE_NAME_RE",
   "ProviderRequirements",
   "PolicyError",
   "ReadSystem",
