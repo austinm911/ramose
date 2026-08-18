@@ -69,10 +69,11 @@ business.
 | name | signature |
 | --- | --- |
 | `Db<C>` | `ReadDb<C> & { transact; install }` |
-| `ReadDb<C>` | `{ name; catalog; q; pull; live; basis; asOf; history }` |
+| `ReadDb<C>` | `{ name; catalog; q; pull; live; livePull; basis; asOf; history }` |
 | `db.q` | `(query) => Effect<R, DbError>` — takes a navigational query value (`Ripple.query(N)…`); with no `.select`, `R` is `readonly Eid<C>[]` |
 | `db.live` | same input as `db.q` → `Stream<R, DbError>` |
 | `db.pull` | `<const P>(subject: Eid<C> \| LookupRef<C>, shape: P) => Effect<Pull<C, P> \| null, DbError>` |
+| `db.livePull` | same input as `db.pull` → `Stream<Pull<C, P> \| null, DbError>` — `live`'s contract over one entity; `null` (entity retracted) is an emission, not an end |
 | `db.transact` | `<A, E, R>(body: (tx: Tx<C>) => Generator<Effect<unknown, E, R>, A>) => Effect<TxReport<C>, DbError \| E, R>` |
 | `db.install` | `() => Effect<TxReport<C>, DbError>` — idempotent catalog upsert |
 | `db.basis` | `() => Effect<{ t: number }, DbError>` — the basis this view reads at: one `GET /db/:name/info` for a live db (`history` included); `asOf(t)` answers `{ t }` with no request. Observing a newer `t` re-runs standing `live` queries, like `transact` |
@@ -109,15 +110,15 @@ the union `DbError`. See [Errors](/reference/errors/).
 ## Semantics that matter
 
 - **A db is a value.** `asOf(t)` and `history` are `Db -> ReadDb`: pure, zero
-  I/O; `q` / `pull` / `live` compose over them unchanged.
+  I/O; `q` / `pull` / `live` / `livePull` compose over them unchanged.
 - **`transact` returns `TxReport`.** `dbAfter` is the same `Db` carrying a
   min-`t` floor of `report.t` — read-your-writes with no second round trip.
   The floor is best-effort; `asOf(t)` pins an exact past view.
 - **A write advances the whole connection.** Every standing `live` re-runs
   against the new basis. Writes go over HTTPS `/transact`; reads and `t`
   ticks ride the socket.
-- **`live` requires nothing** (`R = never`) and survives the network —
-  retried with backoff, failing only on terminal `InvalidRequest`,
+- **`live` and `livePull` require nothing** (`R = never`) and survive the
+  network — retried with backoff, failing only on terminal `InvalidRequest`,
   `Unauthorized`, or `DatabaseNotFound`.
 - **Install is explicit and once.** `Ripple.Database(...)` at deploy or
   `db.install()` at tenant creation; `ripple.db(name, catalog)` is pure.

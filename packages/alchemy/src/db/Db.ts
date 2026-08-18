@@ -119,6 +119,18 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
   ): Effect.Effect<Pull<C, P> | null, DbError>;
 
   /**
+   * Stand a pull up: `live`'s exact contract over one entity. Re-runs on
+   * every basis tick this session sees and after a local `transact`,
+   * deduped by digest. `null` (entity gone, or a required field missing)
+   * is a legitimate emission — a retracted entity emits `null` and keeps
+   * standing. A pinned view (`asOf` / `history`) emits once and completes.
+   */
+  livePull<const P>(
+    subject: Eid<C> | LookupRef<C>,
+    pattern: PullPattern<C, P>,
+  ): Stream.Stream<Pull<C, P> | null, DbError>;
+
+  /**
    * The basis this view reads at: for a live db, the peer's current `t`
    * (one `GET /db/:name/info`); for `asOf(t)`, `t` with no I/O. Observing a
    * newer basis bumps the session, so a standing `live` that missed a tick
@@ -156,6 +168,16 @@ interface View {
   readonly asOf?: number | undefined;
   readonly history?: boolean | undefined;
   readonly minT?: number | undefined;
+}
+
+/**
+ * One pass of a standing read: the emission, the raw wire result it is
+ * digested from, and the basis `t` the peer answered at (the wake fence).
+ */
+interface Pass<A> {
+  readonly value: A;
+  readonly raw: unknown;
+  readonly t: number;
 }
 
 /** The pause between `live` passes that failed non-terminally, in ms. */
@@ -221,7 +243,7 @@ const makeRead = <C extends AnyCatalog>(
     subject: unknown,
     pattern: unknown,
     minT: number | undefined,
-  ): Effect.Effect<unknown, DbError> =>
+  ): Effect.Effect<Pass<unknown>, DbError> =>
     wire
       .read(
         name,
@@ -235,7 +257,14 @@ const makeRead = <C extends AnyCatalog>(
         minT ?? view.minT,
       )
       .pipe(
-        Effect.map((body) => reshapePullResult(pattern, record(body).result)),
+        Effect.map((body) => {
+          const rec = record(body);
+          return {
+            value: reshapePullResult(pattern, rec.result),
+            raw: rec.result,
+            t: typeof rec.t === "number" ? rec.t : 0,
+          };
+        }),
       );
 
   const runQuery = <R>(
@@ -291,6 +320,56 @@ const makeRead = <C extends AnyCatalog>(
     return step(0);
   };
 
+  /**
+   * The standing loop `live` and `livePull` share: run a pass, emit when the
+   * digest moved, sleep until the session's basis does. What varies is only
+   * the pass itself — a query for `live`, a pull for `livePull`.
+   */
+  const standing = <A>(
+    runPass: (minT: number | undefined) => Effect.Effect<Pass<A>, DbError>,
+  ): Stream.Stream<A, DbError> =>
+    Stream.callback<A, DbError>((queue) =>
+      Effect.gen(function* () {
+        if (bad !== undefined) return yield* Queue.fail(queue, bad);
+        const session = wire.session(name);
+        const pinned = view.asOf !== undefined || view.history === true;
+
+        if (!pinned && session === undefined) {
+          return yield* Queue.failCause(
+            queue,
+            Cause.die(
+              new Error(
+                "ripple: db.live needs the session socket — pass `webSocket` to Ripple.connect or Ripple.layer (or run where a global WebSocket exists)",
+              ),
+            ),
+          );
+        }
+
+        let last: string | undefined;
+        for (;;) {
+          const seen = session?.t ?? 0;
+          // one pass; the wire ladder retries its transient attempts, and
+          // withBackoff only re-runs the pass once that ladder is spent
+          const pass = yield* withBackoff(runPass(seen || undefined));
+          // a tick the pass's result did not notice is not news
+          const digest = JSON.stringify(pass.raw) ?? "";
+          if (digest !== last) {
+            last = digest;
+            yield* Queue.offer(queue, pass.value);
+          }
+          if (pinned || session === undefined) break;
+          yield* awaitWake(
+            session,
+            Math.max(seen, pass.t),
+            session.generation,
+          );
+        }
+        return yield* Queue.end(queue);
+      }).pipe(
+        Effect.catch((e: DbError) => Queue.fail(queue, e)),
+      ),
+    );
+
   const read: ReadDb<C> = {
     name,
     catalog,
@@ -303,52 +382,29 @@ const makeRead = <C extends AnyCatalog>(
       )) as ReadDb<C>["q"],
 
     live: (<R>(input: QueryInput<R>) =>
-      Stream.callback<R, DbError>((queue) =>
-        Effect.gen(function* () {
-          if (bad !== undefined) return yield* Queue.fail(queue, bad);
-          const session = wire.session(name);
-          const pinned = view.asOf !== undefined || view.history === true;
-
-          if (!pinned && session === undefined) {
-            return yield* Queue.failCause(
-              queue,
-              Cause.die(
-                new Error(
-                  "ripple: db.live needs the session socket — pass `webSocket` to Ripple.connect or Ripple.layer (or run where a global WebSocket exists)",
-                ),
-              ),
-            );
-          }
-
-          let last: string | undefined;
-          for (;;) {
-            const seen = session?.t ?? 0;
-            // one pass; the wire ladder retries its transient attempts, and
-            // withBackoff only re-runs the pass once that ladder is spent
-            const pass = yield* withBackoff(runQuery(input, seen || undefined));
-            // a tick the query's rows did not notice is not news
-            const digest = JSON.stringify(pass.raw) ?? "";
-            if (digest !== last) {
-              last = digest;
-              yield* Queue.offer(queue, pass.rows as R);
-            }
-            if (pinned || session === undefined) break;
-            yield* awaitWake(
-              session,
-              Math.max(seen, pass.t),
-              session.generation,
-            );
-          }
-          return yield* Queue.end(queue);
-        }).pipe(
-          Effect.catch((e: DbError) => Queue.fail(queue, e)),
+      standing<R>((minT) =>
+        runQuery(input, minT).pipe(
+          Effect.map((pass) => ({
+            value: pass.rows as R,
+            raw: pass.raw,
+            t: pass.t,
+          })),
         ),
       )) as ReadDb<C>["live"],
 
     pull: ((subject: unknown, pattern: unknown) =>
       fenced(
-        Effect.suspend(() => pullOne(subject, pattern, undefined)),
+        Effect.suspend(() =>
+          pullOne(subject, pattern, undefined).pipe(
+            Effect.map((pass) => pass.value),
+          ),
+        ),
       )) as ReadDb<C>["pull"],
+
+    livePull: ((subject: unknown, pattern: unknown) =>
+      standing((minT) => pullOne(subject, pattern, minT))) as ReadDb<
+      C
+    >["livePull"],
 
     // a pinned view answers from its own coordinate; a live view (history
     // included) asks the peer, not `session.t` — that is 0 before the first

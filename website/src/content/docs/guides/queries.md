@@ -173,9 +173,13 @@ const movie = yield* db.pull(eid, shape);
   (`[User.email, "grace@acme.dev"]`).
 - `Pull<C, P>` is a plain type: a React prop can be
   `Ripple.Pull<typeof Movies, typeof shape>`.
+- `db.livePull(eid, shape)` is the live terminal for the same pull —
+  `db.live`'s exact contract (re-run on every basis tick and after a local
+  `transact`, dedupe by digest, `asOf`/`history` emit once and complete),
+  emitting the projection or `null`. A retracted entity emits `null` and the
+  stream keeps standing.
 
-Prefer a navigational query when you need filters, live, or `asOf` on the
-same artifact.
+Prefer a navigational query when you need filters on the same artifact.
 
 ## Reading the past
 
