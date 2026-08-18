@@ -12,6 +12,7 @@ import { optional, type AttrPull } from "./Pull.ts";
 import {
   isSelfRefSchema,
   refTargetOf,
+  type SelfMarker,
 } from "./valueTypes.ts";
 
 export type AttributeMap = Record<string, AnyAttribute>;
@@ -63,24 +64,22 @@ export type NavStamp<
     : StampedAttribute<Ns, Name, A>
   : StampedAttribute<Ns, Name, A>;
 
-/** Pull the target attr map out of a ref attribute's schema brands. */
+/**
+ * Pull the target attr map out of a ref attribute's schema brands: the
+ * namespace `Ref(() => N)` names, or `"self"` for `Ref.self` (typed as
+ * `TargetedRef<SelfMarker>`, so the marker is what its target resolves to).
+ */
 type ResolveRefTarget<A> = A extends {
   readonly schema: {
-    readonly _resolve: () => { readonly attributes: infer T };
+    readonly _resolve?: () => { readonly attributes: infer T };
   };
 }
-  ? T
-  : A extends { readonly schema: { readonly _self: true } }
-    ? "self"
-    : A extends {
-          readonly schema: {
-            readonly _resolve?: () => { readonly attributes: infer T };
-          };
-        }
-      ? unknown extends T
-        ? never
-        : T
-      : never;
+  ? unknown extends T
+    ? never
+    : [T] extends [SelfMarker]
+      ? "self"
+      : T
+  : never;
 
 export type StampedMap<
   Ns extends string,
@@ -190,10 +189,14 @@ const stampOne = (
       const child = resolveTarget(prop);
       if (child === undefined) return undefined;
       const childAttr = child as PathCarrier;
+      // Extend the *receiver's* path, not the target's: two hops in
+      // (`Todo.owner.boss`), `target` is the bare `User.boss` stamp while
+      // `receiver` is the `withPath` proxy that still remembers `:todo/owner`.
+      const from = receiver as PathCarrier;
       return withPath(
         childAttr,
-        [...pathOfSafe(target), childAttr.ident!],
-        [...cardsOf(target), childAttr.cardinality ?? "one"],
+        [...pathOfSafe(from), childAttr.ident!],
+        [...cardsOf(from), childAttr.cardinality ?? "one"],
       );
     },
   }) as StampedAttribute<string, string, AnyAttribute>;

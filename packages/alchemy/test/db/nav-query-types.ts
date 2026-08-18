@@ -138,6 +138,30 @@ type _ordered = Expect<
 // @ts-expect-error a predicate is not a sort key
 query(Book).orderBy(Book.title.eq("Calculus"));
 
+// ── self-refs navigate like any targeted ref, to a finite depth ────────────
+
+const Person = Namespace("person", {
+  name: Attr(Schema.String),
+  boss: Attr(Ref.self),
+  friends: Attr(Ref.self, { cardinality: "many" }),
+});
+const Org = Namespace("org", { lead: Attr(Ref(() => Person)) });
+
+/** each hop keeps the leaf's ident and value type */
+type _selfHop = Expect<Equal<typeof Person.boss.name.ident, ":person/name">>;
+type _selfHops = Expect<
+  Equal<typeof Org.lead.boss.boss.name.ident, ":person/name">
+>;
+type _selfMany = Expect<Equal<typeof Person.friends.name.ident, ":person/name">>;
+query(Person).where(Person.boss.name.startsWith("A"));
+query(Org).orderBy(Org.lead.boss.name);
+
+// @ts-expect-error `:person/name` is a string attribute, two hops in too
+query(Person).where(Person.boss.boss.name.eq(3));
+
+// @ts-expect-error a self-ref exposes only the namespace's attributes
+Person.boss.nope;
+
 // ── the query value and its builder are the same input ─────────────────────
 
 const built = db.q(query(User).select({ name: User.name }).build());
