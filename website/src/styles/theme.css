@@ -1,17 +1,24 @@
 /**
- * ripplegraph.ai brand theme (brand guide 0.1).
+ * ramose.ai brand theme.
  *
- * Palette: VOID #050505 · WARM WHITE #F3F1EA · SIGNAL MOSS #879B45 · SAND #DED9CE.
- * Balance: ~70% void, ~20% warm white, ≤10% moss. Moss marks intelligence,
- * action, or a live state — never general decoration.
+ * Palette: BLACK #0D0D0D (page) · FOREST #0B1A10 (panels, raised surfaces)
+ *          GREEN #42D37A (the one signal) · WHITE #FFFFFF (headings)
+ *          GREY #A6A6A6 (secondary text).
+ * Balance: black dominates, forest lifts a surface, green marks a live state,
+ * an action, or a link — never general decoration.
  * Type: Manrope (web fallback for Avenir Next), then Helvetica Neue.
+ *
+ * `rg-` is this site's CSS namespace prefix (also used by the landing page
+ * markup); it is not a brand string.
  */
 
 :root {
-  --rg-void: #050505;
-  --rg-warm-white: #f3f1ea;
-  --rg-moss: #879b45;
-  --rg-sand: #ded9ce;
+  --rg-black: #0d0d0d;
+  --rg-forest: #0b1a10;
+  --rg-green: #42d37a;
+  --rg-green-bright: #6ce09a;
+  --rg-white: #ffffff;
+  --rg-grey: #a6a6a6;
 
   --sl-font: "Manrope Variable", Manrope, "Avenir Next", "Helvetica Neue",
     ui-sans-serif, system-ui, sans-serif;
@@ -20,29 +27,29 @@
 /* Dark-only palette (the ThemeProvider override pins data-theme="dark"). */
 :root,
 :root[data-theme="dark"] {
-  --sl-color-accent-low: #262c13;
-  --sl-color-accent: var(--rg-moss);
-  --sl-color-accent-high: #c9d49b;
+  --sl-color-accent-low: #0f2a1a;
+  --sl-color-accent: var(--rg-green);
+  --sl-color-accent-high: #9fecc0;
 
-  --sl-color-white: var(--rg-warm-white);
-  --sl-color-gray-1: #e9e6dd;
-  --sl-color-gray-2: #ccc8bc;
-  --sl-color-gray-3: #a09d92;
-  --sl-color-gray-4: #6c6a61;
-  --sl-color-gray-5: #37362f;
-  --sl-color-gray-6: #171713;
-  --sl-color-gray-7: #0d0d0b;
-  --sl-color-black: var(--rg-void);
+  --sl-color-white: var(--rg-white);
+  --sl-color-gray-1: #f1f4f2;
+  --sl-color-gray-2: #d3dbd6;
+  --sl-color-gray-3: var(--rg-grey);
+  --sl-color-gray-4: #6f7a73;
+  --sl-color-gray-5: #2a3a31;
+  --sl-color-gray-6: #14231a;
+  --sl-color-gray-7: var(--rg-forest);
+  --sl-color-black: var(--rg-black);
 
-  --sl-color-bg: var(--rg-void);
-  --sl-color-bg-nav: rgba(5, 5, 5, 0.88);
-  --sl-color-bg-sidebar: var(--rg-void);
-  --sl-color-hairline: #232320;
-  --sl-color-hairline-light: #232320;
-  --sl-color-hairline-shade: #171713;
+  --sl-color-bg: var(--rg-black);
+  --sl-color-bg-nav: rgba(13, 13, 13, 0.88);
+  --sl-color-bg-sidebar: var(--rg-black);
+  --sl-color-hairline: #1c2a21;
+  --sl-color-hairline-light: #1c2a21;
+  --sl-color-hairline-shade: #131f18;
 
-  --sl-color-text-accent: var(--rg-moss);
-  --sl-color-text-invert: var(--rg-void);
+  --sl-color-text-accent: var(--rg-green);
+  --sl-color-text-invert: var(--rg-black);
 }
 
 /* Calm chrome: hairline borders, translucent header, generous space. */
@@ -64,15 +71,29 @@ h1[data-page-title] {
   letter-spacing: -0.015em;
 }
 
-/* Moss is the one signal: links and active nav states. */
+/* Green is the one signal: links and active nav states. */
 .sl-markdown-content a:not(:where(.not-content *)) {
   color: var(--sl-color-accent-high);
   text-decoration: none;
-  border-bottom: 1px solid color-mix(in srgb, var(--rg-moss) 45%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--rg-green) 45%, transparent);
 }
 .sl-markdown-content a:not(:where(.not-content *)):hover {
-  color: var(--rg-warm-white);
-  border-bottom-color: var(--rg-moss);
+  color: var(--rg-white);
+  border-bottom-color: var(--rg-green);
+}
+
+/* The brand tagline, set as spaced caps: white lead, green resolution.
+   `<p class="rg-tagline">Reactive applications <em>that grow safely.</em></p>` */
+.rg-tagline {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--rg-white);
+}
+.rg-tagline em {
+  font-style: normal;
+  color: var(--rg-green);
 }
 
 /* ---------------------------------------------------------------- */
@@ -113,7 +134,7 @@ h1[data-page-title] {
 
 .hero .actions .sl-link-button.secondary {
   border-color: var(--sl-color-gray-5);
-  color: var(--rg-warm-white);
+  color: var(--rg-white);
 }
 .hero .actions .sl-link-button.secondary:hover {
   border-color: var(--sl-color-gray-4);
@@ -137,7 +158,7 @@ h1[data-page-title] {
 }
 
 .rg-sync-pane {
-  background: #0b0b09;
+  background: var(--rg-forest);
   border: 1px solid var(--sl-color-hairline);
   border-radius: 0.75rem;
   padding: 0.875rem 1rem 1rem;
@@ -200,8 +221,8 @@ h1[data-page-title] {
   }
   44%,
   92% {
-    background: var(--rg-moss);
-    border-color: var(--rg-moss);
+    background: var(--rg-green);
+    border-color: var(--rg-green);
   }
   100% {
     background: transparent;
@@ -238,7 +259,7 @@ h1[data-page-title] {
   width: 0.4375rem;
   height: 0.4375rem;
   border-radius: 999px;
-  background: var(--rg-moss);
+  background: var(--rg-green);
   animation: rg-travel 5s ease-in-out infinite;
 }
 
@@ -270,8 +291,8 @@ h1[data-page-title] {
     animation: none;
   }
   .rg-sync-pane li.rg-flip i {
-    background: var(--rg-moss);
-    border-color: var(--rg-moss);
+    background: var(--rg-green);
+    border-color: var(--rg-green);
   }
   /* Without the keyframes the dot has no `top`/`opacity`: park it arrived. */
   .rg-sync-wire span {
@@ -322,16 +343,16 @@ h1[data-page-title] {
 }
 
 .rg-button.primary {
-  background: var(--rg-moss);
-  color: var(--rg-void);
+  background: var(--rg-green);
+  color: var(--rg-black);
 }
 .rg-button.primary:hover {
-  background: #98ac53;
+  background: var(--rg-green-bright);
 }
 
 .rg-button.secondary {
   border: 1px solid var(--sl-color-gray-5);
-  color: var(--rg-warm-white);
+  color: var(--rg-white);
 }
 .rg-button.secondary:hover {
   border-color: var(--sl-color-gray-4);
@@ -354,7 +375,7 @@ h1[data-page-title] {
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--rg-moss);
+  color: var(--rg-green);
   margin: 0 0 0.75rem;
 }
 
@@ -362,7 +383,7 @@ h1[data-page-title] {
   font-size: clamp(1.5rem, 2.6vw, 2rem);
   font-weight: 600;
   letter-spacing: -0.02em;
-  color: var(--rg-warm-white);
+  color: var(--rg-white);
   margin: 0 0 0.625rem;
 }
 
@@ -375,7 +396,7 @@ h1[data-page-title] {
 
 /* A raised band. */
 .rg-band {
-  background: linear-gradient(180deg, #0f0f0c, #0a0a08);
+  background: linear-gradient(180deg, #102319, #0a150e);
   border: 1px solid var(--sl-color-hairline);
   border-radius: 1.25rem;
   padding: clamp(1.75rem, 4vw, 2.75rem);
@@ -402,7 +423,7 @@ h1[data-page-title] {
   font-size: 0.9375rem;
 }
 .rg-run .rg-run-note strong {
-  color: var(--rg-warm-white);
+  color: var(--rg-white);
 }
 
 .rg-run .expressive-code {
@@ -464,7 +485,7 @@ h1[data-page-title] {
   font-size: clamp(1.375rem, 2.4vw, 1.875rem);
   font-weight: 600;
   letter-spacing: -0.02em;
-  color: var(--rg-warm-white);
+  color: var(--rg-white);
   margin: 0 0 0.875rem;
   line-height: 1.2;
 }
@@ -475,7 +496,7 @@ h1[data-page-title] {
   width: 2.25rem;
   height: 2px;
   border-radius: 2px;
-  background: var(--rg-moss);
+  background: var(--rg-green);
   margin-bottom: 1.125rem;
 }
 
@@ -506,7 +527,7 @@ h1[data-page-title] {
 .rg-frames li::before {
   counter-increment: rg-frame;
   content: counter(rg-frame, decimal-leading-zero) " ";
-  color: var(--rg-moss);
+  color: var(--rg-green);
   font-weight: 600;
 }
 
@@ -547,7 +568,7 @@ h1[data-page-title] {
 }
 
 .rg-benefit {
-  background: #0b0b09;
+  background: var(--rg-forest);
   border: 1px solid var(--sl-color-hairline);
   border-radius: 0.875rem;
   padding: 1.5rem 1.5rem 1.625rem;
@@ -557,7 +578,7 @@ h1[data-page-title] {
   font-size: 1.0625rem;
   font-weight: 600;
   letter-spacing: -0.01em;
-  color: var(--rg-warm-white);
+  color: var(--rg-white);
   margin: 0 0 0.625rem;
 }
 
@@ -572,11 +593,11 @@ h1[data-page-title] {
 .rg-benefit--lead {
   background: linear-gradient(
       160deg,
-      rgba(135, 155, 69, 0.12),
-      rgba(135, 155, 69, 0.02) 62%
+      rgba(66, 211, 122, 0.14),
+      rgba(66, 211, 122, 0.02) 62%
     ),
-    #0b0b09;
-  border-color: #35381f;
+    var(--rg-forest);
+  border-color: #24503a;
   padding: 1.875rem 1.75rem 2rem;
 }
 
@@ -615,7 +636,7 @@ h1[data-page-title] {
   margin: 0;
   font-size: 0.9375rem;
   font-weight: 600;
-  color: var(--rg-warm-white);
+  color: var(--rg-white);
 }
 
 .rg-vs-row p {
@@ -627,14 +648,14 @@ h1[data-page-title] {
 
 .rg-limits {
   margin: 1.75rem 0 0;
-  border-inline-start: 2px solid var(--rg-moss);
+  border-inline-start: 2px solid var(--rg-green);
   padding-inline-start: 1rem;
   font-size: 0.9375rem;
   line-height: 1.7;
   color: var(--sl-color-gray-3);
 }
 .rg-limits strong {
-  color: var(--rg-warm-white);
+  color: var(--rg-white);
 }
 .rg-limits ul {
   list-style: none;
@@ -657,7 +678,7 @@ h1[data-page-title] {
 }
 
 .rg-how-box {
-  background: #0b0b09;
+  background: var(--rg-forest);
   border: 1px solid var(--sl-color-hairline);
   border-radius: 0.875rem;
   padding: 1.5rem;
@@ -669,14 +690,14 @@ h1[data-page-title] {
   font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.1em;
-  color: var(--rg-moss);
+  color: var(--rg-green);
   margin-bottom: 0.75rem;
 }
 
 .rg-how-box h3 {
   font-size: 1rem;
   font-weight: 600;
-  color: var(--rg-warm-white);
+  color: var(--rg-white);
   margin: 0 0 0.5rem;
 }
 
@@ -695,11 +716,11 @@ h1[data-page-title] {
   color: var(--sl-color-accent-high);
   text-decoration: none;
   border-bottom: 1px solid
-    color-mix(in srgb, var(--rg-moss) 45%, transparent);
+    color-mix(in srgb, var(--rg-green) 45%, transparent);
 }
 .rg-how-link a:hover {
-  color: var(--rg-warm-white);
-  border-bottom-color: var(--rg-moss);
+  color: var(--rg-white);
+  border-bottom-color: var(--rg-green);
 }
 
 /* --- Closing -------------------------------------------------------- */
@@ -717,7 +738,7 @@ h1[data-page-title] {
   font-size: clamp(1.375rem, 2.6vw, 1.875rem);
   font-weight: 600;
   letter-spacing: -0.02em;
-  color: var(--rg-warm-white);
+  color: var(--rg-white);
   margin: 0 0 0.75rem;
 }
 
