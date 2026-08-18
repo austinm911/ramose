@@ -152,7 +152,8 @@ export const makeDatabases = (
   /**
    * A read as one session frame. Transient failures walk the same retry
    * ladder as HTTPS: a platform error the peer relays over the socket, or a
-   * socket that dropped mid-request (the next attempt reopens it).
+   * socket that dropped mid-request (the next attempt reopens it) — unless the
+   * client is closed, where nothing reopens and the failure is immediate.
    */
   const frame = (
     socket: Session,
@@ -180,6 +181,7 @@ export const makeDatabases = (
               ),
         ),
       ),
+      { while: () => !socket.closed },
     );
 
   /** The same read as one HTTPS POST — the fallback when there is no socket. */

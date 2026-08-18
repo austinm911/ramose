@@ -81,6 +81,8 @@ export interface Session {
   onWake(cb: () => void): () => void;
   /** Close for good; nothing reopens. */
   close(): void;
+  /** `true` once {@link close} ran: every request from here on fails at once. */
+  readonly closed: boolean;
 }
 
 const OPEN = 1;
@@ -260,6 +262,9 @@ export const openSession = (options: SessionOptions): Session => {
     },
     get connects() {
       return connects;
+    },
+    get closed() {
+      return closed;
     },
     bump: (t) => bump(t),
     onWake: (cb) => {

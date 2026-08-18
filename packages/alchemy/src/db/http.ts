@@ -90,26 +90,32 @@ const TRANSIENT_ATTEMPTS = 6;
  * jittered exponential ladder (~150ms doubling to 2s; ~4s of sleep before the
  * last attempt). Every transport goes through here, HTTPS and the session
  * socket alike, so a read does not lose its resilience by taking the socket.
- * `attempt` receives the attempt index; the first is `0`.
+ * `attempt` receives the attempt index; the first is `0`. `while` can call
+ * the ladder off early — a closed client, say, where nothing will reopen.
  */
 export const retryTransient = <A>(
   attempt: (n: number) => Effect.Effect<A, DbError>,
-  n = 0,
-): Effect.Effect<A, DbError> =>
-  attempt(n).pipe(
-    Effect.catch((e: DbError) => {
-      if (n + 1 >= TRANSIENT_ATTEMPTS || !isTransientPlatform(e)) {
-        return Effect.fail(e);
-      }
-      // Jittered so concurrent callers do not retry in lockstep.
-      const ms = Math.round(
-        Math.min(2000, 150 * 2 ** n) * (0.5 + Math.random()),
-      );
-      return Effect.sleep(`${ms} millis`).pipe(
-        Effect.andThen(() => retryTransient(attempt, n + 1)),
-      );
-    }),
-  );
+  options?: { readonly while?: (() => boolean) | undefined },
+): Effect.Effect<A, DbError> => {
+  const go = (n: number): Effect.Effect<A, DbError> =>
+    attempt(n).pipe(
+      Effect.catch((e: DbError) => {
+        if (
+          n + 1 >= TRANSIENT_ATTEMPTS ||
+          !isTransientPlatform(e) ||
+          options?.while?.() === false
+        ) {
+          return Effect.fail(e);
+        }
+        // Jittered so concurrent callers do not retry in lockstep.
+        const ms = Math.round(
+          Math.min(2000, 150 * 2 ** n) * (0.5 + Math.random()),
+        );
+        return Effect.sleep(`${ms} millis`).pipe(Effect.andThen(() => go(n + 1)));
+      }),
+    );
+  return go(0);
+};
 
 /** One request, classified. The only place the client touches `fetch`. */
 export const send = (

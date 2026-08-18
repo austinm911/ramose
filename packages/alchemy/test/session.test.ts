@@ -337,7 +337,10 @@ describe("the layer's scope owns the socket", () => {
     expect(peer.sockets).toHaveLength(1);
 
     await c.dispose();
+    // ...and a closed client does not walk the retry ladder: nothing reopens
+    const started = Date.now();
     expect((await runFail(db.q(names)))._tag).toBe("NetworkError");
+    expect(Date.now() - started).toBeLessThan(500);
     expect(peer.sockets).toHaveLength(1);
   });
 });
