@@ -62,11 +62,11 @@ export default defineConfig({
         {
           icon: "github",
           label: "GitHub",
-          href: "https://github.com/tvanhens/ripple",
+          href: "https://github.com/tvanhens/ramose",
         },
       ],
       editLink: {
-        baseUrl: "https://github.com/tvanhens/ripple/edit/master/website/",
+        baseUrl: "https://github.com/tvanhens/ramose/edit/master/website/",
       },
       customCss: [
         "@fontsource-variable/manrope",

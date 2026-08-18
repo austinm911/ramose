@@ -3,12 +3,24 @@
   "version": "0.1.0",
   "private": true,
   "description": "Ramose — an immutable, Datomic-inspired database for Cloudflare (Workers + Durable Objects + R2).",
+  "license": "Apache-2.0",
+  "author": "Tyler van Hensbergen <tvanhens@gmail.com>",
+  "homepage": "https://ramose.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tvanhens/ramose.git"
+  },
   "type": "module",
   "workspaces": [
     "packages/*",
     "website"
   ],
   "scripts": {
+    "build": "bun run scripts/build-packages.ts --clean",
+    "release": "bun run scripts/release.ts --no-provenance",
+    "release:dry": "bun run scripts/release.ts --dry-run --no-provenance",
+    "release:version": "bun run scripts/set-version.ts",
+    "release:check": "bun run scripts/check-release.ts --built",
     "test": "bun test packages/core packages/storage packages/transactor packages/replica packages/worker packages/alchemy packages/react packages/better-auth examples/todos examples/reef test/support",
     "test:all": "bun test",
     "test:e2e": "bun test test/e2e",
@@ -22,11 +34,11 @@
     "bench:write-do": "bun run bench/write-do.bench.ts",
     "bench:read-do": "bun run bench/read-do.bench.ts",
     "bench:indexer": "bun run bench/indexer.bench.ts",
-    "dev": "bun alchemy dev",
-    "dev:todos": "CI=${CI:-1} ALCHEMY_STATE=${ALCHEMY_STATE:-local} CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-0123456789abcdef0123456789abcdef} CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-x} bun alchemy dev examples/todos/alchemy.run.ts",
-    "dev:reef": "CI=${CI:-1} ALCHEMY_STATE=${ALCHEMY_STATE:-local} CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-0123456789abcdef0123456789abcdef} CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-x} bun alchemy dev examples/reef/alchemy.run.ts",
-    "deploy": "bun alchemy deploy",
-    "deploy:prod": "bun alchemy deploy --stage prod",
+    "dev": "bun run scripts/build-packages.ts && bun alchemy dev",
+    "dev:todos": "CI=${CI:-1} ALCHEMY_STATE=${ALCHEMY_STATE:-local} CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-0123456789abcdef0123456789abcdef} CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-x} bun run scripts/build-packages.ts && bun alchemy dev examples/todos/alchemy.run.ts",
+    "dev:reef": "CI=${CI:-1} ALCHEMY_STATE=${ALCHEMY_STATE:-local} CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-0123456789abcdef0123456789abcdef} CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-x} bun run scripts/build-packages.ts && bun alchemy dev examples/reef/alchemy.run.ts",
+    "deploy": "bun run scripts/build-packages.ts && bun alchemy deploy",
+    "deploy:prod": "bun run scripts/build-packages.ts && bun alchemy deploy --stage prod",
     "deploy:docs": "bun alchemy deploy website/alchemy.run.ts",
     "deploy:docs:prod": "bun alchemy deploy website/alchemy.run.ts --stage prod --adopt",
     "destroy": "bun alchemy destroy"

@@ -207,7 +207,7 @@ issue: {
 
 </div>
 
-<p class="rg-trust"><span>Pre-release</span><span class="rg-trust-sep">·</span><span>no Ramose bill: it runs in your Cloudflare account, so you pay Cloudflare for what you use</span><span class="rg-trust-sep">·</span><span>662 tests run on every pull request and on master</span><span class="rg-trust-sep">·</span><span>built in the open — <a href="https://github.com/tvanhens/ripple">GitHub</a></span></p>
+<p class="rg-trust"><span>Pre-release</span><span class="rg-trust-sep">·</span><span>no Ramose bill: it runs in your Cloudflare account, so you pay Cloudflare for what you use</span><span class="rg-trust-sep">·</span><span>662 tests run on every pull request and on master</span><span class="rg-trust-sep">·</span><span>built in the open — <a href="https://github.com/tvanhens/ramose">GitHub</a></span></p>
 
 <div class="rg-closing">
   <p class="rg-eyebrow">Try it in two lines</p>
@@ -215,13 +215,12 @@ issue: {
   <div class="rg-closing-code">
 
 ```sh title="Try it" frame="terminal"
-git clone https://github.com/tvanhens/ripple && cd ripple && bun install
+git clone https://github.com/tvanhens/ramose && cd ramose && bun install
 bun run dev:reef        # a realtime, multi-tenant app on http://localhost:5173
 ```
 
   </div>
-  {/* SWAP-ON-PUBLISH: replace with the npm path once @ramose/* is published */}
-  <p class="rg-closing-note"><strong>Not on npm yet.</strong> <code>@ramose/*</code> is unpublished, so today the clone above is the way in. Once it ships: <code>npm install @ramose/alchemy @ramose/worker @ramose/react</code>. The <a href="/getting-started/quickstart/#path-2-start-your-own-app">Quickstart</a> shows both paths.</p>
+  <p class="rg-closing-note"><strong>Starting your own app?</strong> <code>npm install @ramose/alchemy @ramose/worker @ramose/react</code>. The clone above is for running Reef, the example app. The <a href="/getting-started/quickstart/#path-2-start-your-own-app">Quickstart</a> shows both paths.</p>
   <div class="rg-actions">
     <a class="rg-button primary" href="/getting-started/quickstart/">Open the Quickstart</a>
     <a class="rg-button secondary" href="/getting-started/tour-of-reef/">See a real app</a>

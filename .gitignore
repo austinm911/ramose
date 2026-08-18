@@ -7,6 +7,15 @@ dist/
 .env.*
 FABLE_TASK.md
 
+# Generated per-package publish artifacts (see scripts/build-packages.ts).
+# LICENSE/NOTICE are always copied from the repo root. A README is generated
+# only where the package does not already have a written one — those are
+# committed and negated below.
+packages/*/LICENSE
+packages/*/NOTICE
+packages/*/README.md
+!packages/react/README.md
+
 # Claude Code scratch. `worktrees/` holds real git worktrees — committing one
 # would commit a checkout of another branch. Shared config (settings.json,
 # agents/, skills/, commands/) is deliberately NOT ignored so it can be checked in.
