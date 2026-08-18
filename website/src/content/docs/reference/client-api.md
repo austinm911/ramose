@@ -27,6 +27,8 @@ Vite app needs no alias. Import it as `* as Ripple`.
 | `layer` | `(options: ClientOptions) => Layer<Databases>` — for Effect users |
 | `Databases` | `Context.Service<Databases, { db<C>(name: string, catalog: C): Db<C> }>` — the key *is* the client |
 | `ClientOptions` | `{ url: string; token?: Effect<Redacted<string>>; fetch?: typeof fetch; webSocket?: typeof WebSocket }` |
+| `DATABASE_NAME_RE` | `RegExp` — the peer's database-name rule: `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$` |
+| `isDatabaseName` | `(name: string) => boolean` — the same rule as a predicate |
 
 `connect` is the promise-land entry: a plain handle, no runtime to build.
 `db` is pure — the same call as `Databases.db` — and every `Db` method needs
@@ -43,6 +45,12 @@ same factory, not a second client. Getting a `Databases` cannot fail.
 A static token is `Effect.succeed(Redacted.make(t))`. The token Effect is
 re-read on every (re)connect and every `/transact`, so token refresh needs no
 client surface — return the current token from the Effect.
+
+`DATABASE_NAME_RE` / `isDatabaseName` let an app that mints names at runtime
+(multi-tenant "create workspace") validate before the peer does — a bad name
+otherwise fails the first operation with `InvalidRequest`. It is a validator,
+not a slugify: how an app turns "Coral Team" into `coral-team` is its own
+business.
 
 ## The database value
 

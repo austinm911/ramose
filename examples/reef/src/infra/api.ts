@@ -42,8 +42,8 @@ import {
   JWT_AUDIENCE,
   JWT_ISSUER,
   JWT_TTL_SECONDS,
-  SLUG_RE,
   classOfRole,
+  isWorkspaceSlug,
 } from "../domain/shared.ts";
 
 /** Better Auth's tables (user/session/org/member/invitation/jwks) live here. */
@@ -126,7 +126,7 @@ export const Api = Cloudflare.Worker(
         Effect.catchCause(() => Effect.succeed(null)),
       )) as { workspace?: unknown } | null;
       const workspace = body?.workspace;
-      if (typeof workspace !== "string" || !SLUG_RE.test(workspace)) {
+      if (typeof workspace !== "string" || !isWorkspaceSlug(workspace)) {
         return yield* json({ error: "workspace must be a valid slug" }, 400);
       }
 
