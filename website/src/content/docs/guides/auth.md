@@ -72,7 +72,9 @@ const payload = Ripple.claims(
   { sub: user.id, db: workspace, class: role, attrs: { org } },
   compiledPolicy, // optional: the Ripple.Policy.compile(policy) JSON
 );
-const { token } = await auth.api.signJWT({ body: { payload } });
+// Spread: Better Auth's `signJWT` wants jose's index-signed `JWTPayload`,
+// which a named interface is not assignable to.
+const { token } = await auth.api.signJWT({ body: { payload: { ...payload } } });
 ```
 
 It validates at mint what the peer would reject anyway: `db` must be a valid

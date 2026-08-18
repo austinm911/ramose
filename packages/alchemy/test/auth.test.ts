@@ -89,13 +89,12 @@ describe("claims", () => {
     ).toBe("viewer");
   });
 
-  test("a non-positive ttl is a config error, not a token in the past", () => {
-    expect(() =>
-      claims({ ...AUTH, ttl: 0 }, { sub: "u", db: "acme", class: "member" }),
-    ).toThrow(/positive number of seconds/);
-    expect(() =>
-      claims({ ...AUTH, ttl: Number.NaN }, { sub: "u", db: "acme", class: "member" }),
-    ).toThrow(/positive number of seconds/);
+  test("a non-positive or fractional ttl is a config error — NumericDate is whole seconds", () => {
+    for (const bad of [0, -900, 900.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() =>
+        claims({ ...AUTH, ttl: bad }, { sub: "u", db: "acme", class: "member" }),
+      ).toThrow(/positive whole number of seconds/);
+    }
   });
 });
 

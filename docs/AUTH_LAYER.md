@@ -125,7 +125,7 @@ Any denied op rejects the whole tx. Cost: one policy pass per non-admin tx on th
 | client session | `alchemy/src/db/session.ts` | token stays on the upgrade; internal `setToken` + the refresh `auth` frame; reconnect in place |
 | errors | `worker/src/errors.ts:23`, `toHttp:71-72`; `alchemy/src/db/Errors.ts` and the 401/403 arm of `alchemy/src/db/http.ts` | `Unauthorized` gains `code`/`attr`; upstream bodies mapped, not passed through; `PolicyError` in `alchemy/src/db/SchemaErrors.ts` |
 | policy value | `alchemy/src/db/Catalog.ts` | `Catalog` unchanged; `Ripple.Policy.policy(catalog, …)` is a separate value on the non-portable entry |
-| Alchemy | `alchemy.run.ts:58-68` | the peer Worker declares its own env beside `RIPPLE_TOKEN`: `...Ripple.authEnv({ policy: Ripple.Policy.compile(policy), jwksUrl, issuers, aud })`, `RIPPLE_JWKS_URL`, `RIPPLE_JWT_AUD`, `RIPPLE_JWT_MAX_TTL` |
+| Alchemy | `alchemy.run.ts:58-68` | the peer Worker declares its own env beside `RIPPLE_TOKEN`: `...Ripple.authEnv({ policy: Ripple.Policy.compile(policy), jwksUrl, auth: AUTH })` — the `AuthConfig` from §1 stands in for the loose `issuers` / `aud` / `maxTtl` keys (which still work, and win when set) and lowers to `RIPPLE_JWKS_URL`, `RIPPLE_JWT_ISS`, `RIPPLE_JWT_AUD`, `RIPPLE_JWT_MAX_TTL` |
 
 ## 5. Out of scope
 

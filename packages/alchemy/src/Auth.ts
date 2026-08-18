@@ -27,8 +27,9 @@ export interface AuthConfig {
   /** The `aud` every token carries and the peer pins (`RIPPLE_JWT_AUD`). */
   readonly audience: string;
   /**
-   * Token lifetime, in seconds. `authEnv` pins `RIPPLE_JWT_MAX_TTL` to it;
-   * `claims` sets `exp = iat + ttl` — so the cap holds by construction.
+   * Token lifetime, in whole seconds (JWT NumericDate). `authEnv` pins
+   * `RIPPLE_JWT_MAX_TTL` to it; `claims` sets `exp = iat + ttl` — so the cap
+   * holds by construction.
    */
   readonly ttl: number;
 }
@@ -104,9 +105,11 @@ export const claims = (
   input: ClaimsInput,
   policy?: CompiledPolicy | string,
 ): Claims => {
-  if (!Number.isFinite(auth.ttl) || auth.ttl <= 0) {
+  // JWT NumericDate is whole seconds, so a fractional ttl would mint a
+  // fractional `exp` — reject it rather than round it.
+  if (!Number.isInteger(auth.ttl) || auth.ttl <= 0) {
     throw new InvalidRequest({
-      message: `ripple: auth.ttl must be a positive number of seconds, got ${auth.ttl}`,
+      message: `ripple: auth.ttl must be a positive whole number of seconds, got ${auth.ttl}`,
     });
   }
   if (!DATABASE_NAME_RE.test(input.db)) throw invalidDatabaseName(input.db);
