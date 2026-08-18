@@ -1,0 +1,76 @@
+# Production publish of the docs site (website/): deploy the Alchemy `prod`
+# stage (assets-only Worker `ripple-docs`) on every push to master / main.
+#
+# State: the stack runs with ALCHEMY_STATE=local and the `.alchemy/` directory
+# is carried between runs via the Actions cache, so each publish updates the
+# same Worker. The physical name is pinned to `ripple-docs` in
+# website/alchemy.run.ts, so a cache miss still adopts the existing Worker
+# (`--adopt`) instead of minting a new workers.dev hostname.
+#
+# Optional: set RIPPLE_DOCS_DOMAIN (e.g. ripplegraph.ai) as a variable on the
+# Development environment to attach a custom domain. The zone must already
+# exist in the Cloudflare account; without it the site is served at
+# https://ripple-docs.<account>.workers.dev.
+#
+# Credentials come from the GitHub Environment "Development" — same as
+# docs-preview.yml and e2e-cloudflare.yml; see CONTRIBUTING.md.
+name: Docs publish
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish-prod
+    runs-on: ubuntu-latest
+    environment: Development
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install
+        run: bun install --frozen-lockfile
+      - name: Restore stack state
+        uses: actions/cache/restore@v4
+        with:
+          path: .alchemy
+          key: docs-prod-state-${{ github.run_id }}
+          restore-keys: |
+            docs-prod-state-
+      - name: Deploy prod stage
+        id: deploy
+        env:
+          CI: "1"
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          RIPPLE_DOCS_DOMAIN: ${{ vars.RIPPLE_DOCS_DOMAIN }}
+          ALCHEMY_STATE: local
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Need CLOUDFLARE_API_TOKEN (secret) and CLOUDFLARE_ACCOUNT_ID (variable or secret) on the Development environment. See CONTRIBUTING.md."
+            exit 1
+          fi
+          bun alchemy deploy website/alchemy.run.ts --stage prod --yes --adopt | tee deploy.log
+          URL=$(grep -oE 'https://[^" ]+' deploy.log | grep -E 'ripplegraph\.ai|workers\.dev' | tail -1)
+          if [ -z "$URL" ]; then
+            echo "::error::Deploy finished but no site URL found in the output."
+            exit 1
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "### Docs site published" >> "$GITHUB_STEP_SUMMARY"
+          echo "$URL" >> "$GITHUB_STEP_SUMMARY"
+      - name: Save stack state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .alchemy
+          key: docs-prod-state-${{ github.run_id }}-${{ github.run_attempt }}
