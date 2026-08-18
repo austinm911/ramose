@@ -1,6 +1,6 @@
 /** Session socket: Worker-accepted WS, frames dispatched into existing HTTP routes. */
 
-import type { Principal } from "@ripple/core";
+import type { Principal } from "@ripplegraph/core";
 
 // ---- wire ------------------------------------------------------------------
 

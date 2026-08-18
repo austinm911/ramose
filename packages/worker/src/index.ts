@@ -30,8 +30,8 @@
  * (analytics.ts) — a no-op when the `ANALYTICS` binding is absent.
  */
 
-import { DEFAULT_QUERY_MAX_CELLS, Histogram, type Principal, type PullPattern, type QueryStats, RateMeter, allows, componentLogger, fromJson, isAdmin, normalizePullPattern, pull, query, setTelemetryLevel, toJson } from "@ripple/core";
-import type { Db as CoreDb } from "@ripple/core";
+import { DEFAULT_QUERY_MAX_CELLS, Histogram, type Principal, type PullPattern, type QueryStats, RateMeter, allows, componentLogger, fromJson, isAdmin, normalizePullPattern, pull, query, setTelemetryLevel, toJson } from "@ripplegraph/core";
+import type { Db as CoreDb } from "@ripplegraph/core";
 import { type RippleEnv, envInt, internalHeaders } from "@ripple/transactor";
 import { TransactorDO } from "@ripple/transactor/transactor-do.ts";
 import { QueryReplicaDO } from "@ripple/replica";

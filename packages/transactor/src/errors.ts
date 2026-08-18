@@ -14,7 +14,7 @@
  */
 
 import * as Data from "effect/Data";
-import { TxError } from "@ripple/core";
+import { TxError } from "@ripplegraph/core";
 
 /** The transactor aborted: in-memory and durable state may have diverged. */
 export class TransactorDeadError extends Error {

@@ -1,6 +1,6 @@
 /**
  * The consumer proof: the app's own query and writes against a real
- * `@ripple/core` `Connection`, over the two wires the client actually uses —
+ * `@ripplegraph/core` `Connection`, over the two wires the client actually uses —
  * writes as `POST /db/todos/transact`, reads and `t` ticks as session frames.
  *
  * What it pins is the loop the UI depends on: a write moves the live stream
@@ -8,8 +8,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import * as Ripple from "@ripple/alchemy/db";
-import { Connection, fromJson, pull, query, toJson } from "@ripple/core";
+import * as Ripple from "@ripplegraph/alchemy/db";
+import { Connection, fromJson, pull, query, toJson } from "@ripplegraph/core";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";

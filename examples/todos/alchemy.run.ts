@@ -2,7 +2,7 @@
  *  VITE_RIPPLE_URL=http://localhost:8787 bunx vite examples/todos
  */
 
-import * as Ripple from "@ripple/alchemy";
+import * as Ripple from "@ripplegraph/alchemy";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";

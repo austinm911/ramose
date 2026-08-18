@@ -9,7 +9,7 @@
  * import `cloudflare:workers`), so the pure mapping is tested directly.
  */
 import { describe, expect, test } from "bun:test";
-import { QueryBudgetError } from "@ripple/core";
+import { QueryBudgetError } from "@ripplegraph/core";
 import * as Effect from "effect/Effect";
 import { BadRequest, Internal, NotFound, QueryBudgetExceeded, type RippleError, Unauthorized, UpstreamError, fromThrown, isRippleError, toHttp } from "../src/errors.ts";
 

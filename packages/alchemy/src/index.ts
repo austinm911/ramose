@@ -1,14 +1,14 @@
 /**
- * `@ripple/alchemy` — the Alchemy 2 + Effect interface to Ripple.
+ * `@ripplegraph/alchemy` — the Alchemy 2 + Effect interface to Ripple.
  *
- * Everything on `@ripple/alchemy/db` (schema, `Databases`, `Db<C>`, the eight
+ * Everything on `@ripplegraph/alchemy/db` (schema, `Databases`, `Db<C>`, the eight
  * errors), plus the deploy-time half: the `Server` and `Database` resources,
  * the two capabilities and the two transport layers.
  *
  * ```typescript
  * import * as Alchemy from "alchemy";
  * import * as Cloudflare from "alchemy/Cloudflare";
- * import * as Ripple from "@ripple/alchemy";
+ * import * as Ripple from "@ripplegraph/alchemy";
  * import * as Schema from "effect/Schema";
  * import * as Layer from "effect/Layer";
  *

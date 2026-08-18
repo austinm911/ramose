@@ -11,7 +11,7 @@ and you're in. No provision step.
 
 ## Why it exists
 
-- **Typed catalog.** `@ripple/alchemy/db` is the schema. Attributes,
+- **Typed catalog.** `@ripplegraph/alchemy/db` is the schema. Attributes,
   uniqueness, cardinality — TypeScript, checked at compile time.
 - **Effect-native writes and reads.** Generator `transact`. Navigational
   `Ripple.query` → `db.q` / `db.live`. `db.pull`.

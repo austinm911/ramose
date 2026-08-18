@@ -17,12 +17,12 @@ VITE_RIPPLE_URL=http://localhost:1337 bunx vite examples/todos   # UI on :5173
 
 | file | what it is |
 |---|---|
-| `schema.ts` | the catalog, on `@ripple/alchemy/db` — shared by the stack, a Worker and the browser |
+| `schema.ts` | the catalog, on `@ripplegraph/alchemy/db` — shared by the stack, a Worker and the browser |
 | `resources.ts` / `alchemy.run.ts` | `Ripple.Server` + `Ripple.Database`: the one place the catalog is installed |
 | `src/db.ts` | one `ManagedRuntime`, disposed with the page. `run` and `db`, nothing else |
 | `src/todos.ts` | `Ripple.query(Todo).select(…)` and writes, so the test drives exactly what the UI does |
 | `src/useLive.ts` | twelve lines of `Stream` → React state. Example code, **not** a shipped name |
-| `test/todos.test.ts` | those helpers against a real `@ripple/core` `Connection` over both wires |
+| `test/todos.test.ts` | those helpers against a real `@ripplegraph/core` `Connection` over both wires |
 
 `src/db.ts` is the whole client:
 
@@ -33,7 +33,7 @@ export const db = runtime.runSync(Ripple.Databases).db("todos", Todos);
 ```
 
 No `await` at module scope (the layer is scoped and getting a `Databases`
-cannot fail), no hand-rolled `run`, and no Vite alias — `@ripple/alchemy/db` is
+cannot fail), no hand-rolled `run`, and no Vite alias — `@ripplegraph/alchemy/db` is
 a real `exports` entry and nothing it reaches imports the deploy engine, so the
 built bundle contains no `alchemy` code at all.
 

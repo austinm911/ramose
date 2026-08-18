@@ -3,12 +3,12 @@ title: Define a catalog
 description: The catalog is the schema — attributes, uniqueness, and cardinality in plain TypeScript, checked at compile time.
 ---
 
-`@ripple/alchemy/db` is the schema. A catalog is namespaces of attributes,
+`@ripplegraph/alchemy/db` is the schema. A catalog is namespaces of attributes,
 built from three constructors and shared verbatim by the deploy stack, the
 Worker, and the browser. No codegen, no IDL, no drift.
 
 ```ts
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ripple from "@ripplegraph/alchemy/db";
 import * as Schema from "effect/Schema";
 
 export const User = Ripple.Namespace("user", {

@@ -1,4 +1,4 @@
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ripple from "@ripplegraph/alchemy/db";
 import * as Schema from "effect/Schema";
 
 export const Todo = Ripple.Namespace("todo", {

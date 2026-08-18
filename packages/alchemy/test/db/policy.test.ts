@@ -2,7 +2,7 @@
 
 import { describe, expect, test } from "bun:test";
 import * as Schema from "effect/Schema";
-import { parsePolicy, type CompiledPolicy } from "@ripple/core";
+import { parsePolicy, type CompiledPolicy } from "@ripplegraph/core";
 import { Attr, Catalog, Namespace, Policy as P, PolicyError, Ref } from "../../src/db/internal.ts";
 
 const User = Namespace("user", { sub: Attr(Schema.String, { unique: "identity" }) });

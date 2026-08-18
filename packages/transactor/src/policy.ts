@@ -5,7 +5,7 @@
  * with `configured: true`, which every caller must read as "deny".
  */
 
-import { type CompiledPolicy, type Principal, componentLogger, parsePolicy } from "@ripple/core";
+import { type CompiledPolicy, type Principal, componentLogger, parsePolicy } from "@ripplegraph/core";
 import type { RippleEnv } from "./env.ts";
 
 export interface PolicyState {

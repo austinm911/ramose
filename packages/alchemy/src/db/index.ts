@@ -1,18 +1,18 @@
 /**
- * `@ripple/alchemy/db` — the portable half of Ripple.
+ * `@ripplegraph/alchemy/db` — the portable half of Ripple.
  *
  * Schema, connecting, the database and the tagged errors, in one flat
- * namespace: `import * as Ripple from "@ripple/alchemy/db"`. It runs in a
+ * namespace: `import * as Ripple from "@ripplegraph/alchemy/db"`. It runs in a
  * browser, in a Worker, in Node/Bun and in a test.
  *
  * **Nothing reachable from this module imports `alchemy`** (the deploy engine)
- * or the `@ripple/core` barrel — that is what makes it browser-safe without a
+ * or the `@ripplegraph/core` barrel — that is what makes it browser-safe without a
  * bundler alias, and `test/db-portable.test.ts` fails the build if it ever
  * stops being true. The deploy-time surface (`Server`, the capability, the
- * transport layers, `Policy`) lives in `@ripple/alchemy`.
+ * transport layers, `Policy`) lives in `@ripplegraph/alchemy`.
  *
  * ```typescript
- * import * as Ripple from "@ripple/alchemy/db";
+ * import * as Ripple from "@ripplegraph/alchemy/db";
  * import * as ManagedRuntime from "effect/ManagedRuntime";
  * import * as Schema from "effect/Schema";
  *

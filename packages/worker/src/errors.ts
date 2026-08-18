@@ -15,7 +15,7 @@
  *   Internal            500  { error, stack? }        stack (`trace`) only off-prod
  */
 
-import { QueryBudgetError } from "@ripple/core";
+import { QueryBudgetError } from "@ripplegraph/core";
 import * as Data from "effect/Data";
 
 export class NotFound extends Data.TaggedError("NotFound")<{ readonly message?: string }> {}

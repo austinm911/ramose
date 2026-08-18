@@ -8,7 +8,7 @@ Catalog)` and you're in. No provision step.
 
 ## Why it exists
 
-- **Typed catalog.** `@ripple/alchemy/db` is the schema. Attributes, uniqueness,
+- **Typed catalog.** `@ripplegraph/alchemy/db` is the schema. Attributes, uniqueness,
   cardinality — TypeScript, checked at compile time.
 - **Effect-native writes and reads.** Generator `transact`. Navigational
   `Ripple.query` → `db.q` / `db.live`. `db.pull`.
@@ -38,7 +38,7 @@ That stack is a peer Worker (R2 + Transactor DO + QueryReplica DO), a
 shape.
 
 ```ts
-import * as Ripple from "@ripple/alchemy";
+import * as Ripple from "@ripplegraph/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 
 const Store = Cloudflare.R2.Bucket("Store");
@@ -85,7 +85,7 @@ the `$USER` stage; `--stage prod` for production.
 ## Catalog → db → transact → live
 
 ```ts
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ripple from "@ripplegraph/alchemy/db";
 import * as Schema from "effect/Schema";
 
 export const Todo = Ripple.Namespace("todo", {
@@ -129,7 +129,7 @@ await run(
 
 Every signature's `R` is `never`, so `runtime.runPromise` is the whole
 runtime; see `examples/todos/src/db.ts` and its twelve-line `useLive`.
-`@ripple/alchemy/db` is a real `exports` entry and nothing it reaches imports
+`@ripplegraph/alchemy/db` is a real `exports` entry and nothing it reaches imports
 the deploy engine, so the Vite app needs no alias.
 
 From a Worker the code is identical: `ripple.db("movies", Movies)`, then the

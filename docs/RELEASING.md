@@ -1,6 +1,6 @@
 # Releasing
 
-How to publish `@ripple/core` and `@ripple/alchemy` to npm. Only these two
+How to publish `@ripplegraph/core` and `@ripplegraph/alchemy` to npm. Only these two
 packages are published — `worker`, `transactor`, `replica`, `storage`, the
 website, and the examples stay `private: true` and never go to npm.
 
@@ -18,8 +18,8 @@ added.
    package.json disagrees). Drafts are safe; the workflow only runs when the
    release is **published**.
 4. The `publish` workflow runs in the `npm` GitHub Environment: it installs,
-   typechecks, tests, then publishes `@ripple/core` first and
-   `@ripple/alchemy` second (alchemy depends on core). Alchemy's
+   typechecks, tests, then publishes `@ripplegraph/core` first and
+   `@ripplegraph/alchemy` second (alchemy depends on core). Alchemy's
    `workspace:*` dependency on core is rewritten to the real version in the
    job workspace only — nothing is committed back.
 
@@ -40,8 +40,9 @@ These cannot be done from the repo; a maintainer clicks them once:
 1. **GitHub Environment**: Settings → Environments → create one named exactly
    `npm`. Optional but recommended: add required reviewers so a publish needs
    a manual approval.
-2. **npm scope**: on npmjs.com, own the `@ripple` scope.
-3. **Trusted publisher**, for **each** of `@ripple/core` and `@ripple/alchemy`:
+2. **npm scope**: on npmjs.com, create/own the `ripplegraph` org so the
+   `@ripplegraph` scope is yours (the `ripple` npm username is taken).
+3. **Trusted publisher**, for **each** of `@ripplegraph/core` and `@ripplegraph/alchemy`:
    Package settings → Trusted Publisher → GitHub Actions, with:
    - user: `tvanhens`
    - repository: `ripple`

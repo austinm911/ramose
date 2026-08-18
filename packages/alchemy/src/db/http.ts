@@ -7,11 +7,11 @@
  * `POST /db/:name/transact` is the one writer — and reads fall back to it when
  * the client was given no `WebSocket`.
  *
- * Nothing here is on the `@ripple/alchemy/db` barrel: HTTP is Worker
+ * Nothing here is on the `@ripplegraph/alchemy/db` barrel: HTTP is Worker
  * internals, not a second public API.
  */
 
-import { fromJson, toJson } from "@ripple/core/json.ts";
+import { fromJson, toJson } from "@ripplegraph/core/json.ts";
 import * as Effect from "effect/Effect";
 import { type DbError, fromResponse, NetworkError } from "./Errors.ts";
 

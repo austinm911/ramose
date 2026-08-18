@@ -12,7 +12,7 @@
  * `fetch` is a provisioning mistake, so it is a defect, not a `DbError`.
  */
 
-import { fromJson, toJson } from "@ripple/core/json.ts";
+import { fromJson, toJson } from "@ripplegraph/core/json.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

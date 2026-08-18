@@ -25,7 +25,7 @@ import {
   query,
   reachable,
   treeDepth,
-} from "@ripple/core";
+} from "@ripplegraph/core";
 import { R2NodeStore, dbPrefix, prefixedBucket, publishRoot, readRootAt, recordToRoots, rootsToRecord } from "@ripple/storage";
 import { MemoryBucket } from "@ripple/storage/memory.ts";
 import { Harness } from "./harness.ts";

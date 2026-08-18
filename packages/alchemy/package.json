@@ -1,8 +1,8 @@
 {
-  "name": "@ripple/alchemy",
+  "name": "@ripplegraph/alchemy",
   "version": "0.1.0",
   "type": "module",
-  "description": "Alchemy 2 + Effect interface for Ripple: the portable `@ripple/alchemy/db` entry, the Ripple.Server and Ripple.Database resources, the ReadWriteDatabases / ReadDatabases capabilities and the ServerBinding / ServerHttp transports.",
+  "description": "Alchemy 2 + Effect interface for Ripple: the portable `@ripplegraph/alchemy/db` entry, the Ripple.Server and Ripple.Database resources, the ReadWriteDatabases / ReadDatabases capabilities and the ServerBinding / ServerHttp transports.",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "exports": {
@@ -21,7 +21,7 @@
     "url": "git+https://github.com/tvanhens/ripple.git"
   },
   "dependencies": {
-    "@ripple/core": "workspace:*",
+    "@ripplegraph/core": "workspace:*",
     "alchemy": "latest",
     "effect": ">=4.0.0-beta.105"
   },

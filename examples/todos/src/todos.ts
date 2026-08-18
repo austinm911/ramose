@@ -1,7 +1,7 @@
 /** The app's queries and writes, in one place so the test can drive them. */
 
-import * as Ripple from "@ripple/alchemy/db";
-import type { Db, Eid } from "@ripple/alchemy/db";
+import * as Ripple from "@ripplegraph/alchemy/db";
+import type { Db, Eid } from "@ripplegraph/alchemy/db";
 import { Todo, type Todos } from "../schema.ts";
 
 export type TodosDb = Db<typeof Todos>;

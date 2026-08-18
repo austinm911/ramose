@@ -28,7 +28,7 @@
  * so the Worker declaration lives in its own file and is imported by the stack.
  */
 
-import * as Ripple from "@ripple/alchemy";
+import * as Ripple from "@ripplegraph/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 
 // ── the Ripple deployment ──────────────────────────────────────────────────

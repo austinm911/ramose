@@ -1,6 +1,6 @@
 /**
  * Typed policy authoring. Combinators over catalog attributes and JWT claims
- * lower to `@ripple/core`'s compiled AST; every check is deploy-time.
+ * lower to `@ripplegraph/core`'s compiled AST; every check is deploy-time.
  */
 
 import * as Schema from "effect/Schema";
@@ -10,7 +10,7 @@ import {
   POLICY_VERSION,
   PolicyAst,
   parsePolicy,
-} from "@ripple/core/policy/ast.ts";
+} from "@ripplegraph/core/policy/ast.ts";
 import type {
   AttrRules,
   CompiledPolicy,
@@ -19,7 +19,7 @@ import type {
   PolicyOp,
   PolicyOperand,
   PolicyRules,
-} from "@ripple/core/policy/ast.ts";
+} from "@ripplegraph/core/policy/ast.ts";
 import type { AnyAttribute, ValueOf } from "./Attribute.ts";
 import { isAttrRef } from "./attrRef.ts";
 import type { AnyCatalog } from "./Catalog.ts";

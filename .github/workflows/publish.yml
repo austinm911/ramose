@@ -1,6 +1,6 @@
 name: Publish
 
-# Publishes @ripple/core then @ripple/alchemy to npm via trusted publishing
+# Publishes @ripplegraph/core then @ripplegraph/alchemy to npm via trusted publishing
 # (OIDC). No NPM_TOKEN anywhere: npm mints a short-lived credential from the
 # workflow's OIDC token. The trusted publisher on npmjs.com matches on this
 # exact filename (publish.yml) and the `npm` environment name.
@@ -58,23 +58,23 @@ jobs:
             fi
           done
 
-      - name: Publish @ripple/core
+      - name: Publish @ripplegraph/core
         working-directory: packages/core
         run: npm publish
 
-      # The tarball must not contain workspace:*. Rewrite the @ripple/core
+      # The tarball must not contain workspace:*. Rewrite the @ripplegraph/core
       # dependency to the real (lockstep) version in the job workspace only —
       # nothing is committed back to git.
-      - name: Rewrite workspace:* dependency in @ripple/alchemy
+      - name: Rewrite workspace:* dependency in @ripplegraph/alchemy
         run: |
           node -e '
             const fs = require("node:fs");
             const path = "packages/alchemy/package.json";
             const pkg = JSON.parse(fs.readFileSync(path, "utf8"));
-            pkg.dependencies["@ripple/core"] = pkg.version;
+            pkg.dependencies["@ripplegraph/core"] = pkg.version;
             fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
           '
 
-      - name: Publish @ripple/alchemy
+      - name: Publish @ripplegraph/alchemy
         working-directory: packages/alchemy
         run: npm publish

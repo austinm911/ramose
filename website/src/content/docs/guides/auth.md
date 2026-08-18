@@ -51,7 +51,7 @@ token carries only the policy selector.
 ## Writing a policy
 
 ```ts
-import * as Ripple from "@ripple/alchemy"; // Policy is deploy-time, not on /db
+import * as Ripple from "@ripplegraph/alchemy"; // Policy is deploy-time, not on /db
 
 const P = Ripple.Policy;
 const inOrg = P.ref(Doc.project, P.ref(Project.org, Org.members));

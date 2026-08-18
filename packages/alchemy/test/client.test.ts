@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { ValueTag } from "@ripple/core/datom.ts";
+import { ValueTag } from "@ripplegraph/core/datom.ts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";

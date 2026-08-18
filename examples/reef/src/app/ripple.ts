@@ -8,7 +8,7 @@
  * themselves — there is no refresh plumbing anywhere else in the app.
  */
 
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ripple from "@ripplegraph/alchemy/db";
 import * as Effect from "effect/Effect";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";

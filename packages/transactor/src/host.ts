@@ -10,7 +10,7 @@
  * exercised (with fault injection) without Cloudflare.
  */
 
-import type { CompiledPolicy } from "@ripple/core";
+import type { CompiledPolicy } from "@ripplegraph/core";
 import type { R2Like } from "@ripple/storage";
 import type { AnalyticsEngineDatasetLike } from "./observability.ts";
 

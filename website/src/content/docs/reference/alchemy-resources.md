@@ -1,9 +1,9 @@
 ---
 title: Alchemy resources
-description: What @ripple/alchemy adds on top of the portable client — the Server and Database resources, capabilities, and transports.
+description: What @ripplegraph/alchemy adds on top of the portable client — the Server and Database resources, capabilities, and transports.
 ---
 
-`@ripple/alchemy` re-exports all of [`@ripple/alchemy/db`](/reference/client-api/)
+`@ripplegraph/alchemy` re-exports all of [`@ripplegraph/alchemy/db`](/reference/client-api/)
 and adds the deploy-time names. Import it as `* as Ripple`.
 
 | name | signature |

@@ -9,7 +9,7 @@ import { Database } from "bun:sqlite";
 import { type R2Like, dbPrefix, prefixedBucket } from "@ripple/storage";
 import { MemoryBucket } from "@ripple/storage/memory.ts";
 export { MemoryBucket };
-import { type CompiledPolicy, type TelemetryEvent, setTelemetryLevel, setTelemetrySink } from "@ripple/core";
+import { type CompiledPolicy, type TelemetryEvent, setTelemetryLevel, setTelemetrySink } from "@ripplegraph/core";
 import { type AnalyticsEngineDatasetLike, DEFAULT_CONFIG, type SocketLike, type SqlLike, type TransactorConfig, type TransactorHost, Transactor } from "../src/index.ts";
 
 /** Captured structured events (all levels) instead of console noise. */

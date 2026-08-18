@@ -52,7 +52,7 @@ template: splash
     <div>
 
 ```ts
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ripple from "@ripplegraph/alchemy/db";
 import * as Schema from "effect/Schema";
 
 export const Todo = Ripple.Namespace("todo", {
@@ -114,7 +114,7 @@ await run(
     <div>
 
 ```ts
-import * as Ripple from "@ripple/alchemy";
+import * as Ripple from "@ripplegraph/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 
 const Worker = Cloudflare.Worker("Peer", {

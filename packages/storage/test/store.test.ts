@@ -9,7 +9,7 @@
  *   - per-database key namespace via prefixedBucket
  */
 import { describe, expect, test } from "bun:test";
-import { Connection, Db, Index, Novelty, buildRoots, Schema, bootstrapDatoms, deriveSchema, gzipCodec, treeDepth, type Datom, type NodeSource, type RootRecord, ValueTag, FIRST_USER_EID, attributeDatoms, query } from "@ripple/core";
+import { Connection, Db, Index, Novelty, buildRoots, Schema, bootstrapDatoms, deriveSchema, gzipCodec, treeDepth, type Datom, type NodeSource, type RootRecord, ValueTag, FIRST_USER_EID, attributeDatoms, query } from "@ripplegraph/core";
 import { R2NodeStore, type CacheTier, dbPrefix, prefixedBucket, publishRoot, readCurrentRoot, rootsToRecord, recordToRoots, listRoots } from "../src/index.ts";
 import { MemoryBucket } from "../src/memory.ts";
 

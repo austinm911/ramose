@@ -2,7 +2,7 @@
  * @internal Everything `db/` declares, flat.
  *
  * Not a package `exports` entry: the public surface is `./index.ts`
- * (`@ripple/alchemy/db`). This module exists so sibling modules and the tests
+ * (`@ripplegraph/alchemy/db`). This module exists so sibling modules and the tests
  * can reach the inferred / internal names — `AnyCatalog`, `NamespaceMap`,
  * `lowerNavQuery`, `makeDatabases`, `Expect`/`Equal` — without each of them
  * naming a dozen files.

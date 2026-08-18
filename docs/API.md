@@ -14,13 +14,13 @@ imported as `* as Ripple`.
 
 ## 2. The names a consumer imports
 
-- **`@ripple/alchemy/db`** — portable: browser, Node/Bun, tests. A real `exports`
+- **`@ripplegraph/alchemy/db`** — portable: browser, Node/Bun, tests. A real `exports`
   entry, so the Vite alias dies. It must not import `alchemy` (implementation:
-  deep-import the `@ripple/core` codec, not the barrel; `sideEffects: false`).
-- **`@ripple/alchemy`** — all of `/db`, plus the resources, the capability and
+  deep-import the `@ripplegraph/core` codec, not the barrel; `sideEffects: false`).
+- **`@ripplegraph/alchemy`** — all of `/db`, plus the resources, the capability and
   the two transport layers.
 
-### `@ripple/alchemy/db`
+### `@ripplegraph/alchemy/db`
 
 **Schema**
 
@@ -69,7 +69,7 @@ Static token: `Effect.succeed(Redacted.make(t))`. The layer is scoped, the socke
 `TxRejected` `Unavailable` `InvalidRequest` `DatabaseNotFound` `Unauthorized`
 `QueryBudgetExceeded` `InternalError` `NetworkError`, and the union `DbError`.
 
-### `@ripple/alchemy` (adds)
+### `@ripplegraph/alchemy` (adds)
 
 | name | signature |
 |---|---|
@@ -86,7 +86,7 @@ Static token: `Effect.succeed(Redacted.make(t))`. The layer is scoped, the socke
 **schema.ts** — shared by the stack, the Worker and the browser.
 
 ```ts
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ripple from "@ripplegraph/alchemy/db";
 import * as Schema from "effect/Schema";
 
 export const Todo = Ripple.Namespace("todo", {
@@ -100,7 +100,7 @@ export const Todos = Ripple.Catalog({ todo: Todo });
 **alchemy.run.ts** — the server, and the one place the catalog is installed.
 
 ```ts
-import * as Ripple from "@ripple/alchemy";
+import * as Ripple from "@ripplegraph/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Todos } from "./schema.ts";
 
@@ -137,7 +137,7 @@ export default Cloudflare.Worker("App", { main: import.meta.url },
 
 ```ts
 // db.ts — one runtime, disposed with the page
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ripple from "@ripplegraph/alchemy/db";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import { Todos } from "./schema.ts";
 
@@ -252,6 +252,6 @@ export const useLive = <A, E>(stream: Stream.Stream<A, E>) => {
 
 ## 7. Open question
 
-Ship the portable half as the `@ripple/alchemy/db` subpath, or as its own
+Ship the portable half as the `@ripplegraph/alchemy/db` subpath, or as its own
 `@ripple/db` package? **Default: subpath now** — one package, one version; the
 split costs nothing once a non-Alchemy deploy target exists.

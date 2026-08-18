@@ -1,5 +1,5 @@
 {
-  "name": "@ripple/core",
+  "name": "@ripplegraph/core",
   "version": "0.1.0",
   "type": "module",
   "description": "Ripple core engine: datoms, segments, segment trees, novelty, datalog. Pure TypeScript, no Cloudflare dependencies.",

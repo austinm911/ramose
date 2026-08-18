@@ -5,7 +5,7 @@
  * { error, code, clause, cells, limit }.
  */
 import { describe, expect, test } from "bun:test";
-import { QueryBudgetError } from "@ripple/core";
+import { QueryBudgetError } from "@ripplegraph/core";
 import { BadRequest, Internal, QueryBudget, replicaErrorResponse, statusOf, toReplicaError } from "../src/errors.ts";
 
 const body = async (r: Response) => (await r.json()) as Record<string, unknown>;

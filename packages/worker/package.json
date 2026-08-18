@@ -6,7 +6,7 @@
   "description": "Ripple peer Worker: HTTP API (/transact /query /pull /db-info), datalog at the edge over cached segments + replica novelty; exports the DO classes.",
   "main": "src/index.ts",
   "dependencies": {
-    "@ripple/core": "workspace:*",
+    "@ripplegraph/core": "workspace:*",
     "@ripple/storage": "workspace:*",
     "@ripple/transactor": "workspace:*",
     "@ripple/replica": "workspace:*",

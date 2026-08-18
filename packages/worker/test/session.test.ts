@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Principal } from "@ripple/core";
+import type { Principal } from "@ripplegraph/core";
 import { META_HEADERS, type Scheduler, type SessionDispatch, type SocketLike, openSession, planOf, watcherKeys } from "../src/session.ts";
 
 /** A `WebSocket` stand-in: records what the session sent, replays what a client would do. */

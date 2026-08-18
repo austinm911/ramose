@@ -6,5 +6,5 @@
   "description": "Ripple storage adapters for Cloudflare: R2-backed content-addressed node store (memory → Cache API / SQLite → R2), root records, log chunks.",
   "main": "src/index.ts",
   "exports": { ".": "./src/index.ts", "./*": "./src/*" },
-  "dependencies": { "@ripple/core": "workspace:*" }
+  "dependencies": { "@ripplegraph/core": "workspace:*" }
 }

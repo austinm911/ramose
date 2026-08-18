@@ -6,7 +6,7 @@
  * ```typescript
  * import * as Alchemy from "alchemy";
  * import * as Cloudflare from "alchemy/Cloudflare";
- * import * as Ripple from "@ripple/alchemy";
+ * import * as Ripple from "@ripplegraph/alchemy";
  * import * as Layer from "effect/Layer";
  *
  * export default Alchemy.Stack("ripple", {

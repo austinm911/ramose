@@ -21,7 +21,7 @@ import {
   componentLogger,
   filterDb,
   isAdmin,
-} from "@ripple/core";
+} from "@ripplegraph/core";
 import { type Basis, dbFromBasis } from "@ripple/replica/basis.ts";
 import { type RippleEnv, envInt, policyOf } from "@ripple/transactor";
 import { type JWTPayload, type JWTVerifyGetKey, createLocalJWKSet, createRemoteJWKSet, jwtVerify } from "jose";

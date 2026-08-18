@@ -19,7 +19,7 @@
  * and /cloudflare/compute/durable-objects for alchemy 2.0.0-beta.72.
  */
 
-import * as Ripple from "@ripple/alchemy";
+import * as Ripple from "@ripplegraph/alchemy";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
@@ -88,7 +88,7 @@ export const Worker = Cloudflare.Worker("Worker", {
 export type WorkerEnv = Cloudflare.InferEnv<typeof Worker>;
 
 /**
- * The Ripple server on this peer Worker (`@ripple/alchemy`).
+ * The Ripple server on this peer Worker (`@ripplegraph/alchemy`).
  *
  * Nothing is provisioned and no database name is pinned here: a Ripple
  * database is a *name*, the Transactor DO is `idFromName(name)` and the

@@ -19,10 +19,10 @@
     "types": ["bun", "@cloudflare/workers-types"],
     "baseUrl": ".",
     "paths": {
-      "@ripple/core": ["packages/core/src/index.ts"],
-      "@ripple/core/*": ["packages/core/src/*"],
-      "@ripple/alchemy": ["packages/alchemy/src/index.ts"],
-      "@ripple/alchemy/db": ["packages/alchemy/src/db/index.ts"]
+      "@ripplegraph/core": ["packages/core/src/index.ts"],
+      "@ripplegraph/core/*": ["packages/core/src/*"],
+      "@ripplegraph/alchemy": ["packages/alchemy/src/index.ts"],
+      "@ripplegraph/alchemy/db": ["packages/alchemy/src/db/index.ts"]
     }
   },
   "include": [

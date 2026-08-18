@@ -1,5 +1,5 @@
 /**
- * The typed surface against a real `@ripple/core` `Connection`.
+ * The typed surface against a real `@ripplegraph/core` `Connection`.
  *
  * The fake peer here is the whole peer: `POST /db/:name/transact|query|pull`
  * over `fetch`, and the same reads as session frames over a fake socket. That
@@ -21,7 +21,7 @@ import {
   pull,
   query,
   toJson,
-} from "@ripple/core";
+} from "@ripplegraph/core";
 import * as Effect from "effect/Effect";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import { Databases, layer, query as navQuery } from "../../src/db/internal.ts";

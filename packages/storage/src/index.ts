@@ -27,7 +27,7 @@ import {
   objectKey,
   reachable,
   serializeNode,
-} from "@ripple/core";
+} from "@ripplegraph/core";
 
 export const IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable";
 

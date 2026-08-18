@@ -8,7 +8,7 @@ build it from catalog attributes, run it with `db.q` or `db.live`, and the
 client lowers it to the datalog + pull IR the engine evaluates at the edge.
 
 ```ts
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ripple from "@ripplegraph/alchemy/db";
 
 const openTodos = Ripple.query(Todo)
   .where(Todo.done.eq(false), Todo.owner.name.startsWith("A"))

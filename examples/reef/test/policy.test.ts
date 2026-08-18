@@ -5,8 +5,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { parsePolicy } from "@ripple/core/policy/ast.ts";
-import * as Ripple from "@ripple/alchemy";
+import { parsePolicy } from "@ripplegraph/core/policy/ast.ts";
+import * as Ripple from "@ripplegraph/alchemy";
 import { compiledPolicy, policy } from "../src/domain/policy.ts";
 import { allShapes, boardShape } from "../src/domain/queries.ts";
 import { Issue, Reef } from "../src/domain/schema.ts";

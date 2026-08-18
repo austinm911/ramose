@@ -31,7 +31,7 @@ import {
   query as runQuery,
   pull as runPull,
   toJson,
-} from "@ripple/core";
+} from "@ripplegraph/core";
 import { type R2Like, R2NodeStore, dbPrefix, prefixedBucket, readCurrentRoot, readLogSince, type ByteTier } from "@ripple/storage";
 import { type RippleEnv, envInt, internalGate, internalHeaders } from "@ripple/transactor";
 import * as Effect from "effect/Effect";

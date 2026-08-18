@@ -11,7 +11,7 @@ Worker body is identical under either.
 ## The shape
 
 ```ts
-import * as Ripple from "@ripple/alchemy";
+import * as Ripple from "@ripplegraph/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import { Server } from "./resources.ts";

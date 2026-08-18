@@ -6,7 +6,7 @@
  * db is built, so a bad name fails the first operation with `InvalidRequest`
  * rather than reaching the peer. The client must not reach into `Server.ts`
  * for the rule: that would drag the whole Alchemy resource machinery into a
- * client that is meant to run anywhere (`@ripple/alchemy/db`).
+ * client that is meant to run anywhere (`@ripplegraph/alchemy/db`).
  */
 
 import { InvalidRequest } from "./db/Errors.ts";

@@ -13,7 +13,7 @@ import {
   pull,
   query as coreQuery,
   toJson,
-} from "@ripple/core";
+} from "@ripplegraph/core";
 import * as Effect from "effect/Effect";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Schema from "effect/Schema";

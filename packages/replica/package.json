@@ -6,5 +6,5 @@
   "description": "Ripple QueryReplica Durable Object: long-lived novelty subscriber (WS to the Transactor), hot-segment cache, basis/novelty endpoint for Workers.",
   "main": "src/index.ts",
   "exports": { ".": "./src/index.ts", "./*": "./src/*" },
-  "dependencies": { "@ripple/core": "workspace:*", "@ripple/storage": "workspace:*", "@ripple/transactor": "workspace:*", "effect": ">=4.0.0-beta.105" }
+  "dependencies": { "@ripplegraph/core": "workspace:*", "@ripple/storage": "workspace:*", "@ripple/transactor": "workspace:*", "effect": ">=4.0.0-beta.105" }
 }

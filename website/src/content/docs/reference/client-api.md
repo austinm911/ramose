@@ -1,9 +1,9 @@
 ---
 title: Client API
-description: Every name @ripple/alchemy/db exports — schema constructors, the layer, the Db value, queries, transactions, and errors.
+description: Every name @ripplegraph/alchemy/db exports — schema constructors, the layer, the Db value, queries, transactions, and errors.
 ---
 
-`@ripple/alchemy/db` is the portable client: browser, Node/Bun, tests. It is a
+`@ripplegraph/alchemy/db` is the portable client: browser, Node/Bun, tests. It is a
 real `exports` entry and nothing it reaches imports the deploy engine, so a
 Vite app needs no alias. Import it as `* as Ripple`.
 

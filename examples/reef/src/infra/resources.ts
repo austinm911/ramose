@@ -20,7 +20,7 @@
  * strings), so they are spelled directly with their `AUTH_ENV_KEYS` names.
  */
 
-import * as Ripple from "@ripple/alchemy";
+import * as Ripple from "@ripplegraph/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Output from "alchemy/Output";
 import * as Effect from "effect/Effect";

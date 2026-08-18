@@ -8,7 +8,7 @@
         "@alchemy.run/better-auth": "^2.0.0-beta.72",
         "@effect/platform-bun": ">=4.0.0-beta.105",
         "@effect/platform-node": ">=4.0.0-beta.105",
-        "@ripple/alchemy": "workspace:*",
+        "@ripplegraph/alchemy": "workspace:*",
         "alchemy": "latest",
         "better-auth": "^1.6.30",
         "effect": ">=4.0.0-beta.105",
@@ -28,25 +28,25 @@
       },
     },
     "packages/alchemy": {
-      "name": "@ripple/alchemy",
+      "name": "@ripplegraph/alchemy",
       "version": "0.1.0",
       "dependencies": {
-        "@ripple/core": "workspace:*",
+        "@ripplegraph/core": "workspace:*",
         "alchemy": "latest",
         "effect": ">=4.0.0-beta.105",
       },
     },
     "packages/core": {
-      "name": "@ripple/core",
+      "name": "@ripplegraph/core",
       "version": "0.1.0",
     },
     "packages/replica": {
       "name": "@ripple/replica",
       "version": "0.1.0",
       "dependencies": {
-        "@ripple/core": "workspace:*",
         "@ripple/storage": "workspace:*",
         "@ripple/transactor": "workspace:*",
+        "@ripplegraph/core": "workspace:*",
         "effect": ">=4.0.0-beta.105",
       },
     },
@@ -54,15 +54,15 @@
       "name": "@ripple/storage",
       "version": "0.1.0",
       "dependencies": {
-        "@ripple/core": "workspace:*",
+        "@ripplegraph/core": "workspace:*",
       },
     },
     "packages/transactor": {
       "name": "@ripple/transactor",
       "version": "0.1.0",
       "dependencies": {
-        "@ripple/core": "workspace:*",
         "@ripple/storage": "workspace:*",
+        "@ripplegraph/core": "workspace:*",
         "effect": ">=4.0.0-beta.105",
       },
     },
@@ -70,10 +70,10 @@
       "name": "@ripple/worker",
       "version": "0.1.0",
       "dependencies": {
-        "@ripple/core": "workspace:*",
         "@ripple/replica": "workspace:*",
         "@ripple/storage": "workspace:*",
         "@ripple/transactor": "workspace:*",
+        "@ripplegraph/core": "workspace:*",
         "effect": ">=4.0.0-beta.105",
         "jose": "^6.0.0",
       },
@@ -540,10 +540,6 @@
 
     "@redis/time-series": ["@redis/time-series@6.2.1", "", { "peerDependencies": { "@redis/client": "^6.2.1" } }, "sha512-kiYniph04dJOole+L359B6C9E+jYS2uDP7hca6Onj0xF38ZIpyxARO0Iq0W4ZRn1e8Q6vqW00QFZVSMRA/2Ijw=="],
 
-    "@ripple/alchemy": ["@ripple/alchemy@workspace:packages/alchemy"],
-
-    "@ripple/core": ["@ripple/core@workspace:packages/core"],
-
     "@ripple/replica": ["@ripple/replica@workspace:packages/replica"],
 
     "@ripple/storage": ["@ripple/storage@workspace:packages/storage"],
@@ -551,6 +547,10 @@
     "@ripple/transactor": ["@ripple/transactor@workspace:packages/transactor"],
 
     "@ripple/worker": ["@ripple/worker@workspace:packages/worker"],
+
+    "@ripplegraph/alchemy": ["@ripplegraph/alchemy@workspace:packages/alchemy"],
+
+    "@ripplegraph/core": ["@ripplegraph/core@workspace:packages/core"],
 
     "@rolldown/binding-android-arm64": ["@rolldown/binding-android-arm64@1.1.5", "", { "os": "android", "cpu": "arm64" }, "sha512-lZg8fqIv2v7FF237bwMgzGZEJvGL79/s5knJ/i6FmsGF4XXlzccZ4jb+TrFIxtSSxFtIpdsgrPZeMk1I9AFcyQ=="],
 

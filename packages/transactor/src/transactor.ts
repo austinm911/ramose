@@ -49,7 +49,7 @@ import {
   checkTx,
   componentLogger,
   isAdmin,
-} from "@ripple/core";
+} from "@ripplegraph/core";
 import { R2NodeStore, readCurrentRoot, recordToRoots, rootsToRecord } from "@ripple/storage";
 import * as Effect from "effect/Effect";
 import { BadRequest, NotFound, TransactorDeadError, TxRejected, errorResponse, toHttpError } from "./errors.ts";

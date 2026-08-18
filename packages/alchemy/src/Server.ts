@@ -22,7 +22,7 @@
  * @example Declaring the server on its Worker
  * ```typescript
  * import * as Cloudflare from "alchemy/Cloudflare";
- * import * as Ripple from "@ripple/alchemy";
+ * import * as Ripple from "@ripplegraph/alchemy";
  *
  * const RippleWorker = Cloudflare.Worker("RippleWorker", { main: "./src/index.ts" });
  * export const Server = Ripple.Server("Ripple", { worker: RippleWorker });

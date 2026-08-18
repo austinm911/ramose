@@ -6,8 +6,8 @@
  * required is a deploy-time error, not a silently dropped row.
  */
 
-import type { Db } from "@ripple/alchemy/db";
-import * as Ripple from "@ripple/alchemy/db";
+import type { Db } from "@ripplegraph/alchemy/db";
+import * as Ripple from "@ripplegraph/alchemy/db";
 import { Comment, Issue, Label, Reef, User } from "./schema.ts";
 
 export type ReefDb = Db<typeof Reef>;

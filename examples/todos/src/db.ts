@@ -7,7 +7,7 @@
  * a browser never installs schema (`alchemy.run.ts` does that at deploy).
  */
 
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ripple from "@ripplegraph/alchemy/db";
 import * as Effect from "effect/Effect";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";

@@ -223,7 +223,7 @@ type _caughtErr = Expect<Equal<Effect.Error<typeof caught>, never>>;
 // ── §2 of docs/API.md, name by name ────────────────────────────────────────
 //
 // `db-portable.test.ts` pins that the barrel exports *these names and no
-// others*; `surface.test.ts` does the same for `@ripple/alchemy`. What is left
+// others*; `surface.test.ts` does the same for `@ripplegraph/alchemy`. What is left
 // is the signature each table row promises, which is a compile-time claim.
 
 /** `ClientOptions` — url, an Effect token, and the two injection seams. */

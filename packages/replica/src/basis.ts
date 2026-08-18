@@ -16,7 +16,7 @@ import {
   deriveSchema,
   entryFromFrame,
   txFrame,
-} from "@ripple/core";
+} from "@ripplegraph/core";
 import { recordToRoots } from "@ripple/storage";
 
 export interface Basis {

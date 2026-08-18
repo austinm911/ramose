@@ -8,7 +8,7 @@
  * (`Issue.assignee.name`).
  */
 
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ripple from "@ripplegraph/alchemy/db";
 import * as Schema from "effect/Schema";
 
 /** One row per human who has entered the workspace. `sub` is the JWT subject. */

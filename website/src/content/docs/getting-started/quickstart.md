@@ -39,7 +39,7 @@ shape.
 **`schema.ts`** — the catalog, shared by the stack, the Worker, and the browser:
 
 ```ts
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ripple from "@ripplegraph/alchemy/db";
 import * as Schema from "effect/Schema";
 
 export const Todo = Ripple.Namespace("todo", {
@@ -53,7 +53,7 @@ export const Todos = Ripple.Catalog({ todo: Todo });
 **`resources.ts`** — the peer Worker and the server:
 
 ```ts
-import * as Ripple from "@ripple/alchemy";
+import * as Ripple from "@ripplegraph/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 
 const Store = Cloudflare.R2.Bucket("Store");
@@ -91,7 +91,7 @@ UI connects.
 One runtime, disposed with the page; the session socket is its finalizer:
 
 ```ts
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ripple from "@ripplegraph/alchemy/db";
 import * as Effect from "effect/Effect";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
@@ -132,7 +132,7 @@ await run(
 );
 ```
 
-`@ripple/alchemy/db` is a real `exports` entry and nothing it reaches imports
+`@ripplegraph/alchemy/db` is a real `exports` entry and nothing it reaches imports
 the deploy engine, so the Vite app needs no alias.
 
 ## Deploy to Cloudflare

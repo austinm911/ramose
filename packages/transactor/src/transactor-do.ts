@@ -11,7 +11,7 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
-import { toJson } from "@ripple/core";
+import { toJson } from "@ripplegraph/core";
 import { dbPrefix, prefixedBucket } from "@ripple/storage";
 import { type RippleEnv, envInt } from "./env.ts";
 import { DEFAULT_CONFIG, type SocketLike, type TransactorConfig, type TransactorHost } from "./host.ts";

@@ -6,7 +6,7 @@
  */
 
 import * as Effect from "effect/Effect";
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ripple from "@ripplegraph/alchemy/db";
 import type { ReefDb } from "../domain/queries.ts";
 import { rankAfter } from "../domain/rank.ts";
 import { Comment, Issue, Label, User, type Status } from "../domain/schema.ts";

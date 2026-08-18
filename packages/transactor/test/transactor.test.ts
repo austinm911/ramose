@@ -8,7 +8,7 @@
  *   - alarm-driven indexing publishes a root and prunes the log
  */
 import { describe, expect, test } from "bun:test";
-import { TxError } from "@ripple/core";
+import { TxError } from "@ripplegraph/core";
 import { Harness, attribute } from "./harness.ts";
 import { TransactorDeadError } from "../src/index.ts";
 

@@ -2,7 +2,7 @@
  * The ops HTTP harness — **not** a client SDK and not a package.
  *
  * `docs/API.md` deletes `@ripple/client`: the typed surface is
- * `@ripple/alchemy/db` (`Ripple.layer` + `Databases` + `Db<C>`), and HTTP is
+ * `@ripplegraph/alchemy/db` (`Ripple.layer` + `Databases` + `Db<C>`), and HTTP is
  * Worker internals. What is left here is the *ops* half that no public API
  * names — raw datalog strings, the metrics response headers, and the admin
  * routes `docs/RUNBOOK.md` documents (`/info`, `/admin/index`, `/admin/gc`,
@@ -13,8 +13,8 @@
  * `packages/**` imports it.
  */
 
-import { fromJson, toJson } from "@ripple/core";
-import type { TxData } from "@ripple/core";
+import { fromJson, toJson } from "@ripplegraph/core";
+import type { TxData } from "@ripplegraph/core";
 
 export interface PeerOptions {
   token?: string;

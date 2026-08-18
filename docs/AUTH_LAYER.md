@@ -28,7 +28,7 @@ Membership, ownership and sharing are **datoms** (`[?org :org/members ?user]`), 
 ## 2. Policy in the catalog
 
 ```ts
-import * as Ripple from "@ripple/alchemy";   // `Policy` is deploy-time, so it is not on `@ripple/alchemy/db`
+import * as Ripple from "@ripplegraph/alchemy";   // `Policy` is deploy-time, so it is not on `@ripplegraph/alchemy/db`
 
 const User    = Ripple.Namespace("user", { sub: Ripple.Attr(Schema.String, { unique: "identity" }) });
 const Org     = Ripple.Namespace("org",  { members: Ripple.Attr(Ripple.Ref, { cardinality: "many" }) });
