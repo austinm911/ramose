@@ -84,12 +84,25 @@ export const optional = <const F>(field: F): PullOptional<F> => ({
  * Internal: implements `attr.orDefault(value)`. The value travels verbatim —
  * `null` is a default like any other, which is why lowering asks *whether*
  * there is one rather than comparing against `undefined`.
+ *
+ * `undefined` is the one value that cannot be a default: it does not survive
+ * the JSON the spec travels as (`{default: undefined}` is dropped) and the
+ * peer's own gate is `spec.default !== undefined`, so the field would read as
+ * `undefined` while its type promised a value. That is `.optional`, spelled
+ * wrong — so it is an error rather than a silent lie.
  */
-export const pullDefault = <const F>(field: F, value: unknown): PullDefault<F> => ({
-  _tag: "default",
-  field,
-  value,
-});
+export const pullDefault = <const F>(field: F, value: unknown): PullDefault<F> => {
+  if (value === undefined) {
+    throw new Error(
+      "ripple/query: .orDefault(undefined) is not a default — the peer would read the field as missing anyway. Use `.optional` for a field that may be absent.",
+    );
+  }
+  return {
+    _tag: "default",
+    field,
+    value,
+  };
+};
 
 /**
  * Internal: nested pull field. Prefer `attr.select({ … })` on stamped attrs;
