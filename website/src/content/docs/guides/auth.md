@@ -48,6 +48,43 @@ token carries only the policy selector.
 - With no token: if the policy declares an `anonymous` class, that applies
   (the public-read shape); otherwise `Unauthorized`.
 
+## Minting
+
+Ripple verifies tokens; it never issues them. But the shape it verifies is a
+contract with two consumers — the peer's env and your mint route — so declare
+it once as an `AuthConfig` and let `Ripple.claims` build the payload:
+
+```ts
+const AUTH: Ripple.AuthConfig = {
+  issuer: "https://auth.acme.example", // RIPPLE_JWT_ISS
+  audience: "ripple:peer:prod",        // RIPPLE_JWT_AUD
+  ttl: 900,                            // seconds — RIPPLE_JWT_MAX_TTL, and exp - iat
+};
+```
+
+The mint route's contract is `POST → { token }`, and the JWT itself carries
+`exp`. `claims` is pure — no signing, no I/O — so sign the payload with
+whatever you have (Better Auth's `signJWT`, `jose`, …):
+
+```ts
+const payload = Ripple.claims(
+  AUTH,
+  { sub: user.id, db: workspace, class: role, attrs: { org } },
+  compiledPolicy, // optional: the Ripple.Policy.compile(policy) JSON
+);
+const { token } = await auth.api.signJWT({ body: { payload } });
+```
+
+It validates at mint what the peer would reject anyway: `db` must be a valid
+database name, and — when the compiled policy is passed — `class` must be one
+the policy declares, because an undeclared class grants nothing, never an
+outage. `exp - iat` is exactly `ttl`, and `authEnv({ auth: AUTH })` pins
+`RIPPLE_JWT_MAX_TTL` to the same `ttl`, so the cap holds by construction.
+
+On the client, hand the fetch of that token to the `token` option of
+`Ripple.layer` — it is re-read on every (re)connect and every transact, so
+re-minting before `exp` is the app's only job.
+
 ## Writing a policy
 
 ```ts
@@ -172,17 +209,18 @@ const runtime = ManagedRuntime.make(
 const auth: Ripple.PeerAuth = {
   policy: process.env.RIPPLE_POLICY,      // Ripple.Policy.compile(policy)
   jwksUrl: process.env.RIPPLE_JWKS_URL,   // issuer public keys
-  issuers: process.env.RIPPLE_JWT_ISS,    // comma-separated allow-list
-  aud: process.env.RIPPLE_JWT_AUD,
-  maxTtl: Number(process.env.RIPPLE_JWT_MAX_TTL ?? 900),
+  auth: AUTH,                             // issuers + aud + maxTtl, in one value
   allowedOrigins: process.env.RIPPLE_ALLOWED_ORIGINS,
   internalSecret: Ripple.internalSecret(process.env.RIPPLE_INTERNAL_SECRET),
 };
 ```
 
-Pass `...Ripple.authEnv(auth)` into the peer Worker's `env` and `auth` into
-`Ripple.Server`. Every knob is listed in the
+The three loose keys still work — `issuers`, `aud` and `maxTtl` may be set
+directly (say, from env), and an explicitly set loose key wins over the
+`AuthConfig`. Pass `...Ripple.authEnv(auth)` into the peer Worker's `env` and
+`auth` into `Ripple.Server`. Every knob is listed in the
 [configuration reference](/reference/configuration/).
 
 Ripple verifies tokens; it never issues them. JWT minting, IdP integration,
-login, and refresh UX live in your auth provider.
+login, and refresh UX live in your auth provider — `Ripple.claims` only
+builds the payload they sign.

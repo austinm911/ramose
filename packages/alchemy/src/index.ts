@@ -36,6 +36,9 @@ export * from "./db/index.ts";
 // ── typed policy: deploy-time, so it is not on `/db` ────────────────────────
 export * as Policy from "./db/Policy.ts";
 
+// ── the verifier/minter contract ───────────────────────────────────────────
+export { type AuthConfig, type Claims, type ClaimsInput, claims } from "./Auth.ts";
+
 // ── resources ──────────────────────────────────────────────────────────────
 export { Database } from "./Database.ts";
 export {
