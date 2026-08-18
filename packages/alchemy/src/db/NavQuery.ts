@@ -1045,15 +1045,16 @@ const collectionNav = <A extends PathCarrier>(
 
 /**
  * Start constraining a collection. A cardinality-many attribute is what has
- * elements to filter, order and page: the entities a many ref or a backlink
- * reaches, or the values of a many scalar (named by `attr.each`). A card-one
- * ref reaches one entity — constrain it in the query's own `.where`.
+ * elements to filter, order and page: the entities a many ref or a many
+ * backlink reaches, or the values of a many scalar (named by `attr.each`). A
+ * card-one ref — or a component ref's backlink, which is card-one too —
+ * reaches one entity; constrain it in the query's own `.where`.
  */
 const collectionOf = (attr: PathCarrier, method: string): CollectionNav => {
   const cards = cardsOf(attr);
   if (cards[cards.length - 1] !== "many") {
     throw new Error(
-      `ripple/query: ${method}(...) on ${pathOf(attr).join(" → ")} — nested where / orderBy / limit / offset constrain a cardinality-many collection (a many ref, a backlink, or a many scalar), which is what has elements to filter`,
+      `ripple/query: ${method}(...) on ${pathOf(attr).join(" → ")} — nested where / orderBy / limit / offset constrain a cardinality-many collection (a many ref, a many backlink, or a many scalar), which is what has elements to filter`,
     );
   }
   return collectionNav(attr, {});

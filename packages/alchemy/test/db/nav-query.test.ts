@@ -648,6 +648,16 @@ describe("`.orDefault`: a missing card-one scalar reads as a value", () => {
     expect("default" in specOf(Todo.title)[0]!).toBe(false);
   });
 
+  test("`.orDefault(undefined)` is rejected — that field is `.optional`", () => {
+    // `{default: undefined}` would not survive the JSON the spec travels as,
+    // and the peer's gate is `spec.default !== undefined`: the row would read
+    // `undefined` while the type promised a value
+    expect(() => Todo.done.orDefault(anyValue(undefined))).toThrow(
+      /\.orDefault\(undefined\) is not a default/,
+    );
+    expect(() => Todo.done.orDefault(anyValue(undefined))).toThrow(/`\.optional`/);
+  });
+
   const seeded = async () => {
     const peer = await inProcessPeer();
     const db = peer.ripple.db("todos", Todos);

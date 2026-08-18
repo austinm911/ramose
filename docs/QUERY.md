@@ -258,6 +258,12 @@ Ripple.query(Address).select({
   name, and the ownerless one is placed by `empty`.
 - A **bare** component backlink still needs a shape, exactly like a many one.
 - Every other ref's backlink is unchanged: many, and an array in a shape.
+- **Componenthood reaches the type only when the options are written inline**
+  (or `as const`). `Attr(Ref(() => N), opts)` with `const opts:
+  Ripple.AttributeOptions = { isComponent: true }` declared first widens
+  `isComponent` back to `boolean | undefined`, so the attribute types as
+  non-component and `.reverse` types as many while the runtime still builds the
+  card-one backlink. The same holds for `cardinality` and `unique`.
 
 ### Shape (`select`)
 
@@ -327,7 +333,9 @@ Ripple.query(Todo)
   `.orDefault(0).optional` and `.optional.orDefault(0)` are both type errors.
 - `.orDefault(null)` is a real default — the value travels verbatim, and
   lowering asks *whether* there is a default rather than comparing to
-  `undefined`.
+  `undefined`. `.orDefault(undefined)` is the one value that is not: the spec
+  would not survive JSON and the field would read as missing while its type
+  promised a value, so it throws — write `.optional`.
 - The default is **read, never written**: the datom stays absent, and the same
   entity asked for with `.optional` still reads `undefined`.
 - A flattened path with a default is still a flattened path:

@@ -76,7 +76,18 @@ export type AnyAttribute = Attribute<
   boolean
 >;
 
-/** Declare an attribute. File it under a namespace key to stamp `:ns/name`. */
+/**
+ * Declare an attribute. File it under a namespace key to stamp `:ns/name`.
+ *
+ * **Write the options inline.** `cardinality`, `unique` and `isComponent`
+ * reach the attribute's *type* — and so reach `.reverse`'s cardinality, the
+ * navigable path, and every row type — only through the `const O` inference on
+ * the literal. An options object typed as {@link AttributeOptions} first
+ * (`const opts: AttributeOptions = { isComponent: true }`) has already widened
+ * those to their optional declared types, and the attribute infers the
+ * defaults (`"one"` / `undefined` / `false`) while the runtime value still
+ * carries what you wrote. Pass the literal at the call site, or `as const` it.
+ */
 export const Attr: {
   <S extends Schema.Top>(
     schema: S,
