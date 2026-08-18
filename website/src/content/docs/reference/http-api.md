@@ -23,7 +23,7 @@ key must be a fully-qualified ident (e.g. `:todo/title`) — a bare key like
 | `/db/:name/query` | POST | run a datalog query at the current basis |
 | `/db/:name/pull` | POST | pull a pattern for one entity or lookup ref |
 | `/db/:name/info` | GET | database status: top-level `t` (the current basis, for every principal); admins also get `transactor.metrics`, `replica.*`, `indexer.*`, `peerMetrics` |
-| `/db/:name/session` | GET | WebSocket upgrade — the session socket behind `Ripple.layer` and `db.live` |
+| `/db/:name/session` | GET | WebSocket upgrade — the session socket behind `Ripple.connect` / `Ripple.layer` and `db.live` |
 
 Auth is `Authorization: Bearer <token>`, or `?token=` on the socket upgrade
 (a browser cannot set headers there). Under a policy, the token must be a JWT
@@ -48,8 +48,11 @@ Every read carries its cost:
 | header | meaning |
 | --- | --- |
 | `x-ripple-ms` | server-side time for the request |
-| `r2-gets` | R2 object reads this query performed |
-| `cache-hits` | segment-cache hits |
+| `x-ripple-r2-gets` | R2 object reads this query performed |
+| `x-ripple-cache-hits` | segment-cache hits |
+
+All three are listed in `access-control-expose-headers`, so a browser can read
+them.
 
 ## Errors on the wire
 

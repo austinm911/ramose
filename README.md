@@ -27,12 +27,25 @@ Catalog)` and you're in. No provision step.
 
 ## Get running with Alchemy
 
-The shortest path is the todos app — React, `Ripple.layer`, `db.live`:
+The shortest path is the todos app — React, `Ripple.connect`, `db.live`:
 
 ```sh
 bun install
-bun alchemy dev examples/todos/alchemy.run.ts
-VITE_RIPPLE_URL=http://localhost:8787 bunx vite examples/todos
+bun run dev:todos     # peer on :1337, app on :5173
+```
+
+`bun run dev:reef` runs the flagship demo instead — Reef, a Linear-style
+multi-tenant issue tracker where every workspace is its own database, with
+Better Auth JWTs and a compiled policy.
+
+The long form of `dev:todos`, if you want to set the environment yourself —
+each variable is only defaulted when unset, so set your own to override one:
+
+```sh
+CI=1 ALCHEMY_STATE=local \
+  CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef \
+  CLOUDFLARE_API_TOKEN=x \
+  bun alchemy dev examples/todos/alchemy.run.ts   # peer on :1337, Vite on :5173
 ```
 
 That stack is a peer Worker (R2 + Transactor DO + QueryReplica DO), a
@@ -101,9 +114,14 @@ export const Todos = Ripple.Catalog({ todo: Todo });
 
 // one client, closed with the page (Effect users: Ripple.layer is the same
 // client as a scoped Layer<Databases>)
+const token = import.meta.env.VITE_RIPPLE_TOKEN;
 const ripple = Ripple.connect({
-  url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:8787",
-  token: Effect.succeed(Redacted.make(import.meta.env.VITE_RIPPLE_TOKEN)),
+  url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:1337",
+  // an open peer has no token: wrapping `undefined` fails on the first request
+  token:
+    token === undefined || token === ""
+      ? undefined
+      : Effect.succeed(Redacted.make(token)),
 });
 const db = ripple.db("todos", Todos);
 
@@ -129,8 +147,8 @@ await Effect.runPromise(
 );
 ```
 
-Every signature's `R` is `never`, so `runtime.runPromise` is the whole
-runtime; see `examples/todos/src/db.ts` and its twelve-line `useLive`.
+Every signature's `R` is `never`, so `Effect.runPromise` runs anything a
+`Db` returns; see `examples/todos/src/db.ts` and its dozen-line `useLive`.
 `@ripple/alchemy/db` is a real `exports` entry and nothing it reaches imports
 the deploy engine, so the Vite app needs no alias.
 
