@@ -87,7 +87,8 @@ const db = useDb("todos", Todos); // inside <App />
 ## One rule the hooks impose
 
 Queries and pull patterns are compared by **identity** — hoist them (they
-are stable values), or the run / subscription re-keys every render. The
-`db` argument and `usePull`'s `subject` are the exceptions: both are
-compared structurally, so `db.asOf(t)` and `{ id: 17 }` written inline are
-fine.
+are stable values), or the run / subscription re-keys every render. For
+`useQuery` / `usePull` / `useBasis` the `db` argument and `usePull`'s
+`subject` are the exceptions: both are compared structurally, so
+`db.asOf(t)` and `{ id: 17 }` written inline are fine. `useLive` keys on
+`[db, query]` identity — hold an `asOf(t)` view in a memo there.
