@@ -20,10 +20,13 @@ import { RippleProvider, useDb, useRipple } from "../src/index.ts";
 
 // imports are hoisted, so this runs after them but before any test renders —
 // which is enough: nothing above touches `document` at import time. The
-// unregister keeps happy-dom's globals out of the rest of the bun test run.
-GlobalRegistrator.register();
+// unregister keeps happy-dom's globals out of the rest of the bun test run;
+// the guard keeps this file indifferent to which hook test file ran before.
+if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register();
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
-afterAll(() => GlobalRegistrator.unregister());
+afterAll(() => {
+  if (GlobalRegistrator.isRegistered) GlobalRegistrator.unregister();
+});
 
 const Todo = Ripple.Namespace("todo", {
   title: Ripple.Attr(Schema.String),
