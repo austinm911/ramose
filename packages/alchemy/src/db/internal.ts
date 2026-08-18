@@ -4,7 +4,7 @@
  * Not a package `exports` entry: the public surface is `./index.ts`
  * (`@ripple/alchemy/db`). This module exists so sibling modules and the tests
  * can reach the inferred / internal names — `AnyCatalog`, `NamespaceMap`,
- * `queryBuilder`, `makeDatabases`, `Expect`/`Equal` — without each of them
+ * `lowerNavQuery`, `makeDatabases`, `Expect`/`Equal` — without each of them
  * naming a dozen files.
  */
 
@@ -39,7 +39,6 @@ export {
   reshapePullResult,
 } from "./Pull.ts";
 export * as Policy from "./Policy.ts";
-export * from "./Query.ts";
 export * from "./session.ts";
 export * from "./Tx.ts";
 export * from "./valueTypes.ts";

@@ -16,7 +16,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
-import type { Tx } from "../src/db/index.ts";
+import { query, type Tx } from "../src/db/index.ts";
 import { ReadDatabases } from "../src/ReadDatabases.ts";
 import { ReadWriteDatabases } from "../src/ReadWriteDatabases.ts";
 import type { Server } from "../src/Server.ts";
@@ -225,7 +225,7 @@ describe("ReadDatabases", () => {
         body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
       });
       return Promise.resolve(
-        new Response(JSON.stringify({ t: 3, root: 3, result: [["Ada"]] }), {
+        new Response(JSON.stringify({ t: 3, root: 3, result: [[{ name: "Ada" }]] }), {
           headers: { "content-type": "application/json" },
         }),
       );
@@ -236,11 +236,11 @@ describe("ReadDatabases", () => {
         const ripple = yield* ReadDatabases(server());
         return yield* ripple
           .db("movies", Movies)
-          .q((q) => q.where("?e", User.name, "?n").find("?n"));
+          .q(query(User).select({ name: User.name }));
       }).pipe(Effect.provide(ServerHttp), Effect.provide(runtimeLayer())),
     );
 
-    expect(rows).toEqual([["Ada"]]);
+    expect(rows).toEqual([{ name: "Ada" }]);
     expect(calls[0].url).toBe("https://peer.example.com/db/movies/query");
   });
 });

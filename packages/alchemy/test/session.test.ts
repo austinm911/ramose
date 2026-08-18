@@ -11,7 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
-import type { QueryBuilder } from "../src/db/internal.ts";
+import { query } from "../src/db/internal.ts";
 import { client, fakePeer, settle } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
@@ -22,10 +22,20 @@ const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
 
 const rows = (result: unknown[], t = 2) => ({ body: { t, root: t, result } });
 
-type Q = QueryBuilder<typeof Movies>;
 /** The one query every test here runs; only the transport is under test. */
-const names = (q: Q) => q.where("?e", User.name, "?n").find("?n");
-const eids = (q: Q) => q.where("?e", User.name, "_").find("?e");
+const names = query(User).select({ name: User.name });
+const eids = query(User);
+
+/** The namespace scope both lower to: `?e` has some `:user/*` attribute. */
+const userScope = [
+  [
+    "or",
+    ["?e", ":user/name", "_"],
+    ["?e", ":user/age", "_"],
+    ["?e", ":user/friends", "_"],
+    ["?e", ":user/bestFriend", "_"],
+  ],
+];
 
 describe("the handshake", () => {
   test("is the ws form of /db/:name/session, with the token as a query param", async () => {
@@ -81,7 +91,7 @@ describe("reads become frames", () => {
     const c = client(peer);
     const db = c.ripple.db("movies", Movies);
 
-    await run(db.q((q: Q) => q.where("?e", User.name, "?n").find("?e")));
+    await run(db.q(eids));
     await run(db.asOf(3).history.pull({ id: 17 }, { name: User.name }));
     await run(db.history.q(names));
 
@@ -89,7 +99,7 @@ describe("reads become frames", () => {
       {
         id: 1,
         op: "q",
-        query: { find: ["?e"], where: [["?e", ":user/name", "?n"]] },
+        query: { find: ["?e"], where: userScope },
         inputs: [],
       },
       {
@@ -105,7 +115,17 @@ describe("reads become frames", () => {
       {
         id: 3,
         op: "q",
-        query: { find: ["?n"], where: [["?e", ":user/name", "?n"]] },
+        query: {
+          find: [
+            [
+              "pull",
+              "?e",
+              [{ kind: "attr", attr: ":user/name", reverse: false, as: "name" }],
+            ],
+          ],
+          // `name` is not `.optional`, so it is a where clause too
+          where: [...userScope, ["?e", ":user/name", "_"]],
+        },
         inputs: [],
         history: true,
       },
@@ -129,17 +149,18 @@ describe("reads become frames", () => {
     const peer = fakePeer({ answer: () => undefined });
     const c = client(peer);
     const db = c.ripple.db("movies", Movies);
-    const build = (n: string) => (q: Q) => q.where("?e", User.name, n).find("?n");
+    const build = (n: string) =>
+      query(User).where(User.name.eq(n)).select({ name: User.name });
 
     const first = run(db.q(build("a")));
     const second = run(db.q(build("b")));
     await settle(5);
     expect(peer.frames.map((f) => f.id)).toEqual([1, 2]);
 
-    peer.push({ id: 2, status: 200, body: { t: 1, root: 1, result: [["b"]] } });
-    peer.push({ id: 1, status: 200, body: { t: 1, root: 1, result: [["a"]] } });
-    expect(await first).toEqual([["a"]]);
-    expect(await second).toEqual([["b"]]);
+    peer.push({ id: 2, status: 200, body: { t: 1, root: 1, result: [[{ name: "b" }]] } });
+    peer.push({ id: 1, status: 200, body: { t: 1, root: 1, result: [[{ name: "a" }]] } });
+    expect(await first).toEqual([{ name: "a" }]);
+    expect(await second).toEqual([{ name: "b" }]);
     await c.dispose();
   });
 
@@ -158,7 +179,7 @@ describe("reads become frames", () => {
     });
     const c = client(peer);
     const e = await runFail(
-      c.ripple.db("movies", Movies).q((q: Q) => q.where("?e", "?a", "?v").find("?e")),
+      c.ripple.db("movies", Movies).q(eids),
     );
     expect(e._tag).toBe("QueryBudgetExceeded");
     if (e._tag === "QueryBudgetExceeded") {
@@ -170,31 +191,56 @@ describe("reads become frames", () => {
 });
 
 describe("a socket that goes away", () => {
-  test("fails what is in flight as NetworkError", async () => {
-    const peer = fakePeer({ answer: () => undefined });
+  test("re-issues what was in flight on a fresh socket", async () => {
+    let n = 0;
+    const peer = fakePeer({
+      answer: () => {
+        n++;
+        if (n === 1) {
+          // the isolate dies before it answers
+          queueMicrotask(() => peer.socket.drop());
+          return undefined;
+        }
+        return rows([[1001]]);
+      },
+    });
     const c = client(peer);
-    const inFlight = runFail(
-      c.ripple.db("movies", Movies).q(eids),
-    );
-    await settle(5);
-    expect(peer.frames).toHaveLength(1);
-
-    peer.drop();
-    expect((await inFlight)._tag).toBe("NetworkError");
+    expect(await run(c.ripple.db("movies", Movies).q(eids))).toEqual([
+      { id: 1001 },
+    ]);
+    // one frame per socket: the first died with its socket, the retry landed
+    expect(peer.sockets).toHaveLength(2);
+    expect(peer.frames).toHaveLength(2);
     await c.dispose();
   });
 
+  // A read that keeps failing walks the whole transient ladder (six attempts,
+  // ~2–6s of jittered sleep) before the failure is the caller's.
+  test(
+    "and is NetworkError once the retries are spent",
+    async () => {
+      const peer = fakePeer({ answer: () => rows([]), refuseUpgrades: 99 });
+      const c = client(peer);
+      expect((await runFail(c.ripple.db("movies", Movies).q(eids)))._tag).toBe(
+        "NetworkError",
+      );
+      expect(peer.sockets).toHaveLength(6);
+      await c.dispose();
+    },
+    15_000,
+  );
+
   test("but the next read reconnects, re-reading the token", async () => {
     let issued = 0;
-    const peer = fakePeer({ answer: () => rows([["Ada"]]) });
+    const peer = fakePeer({ answer: () => rows([[{ name: "Ada" }]]) });
     const c = client(peer, {
       token: Effect.sync(() => Redacted.make(`token-${++issued}`)),
     });
     const db = c.ripple.db("movies", Movies);
 
-    expect(await run(db.q(names))).toEqual([["Ada"]]);
+    expect(await run(db.q(names))).toEqual([{ name: "Ada" }]);
     peer.drop();
-    expect(await run(db.q(names))).toEqual([["Ada"]]);
+    expect(await run(db.q(names))).toEqual([{ name: "Ada" }]);
 
     expect(peer.sockets.map((s) => s.url)).toEqual([
       "wss://peer.example.com/db/movies/session?token=token-1",
@@ -203,14 +249,14 @@ describe("a socket that goes away", () => {
     await c.dispose();
   });
 
-  test("a refused upgrade is a NetworkError, and the one after it succeeds", async () => {
+  test("a refused upgrade is retried, and the read lands on the socket after it", async () => {
     const peer = fakePeer({ answer: () => rows([]), refuseUpgrades: 1 });
     const c = client(peer);
     const db = c.ripple.db("movies", Movies);
 
-    expect((await runFail(db.q(names)))._tag).toBe("NetworkError");
     expect(await run(db.q(names))).toEqual([]);
     expect(peer.sockets).toHaveLength(2);
+    expect(peer.frames).toHaveLength(1);
     await c.dispose();
   });
 });
@@ -226,7 +272,7 @@ describe("Unauthorized is handled in place", () => {
           refusals -= 1;
           return { status: 401, body: { error: "token expired", code: "auth/expired" } };
         }
-        return rows([["Ada"]]);
+        return rows([[{ name: "Ada" }]]);
       },
     });
     const c = client(peer, {
@@ -239,7 +285,7 @@ describe("Unauthorized is handled in place", () => {
           .db("movies", Movies)
           .q(names),
       ),
-    ).toEqual([["Ada"]]);
+    ).toEqual([{ name: "Ada" }]);
 
     // one socket, three frames: the refused read, the swap, the retry
     expect(peer.sockets).toHaveLength(1);
@@ -291,7 +337,10 @@ describe("the layer's scope owns the socket", () => {
     expect(peer.sockets).toHaveLength(1);
 
     await c.dispose();
+    // ...and a closed client does not walk the retry ladder: nothing reopens
+    const started = Date.now();
     expect((await runFail(db.q(names)))._tag).toBe("NetworkError");
+    expect(Date.now() - started).toBeLessThan(500);
     expect(peer.sockets).toHaveLength(1);
   });
 });

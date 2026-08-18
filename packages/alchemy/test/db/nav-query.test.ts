@@ -24,6 +24,8 @@ import {
   Instant,
   Namespace,
   Ref,
+  cardsOf,
+  finalizeNavResult,
   layer,
   lowerNavQuery,
   query,
@@ -38,8 +40,12 @@ interface Reply {
 
 const inProcessPeer = async () => {
   const conn = await Connection.create();
+  /** Every op the peer answered, with the row count it sent back. */
+  const seen: { op: string; body: any; rows?: number }[] = [];
 
   const answer = async (op: string, body: any): Promise<Reply> => {
+    const call: (typeof seen)[number] = { op, body };
+    seen.push(call);
     try {
       if (op === "transact") {
         const rep = await conn.transact(body.tx);
@@ -56,6 +62,7 @@ const inProcessPeer = async () => {
       if (op === "q") {
         const db = conn.db();
         const result = await coreQuery(db, body.query, body.inputs ?? []);
+        call.rows = Array.isArray(result) ? result.length : -1;
         return {
           status: 200,
           body: { t: db.effectiveT, root: db.effectiveT, result },
@@ -146,6 +153,7 @@ const inProcessPeer = async () => {
 
   return {
     ripple: runtime.runSync(Databases),
+    seen,
     dispose: () => runtime.dispose(),
   };
 };
@@ -244,3 +252,297 @@ describe("nav query", () => {
     await peer.dispose();
   });
 });
+
+/** The scope clause every `:todo/*` query carries. */
+const todoScope = [
+  "or",
+  ["?e", ":todo/title", "_"],
+  ["?e", ":todo/done", "_"],
+  ["?e", ":todo/due", "_"],
+  ["?e", ":todo/owner", "_"],
+];
+
+describe("lowering: everything that changes the row set is the peer's", () => {
+  test("order / limit / offset ride in the AST, `empty` always explicit", () => {
+    const { query: q } = lowerNavQuery(
+      query(Todo)
+        .orderBy(Todo.due, "desc")
+        .orderBy(Todo.title, "asc", { empty: "first" })
+        .offset(5)
+        .limit(20)
+        .select({ title: Todo.title })
+        .build(),
+    );
+    expect(q.order).toEqual([
+      { var: "?o0", dir: "desc", empty: "last" },
+      { var: "?o1", dir: "asc", empty: "first" },
+    ]);
+    expect(q.limit).toBe(20);
+    expect(q.offset).toBe(5);
+    // a sort key binds without dropping the rows that lack it: walk the
+    // path, or prove it absent and ground null for the engine to place
+    expect(q.where).toEqual([
+      todoScope,
+      ["?e", ":todo/title", "_"],
+      [
+        "or-join",
+        ["?e", "?o0"],
+        ["and", ["?e", ":todo/due", "?o0"]],
+        ["and", ["not", ["?e", ":todo/due", "_"]], [["ground", [null]], ["?o0", "..."]]],
+      ],
+      [
+        "or-join",
+        ["?e", "?o1"],
+        ["and", ["?e", ":todo/title", "?o1"]],
+        ["and", ["not", ["?e", ":todo/title", "_"]], [["ground", [null]], ["?o1", "..."]]],
+      ],
+    ]);
+  });
+
+  test("a query with no order or paging lowers to none", () => {
+    const { query: q } = lowerNavQuery(query(Todo).select({ title: Todo.title }).build());
+    expect(q).toEqual({
+      find: [["pull", "?e", [{ kind: "attr", attr: ":todo/title", reverse: false, as: "title" }]]],
+      where: [todoScope, ["?e", ":todo/title", "_"]],
+    });
+    expect("order" in q || "limit" in q || "offset" in q).toBe(false);
+  });
+
+  test("a multi-hop sort key is a join chain in one branch, its absence in the other", () => {
+    const { query: q } = lowerNavQuery(
+      query(Todo).orderBy(Todo.owner.name).select({ title: Todo.title }).build(),
+    );
+    expect(q.where.at(-1)).toEqual([
+      "or-join",
+      ["?e", "?o0"],
+      ["and", ["?e", ":todo/owner", "?j1"], ["?j1", ":user/name", "?o0"]],
+      [
+        "and",
+        ["not", ["?e", ":todo/owner", "?j2"], ["?j2", ":user/name", "_"]],
+        [["ground", [null]], ["?o0", "..."]],
+      ],
+    ]);
+  });
+
+  test("a path keeps its whole prefix past the second ref hop", () => {
+    // `Todo.owner` is a User; `User.friends` is a self-ref; two ref hops in,
+    // the path must still start at :todo/owner
+    const p = Todo.owner.friends.name.startsWith("A");
+    expect(p.path).toEqual([":todo/owner", ":user/friends", ":user/name"]);
+    expect(cardsOf(Todo.owner.friends.name)).toEqual(["one", "many", "one"]);
+    const { query: q } = lowerNavQuery(query(Todo).where(p).build());
+    expect(q.where).toEqual([
+      todoScope,
+      ["?e", ":todo/owner", "?j0"],
+      ["?j0", ":user/friends", "?j1"],
+      ["?j1", ":user/name", "?v2"],
+      [["starts-with?", "?v2", "A"]],
+    ]);
+  });
+
+  test("ordering by :db/id sorts on the entity variable itself", () => {
+    const { query: q } = lowerNavQuery(
+      query(Todo).orderBy(Todo.id, "desc").select({ title: Todo.title }).build(),
+    );
+    expect(q.order).toEqual([{ var: "?e", dir: "desc", empty: "last" }]);
+    expect(q.where).toEqual([todoScope, ["?e", ":todo/title", "_"]]);
+  });
+
+  test(":db/id predicates unify or compare the entity variable", () => {
+    const eq = lowerNavQuery(query(Todo).where(Todo.id.eq(42)).build()).query.where;
+    expect(eq).toEqual([todoScope, [["ground", 42], "?e"]]);
+    const gt = lowerNavQuery(query(Todo).where(Todo.id.gt(42)).build()).query.where;
+    expect(gt).toEqual([todoScope, [[">", "?e", 42]]]);
+    const exists = lowerNavQuery(query(Todo).where(Todo.id.exists()).build()).query.where;
+    expect(exists).toEqual([todoScope]);
+    expect(() =>
+      lowerNavQuery(query(Todo).where(Todo.id.missing()).build()),
+    ).toThrow(/not defined on :db\/id/);
+  });
+
+  test("required selected fields become where clauses; optional and many do not", () => {
+    const { query: q } = lowerNavQuery(
+      query(Todo)
+        .select({
+          id: Todo.id,
+          title: Todo.title,
+          due: Todo.due.optional,
+          owner: Todo.owner.select({
+            name: User.name,
+            friends: User.friends.select({ name: User.name.optional }),
+          }),
+        })
+        .build(),
+    );
+    expect(q.where).toEqual([
+      todoScope,
+      ["?e", ":todo/title", "_"],
+      // a required nested select is required through the ref, recursively
+      ["?e", ":todo/owner", "?r0"],
+      ["?r0", ":user/name", "_"],
+    ]);
+    // an optional nested select never touches the row set
+    const optional = lowerNavQuery(
+      query(Todo)
+        .select({ owner: Todo.owner.select({ name: User.name }).optional })
+        .build(),
+    );
+    expect(optional.query.where).toEqual([todoScope]);
+    // a required ref whose sub-shape is all optional only needs the ref
+    const bareRef = lowerNavQuery(
+      query(Todo)
+        .select({ owner: Todo.owner.select({ name: User.name.optional }) })
+        .build(),
+    );
+    expect(bareRef.query.where).toEqual([todoScope, ["?e", ":todo/owner", "_"]]);
+  });
+
+  test("orderBy across a cardinality-many attribute is rejected at build time", () => {
+    expect(() => query(User).orderBy(User.friends)).toThrow(/cardinality-many/);
+    // through a card-one ref onto a many is still a set, and so is anything past it
+    expect(() => query(Todo).orderBy(Todo.owner.friends)).toThrow(/cardinality-many/);
+    expect(() => query(Todo).orderBy(Todo.owner.friends.name)).toThrow(
+      /orderBy\(:todo\/owner → :user\/friends → :user\/name\) crosses a cardinality-many attribute/,
+    );
+    // card-one hops are fine
+    expect(() => query(Todo).orderBy(Todo.owner.name)).not.toThrow();
+  });
+
+  test("finalizeNavResult reshapes rows and never sorts, drops or slices them", () => {
+    const q = query(Todo)
+      .orderBy(Todo.title, "asc")
+      .offset(1)
+      .limit(1)
+      .select({ title: Todo.title })
+      .build();
+    const { pullMap } = lowerNavQuery(q);
+    // out of order and over the limit on purpose: the peer already did both
+    const raw = [[{ title: "b" }], [{ title: "a" }], [{ title: "c" }]];
+    expect(finalizeNavResult(raw, pullMap)).toEqual([
+      { title: "b" },
+      { title: "a" },
+      { title: "c" },
+    ]);
+    // a null pull cell (unreachable once required fields are in :where) is
+    // still a row: the client never makes a page shorter than the peer sent
+    expect(finalizeNavResult([[{ title: "a" }], [null]], pullMap)).toEqual([
+      { title: "a" },
+      null,
+    ]);
+    // no select: bare ids wrap as Eids, same count, same order
+    expect(finalizeNavResult([[30], [10], [20]], undefined)).toEqual([
+      { id: 30 },
+      { id: 10 },
+      { id: 20 },
+    ]);
+  });
+});
+
+describe("paging end to end: the peer pages, the client keeps what it gets", () => {
+  const seed = (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
+    const db = peer.ripple.db("todos", Todos);
+    return run(
+      Effect.gen(function* () {
+        yield* db.install();
+        yield* db.transact(function* (tx) {
+          const alice = yield* tx.entity();
+          yield* alice.add(User.name, "Alice");
+          const bob = yield* tx.entity();
+          yield* bob.add(User.name, "Bob");
+          const nameless = yield* tx.entity();
+          yield* nameless.add(User.friends, alice.eid as never);
+          const mk = function* (title: string, due: Date | undefined, owner: unknown) {
+            const t = yield* tx.entity();
+            yield* t.add(Todo.title, title);
+            yield* t.add(Todo.done, false);
+            if (due !== undefined) yield* t.add(Todo.due, due);
+            if (owner !== undefined) yield* t.add(Todo.owner, owner as never);
+          };
+          yield* mk("c-bob", new Date("2026-01-03"), bob.eid);
+          yield* mk("a-alice", new Date("2026-01-01"), alice.eid);
+          yield* mk("d-nobody", undefined, undefined);
+          yield* mk("b-nameless", new Date("2026-01-02"), nameless.eid);
+        });
+        return db;
+      }),
+    );
+  };
+
+  test("offset + limit: the peer returns exactly the page, ordered", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    peer.seen.length = 0;
+
+    const page = query(Todo)
+      .orderBy(Todo.due, "desc")
+      .offset(1)
+      .limit(2)
+      .select({ title: Todo.title, due: Todo.due.optional });
+    const rows = await run(db.q(page));
+    expect(rows.map((r) => r.title)).toEqual(["b-nameless", "a-alice"]);
+
+    const [call] = peer.seen;
+    expect(call?.op).toBe("q");
+    // the wire query carried the paging, and the peer sent back only the page
+    expect(call?.body.query).toMatchObject({ offset: 1, limit: 2, order: [{ var: "?o0", dir: "desc", empty: "last" }] });
+    expect(call?.rows).toBe(rows.length);
+    await peer.dispose();
+  });
+
+  test("a sort key behind a missing ref keeps the row and places it per `empty`", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    const byOwner = (empty: "first" | "last") =>
+      db.q(
+        query(Todo)
+          .orderBy(Todo.owner.name, "asc", { empty })
+          .orderBy(Todo.title, "asc")
+          .select({ title: Todo.title }),
+      );
+    // no owner, and an owner with no name, both have no sort key
+    expect((await run(byOwner("last"))).map((r) => r.title)).toEqual([
+      "a-alice",
+      "c-bob",
+      "b-nameless",
+      "d-nobody",
+    ]);
+    expect((await run(byOwner("first"))).map((r) => r.title)).toEqual([
+      "b-nameless",
+      "d-nobody",
+      "a-alice",
+      "c-bob",
+    ]);
+    await peer.dispose();
+  });
+
+  test("a required field is the peer's drop, so limit counts kept rows", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    peer.seen.length = 0;
+    const rows = await run(
+      db.q(
+        query(Todo)
+          .orderBy(Todo.title, "asc")
+          .limit(2)
+          .select({ title: Todo.title, owner: Todo.owner.select({ name: User.name }) }),
+      ),
+    );
+    // b-nameless (owner without a name) and d-nobody are dropped before the limit
+    expect(rows.map((r) => r.title)).toEqual(["a-alice", "c-bob"]);
+    expect(peer.seen[0]?.rows).toBe(2);
+    await peer.dispose();
+  });
+
+  test("no select: an ordered, paged list of Eids", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    const all = await run(db.q(query(Todo).orderBy(Todo.title, "asc")));
+    const titles = await run(db.q(query(Todo).orderBy(Todo.title, "asc").select({ id: Todo.id, title: Todo.title })));
+    expect(all.map((e) => e.id)).toEqual(titles.map((r) => r.id));
+    expect(titles.map((r) => r.title)).toEqual(["a-alice", "b-nameless", "c-bob", "d-nobody"]);
+    const page = await run(db.q(query(Todo).orderBy(Todo.title, "desc").offset(1).limit(2)));
+    expect(page).toEqual([all[2]!, all[1]!]);
+    await peer.dispose();
+  });
+});
+

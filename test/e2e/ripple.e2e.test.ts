@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Ripple from "../../packages/alchemy/src/db/index.ts";
@@ -189,6 +190,22 @@ d("ripple session socket e2e", () => {
   const url = URL_ ?? "http://invalid";
   const sessionDb = `${dbName}-session`;
 
+  /**
+   * The alchemy client's own transient retry is a ~6s ladder; a fresh
+   * workers.dev host can serve platform errors for longer than that (see
+   * `retryTransientMs` on the raw Peer above). Absorb up to 30s per operation
+   * — only `Unavailable` / `NetworkError`; application errors never retry.
+   */
+  const absorb = <A, E extends { readonly _tag: string }, R>(
+    eff: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E, R> =>
+    Effect.retry(eff, {
+      while: (e) => e._tag === "Unavailable" || e._tag === "NetworkError",
+      schedule: Schedule.spaced("500 millis").pipe(
+        Schedule.upTo({ duration: "30 seconds" }),
+      ),
+    });
+
   test(
     "one socket queries and pulls; a write on another connection wakes db.live",
     async () => {
@@ -202,29 +219,35 @@ d("ripple session socket e2e", () => {
         const dbA = a.runSync(Ripple.Databases).db(sessionDb, SessionCatalog);
         const dbB = b.runSync(Ripple.Databases).db(sessionDb, SessionCatalog);
 
-        await a.runPromise(dbA.install());
+        await a.runPromise(absorb(dbA.install()));
         const report = await a.runPromise(
-          dbA.transact(function* (tx) {
-            const ada = yield* tx.entity();
-            yield* ada.add(Session.name, "Ada");
-            yield* ada.add(Session.n, 1);
-          }),
+          absorb(
+            dbA.transact(function* (tx) {
+              const ada = yield* tx.entity();
+              yield* ada.add(Session.name, "Ada");
+              yield* ada.add(Session.n, 1);
+            }),
+          ),
         );
         expect(report.t).toBeGreaterThan(0);
 
         // read-your-writes with no second round trip
         const names = await a.runPromise(
-          report.dbAfter.q(
-            Ripple.query(Session).select({ name: Session.name }),
+          absorb(
+            report.dbAfter.q(
+              Ripple.query(Session).select({ name: Session.name }),
+            ),
           ),
         );
         expect(names).toEqual([{ name: "Ada" }]);
 
         const pulled = await a.runPromise(
-          report.dbAfter.pull([":s/name", "Ada"], {
-            name: Session.name,
-            n: Session.n,
-          }),
+          absorb(
+            report.dbAfter.pull([":s/name", "Ada"], {
+              name: Session.name,
+              n: Session.n,
+            }),
+          ),
         );
         expect(pulled).toEqual({ name: "Ada", n: 1 });
 
@@ -241,18 +264,22 @@ d("ripple session socket e2e", () => {
         for (let i = 0; i < 40 && seen.length === 0; i++) await Bun.sleep(100);
 
         await b.runPromise(
-          dbB.transact(function* (tx) {
-            const bob = yield* tx.entity();
-            yield* bob.add(Session.name, "Bob");
-            yield* bob.add(Session.n, 2);
-          }),
+          absorb(
+            dbB.transact(function* (tx) {
+              const bob = yield* tx.entity();
+              yield* bob.add(Session.name, "Bob");
+              yield* bob.add(Session.n, 2);
+            }),
+          ),
         );
         // Prove B's write is visible on A's HTTPS path before requiring live.
         let count = 0;
         for (let i = 0; i < 40 && count < 2; i++) {
           count = (
             await a.runPromise(
-              dbA.q((q) => q.where("?e", Session.name, "?n").find("?n")),
+              absorb(
+                dbA.q(Ripple.query(Session).select({ name: Session.name })),
+              ),
             )
           ).length;
           if (count < 2) await Bun.sleep(250);

@@ -352,8 +352,8 @@ export const lowerPullPattern = (pattern: unknown): unknown[] => {
  *
  * A bare attr is required: missing / null / undefined drops the entity
  * (`null` at the top level). `.optional` may be missing (`undefined`).
- * Required `.with` drops the parent when the ref is missing or the nested
- * object fails *its* required fields. Cardinality-many `.with` filters the
+ * Required `.select` drops the parent when the ref is missing or the nested
+ * object fails *its* required fields. Cardinality-many `.select` filters the
  * array (empty `[]` is still a valid many). Ident-keyed arrays are left as
  * the peer returned them (all optional in the type).
  */
@@ -367,7 +367,14 @@ export const reshapePullResult = (pattern: unknown, result: unknown): unknown =>
 const isPresent = (value: unknown): boolean =>
   value !== undefined && value !== null;
 
-/** `undefined` means this entity failed a required field and should be dropped. */
+/**
+ * `undefined` means this entity failed a required field and should be dropped.
+ *
+ * For a query, `lowerNavQuery` lowers every top-level required field into a
+ * `where` clause, so the drop is the peer's and the top-level `undefined` is
+ * unreachable; what stays here is per-element work that cannot change the row
+ * count — filtering a cardinality-many array, and `db.pull` of one subject.
+ */
 const filterPull = (pattern: unknown, result: unknown): unknown => {
   if (!isPresent(result)) return undefined;
   if (Array.isArray(pattern)) return result;

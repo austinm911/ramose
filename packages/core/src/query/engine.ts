@@ -20,12 +20,13 @@ import {
   type FindElem,
   type NotClause,
   type OrClause,
+  type OrderSpec,
   type PatternClause,
   type PullPattern,
   type Query,
   type Term,
 } from "./ast.ts";
-import { AGGREGATES, FUNCTIONS, PREDICATES, type QueryFn, vkey } from "./builtins.ts";
+import { AGGREGATES, FUNCTIONS, PREDICATES, type QueryFn, compareJs, vkey } from "./builtins.ts";
 import { parseQuery } from "./parse.ts";
 import { pullMany } from "./pull.ts";
 
@@ -591,7 +592,6 @@ class Executor {
   }
 
   private async execOr(rel: Rel, c: OrClause): Promise<Rel> {
-    if (rel.rows.length === 0) return rel;
     // exported vars: explicit (or-join) or the vars common to all branches
     let exported: string[];
     if (c.join) exported = c.join;
@@ -608,6 +608,9 @@ class Executor {
         throw new QueryError(`all clauses in 'or' must use the same variables (use or-join to scope): ${[...all].filter((v) => !exported.includes(v)).join(", ")}`);
       }
     }
+    // an empty input still binds what the branches export: a later clause
+    // (or :order) may name those variables
+    if (rel.rows.length === 0) return { vars: [...rel.vars, ...exported.filter((v) => !rel.vars.includes(v))], rows: [] };
     const shared = exported.filter((v) => rel.vars.includes(v));
     const seed = shared.length ? project(rel, shared) : EMPTY;
     const seen = new Set<string>();
@@ -1129,6 +1132,41 @@ function isQueryAst(q: unknown): boolean {
   return typeof q === "object" && q !== null && "find" in (q as any) && typeof (q as any).find === "object" && "kind" in (q as any).find;
 }
 
+/** A resolved {@link OrderSpec}: which column, which direction, where empties go. */
+interface SortKey {
+  col: number;
+  dir: 1 | -1;
+  emptyLast: boolean;
+}
+
+function sortKeys(order: OrderSpec[], col: (v: string) => number): SortKey[] {
+  return order.map((o) => ({ col: col(o.var), dir: o.dir === "desc" ? -1 : 1, emptyLast: o.empty !== "first" }));
+}
+
+/**
+ * Stable in-place sort. Mixed types get a deterministic total order (numbers
+ * before strings before booleans before instants before the rest — see
+ * {@link compareJs}); null/undefined are placed by `empty` in *both*
+ * directions, so `:desc` does not float missing values to the top. Ties fall
+ * through to the remaining keys and then to the incoming row order.
+ */
+function sortRows(rows: unknown[][], keys: SortKey[]): void {
+  rows.sort((a, b) => {
+    for (const k of keys) {
+      const x = a[k.col], y = b[k.col];
+      const ex = x === null || x === undefined;
+      const ey = y === null || y === undefined;
+      const c = ex || ey ? (ex && ey ? 0 : (ex ? 1 : -1) * (k.emptyLast ? 1 : -1)) : compareJs(x, y) * k.dir;
+      if (c !== 0) return c;
+    }
+    return 0;
+  });
+}
+
+/**
+ * Project / aggregate the result relation, then order → offset → limit, then
+ * resolve pulls — so a `:limit` only pulls the rows that survive it.
+ */
 async function shapeResult(db: Db, ast: Query, rel: Rel): Promise<any> {
   const elems: FindElem[] =
     ast.find.kind === "rel" || ast.find.kind === "tuple" ? ast.find.elems : [ast.find.elem];
@@ -1149,6 +1187,19 @@ async function shapeResult(db: Db, ast: Query, rel: Rel): Promise<any> {
     // set semantics over the find vars (+ :with)
     const vars = elems.map(varOf);
     const withVars = ast.with.filter((v) => !vars.includes(v));
+    if (ast.order) {
+      // Sort the joined relation, not the projection: :order may name any
+      // bound variable. `project` keeps each distinct tuple's first row, so a
+      // tuple lands at its best-ranked binding.
+      sortRows(
+        rel.rows,
+        sortKeys(ast.order, (v) => {
+          const i = ix.get(v);
+          if (i === undefined) throw new QueryError(`order variable ${v} is not bound in :where`);
+          return i;
+        }),
+      );
+    }
     const proj = project(rel, vars.concat(withVars), true);
     tuples = withVars.length ? proj.rows.map((r) => r.slice(0, vars.length)) : proj.rows;
   } else {
@@ -1181,6 +1232,23 @@ async function shapeResult(db: Db, ast: Query, rel: Rel): Promise<any> {
       }
       tuples.push(out);
     }
+    if (ast.order) {
+      // Aggregated rows only carry the :find elements, so that is all :order
+      // can name (by the element's variable — `(count ?x)` orders on ?x).
+      const cols = new Map(elems.map((e, i) => [varOf(e), i]));
+      sortRows(
+        tuples,
+        sortKeys(ast.order, (v) => {
+          const i = cols.get(v);
+          if (i === undefined) throw new QueryError(`order variable ${v} must be in :find when the query aggregates`);
+          return i;
+        }),
+      );
+    }
+  }
+  if (ast.offset !== undefined || ast.limit !== undefined) {
+    const from = ast.offset ?? 0;
+    tuples = tuples.slice(from, ast.limit === undefined ? undefined : from + ast.limit);
   }
   // pulls
   for (let i = 0; i < elems.length; i++) {

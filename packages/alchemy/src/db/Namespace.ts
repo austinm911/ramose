@@ -3,6 +3,7 @@
 import type { AnyAttribute } from "./Attribute.ts";
 import {
   attachAttrNav,
+  cardsOf,
   withPath,
   type AttrNav,
   type PathCarrier,
@@ -11,6 +12,7 @@ import { optional, type AttrPull } from "./Pull.ts";
 import {
   isSelfRefSchema,
   refTargetOf,
+  type SelfMarker,
 } from "./valueTypes.ts";
 
 export type AttributeMap = Record<string, AnyAttribute>;
@@ -62,24 +64,22 @@ export type NavStamp<
     : StampedAttribute<Ns, Name, A>
   : StampedAttribute<Ns, Name, A>;
 
-/** Pull the target attr map out of a ref attribute's schema brands. */
+/**
+ * Pull the target attr map out of a ref attribute's schema brands: the
+ * namespace `Ref(() => N)` names, or `"self"` for `Ref.self` (typed as
+ * `TargetedRef<SelfMarker>`, so the marker is what its target resolves to).
+ */
 type ResolveRefTarget<A> = A extends {
   readonly schema: {
-    readonly _resolve: () => { readonly attributes: infer T };
+    readonly _resolve?: () => { readonly attributes: infer T };
   };
 }
-  ? T
-  : A extends { readonly schema: { readonly _self: true } }
-    ? "self"
-    : A extends {
-          readonly schema: {
-            readonly _resolve?: () => { readonly attributes: infer T };
-          };
-        }
-      ? unknown extends T
-        ? never
-        : T
-      : never;
+  ? unknown extends T
+    ? never
+    : [T] extends [SelfMarker]
+      ? "self"
+      : T
+  : never;
 
 export type StampedMap<
   Ns extends string,
@@ -105,10 +105,12 @@ export type Namespace<
   readonly attributes: StampedMap<Name, Attrs>;
   /**
    * Pseudo-attribute `:db/id`, usable in `where` / `select` / `orderBy`.
-   * Typed as a stamped attr so it is a valid {@link ShapeField}.
+   * Typed as a stamped attr so it is a valid {@link ShapeField}, and as a
+   * number so `Todo.id.eq(42)` / `.lt(n)` take the id they compare against.
    */
   readonly id: AttrNav<
     AnyAttribute & {
+      readonly schema: { readonly Type: number };
       readonly attrName: "id";
       readonly ident: ":db/id";
       readonly valueType: ":db.type/ref";
@@ -147,6 +149,7 @@ const OWN_ATTR_KEYS = new Set([
   "exists",
   "missing",
   "__path",
+  "__cards",
 ]);
 
 const stampOne = (
@@ -186,7 +189,15 @@ const stampOne = (
       const child = resolveTarget(prop);
       if (child === undefined) return undefined;
       const childAttr = child as PathCarrier;
-      return withPath(childAttr, [...pathOfSafe(target), childAttr.ident!]);
+      // Extend the *receiver's* path, not the target's: two hops in
+      // (`Todo.owner.boss`), `target` is the bare `User.boss` stamp while
+      // `receiver` is the `withPath` proxy that still remembers `:todo/owner`.
+      const from = receiver as PathCarrier;
+      return withPath(
+        childAttr,
+        [...pathOfSafe(from), childAttr.ident!],
+        [...cardsOf(from), childAttr.cardinality ?? "one"],
+      );
     },
   }) as StampedAttribute<string, string, AnyAttribute>;
 };

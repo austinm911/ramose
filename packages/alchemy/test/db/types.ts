@@ -77,6 +77,7 @@ type _idents = Expect<
     | ":user/bestFriend"
     | ":movie/title"
     | ":movie/year"
+    | ":movie/released"
     | ":meta/source"
   >
 >;

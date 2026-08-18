@@ -18,14 +18,34 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import type { DbError } from "../src/db/internal.ts";
-import { Databases, layer, schemaTx } from "../src/db/internal.ts";
+import { Databases, layer, query, schemaTx } from "../src/db/internal.ts";
 import { client, fakePeer, httpsClient, type Call } from "./peer.ts";
 
-import { Movies, User } from "./db/fixture.ts";
+import { Movie, Movies, User } from "./db/fixture.ts";
 
 const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
 const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
   Effect.runPromise(Effect.flip(eff));
+
+/** The two queries these tests run; only the transport is under test. */
+const names = query(User).select({ name: User.name });
+const eids = query(User);
+
+/** The namespace scope every `:user/*` query carries. */
+const userScope = [
+  "or",
+  ["?e", ":user/name", "_"],
+  ["?e", ":user/age", "_"],
+  ["?e", ":user/friends", "_"],
+  ["?e", ":user/bestFriend", "_"],
+];
+const namesWire = {
+  find: [
+    ["pull", "?e", [{ kind: "attr", attr: ":user/name", reverse: false, as: "name" }]],
+  ],
+  // `name` is not `.optional`, so the peer drops the rows that lack it
+  where: [userScope, ["?e", ":user/name", "_"]],
+};
 
 const ack = (t = 7, txEid = 13194139533319, datoms = 3) => ({
   t,
@@ -82,7 +102,7 @@ describe("ripple.db(name, catalog) is pure", () => {
         const db = c.ripple.db(name, Movies);
 
         const operations: Effect.Effect<unknown, DbError>[] = [
-          db.q((q) => q.where("?e", User.name, "?n").find("?n")),
+          db.q(names),
           db.pull({ id: 1 }, { name: User.name }),
           db.install(),
           db.transact(function* (tx) {
@@ -132,23 +152,19 @@ describe("writes are HTTPS, reads are not", () => {
 
   test("reads take the session socket when there is one", async () => {
     const peer = fakePeer({
-      answer: () => ({ body: { t: 2, root: 2, result: [["Ada"]] } }),
+      answer: () => ({ body: { t: 2, root: 2, result: [[{ name: "Ada" }]] } }),
     });
     const c = client(peer);
 
     expect(
-      await run(
-        c.ripple
-          .db("movies", Movies)
-          .q((q) => q.where("?e", User.name, "?n").find("?n")),
-      ),
-    ).toEqual([["Ada"]]);
+      await run(c.ripple.db("movies", Movies).q(names)),
+    ).toEqual([{ name: "Ada" }]);
 
     expect(peer.calls).toEqual([]);
     expect(peer.frames[0]).toEqual({
       id: 1,
       op: "q",
-      query: { find: ["?n"], where: [["?e", ":user/name", "?n"]] },
+      query: namesWire,
       inputs: [],
     });
     await c.dispose();
@@ -164,11 +180,9 @@ describe("writes are HTTPS, reads are not", () => {
     const { databases, close } = httpsClient(peer);
     const db = databases.db("movies", Movies);
 
-    const rows = await run(
-      db.q((q) => q.where("?e", User.name, "?n").find("?e")),
-    );
-    expect(rows).toEqual([[{ id: 1001 }]]);
-    expect(await run(db.pull(rows[0][0], { name: User.name }))).toEqual({
+    const rows = await run(db.q(eids));
+    expect(rows).toEqual([{ id: 1001 }]);
+    expect(await run(db.pull(rows[0]!, { name: User.name }))).toEqual({
       name: "Ada",
     });
 
@@ -196,8 +210,8 @@ describe("dbAfter is the read fence", () => {
       }),
     );
 
-    await run(dbAfter.q((q) => q.where("?e", User.name, "?n").find("?n")));
-    await run(db.q((q) => q.where("?e", User.name, "?n").find("?n")));
+    await run(dbAfter.q(names));
+    await run(db.q(names));
 
     expect(peer.frameOps("q").map((f) => f.minT)).toEqual([30, undefined]);
     await c.dispose();
@@ -218,8 +232,8 @@ describe("dbAfter is the read fence", () => {
         yield* tx.retractEntity(1);
       }),
     );
-    await run(dbAfter.q((q) => q.where("?e", User.name, "?n").find("?n")));
-    await run(db.q((q) => q.where("?e", User.name, "?n").find("?n")));
+    await run(dbAfter.q(names));
+    await run(db.q(names));
 
     expect(peer.calls[1].headers["x-ripple-min-t"]).toBe("30");
     expect(peer.calls[2].headers["x-ripple-min-t"]).toBeUndefined();
@@ -279,7 +293,7 @@ describe("the token", () => {
 
     await run(db.transact(function* (tx) { yield* tx.retractEntity(1); }));
     await run(db.transact(function* (tx) { yield* tx.retractEntity(2); }));
-    await run(db.q((q) => q.where("?e", User.name, "?n").find("?n")));
+    await run(db.q(names));
 
     expect(peer.calls.map((call) => call.headers.authorization)).toEqual([
       "Bearer token-1",
@@ -383,30 +397,66 @@ describe("failures arrive tagged, not thrown", () => {
     await c.dispose();
   });
 
-  test("a dead transactor is Unavailable with its retry hint", async () => {
-    const peer = failing(503, {
-      error: "transactor aborted",
-      tag: "TransactorDead",
-      retryAfterMs: 500,
+  test("a platform error relayed over the session socket is retried too", async () => {
+    // A read that took the socket must not lose the resilience the HTTPS
+    // path has: the peer relays "Worker not found" from a Durable Object
+    // namespace that has not converged yet, and the next frame is fine.
+    let n = 0;
+    const peer = fakePeer({
+      answer: () => {
+        n++;
+        return n === 1
+          ? { status: 500, body: { error: "Worker not found." } }
+          : { body: { t: 2, root: 2, result: [[{ name: "Ada" }]] } };
+      },
     });
     const c = client(peer);
-    const e = await runFail(c.ripple.db("movies", Movies).install());
-    expect(e._tag).toBe("Unavailable");
-    if (e._tag === "Unavailable") expect(e.retryAfterMs).toBe(500);
+    expect(await run(c.ripple.db("movies", Movies).q(names))).toEqual([
+      { name: "Ada" },
+    ]);
+    expect(n).toBe(2);
+    expect(peer.frameOps("q")).toHaveLength(2);
+    expect(peer.calls).toEqual([]);
     await c.dispose();
   });
 
-  test("a transport failure is NetworkError and keeps its cause", async () => {
-    const boom = new Error("connect ECONNREFUSED");
-    const peer = fakePeer();
-    const c = client(peer, {
-      fetch: (() => Promise.reject(boom)) as unknown as typeof fetch,
-    });
-    const e = await runFail(c.ripple.db("movies", Movies).install());
-    expect(e._tag).toBe("NetworkError");
-    if (e._tag === "NetworkError") expect(e.cause).toBe(boom);
-    await c.dispose();
-  });
+  // Unavailable and NetworkError are transient: `send` walks its whole
+  // jittered retry ladder (up to ~6.4s) before the failure surfaces, which is
+  // longer than bun's default 5s test timeout.
+  const RETRY_LADDER_MS = 15_000;
+
+  test(
+    "a dead transactor is Unavailable with its retry hint",
+    async () => {
+      const peer = failing(503, {
+        error: "transactor aborted",
+        tag: "TransactorDead",
+        retryAfterMs: 500,
+      });
+      const c = client(peer);
+      const e = await runFail(c.ripple.db("movies", Movies).install());
+      expect(e._tag).toBe("Unavailable");
+      if (e._tag === "Unavailable") expect(e.retryAfterMs).toBe(500);
+      await c.dispose();
+    },
+    RETRY_LADDER_MS,
+  );
+
+  test(
+    "a transport failure is NetworkError and keeps its cause",
+    async () => {
+      const boom = new Error("connect ECONNREFUSED");
+      const peer = fakePeer();
+      const c = client(peer, {
+        fetch: (() => Promise.reject(boom)) as unknown as typeof fetch,
+      });
+      const e = await runFail(c.ripple.db("movies", Movies).install());
+      expect(e._tag).toBe("NetworkError");
+      if (e._tag === "NetworkError") expect(e.cause).toBe(boom);
+      await c.dispose();
+    },
+    RETRY_LADDER_MS,
+  );
 
   test("a non-JSON error body still classifies by status", async () => {
     const peer = fakePeer();
@@ -449,7 +499,7 @@ describe("the JSON transport", () => {
           root: 1,
           // echo the where-clause constants back as the relation
           result: [
-            [(frame.query as { where: unknown[][] }).where[0][2]],
+            [(frame.query as { where: unknown[][] }).where[1][2]],
             [{ $uuid: "3F333DF6-90A4-4FDA-8DD3-9485D27CEE36" }],
           ],
         },
@@ -457,20 +507,26 @@ describe("the JSON transport", () => {
     });
     const c = client(peer);
 
-    const rows: readonly unknown[][] = await run(
-      c.ripple
-        .db("movies", Movies)
-        .q((q) => q.where("?e", ":movie/title" as never, when as never).find("?e")),
+    const rows: readonly unknown[] = await run(
+      c.ripple.db("movies", Movies).q(query(Movie).where(Movie.released.eq(when))),
     );
 
     // on the wire: tagged, JSON-safe
     expect(peer.frames[0].query).toEqual({
       find: ["?e"],
-      where: [["?e", ":movie/title", { $inst: when.getTime() }]],
+      where: [
+        [
+          "or",
+          ["?e", ":movie/title", "_"],
+          ["?e", ":movie/year", "_"],
+          ["?e", ":movie/released", "_"],
+        ],
+        ["?e", ":movie/released", { $inst: when.getTime() }],
+      ],
     });
     // back off the wire: the original types
-    expect(rows[0][0]).toBeInstanceOf(Date);
-    expect(rows[1][0]).toEqual({
+    expect(rows[0]).toBeInstanceOf(Date);
+    expect(rows[1]).toEqual({
       vt: ValueTag.Uuid,
       v: "3f333df6-90a4-4fda-8dd3-9485d27cee36",
     });
@@ -486,7 +542,7 @@ describe("live needs the socket", () => {
       Stream.runCollect(
         databases
           .db("movies", Movies)
-          .live((q) => q.where("?e", User.name, "?n").find("?n")),
+          .live(names),
       ),
     );
     expect(Exit.isFailure(exit)).toBe(true);
@@ -499,18 +555,15 @@ describe("live needs the socket", () => {
 
   test("a pinned view does not, so asOf still emits once over HTTPS", async () => {
     const peer = fakePeer({
-      http: () => ({ body: { t: 2, root: 2, result: [["Ada"]] } }),
+      http: () => ({ body: { t: 2, root: 2, result: [[{ name: "Ada" }]] } }),
     });
     const { databases, close } = httpsClient(peer);
     const rows = await Effect.runPromise(
       Stream.runCollect(
-        databases
-          .db("movies", Movies)
-          .asOf(1)
-          .live((q) => q.where("?e", User.name, "?n").find("?n")),
+        databases.db("movies", Movies).asOf(1).live(names),
       ),
     );
-    expect(rows).toEqual([[["Ada"]]]);
+    expect(rows).toEqual([[{ name: "Ada" }]]);
     close();
   });
 });

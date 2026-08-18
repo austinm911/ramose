@@ -24,9 +24,14 @@ import {
 } from "@ripple/core";
 import * as Effect from "effect/Effect";
 import * as ManagedRuntime from "effect/ManagedRuntime";
-import { Databases, layer } from "../../src/db/internal.ts";
+import { Databases, layer, query as navQuery } from "../../src/db/internal.ts";
 
 import { Meta, Movie, Movies, User } from "./fixture.ts";
+
+/** The one query most of these tests run; only the transport is under test. */
+const names = navQuery(User).select({ name: User.name });
+/** The entity behind a known name, as an `Eid`. */
+const adaId = navQuery(User).where(User.name.eq("Ada"));
 
 const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
 const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
@@ -203,14 +208,13 @@ describe("install → transact → q → pull", () => {
     expect(report.datomCount).toBeGreaterThan(0);
 
     // read-your-writes with no second round trip
-    const rows = await run(
-      report.dbAfter.q((q) => q.where("?e", User.name, "?n").find("?e", "?n")),
-    );
-    const ada = rows.find((r) => r[1] === "Ada")!;
-    expect(ada[0].id).toBeGreaterThan(0);
+    const rows = await run(report.dbAfter.q(adaId));
+    expect(rows).toHaveLength(1);
+    const ada = rows[0]!;
+    expect(ada.id).toBeGreaterThan(0);
 
     const pulled = await run(
-      report.dbAfter.pull(ada[0], {
+      report.dbAfter.pull(ada, {
         name: User.name,
         age: User.age.optional,
         source: Meta.source,
@@ -229,7 +233,7 @@ describe("install → transact → q → pull", () => {
     expect(pulled!.friends.map((f) => f.name)).toEqual(["Alonzo"]);
 
     // the ident-keyed escape hatch
-    const soup = await run(db.pull(ada[0], [User.name, User.age] as const));
+    const soup = await run(db.pull(ada, [User.name, User.age] as const));
     expect(soup![":user/name"]).toBe("Ada");
     expect(soup![":user/age"]).toBe(36);
 
@@ -257,13 +261,11 @@ describe("install → transact → q → pull", () => {
         yield* e.add(User.name, "Ada");
       }),
     );
-    expect(
-      await run(db.q((q) => q.where("?e", User.name, "?n").find("?n"))),
-    ).toEqual([["Ada"]]);
+    expect(await run(db.q(names))).toEqual([{ name: "Ada" }]);
     await peer.dispose();
   });
 
-  test("`.find` with a pull terminal yields [Eid, Pull] rows", async () => {
+  test("`.select` pulls in the query — one round trip, one row per entity", async () => {
     const peer = await inProcessPeer();
     const db = peer.ripple.db("movies", Movies);
     await run(db.install());
@@ -277,12 +279,12 @@ describe("install → transact → q → pull", () => {
     );
 
     const rows = await run(
-      dbAfter.q((q) =>
-        q.where("?e", User.name, "_").find("?e").pull({ name: User.name }),
-      ),
+      dbAfter.q(navQuery(User).select({ id: User.id, name: User.name })),
     );
-    expect(rows.map((r) => r[1].name).sort()).toEqual(["Ada", "Bob"]);
-    expect(rows.every((r) => typeof r[0].id === "number")).toBe(true);
+    expect(rows.map((r) => r.name).sort()).toEqual(["Ada", "Bob"]);
+    expect(rows.every((r) => typeof r.id === "number")).toBe(true);
+    // the pull rode along in the query: no second op per row
+    expect(peer.frames.map((f) => f.op)).toEqual(["q"]);
     await peer.dispose();
   });
 });
@@ -299,19 +301,13 @@ describe("views", () => {
       }),
     );
 
-    const before = await run(
-      db.asOf(first.t - 1).q((q) => q.where("?e", User.name, "?n").find("?n")),
-    );
+    const before = await run(db.asOf(first.t - 1).q(names));
     expect(before).toEqual([]);
 
-    const now = await run(
-      first.dbAfter.q((q) => q.where("?e", User.name, "?n").find("?n")),
-    );
-    expect(now).toEqual([["Ada"]]);
+    const now = await run(first.dbAfter.q(names));
+    expect(now).toEqual([{ name: "Ada" }]);
 
-    const hist = await run(
-      db.history.q((q) => q.where("?e", User.name, "Ada").find("?e")),
-    );
+    const hist = await run(db.history.q(adaId));
     expect(hist.length).toBeGreaterThanOrEqual(1);
 
     expect("transact" in db.asOf(1)).toBe(false);
@@ -324,8 +320,8 @@ describe("views", () => {
     const db = peer.ripple.db("movies", Movies);
     await run(db.install());
     const past = db.asOf(1);
-    await run(db.q((q) => q.where("?e", User.name, "?n").find("?n")));
-    await run(past.q((q) => q.where("?e", User.name, "?n").find("?n")));
+    await run(db.q(names));
+    await run(past.q(names));
     expect(peer.frames.map((f) => f.asOf)).toEqual([undefined, 1]);
     await peer.dispose();
   });
@@ -344,15 +340,9 @@ describe("the read fence is what dbAfter carries", () => {
     );
 
     // an unfenced read is served from the pinned basis
-    expect(
-      await run(db.q((q) => q.where("?e", User.name, "?n").find("?n"))),
-    ).toEqual([]);
+    expect(await run(db.q(names))).toEqual([]);
     // dbAfter carries `report.t`, which is past the pin
-    expect(
-      await run(
-        report.dbAfter.q((q) => q.where("?e", User.name, "?n").find("?n")),
-      ),
-    ).toEqual([["Ada"]]);
+    expect(await run(report.dbAfter.q(names))).toEqual([{ name: "Ada" }]);
     await peer.dispose();
   });
 });
@@ -367,9 +357,7 @@ describe("failures", () => {
     expect(pulled._tag).toBe("InvalidRequest");
     expect(pulled.message).toContain(":user/name");
 
-    const queried = await runFail(
-      db.q((q) => q.where("?e", User.name, "?n").find("?n")),
-    );
+    const queried = await runFail(db.q(names));
     expect(queried._tag).toBe("InvalidRequest");
     await peer.dispose();
   });
@@ -416,9 +404,7 @@ describe("failures", () => {
     );
     expect(e).toBe("nope");
     expect(peer.calls).toHaveLength(writes);
-    expect(
-      await run(db.q((q) => q.where("?e", User.name, "?n").find("?n"))),
-    ).toEqual([]);
+    expect(await run(db.q(names))).toEqual([]);
     await peer.dispose();
   });
 
@@ -438,10 +424,8 @@ describe("failures", () => {
         yield* ada.add(User.friends, ghost.eid as never);
       }),
     );
-    const rows = await run(
-      dbAfter.q((q) => q.where("?e", User.name, "Ada").find("?e")),
-    );
-    const ada = rows[0][0];
+    const rows = await run(dbAfter.q(adaId));
+    const ada = rows[0]!;
 
     expect(await run(dbAfter.pull(ada, { name: User.name, age: User.age }))).toBeNull();
     expect(

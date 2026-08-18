@@ -17,7 +17,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
-import type { QueryBuilder } from "../src/db/internal.ts";
+import { query } from "../src/db/internal.ts";
 import { client, fakePeer, settle, type Frame, type Reply } from "./peer.ts";
 
 import { Movies, User } from "./db/fixture.ts";
@@ -59,16 +59,33 @@ const collect = <A, E>(stream: Stream.Stream<A, E>) => {
   };
 };
 
-type Q = QueryBuilder<typeof Movies>;
-const names = (q: Q) => q.where("?e", User.name, "?n").find("?n");
-const pulled = (q: Q) =>
-  q.where("?e", User.name, "_").find("?e").pull({ name: User.name });
+const names = query(User).select({ name: User.name });
+
+/** The wire query `names` lowers to: one find-pull, the namespace scope. */
+const namesWire = {
+  find: [
+    ["pull", "?e", [{ kind: "attr", attr: ":user/name", reverse: false, as: "name" }]],
+  ],
+  where: [
+    [
+      "or",
+      ["?e", ":user/name", "_"],
+      ["?e", ":user/age", "_"],
+      ["?e", ":user/friends", "_"],
+      ["?e", ":user/bestFriend", "_"],
+    ],
+    // `name` is not `.optional`: the required field is the peer's to enforce
+    ["?e", ":user/name", "_"],
+  ],
+};
+
+/** One find-pull row, as the peer sends it. */
+const row = (name: string) => [{ name }];
 
 /** A peer whose relation and basis the test moves under it. */
 const peerAt = (state: {
   t: number;
   rows: unknown[][];
-  names?: Record<number, string | null>;
   ackT?: number;
   answer?: (frame: Frame) => Reply | undefined;
 }) =>
@@ -79,61 +96,42 @@ const peerAt = (state: {
     answer: (frame) => {
       const custom = state.answer?.(frame);
       if (custom !== undefined) return custom;
-      if (frame.op === "pull") {
-        const name = (state.names ?? {})[frame.eid as number];
-        return { body: { t: state.t, result: name == null ? null : { name } } };
-      }
       return { body: { t: state.t, root: state.t, result: state.rows } };
     },
   });
 
-describe("q and live are two terminals over one builder", () => {
-  test("the same callback runs once, or stands up", async () => {
-    const state = { t: 5, rows: [["Ada"]] };
+describe("q and live are two terminals over one query", () => {
+  test("the same query value runs once, or stands up", async () => {
+    const state = { t: 5, rows: [row("Ada")] };
     const peer = peerAt(state);
     const c = client(peer);
     const db = c.ripple.db("movies", Movies);
 
-    expect(await run(db.q(names))).toEqual([["Ada"]]);
+    expect(await run(db.q(names))).toEqual([{ name: "Ada" }]);
     const live = collect(db.live(names));
     await settle();
-    expect(live.seen).toEqual([[["Ada"]]]);
+    expect(live.seen).toEqual([[{ name: "Ada" }]]);
     expect(peer.frameOps("q").map((f) => f.query)).toEqual([
-      { find: ["?n"], where: [["?e", ":user/name", "?n"]] },
-      { find: ["?n"], where: [["?e", ":user/name", "?n"]] },
+      namesWire,
+      namesWire,
     ]);
 
     await live.stop();
     await c.dispose();
   });
 
-  test("`.pull` after a one-eid find makes rows of [Eid, Pull]", async () => {
-    const state = {
-      t: 5,
-      rows: [[1001], [1002], [1003]],
-      names: { 1001: "Ada", 1002: null, 1003: "Cy" },
-    };
+  test("the pull rides in the query: one op, and the rows are the peer's", async () => {
+    const state = { t: 5, rows: [row("Ada"), row("Cy")] };
     const peer = peerAt(state);
     const c = client(peer);
-    const live = collect(c.ripple.db("movies", Movies).live(pulled));
+    const live = collect(c.ripple.db("movies", Movies).live(names));
     await settle();
 
-    // a row whose pull comes back null is dropped
-    expect(live.seen[0]).toEqual([
-      [{ id: 1001 }, { name: "Ada" }],
-      [{ id: 1003 }, { name: "Cy" }],
-    ]);
-    // one pull per row, fenced at the q's own t
-    expect(
-      peer
-        .frameOps("pull")
-        .map((f) => ({ eid: f.eid, minT: f.minT }))
-        .sort((a, b) => (a.eid as number) - (b.eid as number)),
-    ).toEqual([
-      { eid: 1001, minT: 5 },
-      { eid: 1002, minT: 5 },
-      { eid: 1003, minT: 5 },
-    ]);
+    // exactly what the peer sent, reshaped — the client drops nothing
+    expect(live.seen[0]).toEqual([{ name: "Ada" }, { name: "Cy" }]);
+    // one op for the whole pass — no client-side N+1
+    expect(peer.frameOps("pull")).toHaveLength(0);
+    expect(peer.frameOps("q")).toHaveLength(1);
 
     await live.stop();
     await c.dispose();
@@ -142,7 +140,7 @@ describe("q and live are two terminals over one builder", () => {
 
 describe("the basis is the wake", () => {
   test("a t frame re-runs the query at that fence", async () => {
-    const state = { t: 5, rows: [["Ada"]] };
+    const state = { t: 5, rows: [row("Ada")] };
     const peer = peerAt(state);
     const c = client(peer);
     const live = collect(c.ripple.db("movies", Movies).live(names));
@@ -150,20 +148,48 @@ describe("the basis is the wake", () => {
     expect(live.seen).toHaveLength(1);
 
     state.t = 9;
-    state.rows = [["Ada"], ["Bob"]];
+    state.rows = [row("Ada"), row("Bob")];
     peer.push({ op: "t", t: 9 });
     await settle();
 
     expect(live.seen).toHaveLength(2);
-    expect(live.seen[1]).toEqual([["Ada"], ["Bob"]]);
+    expect(live.seen[1]).toEqual([{ name: "Ada" }, { name: "Bob" }]);
     expect(peer.frameOps("q").map((f) => f.minT)).toEqual([undefined, 9]);
 
     await live.stop();
     await c.dispose();
   });
 
+  test("a tick the rows did not notice is not an emission", async () => {
+    const state = { t: 5, rows: [row("Ada")] };
+    const peer = peerAt(state);
+    const c = client(peer);
+    const live = collect(c.ripple.db("movies", Movies).live(names));
+    await settle();
+    expect(live.seen).toHaveLength(1);
+
+    // the basis moves (some other write), the relation does not
+    state.t = 9;
+    peer.push({ op: "t", t: 9 });
+    await settle();
+    // ...so the query re-ran at the new fence but nothing was re-emitted
+    expect(peer.frameOps("q").map((f) => f.minT)).toEqual([undefined, 9]);
+    expect(live.seen).toHaveLength(1);
+
+    // the next tick that changes the rows is news again
+    state.t = 12;
+    state.rows = [row("Ada"), row("Bob")];
+    peer.push({ op: "t", t: 12 });
+    await settle();
+    expect(live.seen).toHaveLength(2);
+    expect(live.seen[1]).toEqual([{ name: "Ada" }, { name: "Bob" }]);
+
+    await live.stop();
+    await c.dispose();
+  });
+
   test("a local transact bumps the basis, so a standing live re-runs", async () => {
-    const state = { t: 5, rows: [["Ada"]], ackT: 30 };
+    const state = { t: 5, rows: [row("Ada")], ackT: 30 };
     const peer = peerAt(state);
     const c = client(peer);
     const db = c.ripple.db("movies", Movies);
@@ -172,7 +198,7 @@ describe("the basis is the wake", () => {
     expect(live.seen).toHaveLength(1);
 
     state.t = 30;
-    state.rows = [["Ada"], ["Bob"]];
+    state.rows = [row("Ada"), row("Bob")];
     await run(
       db.transact(function* (tx) {
         const bob = yield* tx.entity();
@@ -183,7 +209,7 @@ describe("the basis is the wake", () => {
 
     // no invalidation call: the write's own ack carried the new basis
     expect(live.seen).toHaveLength(2);
-    expect(live.seen[1]).toEqual([["Ada"], ["Bob"]]);
+    expect(live.seen[1]).toEqual([{ name: "Ada" }, { name: "Bob" }]);
     expect(peer.frameOps("q").at(-1)?.minT).toBe(30);
 
     await live.stop();
@@ -191,7 +217,7 @@ describe("the basis is the wake", () => {
   });
 
   test("interrupting the fiber is the whole teardown", async () => {
-    const state = { t: 5, rows: [["Ada"]] };
+    const state = { t: 5, rows: [row("Ada")] };
     const peer = peerAt(state);
     const c = client(peer);
     const live = collect(c.ripple.db("movies", Movies).live(names));
@@ -210,7 +236,7 @@ describe("the basis is the wake", () => {
 
 describe("live survives the network", () => {
   test("a dropped socket reconnects in place and the stream keeps emitting", async () => {
-    const state = { t: 5, rows: [["Ada"]] };
+    const state = { t: 5, rows: [row("Ada")] };
     const peer = peerAt(state);
     const c = client(peer);
     const live = collect(c.ripple.db("movies", Movies).live(names));
@@ -218,12 +244,12 @@ describe("live survives the network", () => {
     expect(live.seen).toHaveLength(1);
     expect(peer.sockets).toHaveLength(1);
 
-    state.rows = [["Ada"], ["Bob"]];
+    state.rows = [row("Ada"), row("Bob")];
     peer.drop();
     await settle(60);
 
     expect(peer.sockets).toHaveLength(2);
-    expect(live.seen.at(-1)).toEqual([["Ada"], ["Bob"]]);
+    expect(live.seen.at(-1)).toEqual([{ name: "Ada" }, { name: "Bob" }]);
     expect(live.error).toBeUndefined();
 
     await live.stop();
@@ -234,7 +260,7 @@ describe("live survives the network", () => {
     let failures = 1;
     const state = {
       t: 5,
-      rows: [["Ada"]],
+      rows: [row("Ada")],
       answer: (frame: Frame) => {
         if (frame.op !== "q" || failures === 0) return undefined;
         failures -= 1;
@@ -250,7 +276,7 @@ describe("live survives the network", () => {
     expect(live.error).toBeUndefined();
 
     await settle(400); // the first backoff is 250ms
-    expect(live.seen).toEqual([[["Ada"]]]);
+    expect(live.seen).toEqual([[{ name: "Ada" }]]);
     expect(live.error).toBeUndefined();
 
     await live.stop();
@@ -262,7 +288,7 @@ describe("live survives the network", () => {
     let refusals = 1;
     const state = {
       t: 5,
-      rows: [["Ada"]],
+      rows: [row("Ada")],
       answer: (frame: Frame) => {
         if (frame.op === "auth") return { ok: true };
         if (frame.op === "q" && refusals > 0) {
@@ -282,7 +308,7 @@ describe("live survives the network", () => {
     // the swap happened on the same socket, and the stream never saw it
     expect(peer.sockets).toHaveLength(1);
     expect(peer.frames.map((f) => f.op)).toEqual(["q", "auth", "q"]);
-    expect(live.seen).toEqual([[["Ada"]]]);
+    expect(live.seen).toEqual([[{ name: "Ada" }]]);
     expect(live.error).toBeUndefined();
 
     await live.stop();
@@ -323,13 +349,13 @@ describe("live survives the network", () => {
 
 describe("a pinned view has no news", () => {
   test("live over asOf emits once and completes", async () => {
-    const state = { t: 5, rows: [["Ada"]] };
+    const state = { t: 5, rows: [row("Ada")] };
     const peer = peerAt(state);
     const c = client(peer);
     const live = collect(c.ripple.db("movies", Movies).asOf(3).live(names));
     await settle();
 
-    expect(live.seen).toEqual([[["Ada"]]]);
+    expect(live.seen).toEqual([[{ name: "Ada" }]]);
     expect(live.done).toBe(true);
     expect(peer.frameOps("q")[0].asOf).toBe(3);
 
@@ -340,7 +366,7 @@ describe("a pinned view has no news", () => {
   });
 
   test("live over history emits once and completes", async () => {
-    const state = { t: 5, rows: [["Ada"]] };
+    const state = { t: 5, rows: [row("Ada")] };
     const peer = peerAt(state);
     const c = client(peer);
     const live = collect(c.ripple.db("movies", Movies).history.live(names));

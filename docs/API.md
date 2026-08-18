@@ -48,14 +48,14 @@ Static token: `Effect.succeed(Redacted.make(t))`. The layer is scoped, the socke
 |---|---|
 | `Db<C>` | `ReadDb<C> & { transact; install }` |
 | `ReadDb<C>` | `{ name; catalog; q; pull; live; asOf; history }` |
-| `db.q` | `<R>(query: NavQuery\<R\> \| NavQueryBuilder \| legacy callback) => Effect<R, DbError>` — prefer `Ripple.query(N)` (see `docs/QUERY.md`) |
+| `db.q` | `<R>(query: NavQuery\<R\> \| NavQueryBuilder\<_, R\>) => Effect<R, DbError>` — a `Ripple.query(N)` value (see `docs/QUERY.md`); with no `.select`, `R` is `readonly Eid<C>[]` |
 | `db.live` | same input as `db.q` → `Stream<R, DbError>` |
 | `db.pull` | `<const P>(subject: Eid<C> \| LookupRef<C>, shape: P) => Effect<Pull<C, P> \| null, DbError>` |
 | `db.transact` | `<A, E, R>(body: (tx: Tx<C>) => Generator<Effect<unknown, E, R>, A>) => Effect<TxReport<C>, DbError \| E, R>` |
 | `db.install` | `() => Effect<TxReport<C>, DbError>` — idempotent catalog upsert |
 | `db.asOf` | `(t: number) => ReadDb<C>` |
 | `db.history` | `ReadDb<C>` |
-| `query` | `Ripple.query(N)` — navigational query builder (`.where` `.select` `.orderBy` `.limit`) |
+| `query` | `Ripple.query(N)` — navigational query builder (`.where` `.select` `.orderBy` `.limit` `.offset`); order and paging run on the peer |
 | `Pull<C, P>` | result of shape `P`. Nest with `attr.select({…})`, maybe with `.optional` |
 | `Eid<C>` | `{ readonly id: number }`, catalog-branded. Data — no methods, no I/O |
 | `LookupRef<C>` | `[AttrRef, value]` on a unique attribute |
@@ -228,8 +228,8 @@ export const useLive = <A, E>(stream: Stream.Stream<A, E>) => {
 | `entity(eid)` read op, socket `op:"entity"`, `info()`, `health()`, `DatabaseHealth` | deleted; `db.pull`, deploy-time probe |
 | all `Live*` (`LiveStore`, `LiveFn`, `LiveQuery*`, `LiveFind`, `LiveRow`, `TypedLiveDatabaseClient`, `EidVar`, `LiveRun`, `makeLive`) | deleted; `db.live` is a `Stream` |
 | `PullResult`, `pick`, `ValidatePull`, `PullOptional`, `PullNested`, `AttrPull`, `IdentPull*`, `StructPullResult`, `isPull*`, `lowerPullPattern`, `reshapePullResult` | → `Pull<C, P>`; rest internal |
-| all `Query*` builder & helper types (`QueryVar`, `QueryBlank`, `*Slot`, `FindRow(s)`, `Bind*`, `ValueFromAttr`, `AttrRef`, `QuerySpec`, `QueryIo`, `toQueryObject`, `queryBuilder`) | internal, inferred; `Query<C, R>` remains |
-| `q(string \| object)`, `db.query`, `builder.query` | deleted; `explain` stays |
+| the callback query builder (`db.q((q) => q.where("?e", …).find("?e"))`, `Query<C, R>`, `QueryBuilder`, `QueryVar`, `QueryBlank`, `*Slot`, `FindRow(s)`, `Bind*`, `ValueFromAttr`, `AttrRef`, `QuerySpec`, `toQueryObject`, `queryBuilder`) | deleted; `Ripple.query(N)` is the one read surface |
+| `q(string \| object)`, `db.query`, `builder.query`, the `explain` terminal | deleted |
 | all `Tx*` builder & wire types (`TxBuilder`, `EntityHandle`, `TxAttr/Value/Entity`, `TxOp`, `TxSpec`, `AttrRefLookup`, `Yield*`, `Tx*Body`, `txBuilder`, `lowerWireTx`) | → `Tx<C>` / `Entity<C>`; rest internal |
 | `WireTx*`, `WireEntity`, `AddOp`, `RetractOp`, `RetractEntityOp`, `transactWire`, `transactUntyped` | deleted; one tx form, the generator |
 | `Ident`, `EntityRef`, `CatalogIdent`, `AttrAtIdent`, `ValueAtIdent`, `CardAtIdent`, `WriteAtIdent`, `ReadAtIdent` | internal; `LookupRef` stays |
@@ -243,7 +243,7 @@ export const useLive = <A, E>(stream: Stream.Stream<A, E>) => {
 - **One writer.** `transact` is the only write and still `POST /db/:name/transact`; nothing in the surface names or reaches a Transactor.
 - **Dense `t`.** `t` is only ever read (`report.t`, `db.asOf(t)`); no API mints, skips or supplies one.
 - **Persist-before-ack.** `transact` resolves only with a `TxReport`, and `dbAfter` carries that `t`.
-- **QueryReplica first-class.** Reads take their basis from the server's replica path; no replica selection, no novelty access, `explain` is the only knob.
+- **QueryReplica first-class.** Reads take their basis from the server's replica path; no replica selection, no novelty access.
 - **A database is a name.** `ripple.db(name, catalog)` is the whole creation step — no create / list / delete, one resource for N tenants.
 - **HTTP is Worker internals.** No endpoint, source, URL or admin type is exported; the two transports are Layers, not clients.
 - **Browser sockets terminate in the Worker isolate.** The client speaks only `GET /db/:name/session`; no DO route is reachable or nameable.

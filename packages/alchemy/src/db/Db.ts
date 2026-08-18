@@ -17,6 +17,7 @@ import { DATABASE_NAME_RE, invalidDatabaseName } from "../DatabaseName.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import { type Eid, makeEid } from "./Eid.ts";
 import { schemaTx } from "./ensure.ts";
+import type { Equal } from "./equal.ts";
 import type { DbError, InvalidRequest } from "./Errors.ts";
 import { compact, record } from "./http.ts";
 import type { LookupRef } from "./idents.ts";
@@ -35,12 +36,6 @@ import {
   reshapePullResult,
   type ValidatePull,
 } from "./Pull.ts";
-import {
-  type Query,
-  type QueryBuilder,
-  queryBuilder,
-  toQueryObject,
-} from "./Query.ts";
 import type { Session } from "./session.ts";
 import {
   type Tx,
@@ -49,11 +44,16 @@ import {
   type YieldError,
 } from "./Tx.ts";
 
-/** Callback builder (legacy) or navigational query value / builder. */
-export type QueryInput<C extends AnyCatalog, R> =
-  | ((q: QueryBuilder<C, {}>) => Query<C, R>)
-  | NavQuery<R>
-  | NavQueryBuilder<AnyNamespace, R>;
+/** A navigational query value, or the builder that makes one. */
+export type QueryInput<R> = NavQuery<R> | NavQueryBuilder<AnyNamespace, R>;
+
+/**
+ * The rows a query yields here. A query is scoped to a namespace, not to a
+ * catalog, so a `.select`-less one types its ids against whichever catalog the
+ * db that ran it carries.
+ */
+type QueryRows<C extends AnyCatalog, R> =
+  Equal<R, readonly Eid[]> extends true ? readonly Eid<C>[] : R;
 
 // ── the transport seam ─────────────────────────────────────────────────────
 
@@ -98,16 +98,17 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
   readonly name: string;
   readonly catalog: C;
 
-  /** Run a query once — callback builder or navigational {@link NavQuery}. */
-  q<R>(input: QueryInput<C, R>): Effect.Effect<R, DbError>;
+  /** Run a {@link NavQuery} once. */
+  q<R>(input: QueryInput<R>): Effect.Effect<QueryRows<C, R>, DbError>;
 
   /**
    * Stand a query up: re-run on every basis tick this session sees,
    * and after a local `transact`. Requirements are `never` — teardown is fiber
    * interruption — and a pinned view (`asOf` / `history`) emits once and
-   * completes. Accepts a callback builder or navigational {@link NavQuery}.
+   * completes. A pass that returns the rows already emitted is not emitted
+   * again: a write this query does not see is not a re-render.
    */
-  live<R>(input: QueryInput<C, R>): Stream.Stream<R, DbError>;
+  live<R>(input: QueryInput<R>): Stream.Stream<QueryRows<C, R>, DbError>;
 
   /** Project one entity. `null` when a required field is missing. */
   pull<const P>(
@@ -147,8 +148,7 @@ interface View {
   readonly minT?: number | undefined;
 }
 
-/** Pulls in flight per pass, and the live retry backoff bounds in ms. */
-const PULL_CONCURRENCY = 16;
+/** The pause between `live` passes that failed non-terminally, in ms. */
 const RETRY_MIN = 250;
 const RETRY_MAX = 5000;
 
@@ -196,21 +196,6 @@ const lowerSubject = (subject: unknown): unknown => {
   return typeof id === "number" ? id : subject;
 };
 
-const wrapRows = (
-  vars: readonly string[],
-  eidVars: readonly string[] | undefined,
-  result: unknown,
-): unknown[] => {
-  if (!Array.isArray(result)) return [];
-  const eids = new Set(eidVars ?? []);
-  return result.map((row) => {
-    if (!Array.isArray(row)) return row;
-    return vars.map((v, i) =>
-      eids.has(v) && typeof row[i] === "number" ? makeEid(row[i]) : row[i],
-    );
-  });
-};
-
 /** @internal Everything a `Db` and its `ReadDb` views share. */
 const makeRead = <C extends AnyCatalog>(
   wire: Wire,
@@ -243,63 +228,16 @@ const makeRead = <C extends AnyCatalog>(
         Effect.map((body) => reshapePullResult(pattern, record(body).result)),
       );
 
-  const runLegacyQuery = (
-    query: Query<C, unknown>,
+  const runQuery = <R>(
+    input: QueryInput<R>,
     minT: number | undefined,
-  ): Effect.Effect<{ readonly rows: unknown; readonly t: number }, DbError> =>
+  ): Effect.Effect<
+    { readonly rows: unknown; readonly t: number; readonly raw: unknown },
+    DbError
+  > =>
     Effect.gen(function* () {
+      const lowered = lowerNavQuery(asNavQuery(input));
       const fence = minT ?? view.minT;
-      const body = record(
-        yield* wire.read(
-          name,
-          "q",
-          compact({
-            query: toQueryObject(query.spec, query.vars),
-            inputs: [],
-            asOf: view.asOf,
-            history: view.history === true ? true : undefined,
-            explain: query.spec.explain === true ? true : undefined,
-          }),
-          fence,
-        ),
-      );
-      const t = typeof body.t === "number" ? body.t : undefined;
-      let rows: unknown = wrapRows(
-        query.vars,
-        query.spec.eidVars,
-        body.result,
-      );
-
-      if (query.spec.pull !== undefined) {
-        const eids = (rows as unknown[][]).map((row) => row[0] as Eid<C>);
-        const pulled = yield* Effect.forEach(
-          eids,
-          (eid) => pullOne(eid, query.spec.pull, t),
-          { concurrency: PULL_CONCURRENCY },
-        );
-        const kept: unknown[] = [];
-        pulled.forEach((row, i) => {
-          if (row !== null && row !== undefined) kept.push([eids[i], row]);
-        });
-        rows = kept;
-      }
-
-      return {
-        rows:
-          query.spec.explain === true
-            ? { rows, explain: body.explain ?? [], budget: body.budget }
-            : rows,
-        t: t ?? 0,
-      };
-    });
-
-  const runNavQuery = (
-    nav: NavQuery,
-    minT: number | undefined,
-  ): Effect.Effect<{ readonly rows: unknown; readonly t: number }, DbError> =>
-    Effect.gen(function* () {
-      const fence = minT ?? view.minT;
-      const lowered = lowerNavQuery(nav);
       const body = record(
         yield* wire.read(
           name,
@@ -315,25 +253,20 @@ const makeRead = <C extends AnyCatalog>(
       );
       const t = typeof body.t === "number" ? body.t : 0;
       return {
-        rows: finalizeNavResult(nav, body.result, lowered.pullMap),
+        rows: finalizeNavResult(body.result, lowered.pullMap),
         t,
+        raw: body.result,
       };
     });
 
-  const runInput = <R>(
-    input: QueryInput<C, R>,
-    minT: number | undefined,
-  ): Effect.Effect<{ readonly rows: unknown; readonly t: number }, DbError> => {
-    if (typeof input === "function") {
-      return runLegacyQuery(
-        input(queryBuilder(catalog)) as unknown as Query<C, unknown>,
-        minT,
-      );
-    }
-    return runNavQuery(asNavQuery(input as NavQuery | NavQueryBuilder<AnyNamespace>), minT);
-  };
-
-  /** Retry the transient half of `DbError` with the live backoff. */
+  /**
+   * Keep a standing query alive: re-run a pass that failed non-terminally
+   * until it succeeds. This is not a transient policy — the wire's
+   * `retryTransient` ladder already retried each Unavailable / NetworkError
+   * attempt and only surfaces once spent — it is what happens *after* that
+   * (an outage longer than the ladder), and for the failures the ladder does
+   * not touch (a 5xx `InternalError`). Exponential pause, capped.
+   */
   const withBackoff = <A>(
     attempt: Effect.Effect<A, DbError>,
   ): Effect.Effect<A, DbError> => {
@@ -352,14 +285,14 @@ const makeRead = <C extends AnyCatalog>(
     name,
     catalog,
 
-    q: (<R>(input: QueryInput<C, R>) =>
+    q: (<R>(input: QueryInput<R>) =>
       fenced(
         Effect.suspend(() =>
-          runInput(input, undefined).pipe(Effect.map((r) => r.rows as R)),
+          runQuery(input, undefined).pipe(Effect.map((r) => r.rows as R)),
         ),
       )) as ReadDb<C>["q"],
 
-    live: (<R>(input: QueryInput<C, R>) =>
+    live: (<R>(input: QueryInput<R>) =>
       Stream.callback<R, DbError>((queue) =>
         Effect.gen(function* () {
           if (bad !== undefined) return yield* Queue.fail(queue, bad);
@@ -377,10 +310,18 @@ const makeRead = <C extends AnyCatalog>(
             );
           }
 
+          let last: string | undefined;
           for (;;) {
             const seen = session?.t ?? 0;
-            const pass = yield* withBackoff(runInput(input, seen || undefined));
-            yield* Queue.offer(queue, pass.rows as R);
+            // one pass; the wire ladder retries its transient attempts, and
+            // withBackoff only re-runs the pass once that ladder is spent
+            const pass = yield* withBackoff(runQuery(input, seen || undefined));
+            // a tick the query's rows did not notice is not news
+            const digest = JSON.stringify(pass.raw) ?? "";
+            if (digest !== last) {
+              last = digest;
+              yield* Queue.offer(queue, pass.rows as R);
+            }
             if (pinned || session === undefined) break;
             yield* awaitWake(
               session,

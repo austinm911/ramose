@@ -33,12 +33,17 @@ const rows = yield* db
 
 ## Retry semantics
 
-- **`live` retries for you.** Dropped sockets, 5xx, and `NetworkError` are
-  retried with backoff; the stream fails only on terminal `InvalidRequest`,
-  `Unauthorized`, or `DatabaseNotFound`.
-- **`transact` does not auto-retry.** A 503 (`Unavailable`) after a
-  transactor abort means nothing from the failed batch was durable — retry
-  the whole transaction.
+- **Transient platform errors are retried briefly, on every transport.**
+  `Unavailable` and `NetworkError` walk a short jittered ladder (six
+  attempts, ~150ms doubling to 2s) before they surface — for HTTPS and for
+  reads over the session socket alike, so a read does not lose resilience by
+  taking the socket. Application errors never retry.
+- **`live` retries for you.** Beyond that ladder, dropped sockets, 5xx, and
+  `NetworkError` are retried with backoff; the stream fails only on terminal
+  `InvalidRequest`, `Unauthorized`, or `DatabaseNotFound`.
+- **`transact` is not retried past that ladder.** A 503 (`Unavailable`)
+  after a transactor abort means nothing from the failed batch was durable —
+  retry the whole transaction.
 - **`TxRejected` is not transient.** The transaction itself is wrong for the
   current database value (or denied by policy); retrying unchanged will
   reject again.

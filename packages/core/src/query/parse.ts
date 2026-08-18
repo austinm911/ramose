@@ -14,6 +14,7 @@ import {
   type FindElem,
   type FindSpec,
   type InputSpec,
+  type OrderSpec,
   type PullAttrSpec,
   type PullPattern,
   type Query,
@@ -195,8 +196,71 @@ function toInputs(form: unknown): InputSpec[] {
 }
 
 // ---------------------------------------------------------------------------
+// order / limit / offset
+// ---------------------------------------------------------------------------
+
+/** Strip a leading ':' so EDN keywords and plain JSON strings both work. */
+function bare(x: unknown): unknown {
+  return typeof x === "string" && x.startsWith(":") ? x.slice(1) : x;
+}
+
+function orderDir(x: unknown, form: unknown): "asc" | "desc" {
+  if (x === undefined) return "asc";
+  const s = bare(x);
+  if (s === "asc" || s === "desc") return s;
+  return fail("order direction must be :asc or :desc", form);
+}
+
+function orderEmpty(x: unknown, form: unknown): "first" | "last" | undefined {
+  if (x === undefined) return undefined;
+  const s = bare(x);
+  if (s === "first" || s === "last") return s;
+  return fail("order empty placement must be :first or :last", form);
+}
+
+function mkOrder(name: string, dir: "asc" | "desc", empty: "first" | "last" | undefined): OrderSpec {
+  return empty === undefined ? { var: name, dir } : { var: name, dir, empty };
+}
+
+/** `?v` | `[?v :desc :last]` | `{:var ?v :dir :desc :empty :last}` */
+function toOrderSpec(x: unknown): OrderSpec {
+  if (isVarName(x)) return { var: x, dir: "asc" };
+  if (Array.isArray(x)) {
+    if (!isVarName(x[0])) fail("order needs a variable", x);
+    if (x.length > 3) fail("order tuple is [?var dir? empty?]", x);
+    return mkOrder(x[0] as string, orderDir(x[1], x), orderEmpty(x[2], x));
+  }
+  if (typeof x === "object" && x !== null && !(x instanceof EdnList)) {
+    const m: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(x as Record<string, unknown>)) m[String(bare(k))] = v;
+    for (const k of Object.keys(m)) if (k !== "var" && k !== "dir" && k !== "empty") fail(`unknown order key :${k}`, x);
+    if (!isVarName(m.var)) fail("order needs a variable", x);
+    return mkOrder(m.var as string, orderDir(m.dir, x), orderEmpty(m.empty, x));
+  }
+  return fail("bad order spec", x);
+}
+
+function toOrder(form: unknown): OrderSpec[] | undefined {
+  if (form === undefined) return undefined;
+  if (!Array.isArray(form)) fail("order must be a vector", form);
+  const specs = (form as unknown[]).map(toOrderSpec);
+  return specs.length ? specs : undefined;
+}
+
+function toCount(x: unknown, key: string): number | undefined {
+  if (x === undefined || x === null) return undefined;
+  if (typeof x !== "number" || !Number.isInteger(x) || x < 0) fail(`:${key} must be a non-negative integer`, x);
+  return x as number;
+}
+
+// ---------------------------------------------------------------------------
 // query
 // ---------------------------------------------------------------------------
+
+const SECTIONS = [":find", ":in", ":where", ":with", ":keys", ":strs", ":syms", ":order", ":limit", ":offset"];
+/** Sections that take a single value rather than a sequence of forms. */
+const SCALAR_SECTIONS = ["limit", "offset"];
+const QUERY_KEYS = new Set(SECTIONS.map((s) => s.slice(1)));
 
 function normalizeMap(form: unknown): Record<string, unknown> {
   if (typeof form === "string") form = readEdn(form);
@@ -205,13 +269,19 @@ function normalizeMap(form: unknown): Record<string, unknown> {
     const out: Record<string, unknown> = {};
     let key: string | undefined;
     for (const x of form as unknown[]) {
-      if (isKeyword(x) && [":find", ":in", ":where", ":with", ":keys", ":strs", ":syms"].includes(x)) {
+      if (isKeyword(x) && SECTIONS.includes(x)) {
         key = x.slice(1);
         out[key] = [];
         continue;
       }
       if (!key) fail("query vector must start with :find", form);
       (out[key] as unknown[]).push(x);
+    }
+    for (const k of SCALAR_SECTIONS) {
+      const vs = out[k] as unknown[] | undefined;
+      if (vs === undefined) continue;
+      if (vs.length !== 1) fail(`:${k} takes exactly one value`, form);
+      out[k] = vs[0];
     }
     return out;
   }
@@ -223,6 +293,9 @@ function normalizeMap(form: unknown): Record<string, unknown> {
 
 export function parseQuery(form: unknown): Query {
   const m = normalizeMap(form);
+  for (const k of Object.keys(m)) {
+    if (!QUERY_KEYS.has(k)) fail(`unknown query key :${k} (expected one of ${SECTIONS.join(" ")})`);
+  }
   if (m.find === undefined) fail("query is missing :find");
   const find = toFindSpec(m.find);
   const where = m.where === undefined ? [] : (Array.isArray(m.where) ? m.where.map(toClause) : fail("where must be a vector", m.where));
@@ -232,7 +305,10 @@ export function parseQuery(form: unknown): Query {
   const keys = keysForm === undefined ? undefined : (keysForm as unknown[]).map(String);
   if (keys && find.kind !== "rel") fail(":keys requires a relation find spec");
   if (keys && find.kind === "rel" && keys.length !== find.elems.length) fail(":keys length must match :find");
-  return { find, keys, with: withVars, in: inputs, where };
+  const order = toOrder(m.order);
+  const limit = toCount(m.limit, "limit");
+  const offset = toCount(m.offset, "offset");
+  return { find, keys, with: withVars, in: inputs, where, order, limit, offset };
 }
 
 // ---------------------------------------------------------------------------
@@ -268,8 +344,7 @@ function pullSpec(x: unknown): PullAttrSpec | { kind: "wildcard" } {
     typeof (x as { attr?: unknown }).attr === "string"
   ) {
     const spec = x as PullAttrSpec;
-    if (spec.sub) spec.sub = parsePullPattern(spec.sub);
-    return spec;
+    return spec.sub ? { ...spec, sub: parsePullPattern(spec.sub) } : { ...spec };
   }
   if (isKeyword(x)) return { kind: "attr", ...attrName(x, x) };
   const expr = asExpr(x);
