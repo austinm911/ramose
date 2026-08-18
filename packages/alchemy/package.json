@@ -1,7 +1,6 @@
 {
   "name": "@ripple/alchemy",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Alchemy 2 + Effect interface for Ripple: the portable `@ripple/alchemy/db` entry, the Ripple.Server and Ripple.Database resources, the ReadWriteDatabases / ReadDatabases capabilities and the ServerBinding / ServerHttp transports.",
   "main": "src/index.ts",
@@ -9,6 +8,17 @@
   "exports": {
     ".": "./src/index.ts",
     "./db": "./src/db/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": false
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tvanhens/ripple.git"
   },
   "dependencies": {
     "@ripple/core": "workspace:*",

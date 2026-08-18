@@ -62,6 +62,7 @@ stage name is unguessable and torn down at the end of the run.
 | `.github/workflows/ci.yml` | every PR and push to `master` | `typecheck` + unit tests |
 | `.github/workflows/e2e-cloudflare.yml` | every PR, push to `master`, and `workflow_dispatch` | `bun run test:e2e:cf` |
 | `.github/workflows/docs-preview.yml` | PRs touching `website/` | deploy a `pr-<n>` preview of the docs site, comment the URL, destroy on close |
+| `.github/workflows/publish.yml` | publishing a GitHub Release (`vX.Y.Z`) | publish `@ripple/core` + `@ripple/alchemy` to npm — see [`docs/RELEASING.md`](docs/RELEASING.md) |
 
 The e2e and docs-preview jobs use the GitHub **Development** environment
 (`environment: Development`). Put `CLOUDFLARE_API_TOKEN` there as a secret and

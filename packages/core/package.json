@@ -1,7 +1,6 @@
 {
   "name": "@ripple/core",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Ripple core engine: datoms, segments, segment trees, novelty, datalog. Pure TypeScript, no Cloudflare dependencies.",
   "main": "src/index.ts",
@@ -9,6 +8,17 @@
   "exports": {
     ".": "./src/index.ts",
     "./*": "./src/*"
+  },
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": false
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tvanhens/ripple.git"
   },
   "scripts": {
     "test": "bun test"
