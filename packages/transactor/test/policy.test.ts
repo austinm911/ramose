@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { type Principal, parsePolicy } from "@ripple/core";
+import { type Principal, parsePolicy } from "@ramose/core";
 import { Harness, attribute } from "./harness.ts";
 
 const allow = (expr: unknown) => [{ _tag: "allow", expr }];

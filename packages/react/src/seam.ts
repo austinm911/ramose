@@ -1,6 +1,6 @@
 /**
  * @internal The reader half of the seam `Db.ts` attaches under
- * `Symbol.for("ripple.db.seam")` — see `DbSeam` there; the shapes must stay
+ * `Symbol.for("ramose.db.seam")` — see `DbSeam` there; the shapes must stay
  * compatible, and `packages/alchemy/test/db-seam.test.ts` pins the contract.
  * It exists because `db.asOf(t)` is pure and builds a new object per call:
  * keyed by identity, an inline view would re-subscribe — and, through the
@@ -8,9 +8,9 @@
  * dependency a hook actually means.
  */
 
-import type { Catalog, ReadDb } from "@ripple/alchemy/db";
+import type { Catalog, ReadDb } from "@ramose/alchemy/db";
 
-const DB_SEAM = Symbol.for("ripple.db.seam");
+const DB_SEAM = Symbol.for("ramose.db.seam");
 
 interface DbSeam {
   /** Equal iff two views read the same coordinates over the same client. */

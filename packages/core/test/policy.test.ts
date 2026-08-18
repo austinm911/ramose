@@ -64,7 +64,7 @@ const user = (sub: string, eid: number | undefined, cls = "member"): Principal =
   class: cls,
   sub,
   eid,
-  claims: { sub, iss: "https://auth.test", aud: "ripple:peer:test", exp: 2 ** 31, attrs: { org: "org_1" } },
+  claims: { sub, iss: "https://auth.test", aud: "ramose:peer:test", exp: 2 ** 31, attrs: { org: "org_1" } },
   db: "acme",
 });
 

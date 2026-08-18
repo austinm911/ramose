@@ -1,5 +1,5 @@
 /**
- * `Ripple.token` — the shipped token sources.
+ * `Ramose.token` — the shipped token sources.
  *
  * `token.jwt(mint)` turns "here is how to fetch a JWT" into the `token`
  * Effect the layer re-reads on every (re)connect and every `/transact`:
@@ -84,7 +84,7 @@ describe("token.jwt mints lazily and caches", () => {
     });
     const peer = fakePeer();
     const c = client(peer, { token: source });
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
 
     // building the source, the layer and the db minted nothing
     expect(mints).toBe(0);
@@ -114,9 +114,9 @@ describe("token.jwt mints lazily and caches", () => {
   test("mint may resolve to the route's body: { token } passes through", async () => {
     const jwt = jwtOf({
       exp: Math.floor((Date.now() + 3_600_000) / 1000),
-      ripple: { db: "acme", class: "member" },
+      ramose: { db: "acme", class: "member" },
     });
-    // what reef's /api/ripple-token actually returns
+    // what reef's /api/ramose-token actually returns
     const source = token.jwt(async () => ({
       token: jwt,
       class: "member",
@@ -125,7 +125,7 @@ describe("token.jwt mints lazily and caches", () => {
 
     expect(await read(source)).toBe(jwt);
     // the claims come from the JWT payload, not the body's side channel
-    expect((await source.claims()).ripple?.class).toBe("member");
+    expect((await source.claims()).ramose?.class).toBe("member");
   });
 
   test("concurrent readers share one in-flight mint", async () => {
@@ -285,19 +285,19 @@ describe("token.jwt refreshes on the payload's exp", () => {
 });
 
 describe("claims() is the decoded payload, UI hints only", () => {
-  test("decodes ripple.class, and its mint is the same cache", async () => {
+  test("decodes ramose.class, and its mint is the same cache", async () => {
     let mints = 0;
     const source = token.jwt(async () => {
       mints += 1;
       return jwtOf({
         sub: "user_01HQ8ZK",
         exp: Math.floor((Date.now() + 3_600_000) / 1000),
-        ripple: { db: "acme", class: "member" },
+        ramose: { db: "acme", class: "member" },
       });
     });
 
     const claims = await source.claims();
-    expect(claims.ripple?.class).toBe("member");
+    expect(claims.ramose?.class).toBe("member");
     expect(claims.sub).toBe("user_01HQ8ZK");
     expect(mints).toBe(1);
 
@@ -307,10 +307,10 @@ describe("claims() is the decoded payload, UI hints only", () => {
   });
 
   test("token.static carries a fixed credential, decoded when it is a JWT", async () => {
-    const jwt = jwtOf({ ripple: { db: "acme", class: "admin" } });
+    const jwt = jwtOf({ ramose: { db: "acme", class: "admin" } });
     const source = token.static(jwt);
     expect(await read(source)).toBe(jwt);
-    expect((await source.claims()).ripple?.class).toBe("admin");
+    expect((await source.claims()).ramose?.class).toBe("admin");
 
     // not a JWT: no claims, but the credential still flows
     const opaque = token.static("s3cret");
@@ -328,7 +328,7 @@ describe("failure typing on the wire", () => {
     });
     const peer = fakePeer();
     const c = client(peer, { token: source });
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
 
     const error = await runFail(
       db.transact(function* (tx) {
@@ -352,7 +352,7 @@ describe("failure typing on the wire", () => {
     });
     const peer = fakePeer();
     const c = client(peer, { token: source });
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
 
     const error = await runFail(
       db.transact(function* (tx) {
@@ -380,7 +380,7 @@ describe("failure typing on the wire", () => {
       answer: () => ({ body: { t: 5, result: [[{ name: "Ada" }]] } }),
     });
     const c = client(peer, { token: source });
-    const live = collect(c.ripple.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).live(names));
 
     // the wire's transient ladder retries the failed connect in place
     await settle(600);
@@ -399,7 +399,7 @@ describe("failure typing on the wire", () => {
     });
     const peer = fakePeer();
     const c = client(peer, { token: source });
-    const live = collect(c.ripple.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).live(names));
     await settle();
 
     expect(live.done).toBe(true);

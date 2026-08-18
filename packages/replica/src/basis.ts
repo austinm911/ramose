@@ -16,8 +16,8 @@ import {
   deriveSchema,
   entryFromFrame,
   txFrame,
-} from "@ripple/core";
-import { recordToRoots } from "@ripple/storage";
+} from "@ramose/core";
+import { recordToRoots } from "@ramose/storage";
 
 export interface Basis {
   v: 1;

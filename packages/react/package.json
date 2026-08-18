@@ -1,16 +1,16 @@
 {
-  "name": "@ripple/react",
+  "name": "@ramose/react",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "React bindings for Ripple: RippleProvider owns one Client per subtree, useRipple hands it back, useDb memoises a Db from it. Hooks only — no UI, no styling.",
+  "description": "React bindings for Ramose: RamoseProvider owns one Client per subtree, useRamose hands it back, useDb memoises a Db from it. Hooks only — no UI, no styling.",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "exports": {
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@ripple/alchemy": "workspace:*",
+    "@ramose/alchemy": "workspace:*",
     "effect": ">=4.0.0-beta.105"
   },
   "peerDependencies": {

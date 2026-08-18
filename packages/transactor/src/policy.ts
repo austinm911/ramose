@@ -1,15 +1,15 @@
 /**
- * `RIPPLE_POLICY` → a `CompiledPolicy`, parsed once per isolate.
+ * `RAMOSE_POLICY` → a `CompiledPolicy`, parsed once per isolate.
  *
  * Fail closed: a policy that is set but malformed leaves `policy` undefined
  * with `configured: true`, which every caller must read as "deny".
  */
 
-import { type CompiledPolicy, type Principal, componentLogger, parsePolicy } from "@ripple/core";
-import type { RippleEnv } from "./env.ts";
+import { type CompiledPolicy, type Principal, componentLogger, parsePolicy } from "@ramose/core";
+import type { RamoseEnv } from "./env.ts";
 
 export interface PolicyState {
-  /** `RIPPLE_POLICY` is set — enforcement is armed even if parsing failed */
+  /** `RAMOSE_POLICY` is set — enforcement is armed even if parsing failed */
   readonly configured: boolean;
   readonly policy?: CompiledPolicy;
   /** why the policy is unusable (parse failure) */
@@ -21,8 +21,8 @@ const cache = new Map<string, PolicyState>();
 const log = componentLogger("peer");
 
 /** Parse (and memoize) the compiled policy in `env`. */
-export function policyOf(env: Pick<RippleEnv, "RIPPLE_POLICY">): PolicyState {
-  const raw = env.RIPPLE_POLICY;
+export function policyOf(env: Pick<RamoseEnv, "RAMOSE_POLICY">): PolicyState {
+  const raw = env.RAMOSE_POLICY;
   if (!raw) return OPEN;
   const hit = cache.get(raw);
   if (hit) return hit;
@@ -46,7 +46,7 @@ const DENY_ALL: CompiledPolicy = { version: 1, principal: ":db/ident", classes: 
  * The policy the writer enforces. A configured-but-malformed policy denies
  * every non-admin write rather than falling open.
  */
-export function enforcedPolicy(env: Pick<RippleEnv, "RIPPLE_POLICY">): CompiledPolicy | undefined {
+export function enforcedPolicy(env: Pick<RamoseEnv, "RAMOSE_POLICY">): CompiledPolicy | undefined {
   const st = policyOf(env);
   if (!st.configured) return undefined;
   return st.policy ?? DENY_ALL;

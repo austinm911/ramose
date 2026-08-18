@@ -8,7 +8,7 @@
  * are "everything" and "reads only".
  *
  * @binding
- * @product Ripple
+ * @product Ramose
  * @category Storage & Databases
  */
 
@@ -20,10 +20,10 @@ import type { Server } from "./Server.ts";
 export interface ReadDatabases
   extends Binding.Service<
     ReadDatabases,
-    "Ripple.ReadDatabases",
+    "Ramose.ReadDatabases",
     (server: Server) => Effect.Effect<ReadDatabasesShape>
   > {}
 
 export const ReadDatabases = Binding.Service<ReadDatabases>(
-  "Ripple.ReadDatabases",
+  "Ramose.ReadDatabases",
 );

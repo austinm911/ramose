@@ -9,9 +9,9 @@
  * import `cloudflare:workers`), so the pure mapping is tested directly.
  */
 import { describe, expect, test } from "bun:test";
-import { QueryBudgetError } from "@ripple/core";
+import { QueryBudgetError } from "@ramose/core";
 import * as Effect from "effect/Effect";
-import { BadRequest, Internal, NotFound, QueryBudgetExceeded, type RippleError, Unauthorized, UpstreamError, fromThrown, isRippleError, toHttp } from "../src/errors.ts";
+import { BadRequest, Internal, NotFound, QueryBudgetExceeded, type RamoseError, Unauthorized, UpstreamError, fromThrown, isRamoseError, toHttp } from "../src/errors.ts";
 
 describe("tagged failure → status/body", () => {
   test("NotFound → 404 { error }", () => {
@@ -45,7 +45,7 @@ describe("tagged failure → status/body", () => {
   });
 
   test("UpstreamError passes the DO response through verbatim", () => {
-    const headers = { "content-type": "application/json", "x-ripple-ms": "3" };
+    const headers = { "content-type": "application/json", "x-ramose-ms": "3" };
     expect(toHttp(new UpstreamError({ status: 409, body: '{"error":"cas failed"}', headers }))).toEqual({ status: 409, raw: '{"error":"cas failed"}', headers });
   });
 });
@@ -70,8 +70,8 @@ describe("fromThrown", () => {
   test("a tagged failure thrown inside a route body is passed through unchanged", () => {
     const thrown = new BadRequest({ message: "body must be { query, inputs? }" });
     expect(fromThrown(thrown)).toBe(thrown);
-    expect(isRippleError(thrown)).toBe(true);
-    expect(isRippleError(new Error("x"))).toBe(false);
+    expect(isRamoseError(thrown)).toBe(true);
+    expect(isRamoseError(new Error("x"))).toBe(false);
   });
 });
 
@@ -84,7 +84,7 @@ describe("Effect.catchTags dispatch", () => {
     QueryBudgetExceeded: (e: QueryBudgetExceeded) => Effect.succeed(toHttp(e)),
     Internal: (e: Internal) => Effect.succeed(toHttp(e)),
   };
-  const run = (e: RippleError) => Effect.runPromise(Effect.fail(e).pipe(Effect.catchTags(recover)));
+  const run = (e: RamoseError) => Effect.runPromise(Effect.fail(e).pipe(Effect.catchTags(recover)));
 
   test("every tag is handled and keeps its status", async () => {
     expect((await run(new NotFound({}))).status).toBe(404);

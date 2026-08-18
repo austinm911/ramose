@@ -1,12 +1,12 @@
 /**
- * `@ripple/react` — React bindings for Ripple. Named hooks, not a namespace:
+ * `@ramose/react` — React bindings for Ramose. Named hooks, not a namespace:
  *
  * ```tsx
- * import { RippleProvider, useDb } from "@ripple/react";
+ * import { RamoseProvider, useDb } from "@ramose/react";
  * ```
  *
- * `RippleProvider` owns one `Client` per subtree (connect on mount / prop
- * change, close on unmount / prop change, StrictMode-safe), `useRipple()`
+ * `RamoseProvider` owns one `Client` per subtree (connect on mount / prop
+ * change, close on unmount / prop change, StrictMode-safe), `useRamose()`
  * hands it back, and `useDb(name, catalog)` memoises a `Db` from it. On top
  * sit the reads — `useLive` (standing query as state), `useQuery` (one-shot
  * `db.q` as `Async`), `usePull` (standing `db.livePull` as `Live`),
@@ -15,8 +15,8 @@
  * for toast text.
  */
 
-export { RippleProvider, type RippleProviderProps } from "./RippleProvider.tsx";
-export { useDb, useRipple } from "./hooks.ts";
+export { RamoseProvider, type RamoseProviderProps } from "./RamoseProvider.tsx";
+export { useDb, useRamose } from "./hooks.ts";
 export { type Live, useLive } from "./useLive.ts";
 export { type Async, useQuery } from "./useQuery.ts";
 export { usePull } from "./usePull.ts";

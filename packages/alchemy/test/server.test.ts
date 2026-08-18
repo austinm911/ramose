@@ -2,7 +2,7 @@
  * The resources themselves: identity, the name rule their clients enforce,
  * Worker resolution, and the env keys the two transports agree on.
  *
- * Instantiating a resource (`Ripple.Server("Ripple", …)`) needs a running
+ * Instantiating a resource (`Ramose.Server("Ramose", …)`) needs a running
  * engine — that lives in `stack.test.ts`. What is checkable in isolation is
  * everything the provider decides *about* a server, plus the shape of the
  * props and attributes, which the compiler checks.
@@ -28,27 +28,27 @@ import { envKeys } from "../src/ServerRuntime.ts";
 
 describe("identity", () => {
   test("the resource classes carry their types", () => {
-    expect(Server.Type).toBe("Ripple.Server");
-    expect(Database.Type).toBe("Ripple.Database");
+    expect(Server.Type).toBe("Ramose.Server");
+    expect(Database.Type).toBe("Ramose.Database");
   });
 
   test("isServer recognises a server and nothing else", () => {
-    expect(isServer({ Type: "Ripple.Server", FQN: "app/Ripple" })).toBe(true);
+    expect(isServer({ Type: "Ramose.Server", FQN: "app/Ramose" })).toBe(true);
     // Refs resolve to callable proxies, hence the `function` case.
-    const ref = Object.assign(() => {}, { Type: "Ripple.Server" });
+    const ref = Object.assign(() => {}, { Type: "Ramose.Server" });
     expect(isServer(ref)).toBe(true);
     expect(isServer({ Type: "Cloudflare.KV.Namespace", FQN: "app/KV" })).toBe(false);
     // the other resource in this package is not this resource
-    expect(isServer({ Type: "Ripple.Database", FQN: "app/Movies" })).toBe(false);
-    expect(isDatabase({ Type: "Ripple.Database", FQN: "app/Movies" })).toBe(true);
-    expect(isDatabase({ Type: "Ripple.Server", FQN: "app/Ripple" })).toBe(false);
+    expect(isServer({ Type: "Ramose.Database", FQN: "app/Movies" })).toBe(false);
+    expect(isDatabase({ Type: "Ramose.Database", FQN: "app/Movies" })).toBe(true);
+    expect(isDatabase({ Type: "Ramose.Server", FQN: "app/Ramose" })).toBe(false);
     expect(isServer(undefined)).toBe(false);
-    expect(isServer("Ripple.Server")).toBe(false);
+    expect(isServer("Ramose.Server")).toBe(false);
   });
 
   test("the capabilities are keyed under stable ids", () => {
-    expect(ReadWriteDatabases.key).toBe("Ripple.ReadWriteDatabases");
-    expect(ReadDatabases.key).toBe("Ripple.ReadDatabases");
+    expect(ReadWriteDatabases.key).toBe("Ramose.ReadWriteDatabases");
+    expect(ReadDatabases.key).toBe("Ramose.ReadDatabases");
   });
 });
 
@@ -60,7 +60,7 @@ describe("identity", () => {
  */
 describe("a server has no database name", () => {
   test("`name` is not a prop", () => {
-    // @ts-expect-error a database name is chosen per call, by `ripple.db(name, …)`
+    // @ts-expect-error a database name is chosen per call, by `ramose.db(name, …)`
     const props: ServerProps = { worker: "https://peer.example.com", name: "movies" };
     expect(props.worker).toBe("https://peer.example.com");
 
@@ -72,7 +72,7 @@ describe("a server has no database name", () => {
   test("the attributes are url / workerName / token — no name, no databaseUrl", () => {
     const attributes: Server["Attributes"] = {
       url: "https://peer.example.com",
-      workerName: "ripple-peer",
+      workerName: "ramose-peer",
       token: undefined,
     };
     expect(Object.keys(attributes).sort()).toEqual(["token", "url", "workerName"]);
@@ -94,9 +94,9 @@ describe("a server has no database name", () => {
 
 describe("worker resolution", () => {
   test("a Worker-shaped value yields its url and script name", () => {
-    expect(resolveWorker({ url: "https://peer.example.com", workerName: "ripple-peer" })).toEqual({
+    expect(resolveWorker({ url: "https://peer.example.com", workerName: "ramose-peer" })).toEqual({
       url: "https://peer.example.com",
-      workerName: "ripple-peer",
+      workerName: "ramose-peer",
     });
   });
 
@@ -114,17 +114,17 @@ describe("worker resolution", () => {
 
 describe("env keys", () => {
   test("the env keys are derived from the logical id — and there is no _DB key", () => {
-    const keys = envKeys({ LogicalId: "Ripple" });
+    const keys = envKeys({ LogicalId: "Ramose" });
     expect(keys).toEqual({
-      service: "Ripple",
-      url: "Ripple_URL",
-      token: "Ripple_TOKEN",
+      service: "Ramose",
+      url: "Ramose_URL",
+      token: "Ramose_TOKEN",
     });
-    expect(Object.values(keys)).not.toContain("Ripple_DB");
+    expect(Object.values(keys)).not.toContain("Ramose_DB");
   });
 
   test("service-binding dispatch uses a synthetic origin", () => {
-    expect(SERVICE_ORIGIN).toBe("https://ripple.internal");
+    expect(SERVICE_ORIGIN).toBe("https://ramose.internal");
   });
 });
 
@@ -135,13 +135,13 @@ describe("env keys", () => {
 describe("the server's auth env", () => {
   test("the key names are the ones the server Worker reads", () => {
     expect(AUTH_ENV_KEYS).toEqual({
-      policy: "RIPPLE_POLICY",
-      jwksUrl: "RIPPLE_JWKS_URL",
-      issuers: "RIPPLE_JWT_ISS",
-      aud: "RIPPLE_JWT_AUD",
-      maxTtl: "RIPPLE_JWT_MAX_TTL",
-      allowedOrigins: "RIPPLE_ALLOWED_ORIGINS",
-      internalSecret: "RIPPLE_INTERNAL_SECRET",
+      policy: "RAMOSE_POLICY",
+      jwksUrl: "RAMOSE_JWKS_URL",
+      issuers: "RAMOSE_JWT_ISS",
+      aud: "RAMOSE_JWT_AUD",
+      maxTtl: "RAMOSE_JWT_MAX_TTL",
+      allowedOrigins: "RAMOSE_ALLOWED_ORIGINS",
+      internalSecret: "RAMOSE_INTERNAL_SECRET",
     });
     expect(DEFAULT_JWT_MAX_TTL).toBe(900);
   });
@@ -157,17 +157,17 @@ describe("the server's auth env", () => {
       policy: '{"v":1}',
       jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
       issuers: ["https://auth.acme.example", " https://auth.other.example "],
-      aud: "ripple:peer:prod",
+      aud: "ramose:peer:prod",
       maxTtl: 300,
       allowedOrigins: "https://app.acme.example, ",
     });
     expect(env).toEqual({
-      RIPPLE_POLICY: '{"v":1}',
-      RIPPLE_JWKS_URL: "https://auth.acme.example/.well-known/jwks.json",
-      RIPPLE_JWT_ISS: "https://auth.acme.example,https://auth.other.example",
-      RIPPLE_JWT_AUD: "ripple:peer:prod",
-      RIPPLE_JWT_MAX_TTL: "300",
-      RIPPLE_ALLOWED_ORIGINS: "https://app.acme.example",
+      RAMOSE_POLICY: '{"v":1}',
+      RAMOSE_JWKS_URL: "https://auth.acme.example/.well-known/jwks.json",
+      RAMOSE_JWT_ISS: "https://auth.acme.example,https://auth.other.example",
+      RAMOSE_JWT_AUD: "ramose:peer:prod",
+      RAMOSE_JWT_MAX_TTL: "300",
+      RAMOSE_ALLOWED_ORIGINS: "https://app.acme.example",
     });
   });
 
@@ -179,7 +179,7 @@ describe("the server's auth env", () => {
   });
 
   /**
-   * The DO gate is off when `RIPPLE_INTERNAL_SECRET` is unset, so a policy that
+   * The DO gate is off when `RAMOSE_INTERNAL_SECRET` is unset, so a policy that
    * bound no secret would arm enforcement on the Worker while leaving the
    * transactor trusting whatever principal the Worker claims.
    */
@@ -188,7 +188,7 @@ describe("the server's auth env", () => {
       policy: '{"v":1}',
       jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
       issuers: "https://auth.acme.example",
-      aud: "ripple:peer:prod",
+      aud: "ramose:peer:prod",
     });
     const bound = env[AUTH_ENV_KEYS.internalSecret];
     expect(Redacted.isRedacted(bound)).toBe(true);
@@ -202,7 +202,7 @@ describe("the server's auth env", () => {
       policy: '{"v":1}',
       jwksUrl: "https://auth.acme.example/.well-known/jwks.json",
       issuers: "https://auth.acme.example",
-      aud: "ripple:peer:prod",
+      aud: "ramose:peer:prod",
       internalSecret: "sh4red",
     });
     expect(Redacted.value(env[AUTH_ENV_KEYS.internalSecret] as Redacted.Redacted<string>)).toBe(
@@ -212,7 +212,7 @@ describe("the server's auth env", () => {
 
   test("no policy and no pinned secret binds no internal secret", () => {
     expect(authEnv({ jwksUrl: "https://auth.acme.example/.well-known/jwks.json" })).toEqual({
-      RIPPLE_JWKS_URL: "https://auth.acme.example/.well-known/jwks.json",
+      RAMOSE_JWKS_URL: "https://auth.acme.example/.well-known/jwks.json",
     });
     expect(authEnv({})[AUTH_ENV_KEYS.internalSecret]).toBeUndefined();
     expect(authEnv({ policy: "" })[AUTH_ENV_KEYS.internalSecret]).toBeUndefined();

@@ -1,7 +1,7 @@
 /**
  * The two capabilities through the two transport layers.
  *
- * The binding **is** the client: `yield* Ripple.ReadWriteDatabases(Server)`
+ * The binding **is** the client: `yield* Ramose.ReadWriteDatabases(Server)`
  * hands back a `Databases`, and the Worker body is identical whether
  * `ServerBinding` (a service binding to the server Worker) or `ServerHttp`
  * (the public URL) decided the wire. `ReadDatabases` is the same client with
@@ -29,11 +29,11 @@ const ACK = { t: 7, txEid: 13194139533319, tempids: {}, datoms: 1 };
 /** A server whose attributes are literal Outputs, as after a deploy. */
 const server = (token?: string): Server =>
   ({
-    LogicalId: "Ripple",
-    FQN: "app/Ripple",
-    Type: "Ripple.Server",
+    LogicalId: "Ramose",
+    FQN: "app/Ramose",
+    Type: "Ramose.Server",
     url: Output.literal("https://peer.example.com"),
-    workerName: Output.literal("ripple-peer"),
+    workerName: Output.literal("ramose-peer"),
     token: Output.literal(token === undefined ? undefined : Redacted.make(token)),
   }) as unknown as Server;
 
@@ -100,14 +100,14 @@ afterEach(() => {
 describe("ReadWriteDatabases under ServerBinding", () => {
   test("the binding is the client: writes dispatch through env[LogicalId]", async () => {
     const calls: Call[] = [];
-    const env = { Ripple: { fetch: fetcher(calls) } };
+    const env = { Ramose: { fetch: fetcher(calls) } };
 
     const report = await Effect.runPromise(
       Effect.gen(function* () {
-        const ripple = yield* ReadWriteDatabases(server("s3cret"));
+        const ramose = yield* ReadWriteDatabases(server("s3cret"));
         // pure: naming a database costs no request
         expect(calls).toEqual([]);
-        return yield* ripple.db("movies", Movies).transact(write);
+        return yield* ramose.db("movies", Movies).transact(write);
       }).pipe(
         Effect.provide(ServerBinding),
         Effect.provide(
@@ -130,8 +130,8 @@ describe("ReadWriteDatabases under ServerBinding", () => {
   test("a missing service binding is a defect, not a DbError", async () => {
     const outcome = await Effect.runPromise(
       Effect.gen(function* () {
-        const ripple = yield* ReadWriteDatabases(server());
-        return yield* ripple.db("movies", Movies).transact(write);
+        const ramose = yield* ReadWriteDatabases(server());
+        return yield* ramose.db("movies", Movies).transact(write);
       }).pipe(
         Effect.provide(ServerBinding),
         Effect.provide(
@@ -151,7 +151,7 @@ describe("ReadWriteDatabases under ServerBinding", () => {
     );
     expect(outcome).toMatchObject({ die: true });
     expect((outcome as { message: string }).message).toMatch(
-      /no service binding "Ripple"/,
+      /no service binding "Ramose"/,
     );
   });
 });
@@ -163,8 +163,8 @@ describe("ReadWriteDatabases under ServerHttp", () => {
 
     const report = await Effect.runPromise(
       Effect.gen(function* () {
-        const ripple = yield* ReadWriteDatabases(server("s3cret"));
-        return yield* ripple.db("movies", Movies).transact(write);
+        const ramose = yield* ReadWriteDatabases(server("s3cret"));
+        return yield* ramose.db("movies", Movies).transact(write);
       }).pipe(Effect.provide(ServerHttp), Effect.provide(runtimeLayer())),
     );
 
@@ -183,14 +183,14 @@ describe("ReadDatabases", () => {
     const read = (transport: Layer.Layer<ReadDatabases, never, WorkerEnvironment>) =>
       Effect.runPromise(
         Effect.gen(function* () {
-          const ripple = yield* ReadDatabases(server());
-          return ripple.db("movies", Movies);
+          const ramose = yield* ReadDatabases(server());
+          return ramose.db("movies", Movies);
         }).pipe(
           Effect.provide(transport),
           Effect.provide(
             Layer.mergeAll(
               Layer.succeed(WorkerEnvironment, {
-                Ripple: { fetch: fetcher(calls) },
+                Ramose: { fetch: fetcher(calls) },
               } as never),
               runtimeLayer(),
             ),
@@ -233,8 +233,8 @@ describe("ReadDatabases", () => {
 
     const rows = await Effect.runPromise(
       Effect.gen(function* () {
-        const ripple = yield* ReadDatabases(server());
-        return yield* ripple
+        const ramose = yield* ReadDatabases(server());
+        return yield* ramose
           .db("movies", Movies)
           .q(query(User).select({ name: User.name }));
       }).pipe(Effect.provide(ServerHttp), Effect.provide(runtimeLayer())),

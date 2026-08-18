@@ -219,7 +219,7 @@ const reverseNode = (
 ): unknown => {
   if ((from as { isComponent?: boolean }).isComponent === true) {
     throw new Error(
-      `ripple/query: ${from.ident} is a component ref, whose backlink is single-valued — \`.reverse\` only models the many-valued case`,
+      `ramose/query: ${from.ident} is a component ref, whose backlink is single-valued — \`.reverse\` only models the many-valued case`,
     );
   }
   const path = pathOfSafe(from);

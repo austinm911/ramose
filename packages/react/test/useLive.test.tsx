@@ -19,7 +19,7 @@
 
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, describe, expect, test } from "bun:test";
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -36,27 +36,27 @@ GlobalRegistrator.register();
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 afterAll(() => GlobalRegistrator.unregister());
 
-const Todo = Ripple.Namespace("todo", {
-  title: Ripple.Attr(Schema.String),
+const Todo = Ramose.Namespace("todo", {
+  title: Ramose.Attr(Schema.String),
 });
-const Todos = Ripple.Catalog({ todo: Todo });
+const Todos = Ramose.Catalog({ todo: Todo });
 
 /** No `.select`, so rows are entity ids — the peer's `[[eid], …]` unwrapped. */
-const allTodos = Ripple.query(Todo);
-const oneTodo = Ripple.query(Todo).limit(1);
+const allTodos = Ramose.query(Todo);
+const oneTodo = Ramose.query(Todo).limit(1);
 
 /** Every pass is a handful of microtasks; a beat is plenty. */
 const settle = (ms = 25) => Bun.sleep(ms);
 
 /** Entity ids as the shape the rows carry — `Eid` is `{ id }`, as data. */
-const ids = (...ns: number[]): readonly Ripple.Eid[] =>
+const ids = (...ns: number[]): readonly Ramose.Eid[] =>
   ns.map((id) => ({ id }));
 
 /** One client over one fake peer, with a swappable frame answer. */
 const setup = () => {
   let respond: Answer = () => ({ body: { t: 1, result: [[1]] } });
   const peer = fakePeer({ answer: (frame) => respond(frame) });
-  const client = Ripple.connect({
+  const client = Ramose.connect({
     url: "https://peer.example.com",
     fetch: peer.fetch,
     webSocket: peer.webSocket,
@@ -110,7 +110,7 @@ describe("useLive (query form)", () => {
     const { db, peer, answer, qFrames, close } = setup();
     try {
       const { result, rerender } = renderHook(
-        ({ query }: { query: Ripple.QueryInput<readonly Ripple.Eid[]> }) =>
+        ({ query }: { query: Ramose.QueryInput<readonly Ramose.Eid[]> }) =>
           useLive(db, query),
         { initialProps: { query: allTodos } },
       );
@@ -149,7 +149,7 @@ describe("useLive (query form)", () => {
     const { db, close } = setup();
     try {
       const { result, rerender, unmount } = renderHook(
-        ({ query }: { query: Ripple.QueryInput<readonly Ripple.Eid[]> }) =>
+        ({ query }: { query: Ramose.QueryInput<readonly Ramose.Eid[]> }) =>
           useLive(db, query),
         { initialProps: { query: allTodos } },
       );

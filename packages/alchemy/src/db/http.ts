@@ -7,11 +7,11 @@
  * `POST /db/:name/transact` is the one writer — and reads fall back to it when
  * the client was given no `WebSocket`.
  *
- * Nothing here is on the `@ripple/alchemy/db` barrel: HTTP is Worker
+ * Nothing here is on the `@ramose/alchemy/db` barrel: HTTP is Worker
  * internals, not a second public API.
  */
 
-import { fromJson, toJson } from "@ripple/core/json.ts";
+import { fromJson, toJson } from "@ramose/core/json.ts";
 import * as Effect from "effect/Effect";
 import { type DbError, fromResponse, NetworkError } from "./Errors.ts";
 
@@ -63,7 +63,7 @@ export const record = (value: unknown): Record<string, unknown> =>
 export const minTHeader = (
   minT: number | undefined,
 ): Record<string, string> =>
-  minT === undefined ? {} : { "x-ripple-min-t": String(minT) };
+  minT === undefined ? {} : { "x-ramose-min-t": String(minT) };
 
 export interface RawResult {
   readonly body: unknown;
@@ -157,7 +157,7 @@ const sendOnce = (
         }),
       catch: (cause) =>
         new NetworkError({
-          message: `ripple: ${options.method} ${options.path} failed: ${
+          message: `ramose: ${options.method} ${options.path} failed: ${
             cause instanceof Error ? cause.message : String(cause)
           }`,
           cause,
@@ -168,7 +168,7 @@ const sendOnce = (
       try: () => response.text(),
       catch: (cause) =>
         new NetworkError({
-          message: "ripple: response body could not be read",
+          message: "ramose: response body could not be read",
           cause,
         }),
     });

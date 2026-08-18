@@ -7,7 +7,7 @@
  * first answer lands.
  */
 
-import type { Catalog, ReadDb } from "@ripple/alchemy/db";
+import type { Catalog, ReadDb } from "@ramose/alchemy/db";
 import * as Effect from "effect/Effect";
 import { useEffect, useState } from "react";
 import { seamOf, viewDep } from "./seam.ts";

@@ -1,14 +1,14 @@
 /**
- * `@ripple/alchemy/db` is the portable entry: a browser gets it with no
+ * `@ramose/alchemy/db` is the portable entry: a browser gets it with no
  * bundler alias, no deploy engine and no dead weight.
  *
  * Two guards, both on the *whole transitive import graph* of the barrel:
  *
  *   1. nothing reaches `alchemy` (the deploy engine — `alchemy`,
  *      `alchemy/RuntimeContext`, `alchemy/Binding`, …). That import is what
- *      forced the old `@ripple/alchemy/schema` Vite alias.
- *   2. nothing reaches the `@ripple/core` *barrel*. Deep imports
- *      (`@ripple/core/json.ts`) are how the codec is taken; the barrel drags
+ *      forced the old `@ramose/alchemy/schema` Vite alias.
+ *   2. nothing reaches the `@ramose/core` *barrel*. Deep imports
+ *      (`@ramose/core/json.ts`) are how the codec is taken; the barrel drags
  *      the engine — segment trees, the query planner, the store — into a
  *      browser bundle.
  *
@@ -27,7 +27,7 @@ const repo = resolve(here, "../../..");
 const BARREL = resolve(here, "../src/db/index.ts");
 
 /** Bare specifiers that resolve to source we own and therefore keep walking. */
-const CORE = "@ripple/core";
+const CORE = "@ramose/core";
 
 /** `import … from "x"`, `export … from "x"`, `import("x")` — one regex each. */
 const SPECIFIERS = [
@@ -83,7 +83,7 @@ const walk = (entry: string): Graph => {
   return { files, bare };
 };
 
-describe("@ripple/alchemy/db is portable", () => {
+describe("@ramose/alchemy/db is portable", () => {
   const graph = walk(BARREL);
   const blame = (spec: string) =>
     `${spec} (imported by ${relative(repo, graph.bare.get(spec) ?? "?")})`;
@@ -95,7 +95,7 @@ describe("@ripple/alchemy/db is portable", () => {
     expect(engine.map(blame)).toEqual([]);
   });
 
-  test("no module in the graph imports the `@ripple/core` barrel", () => {
+  test("no module in the graph imports the `@ramose/core` barrel", () => {
     const barrel = [...graph.bare.keys()].filter((spec) => spec === CORE);
     expect(barrel.map(blame)).toEqual([]);
     expect(graph.files.has(resolve(repo, "packages/core/src/index.ts"))).toBe(

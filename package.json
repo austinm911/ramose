@@ -1,8 +1,8 @@
 {
-  "name": "ripple",
+  "name": "ramose",
   "version": "0.1.0",
   "private": true,
-  "description": "Ripple — an immutable, Datomic-inspired database for Cloudflare (Workers + Durable Objects + R2).",
+  "description": "Ramose — an immutable, Datomic-inspired database for Cloudflare (Workers + Durable Objects + R2).",
   "type": "module",
   "workspaces": [
     "packages/*",
@@ -48,9 +48,9 @@
     "@alchemy.run/better-auth": "^2.0.0-beta.72",
     "@effect/platform-bun": ">=4.0.0-beta.105",
     "@effect/platform-node": ">=4.0.0-beta.105",
-    "@ripple/alchemy": "workspace:*",
-    "@ripple/better-auth": "workspace:*",
-    "@ripple/react": "workspace:*",
+    "@ramose/alchemy": "workspace:*",
+    "@ramose/better-auth": "workspace:*",
+    "@ramose/react": "workspace:*",
     "alchemy": "latest",
     "better-auth": "^1.6.30",
     "effect": ">=4.0.0-beta.105"

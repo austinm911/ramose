@@ -7,7 +7,7 @@ export interface PrincipalClaims {
   readonly iss?: string;
   readonly aud?: string;
   readonly exp?: number;
-  /** app claims (`ripple.attrs`), shaped by the policy's `claims` schema */
+  /** app claims (`ramose.attrs`), shaped by the policy's `claims` schema */
   readonly attrs?: Readonly<Record<string, unknown>>;
 }
 
@@ -19,7 +19,7 @@ export interface Principal {
   /** the principal entity resolved via the policy's `principal` attribute */
   readonly eid?: number;
   readonly claims: PrincipalClaims;
-  /** the database this principal is bound to (`ripple.db`) */
+  /** the database this principal is bound to (`ramose.db`) */
   readonly db: string;
 }
 

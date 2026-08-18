@@ -1,7 +1,7 @@
 /**
- * The `@ripple/alchemy` barrel, exactly.
+ * The `@ramose/alchemy` barrel, exactly.
  *
- * Everything on `@ripple/alchemy/db` (asserted name-by-name in
+ * Everything on `@ramose/alchemy/db` (asserted name-by-name in
  * `db-portable.test.ts`) plus the deploy-time half: two resources, two
  * capabilities, two transports, the provider collection, typed policy and the
  * server's auth env. Nothing else is public — no source, no endpoint, no URL
@@ -62,7 +62,7 @@ const KILLED = [
   "openSession",
 ];
 
-describe("the `@ripple/alchemy` barrel", () => {
+describe("the `@ramose/alchemy` barrel", () => {
   test("is `/db` plus exactly the deploy-time half", async () => {
     const [alchemy, db] = await Promise.all([
       import("../src/index.ts"),

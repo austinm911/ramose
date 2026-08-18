@@ -1,20 +1,20 @@
 /**
- * M2 bench: sustained write throughput against a running Ripple deployment
+ * M2 bench: sustained write throughput against a running Ramose deployment
  * (Transactor DO with group commit).
  *
- *   RIPPLE_URL=http://localhost:8787 bun run bench/write-do.bench.ts [concurrency=64] [seconds=10]
+ *   RAMOSE_URL=http://localhost:8787 bun run bench/write-do.bench.ts [concurrency=64] [seconds=10]
  */
-import { attrMap, Peer } from "../test/support/rippleHttp.ts";
+import { attrMap, Peer } from "../test/support/ramoseHttp.ts";
 import { fmt, percentile } from "./lib.ts";
 
-const url = process.env.RIPPLE_URL;
+const url = process.env.RAMOSE_URL;
 if (!url) {
-  console.error("set RIPPLE_URL");
+  console.error("set RAMOSE_URL");
   process.exit(1);
 }
 const conc = Number(process.argv[2] ?? 64);
 const seconds = Number(process.argv[3] ?? 10);
-const client = new Peer(url, { token: process.env.RIPPLE_TOKEN });
+const client = new Peer(url, { token: process.env.RAMOSE_TOKEN });
 const db = client.db(`bench-${Date.now().toString(36)}`);
 await db.transact([attrMap(":k/id", "long", { unique: "identity" }), attrMap(":k/v", "string")]);
 

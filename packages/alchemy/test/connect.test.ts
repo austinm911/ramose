@@ -21,7 +21,7 @@ const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
 
 const names = query(User).select({ name: User.name });
 
-const ripple = (peer: FakePeer) =>
+const ramose = (peer: FakePeer) =>
   connect({
     url: "https://peer.example.com",
     fetch: peer.fetch,
@@ -36,7 +36,7 @@ describe("connect().db() is layer's client, without the runtime", () => {
         body: { t: 7, txEid: 42, tempids: { "tmp-1": 1001 }, datoms: 2 },
       }),
     });
-    const c = ripple(peer);
+    const c = ramose(peer);
     const db = c.db("movies", Movies);
 
     expect(await run(db.q(names))).toEqual([{ name: "Ada" }]);
@@ -63,7 +63,7 @@ describe("connect().db() is layer's client, without the runtime", () => {
 
   test("db is pure: naming a database costs no request and opens no socket", async () => {
     const peer = fakePeer();
-    const c = ripple(peer);
+    const c = ramose(peer);
 
     const db = c.db("movies", Movies);
     void c.db("other", Movies);
@@ -81,7 +81,7 @@ describe("close()", () => {
     const peer = fakePeer({
       answer: () => ({ body: { t: 1, root: 1, result: [] } }),
     });
-    const c = ripple(peer);
+    const c = ramose(peer);
 
     await run(c.db("movies", Movies).q(names));
     await run(c.db("other", Movies).q(names));
@@ -102,7 +102,7 @@ describe("close()", () => {
     const peer = fakePeer({
       answer: () => ({ body: { t: 1, root: 1, result: [] } }),
     });
-    const c = ripple(peer);
+    const c = ramose(peer);
 
     const doomed = runFail(c.db("movies", Movies).q(names));
     await c.close();
@@ -115,7 +115,7 @@ describe("close()", () => {
     const peer = fakePeer({
       answer: () => ({ body: { t: 1, root: 1, result: [] } }),
     });
-    const c = ripple(peer);
+    const c = ramose(peer);
     const db = c.db("movies", Movies);
     await run(db.q(names));
 
@@ -146,7 +146,7 @@ describe("provisioning mistakes throw synchronously", () => {
     globalThis.fetch = undefined as unknown as typeof fetch;
     try {
       expect(() => connect({ url: "https://peer.example.com" })).toThrow(
-        /no global fetch.*Ripple\.connect/,
+        /no global fetch.*Ramose\.connect/,
       );
     } finally {
       globalThis.fetch = ambient;

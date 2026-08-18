@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Principal } from "@ripple/core";
+import type { Principal } from "@ramose/core";
 import { META_HEADERS, type Scheduler, type SessionDispatch, type SocketLike, openSession, planOf, watcherKeys } from "../src/session.ts";
 
 /** A `WebSocket` stand-in: records what the session sent, replays what a client would do. */
@@ -137,14 +137,14 @@ describe("planOf: frame → sub-request", () => {
     expect(planOf({ id: 5, op: "info" })).toEqual({ id: 5, op: "info", rest: "/info", method: "GET", headers: {} }); // GET: no body
   });
 
-  test("minT becomes x-ripple-min-t on reads; absent minT sets no header", () => {
+  test("minT becomes x-ramose-min-t on reads; absent minT sets no header", () => {
     const q = planOf({ id: 1, op: "q", query: "[:find ?e]", minT: 12 }) as any;
     const pull = planOf({ id: 2, op: "pull", eid: 1, pattern: ["*"], minT: 0 }) as any;
-    expect(q.headers["x-ripple-min-t"]).toBe("12");
-    expect(pull.headers["x-ripple-min-t"]).toBe("0");
-    expect((planOf({ id: 3, op: "q", query: "[:find ?e]" }) as any).headers["x-ripple-min-t"]).toBeUndefined();
-    expect((planOf({ id: 4, op: "q", query: "[:find ?e]", minT: -1 }) as any).headers["x-ripple-min-t"]).toBeUndefined();
-    expect((planOf({ id: 5, op: "q", query: "[:find ?e]", minT: "9" }) as any).headers["x-ripple-min-t"]).toBeUndefined();
+    expect(q.headers["x-ramose-min-t"]).toBe("12");
+    expect(pull.headers["x-ramose-min-t"]).toBe("0");
+    expect((planOf({ id: 3, op: "q", query: "[:find ?e]" }) as any).headers["x-ramose-min-t"]).toBeUndefined();
+    expect((planOf({ id: 4, op: "q", query: "[:find ?e]", minT: -1 }) as any).headers["x-ramose-min-t"]).toBeUndefined();
+    expect((planOf({ id: 5, op: "q", query: "[:find ?e]", minT: "9" }) as any).headers["x-ramose-min-t"]).toBeUndefined();
   });
 
   test("malformed frames are plan errors, keeping the id when there is one", () => {
@@ -168,8 +168,8 @@ describe("frame dispatch", () => {
     await s.onMessage(JSON.stringify({ id: 3, op: "entity", eid: 7 }));
     await s.onMessage(JSON.stringify({ id: 4, op: "info" }));
     expect(calls.map((c) => `${c.method} ${c.rest}`)).toEqual(["POST /query", "POST /pull", "GET /entity/7", "GET /info"]);
-    expect(calls[1].headers["x-ripple-min-t"]).toBe("4");
-    expect(calls[0].headers["x-ripple-min-t"]).toBeUndefined();
+    expect(calls[1].headers["x-ramose-min-t"]).toBe("4");
+    expect(calls[0].headers["x-ramose-min-t"]).toBeUndefined();
     expect(socket.frames.map((f) => f.id)).toEqual([1, 2, 3, 4]);
     expect(socket.frames[0]).toMatchObject({ id: 1, status: 200, body: { t: 4, result: [] } });
   });
@@ -186,13 +186,13 @@ describe("frame dispatch", () => {
     expect(socket.frames.map((f) => f.id).sort()).toEqual([1, 2]);
   });
 
-  test("reply carries the status and the x-ripple-* headers; an upstream 413 does not close the socket", async () => {
+  test("reply carries the status and the x-ramose-* headers; an upstream 413 does not close the socket", async () => {
     const socket = new FakeSocket();
     const budget = { error: "query aborted", code: "query/budget-exceeded", clause: "[?e :p/f ?f]", cells: 900, limit: 500 };
     const { dispatch } = fakeDispatch((c) =>
       c.rest === "/query"
-        ? json(budget, 413, { "x-ripple-ms": "7" })
-        : json({ t: 4, result: [] }, 200, { "x-ripple-ms": "3", "x-ripple-basis-t": "4", "x-ripple-basis-hit": "1", "x-ripple-colo": "IAD", "x-not-a-meta-header": "drop me" }),
+        ? json(budget, 413, { "x-ramose-ms": "7" })
+        : json({ t: 4, result: [] }, 200, { "x-ramose-ms": "3", "x-ramose-basis-t": "4", "x-ramose-basis-hit": "1", "x-ramose-colo": "IAD", "x-not-a-meta-header": "drop me" }),
     );
     const s = session(socket, { dispatch });
     await s.onMessage(JSON.stringify({ id: 1, op: "query-typo" }));
@@ -200,10 +200,10 @@ describe("frame dispatch", () => {
     await s.onMessage(JSON.stringify({ id: 3, op: "pull", eid: 1, pattern: ["*"] }));
     expect(socket.frames[0]).toEqual({ id: 1, status: 400, body: { error: "unknown op: query-typo" } });
     expect(socket.frames[1]).toMatchObject({ id: 2, status: 413, body: budget });
-    expect(socket.frames[1].headers).toEqual({ "x-ripple-ms": "7" });
+    expect(socket.frames[1].headers).toEqual({ "x-ramose-ms": "7" });
     expect(socket.frames[2]).toMatchObject({ id: 3, status: 200 });
-    expect(socket.frames[2].headers).toEqual({ "x-ripple-ms": "3", "x-ripple-basis-t": "4", "x-ripple-basis-hit": "1", "x-ripple-colo": "IAD" });
-    expect(META_HEADERS).toContain("x-ripple-basis-t");
+    expect(socket.frames[2].headers).toEqual({ "x-ramose-ms": "3", "x-ramose-basis-t": "4", "x-ramose-basis-hit": "1", "x-ramose-colo": "IAD" });
+    expect(META_HEADERS).toContain("x-ramose-basis-t");
     expect(socket.closed).toBe(false);
   });
 

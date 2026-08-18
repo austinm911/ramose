@@ -10,8 +10,8 @@
  * exercised (with fault injection) without Cloudflare.
  */
 
-import type { CompiledPolicy } from "@ripple/core";
-import type { R2Like } from "@ripple/storage";
+import type { CompiledPolicy } from "@ramose/core";
+import type { R2Like } from "@ramose/storage";
 import type { AnalyticsEngineDatasetLike } from "./observability.ts";
 
 export interface SqlCursorLike {
@@ -90,7 +90,7 @@ export interface TransactorHost {
    */
   readonly analytics?: AnalyticsEngineDatasetLike;
   /**
-   * The deployed policy (`RIPPLE_POLICY`). Present = the commit loop checks
+   * The deployed policy (`RAMOSE_POLICY`). Present = the commit loop checks
    * every non-admin tx against the db it is about to apply to.
    */
   readonly policy?: CompiledPolicy;
