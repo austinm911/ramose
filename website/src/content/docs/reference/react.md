@@ -7,7 +7,7 @@ description: "@ripple/react — RippleProvider owns one Client per subtree; useR
 namespace:
 
 ```tsx
-import { RippleProvider, useDb, useLive } from "@ripple/react";
+import { RippleProvider, useDb, useLive, useTransact } from "@ripple/react";
 ```
 
 ## Provider
@@ -69,5 +69,27 @@ const TodoList = () => {
 };
 ```
 
-Later slices extend this page with `useQuery` / `usePull` / `useBasis` and
-`useTransact`.
+## useTransact
+
+| name | signature |
+| --- | --- |
+| `useTransact` | `(options?: { onError?: (error: unknown) => void }) => Transact` |
+| `Transact` | `{ run<A, E>(effect: Effect<A, E>): Promise<Exit<A, E>>; pending: boolean; error: unknown \| undefined; clearError(): void }` |
+| `errorMessage` | `(error: unknown) => string` — `e.message ?? e._tag ?? String(e)` |
+
+One hook for running writes (any Effect with `R = never`, really) from event
+handlers. `run` resolves to the `Exit` instead of throwing, so handlers stay
+`void`-safe; `pending` is true while any run is in flight; `error` holds the
+last-settled failure's error for inline rendering, clears when a run settles
+successfully or on `clearError()`, and `onError` fires per failure. It takes
+no `db` argument — it runs whatever Effect the caller built — and needs no
+provider. After unmount a settling run touches no state, but `onError` still
+fires: the toast host usually outlives the form that ran the write.
+
+```tsx
+const tx = useTransact({ onError: (e) => toast(errorMessage(e)) });
+
+<button disabled={tx.pending} onClick={() => void tx.run(addTodo(db, title))} />;
+```
+
+Later slices extend this page with `useQuery` / `usePull` / `useBasis`.
