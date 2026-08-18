@@ -109,13 +109,15 @@ export const Api = Cloudflare.Worker(
     });
 
     /**
-     * `POST /api/ripple-token { workspace }` → `{ token, class, exp }`.
+     * `POST /api/ripple-token { workspace }` → `{ token }`.
      *
      * The session cookie authenticates the caller; their membership in the
      * org whose slug is `workspace` decides the class; `Ripple.claims` builds
      * the claim set the Ripple peer verifies (docs/AUTH_LAYER.md §1) and
      * `signJWT` (server-only, same JWKS key the /api/auth/jwks endpoint
-     * publishes) signs it.
+     * publishes) signs it. The class and `exp` ride inside the JWT —
+     * `Ripple.token.jwt` decodes them client-side (`source.claims()`), so
+     * the body carries nothing else.
      */
     const rippleToken = Effect.gen(function* () {
       const session = yield* auth.getSession();
@@ -159,7 +161,7 @@ export const Api = Cloudflare.Worker(
       const { token } = yield* auth.api
         .signJWT({ body: { payload: { ...payload } } })
         .pipe(Effect.orDie);
-      return yield* json({ token, class: cls, exp: payload.exp });
+      return yield* json({ token });
     }).pipe(
       // Session-lookup failures (bad cookie, storage hiccough) render as the
       // API error they are instead of escaping the Worker's HttpEffect type.

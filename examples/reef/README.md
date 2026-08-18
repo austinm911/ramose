@@ -84,8 +84,9 @@ examples/reef/
 | `src/domain/queries.ts` | every navigational query and pull shape; compiled against the policy in tests |
 | `src/domain/rank.ts` | fractional ranking — a drag writes one `:issue/rank` double |
 | `src/domain/roles.ts` / `shared.ts` | Better Auth access-control roles and the constants both Workers and the SPA share |
-| `src/infra/api.ts` | the auth Worker: BetterAuth (organization + jwt plugins) on D1, `POST /api/ripple-token`, and the built SPA as Worker assets |
+| `src/infra/api.ts` | the auth Worker: BetterAuth (organization + jwt plugins) on D1, `POST /api/ripple-token` → `{ token }`, and the built SPA as Worker assets |
 | `src/infra/resources.ts` / `alchemy.run.ts` | the peer (R2 + DOs + compiled policy via `Ripple.authEnv`) and the one stack wiring both Workers plus the dev-only `Ui` (`Command.Dev` running Vite) |
+| `src/app/ripple.ts` | the whole client wiring, 30 lines: `Ripple.token.jwt` over the mint route + `Ripple.connect`, exposed to screens as `{ slug, cls, db, close }` |
 | `src/app/` | the SPA: `ui.tsx` primitives (icons, buttons, dialog, toasts, priority glyph), auth screen, workspace picker, live kanban board, issue detail, time travel |
 | `test/` | policy compilation + masked-pull checks, role→class mapping, ranking — part of `bun run test` |
 
@@ -93,9 +94,9 @@ examples/reef/
 
 - **Workspace picker** — multi-tenancy. Creating "Coral Team" runs
   `ripple.db("coral-team").install()` under the creator's freshly-minted
-  admin JWT. Switching workspaces disposes the `ManagedRuntime` and builds a
-  new `Ripple.layer` whose `token` Effect re-mints on every reconnect and
-  transact, so 15-minute tokens refresh themselves.
+  admin JWT. Switching workspaces closes the client and `Ripple.connect`s a
+  new one whose `Ripple.token.jwt` source re-mints as the token nears `exp`,
+  so 15-minute tokens refresh themselves.
 - **Board** — reactivity. Columns render one `db.live(boardQuery)` stream;
   a drag writes two datoms (status + rank) and the board re-renders when the
   peer's basis ticks — the `live` pill in the header pulses on every tick.

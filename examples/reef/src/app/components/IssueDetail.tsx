@@ -8,7 +8,7 @@
  */
 
 import * as stylex from "@stylexjs/stylex";
-import type * as Effect from "effect/Effect";
+import * as Effect from "effect/Effect";
 import { useEffect, useMemo, useState } from "react";
 import {
   commentsQuery,
@@ -47,6 +47,9 @@ import {
 } from "../ui.tsx";
 import { useLive } from "../useLive.ts";
 import { COLUMN_TINTS } from "./Board.tsx";
+
+/** Every `Db` method needs no environment; the hooks port (#44) removes this. */
+const run = Effect.runPromise;
 
 type Extra = {
   readonly title: string;
@@ -260,8 +263,7 @@ export const IssueDetail = ({
   // `row` is new on every live emission, so edits from any tab re-pull.
   useEffect(() => {
     let alive = true;
-    void workspace
-      .run(db.pull({ id: issueId }, issueExtraShape))
+    void run(db.pull({ id: issueId }, issueExtraShape))
       .then((pulled) => {
         if (!alive || pulled === null) return;
         const e = pulled as Extra;
