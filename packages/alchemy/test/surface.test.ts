@@ -30,6 +30,8 @@ const ADDS = [
   "internalSecret",
   "AUTH_ENV_KEYS",
   "DEFAULT_JWT_MAX_TTL",
+  // the verifier/minter contract (`AuthConfig` is a type; `claims` builds the payload)
+  "claims",
 ];
 
 /** Names the kill-list retired: internal, deleted, or renamed. */
@@ -43,7 +45,6 @@ const KILLED = [
   "ProviderLive",
   "ProviderLocal",
   "SystemProvider",
-  "DATABASE_NAME_RE",
   "ProviderRequirements",
   "PolicyError",
   "ReadSystem",

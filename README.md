@@ -99,15 +99,13 @@ export const Todo = Ripple.Namespace("todo", {
 });
 export const Todos = Ripple.Catalog({ todo: Todo });
 
-// one runtime, disposed with the page; the session socket is its finalizer
-const runtime = ManagedRuntime.make(
-  Ripple.layer({
-    url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:8787",
-    token: Effect.succeed(Redacted.make(import.meta.env.VITE_RIPPLE_TOKEN)),
-  }),
-);
-const run = runtime.runPromise;
-const db = runtime.runSync(Ripple.Databases).db("todos", Todos);
+// one client, closed with the page (Effect users: Ripple.layer is the same
+// client as a scoped Layer<Databases>)
+const ripple = Ripple.connect({
+  url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:8787",
+  token: Effect.succeed(Redacted.make(import.meta.env.VITE_RIPPLE_TOKEN)),
+});
+const db = ripple.db("todos", Todos);
 
 const todoQuery = Ripple.query(Todo)
   .orderBy(Todo.createdAt, "asc")
@@ -121,7 +119,7 @@ const todos = db.live(todoQuery);
 // Stream<readonly { id, title, done, createdAt }[]>
 // hoist it, then drain it with Stream.runForEach on its own fiber
 
-await run(
+await Effect.runPromise(
   db.transact(function* (tx) {
     const t = yield* tx.entity();
     yield* t.add(Todo.title, "ship it");

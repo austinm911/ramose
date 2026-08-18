@@ -1,7 +1,7 @@
 # Todos
 
 The consumer proof for navigational query (`docs/QUERY.md`) on
-`Ripple.layer` + `db.live`. From the repo root:
+`Ripple.connect` + `db.live`. From the repo root:
 
 ```sh
 CI=1 ALCHEMY_STATE=local \
@@ -19,7 +19,7 @@ VITE_RIPPLE_URL=http://localhost:1337 bunx vite examples/todos   # UI on :5173
 |---|---|
 | `schema.ts` | the catalog, on `@ripple/alchemy/db` — shared by the stack, a Worker and the browser |
 | `resources.ts` / `alchemy.run.ts` | `Ripple.Server` + `Ripple.Database`: the one place the catalog is installed |
-| `src/db.ts` | one `ManagedRuntime`, disposed with the page. `run` and `db`, nothing else |
+| `src/db.ts` | one client, closed with the page. `db`, nothing else |
 | `src/todos.ts` | `Ripple.query(Todo).select(…)` and writes, so the test drives exactly what the UI does |
 | `src/useLive.ts` | twelve lines of `Stream` → React state. Example code, **not** a shipped name |
 | `test/todos.test.ts` | those helpers against a real `@ripple/core` `Connection` over both wires |
@@ -27,15 +27,17 @@ VITE_RIPPLE_URL=http://localhost:1337 bunx vite examples/todos   # UI on :5173
 `src/db.ts` is the whole client:
 
 ```ts
-const runtime = ManagedRuntime.make(Ripple.layer({ url, token }));
-export const run = runtime.runPromise;
-export const db = runtime.runSync(Ripple.Databases).db("todos", Todos);
+const ripple = Ripple.connect({ url, token });
+export const db = ripple.db("todos", Todos);
 ```
 
-No `await` at module scope (the layer is scoped and getting a `Databases`
-cannot fail), no hand-rolled `run`, and no Vite alias — `@ripple/alchemy/db` is
-a real `exports` entry and nothing it reaches imports the deploy engine, so the
-built bundle contains no `alchemy` code at all.
+No `await` at module scope (`connect` throws only on a provisioning mistake
+and the socket opens lazily), no runtime and no `run` — every `Db` method
+needs no environment, so writes are `Effect.runPromise(db.transact(…))` — and
+no Vite alias: `@ripple/alchemy/db` is a real `exports` entry and nothing it
+reaches imports the deploy engine, so the built bundle contains no `alchemy`
+code at all. (Effect users: `Ripple.layer({ url, token })` is the same client
+as a scoped `Layer<Databases>`.)
 
 `db.live` is a `Stream` over a **query value**, so it is hoisted once at module
 scope and the hook's dependency is stable:
@@ -45,11 +47,12 @@ const todoQuery = Ripple.query(Todo)
   .orderBy(Todo.createdAt, "asc")
   .select({ id: Todo.id, title: Todo.title, done: Todo.done, createdAt: Todo.createdAt });
 
-const todos = db.live(todoQuery);   // Stream<readonly TodoRow[], Ripple.DbError>
+const todos = db.live(todoQuery);   // Stream<Ripple.Rows<typeof todoQuery>, Ripple.DbError>
+type TodoRow = Ripple.Row<typeof todoQuery>;  // one row, named from the query
 ```
 
 Teardown is fiber interruption — `useLive`'s cleanup is one
-`Fiber.interrupt`. Writes are `run(db.transact(function* (tx) { … }))` and one
-row is `db.pull(eid, shape)`; a write bumps the connection's basis, so the
-standing stream re-runs with no refetch and no invalidation call at the write
-site.
+`Fiber.interrupt`. Writes are
+`Effect.runPromise(db.transact(function* (tx) { … }))` and one row is
+`db.pull(eid, shape)`; a write bumps the connection's basis, so the standing
+stream re-runs with no refetch and no invalidation call at the write site.

@@ -9,7 +9,7 @@ and like a client in a browser — same names, same `Db<C>`, different transport
 Everything that exists only because the implementation grew that way (`SchemaFx`,
 `RuntimeContext`, `create` vs `connect`, the capability trio, nine transport
 layers, the untyped `Client.*` twin, the `/schema` Vite alias) is deleted rather
-than renamed. What is left is **39 names** across two entry points, both
+than renamed. What is left is **41 names** across two entry points, both
 imported as `* as Ripple`.
 
 ## 2. The names a consumer imports
@@ -39,6 +39,7 @@ imported as `* as Ripple`.
 | `layer` | `(options: ClientOptions) => Layer<Databases>` |
 | `Databases` | `Context.Service<Databases, { db<C>(name: string, catalog: C): Db<C> }>` — the key *is* the client |
 | `ClientOptions` | `{ url: string; token?: Effect<Redacted<string>>; fetch?: typeof fetch; webSocket?: typeof WebSocket }` |
+| `DATABASE_NAME_RE` `isDatabaseName` | the peer's database-name rule (`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`), as a `RegExp` and a predicate — validate a user-minted name before the peer does. Not a slugify |
 
 Static token: `Effect.succeed(Redacted.make(t))`. The layer is scoped, the socket a finalizer; getting a `Databases` cannot fail.
 
@@ -136,17 +137,15 @@ export default Cloudflare.Worker("App", { main: import.meta.url },
 **Browser** — no `run`, no `RuntimeContext.phantom`, no Vite alias, no `await`.
 
 ```ts
-// db.ts — one runtime, disposed with the page
+// db.ts — one client, closed with the page
 import * as Ripple from "@ripple/alchemy/db";
-import * as ManagedRuntime from "effect/ManagedRuntime";
 import { Todos } from "./schema.ts";
 
 const token = Effect.succeed(Redacted.make(import.meta.env.VITE_RIPPLE_TOKEN));
-const runtime = ManagedRuntime.make(
-  Ripple.layer({ url: import.meta.env.VITE_RIPPLE_URL, token }),
-);
-export const run = runtime.runPromise;
-export const db = runtime.runSync(Ripple.Databases).db("todos", Todos);
+const ripple = Ripple.connect({ url: import.meta.env.VITE_RIPPLE_URL, token });
+export const db = ripple.db("todos", Todos);
+// Effect users: Ripple.layer({ url, token }) is the same client as a scoped
+// Layer<Databases>.
 ```
 
 ```tsx
@@ -161,14 +160,16 @@ const todos = db.live(todoQuery);
 //    Stream<readonly { id; title; done; createdAt }[], Ripple.DbError>
 
 const add = (title: string) =>
-  run(db.transact(function* (tx) {
+  Effect.runPromise(db.transact(function* (tx) {
     const todo = yield* tx.entity();
     yield* todo.add(Todo.title, title);
     yield* todo.add(Todo.createdAt, new Date());
   }));
 
 const one = (e: Ripple.Eid<typeof Todos>) =>
-  run(db.pull(e, { title: Todo.title, done: Todo.done, createdAt: Todo.createdAt }));
+  Effect.runPromise(
+    db.pull(e, { title: Todo.title, done: Todo.done, createdAt: Todo.createdAt }),
+  );
 ```
 
 ```tsx
@@ -215,7 +216,8 @@ export const useLive = <A, E>(stream: Stream.Stream<A, E>) => {
 | `ReadSystem`, `WriteSystem`, `ReadWriteSystem` | → `ReadWriteDatabases`; `ReadDatabases` returns with #14 |
 | 9 × `{Read,Write,ReadWrite}System{Binding,Http,Local}` | → `ServerBinding`, `ServerHttp` |
 | `System`, `SystemProps`, `SystemPeer`, `SystemProbe` | → `Ripple.Server`, prop `worker` |
-| `isSystem`, `DATABASE_NAME_RE`, `resolvePeer`, `ProviderLive`, `ProviderLocal`, `SystemProvider` | internal; bad name is `InvalidRequest` |
+| `isSystem`, `resolvePeer`, `ProviderLive`, `ProviderLocal`, `SystemProvider` | internal; bad name is `InvalidRequest` |
+| `DATABASE_NAME_RE` | public again, on `/db` with `isDatabaseName` (#37) |
 | `openSession`, `Session`, `SessionOptions`, `sessionUrl`, `TypedSession`, `TypedSessionOptions`, `Session.connect`'s `{ session, db }` | internal; `layer` provides `Databases` |
 | `SchemaFx` (the namespace name) | deleted; flattened into `/db` |
 | `create` / `connect` on a system | → `ripple.db(name, catalog)`, pure |

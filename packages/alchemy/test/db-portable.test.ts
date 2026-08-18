@@ -150,8 +150,13 @@ describe("the `/db` barrel's public names", () => {
         "or",
         "not",
         // connecting
+        "connect",
         "layer",
         "Databases",
+        "token",
+        // the database-name rule (issue #37)
+        "DATABASE_NAME_RE",
+        "isDatabaseName",
         // errors
         "TxRejected",
         "Unavailable",

@@ -49,6 +49,15 @@ Install is explicit and once. A browser never installs schema, and a Worker
 binding does zero network per request. Against an *uninstalled* database, `q`
 fails with `InvalidRequest` and `transact` fails with `TxRejected`.
 
+## What counts as a name
+
+A name must match `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$` — alphanumeric first
+character, then up to 63 more of `[a-zA-Z0-9._-]`. The client exports the rule
+from `@ripple/alchemy/db` as `DATABASE_NAME_RE` and `isDatabaseName(name)`, so
+an app that lets users mint names (a "create workspace" flow) can validate
+before the peer does; a bad name fails the first operation with
+`InvalidRequest` without reaching the peer.
+
 ## Names and tokens
 
 With a shared `RIPPLE_TOKEN`, one bearer token opens every name — fine for a

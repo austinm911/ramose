@@ -28,22 +28,22 @@
 
 import { BetterAuth } from "@alchemy.run/better-auth";
 import { CloudflareD1 } from "@alchemy.run/better-auth/CloudflareD1";
+import { claims } from "@ripple/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { jwt } from "better-auth/plugins/jwt";
 import { organization } from "better-auth/plugins/organization";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import { compiledPolicy } from "../domain/policy.ts";
 import { ac, roles } from "../domain/roles.ts";
 import {
   AUTH_BASE_PATH,
   DEV_API_PORT,
   DEV_UI_ORIGIN,
-  JWT_AUDIENCE,
-  JWT_ISSUER,
-  JWT_TTL_SECONDS,
-  SLUG_RE,
+  REEF_AUTH,
   classOfRole,
+  isWorkspaceSlug,
 } from "../domain/shared.ts";
 
 /** Better Auth's tables (user/session/org/member/invitation/jwks) live here. */
@@ -100,9 +100,9 @@ export const Api = Cloudflare.Worker(
         }),
         jwt({
           jwt: {
-            issuer: JWT_ISSUER,
-            audience: JWT_AUDIENCE,
-            expirationTime: `${JWT_TTL_SECONDS}s`,
+            issuer: REEF_AUTH.issuer,
+            audience: REEF_AUTH.audience,
+            expirationTime: `${REEF_AUTH.ttl}s`,
           },
         }),
       ],
@@ -112,9 +112,10 @@ export const Api = Cloudflare.Worker(
      * `POST /api/ripple-token { workspace }` → `{ token, class, exp }`.
      *
      * The session cookie authenticates the caller; their membership in the
-     * org whose slug is `workspace` decides the class; `signJWT` (server-only,
-     * same JWKS key the /api/auth/jwks endpoint publishes) mints the claim
-     * set the Ripple peer verifies (docs/AUTH_LAYER.md §1).
+     * org whose slug is `workspace` decides the class; `Ripple.claims` builds
+     * the claim set the Ripple peer verifies (docs/AUTH_LAYER.md §1) and
+     * `signJWT` (server-only, same JWKS key the /api/auth/jwks endpoint
+     * publishes) signs it.
      */
     const rippleToken = Effect.gen(function* () {
       const session = yield* auth.getSession();
@@ -126,7 +127,7 @@ export const Api = Cloudflare.Worker(
         Effect.catchCause(() => Effect.succeed(null)),
       )) as { workspace?: unknown } | null;
       const workspace = body?.workspace;
-      if (typeof workspace !== "string" || !SLUG_RE.test(workspace)) {
+      if (typeof workspace !== "string" || !isWorkspaceSlug(workspace)) {
         return yield* json({ error: "workspace must be a valid slug" }, 400);
       }
 
@@ -145,21 +146,20 @@ export const Api = Cloudflare.Worker(
       }
 
       const cls = classOfRole(member.role);
-      const iat = Math.floor(Date.now() / 1000);
-      const exp = iat + JWT_TTL_SECONDS;
+      // One contract: `Ripple.claims` builds the payload the peer verifies
+      // from the same REEF_AUTH the peer's env pins, validating the db name
+      // and that the class is one the compiled policy declares.
+      const payload = claims(
+        REEF_AUTH,
+        { sub: session.user.id, db: workspace, class: cls },
+        compiledPolicy(),
+      );
+      // Spread: `signJWT` wants jose's index-signed `JWTPayload`, which a
+      // named interface is not assignable to.
       const { token } = yield* auth.api
-        .signJWT({
-          body: {
-            payload: {
-              sub: session.user.id,
-              iat,
-              exp,
-              ripple: { db: workspace, class: cls },
-            },
-          },
-        })
+        .signJWT({ body: { payload: { ...payload } } })
         .pipe(Effect.orDie);
-      return yield* json({ token, class: cls, exp });
+      return yield* json({ token, class: cls, exp: payload.exp });
     }).pipe(
       // Session-lookup failures (bad cookie, storage hiccough) render as the
       // API error they are instead of escaping the Worker's HttpEffect type.

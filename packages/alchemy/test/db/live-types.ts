@@ -20,6 +20,7 @@ import { query } from "../../src/db/internal.ts";
 import { Movies, User } from "./fixture.ts";
 
 declare const db: Db<typeof Movies>;
+declare const eid: Eid<typeof Movies>;
 
 // ── the stream's element is the query's row type ───────────────────────────
 
@@ -76,6 +77,44 @@ const historyBasis = db.history.basis();
 type _historyBasis = Expect<
   Equal<typeof historyBasis, Effect.Effect<{ readonly t: number }, DbError>>
 >;
+
+// ── livePull: the live terminal for pull ───────────────────────────────────
+
+const projected = db.livePull(eid, {
+  name: User.name,
+  age: User.age.optional,
+});
+type Projection = {
+  readonly name: string;
+  readonly age: number | undefined;
+};
+type _projected = Expect<
+  Equal<typeof projected, Stream.Stream<Projection | null, DbError>>
+>;
+/** `livePull` requires nothing either: teardown is fiber interruption. */
+type _projectedR = Expect<Equal<Stream.Services<typeof projected>, never>>;
+type _projectedErr = Expect<Equal<Stream.Error<typeof projected>, DbError>>;
+
+// nested `.select` and a lookup-ref subject come through as in `db.pull`
+const bestOf = db.livePull([User.name, "Ada"], {
+  bestFriend: User.bestFriend.optional.select({ name: User.name }),
+});
+type BestOf = NonNullable<Stream.Success<typeof bestOf>>;
+type _bestOf = Expect<
+  Equal<BestOf["bestFriend"], { readonly name: string } | undefined>
+>;
+
+// a pinned view still gives a Stream
+const pastPull = db.asOf(3).livePull(eid, { name: User.name });
+type _pastPull = Expect<
+  Equal<
+    typeof pastPull,
+    Stream.Stream<{ readonly name: string } | null, DbError>
+  >
+>;
+
+// @ts-expect-error unknown attr on the namespace
+db.livePull(eid, { name: User.nope });
 
 // ── the query is still attribute-checked ───────────────────────────────────
 

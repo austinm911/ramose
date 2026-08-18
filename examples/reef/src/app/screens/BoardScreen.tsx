@@ -273,7 +273,7 @@ export const BoardScreen = ({
       void workspace
         .run(db.asOf(t).q(boardQuery))
         .then((rows) =>
-          setPast((p) => (p === null || p.t !== t ? p : { ...p, rows: rows as readonly BoardRow[] })),
+          setPast((p) => (p === null || p.t !== t ? p : { ...p, rows })),
         )
         .catch(() => {});
     },
@@ -293,7 +293,7 @@ export const BoardScreen = ({
           (r) => !live.has(r.id),
         );
         setSelected(null);
-        setPast({ t, maxT: t, rows: rows as readonly BoardRow[], deleted });
+        setPast({ t, maxT: t, rows, deleted });
       } catch (err) {
         toast("error", err instanceof Error ? err.message : String(err));
       }
@@ -317,7 +317,7 @@ export const BoardScreen = ({
   }
   if (board.rows === undefined) return <Loading text={`opening ${slug}…`} />;
 
-  const liveRows = board.rows as readonly BoardRow[];
+  const liveRows = board.rows;
   const rows = past?.rows ?? liveRows;
   const timeTraveling = past !== null;
   // Derived from the live rows, so a deleted issue closes its own panel.

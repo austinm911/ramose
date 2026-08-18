@@ -23,6 +23,8 @@ Reads become a **filtered `Db`** built at `dbFromBasis` — a datom `[e a v t]` 
 
 `Claims = Schema.Struct({ iss, sub, aud, exp, iat?, ripple: Schema.Struct({ db, class, attrs? }) })`. `P.claims.sub`, `.iss`, `.aud`, `.exp` are those standard fields, typed; app attributes live under `P.claims.attrs`. **With no token**: if the policy declares an `anonymous` class, that class applies (the public-read shape); otherwise `Unauthorized`.
 
+This shape is a builder on the deploy side: `Ripple.claims(auth, { sub, db, class, attrs?, now? }, policy?)` (`alchemy/src/Auth.ts`) constructs the payload above from one `AuthConfig` (`{ issuer, audience, ttl }`) — the same value `authEnv({ auth })` pins `RIPPLE_JWT_ISS` / `RIPPLE_JWT_AUD` / `RIPPLE_JWT_MAX_TTL` from, so `exp - iat === ttl === maxTtl` by construction. It is pure (no signing, no I/O; the app signs with its own JWKS key) and validates at mint what the peer rejects at verify: the db name, and — given the compiled policy — that `class` is declared.
+
 Membership, ownership and sharing are **datoms** (`[?org :org/members ?user]`), never token tuples: revocation lands on the next basis tick and a rule reads a grant at the basis it needs it. The token carries only the policy selector.
 
 ## 2. Policy in the catalog
@@ -123,7 +125,7 @@ Any denied op rejects the whole tx. Cost: one policy pass per non-admin tx on th
 | client session | `alchemy/src/db/session.ts` | token stays on the upgrade; internal `setToken` + the refresh `auth` frame; reconnect in place |
 | errors | `worker/src/errors.ts:23`, `toHttp:71-72`; `alchemy/src/db/Errors.ts` and the 401/403 arm of `alchemy/src/db/http.ts` | `Unauthorized` gains `code`/`attr`; upstream bodies mapped, not passed through; `PolicyError` in `alchemy/src/db/SchemaErrors.ts` |
 | policy value | `alchemy/src/db/Catalog.ts` | `Catalog` unchanged; `Ripple.Policy.policy(catalog, …)` is a separate value on the non-portable entry |
-| Alchemy | `alchemy.run.ts:58-68` | the peer Worker declares its own env beside `RIPPLE_TOKEN`: `...Ripple.authEnv({ policy: Ripple.Policy.compile(policy), jwksUrl, issuers, aud })`, `RIPPLE_JWKS_URL`, `RIPPLE_JWT_AUD`, `RIPPLE_JWT_MAX_TTL` |
+| Alchemy | `alchemy.run.ts:58-68` | the peer Worker declares its own env beside `RIPPLE_TOKEN`: `...Ripple.authEnv({ policy: Ripple.Policy.compile(policy), jwksUrl, auth: AUTH })` — the `AuthConfig` from §1 stands in for the loose `issuers` / `aud` / `maxTtl` keys (which still work, and win when set) and lowers to `RIPPLE_JWKS_URL`, `RIPPLE_JWT_ISS`, `RIPPLE_JWT_AUD`, `RIPPLE_JWT_MAX_TTL` |
 
 ## 5. Out of scope
 

@@ -36,6 +36,12 @@ export * from "./db/index.ts";
 // ── typed policy: deploy-time, so it is not on `/db` ────────────────────────
 export * as Policy from "./db/Policy.ts";
 
+// ── the verifier/minter contract ─────────────────────────────────────────
+// (`MintedClaims`, not `Claims`: the portable barrel already exports `Claims`
+// as the decoded-but-unverified payload of a `TokenSource` — same shape,
+// different trust level — and a shadow would silently change its meaning.)
+export { type AuthConfig, claims, type ClaimsInput, type MintedClaims } from "./Auth.ts";
+
 // ── resources ──────────────────────────────────────────────────────────────
 export { Database } from "./Database.ts";
 export {
@@ -54,7 +60,6 @@ export { ServerBinding } from "./ServerBinding.ts";
 export { ServerHttp } from "./ServerHttp.ts";
 export { providers, Providers } from "./Providers.ts";
 
-// `DatabaseName.ts`, `ServerRuntime.ts` and `Source.ts` are internal
-// scaffolding and are deliberately NOT re-exported (mirrors
-// `alchemy/Cloudflare/KV/index.ts`): HTTP is Worker internals, not a second
-// public API.
+// `ServerRuntime.ts` and `Source.ts` are internal scaffolding and are
+// deliberately NOT re-exported (mirrors `alchemy/Cloudflare/KV/index.ts`):
+// HTTP is Worker internals, not a second public API.

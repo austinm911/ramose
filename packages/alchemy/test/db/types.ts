@@ -35,6 +35,8 @@ import {
   Namespace,
   type ReadDb,
   Ref,
+  type TokenSource,
+  token,
   type TxReport,
   Uuid,
   UuidString,
@@ -226,12 +228,14 @@ type _caughtErr = Expect<Equal<Effect.Error<typeof caught>, never>>;
 // others*; `surface.test.ts` does the same for `@ripple/alchemy`. What is left
 // is the signature each table row promises, which is a compile-time claim.
 
-/** `ClientOptions` — url, an Effect token, and the two injection seams. */
+/** `ClientOptions` — url, a token in either form, and the two injection seams. */
 type _optUrl = Expect<Equal<ClientOptions["url"], string>>;
 type _optToken = Expect<
   Equal<
     ClientOptions["token"],
-    Effect.Effect<Redacted.Redacted<string>> | undefined
+    | Effect.Effect<Redacted.Redacted<string>, DbError>
+    | TokenSource
+    | undefined
   >
 >;
 type _optFetch = Expect<Equal<ClientOptions["fetch"], typeof fetch | undefined>>;
@@ -243,13 +247,23 @@ const _staticToken: ClientOptions["token"] = Effect.succeed(
   Redacted.make("t"),
 );
 void _staticToken;
+/** `token.jwt(mint)` is a `TokenSource`, and the layer takes both forms. */
+const _jwtToken: ClientOptions["token"] = token.jwt(async () => "jwt");
+void _jwtToken;
+const _viaSource = layer({ url: "https://x", token: token.jwt(async () => "t") });
+const _viaEffect = layer({
+  url: "https://x",
+  token: Effect.succeed(Redacted.make("t")),
+});
+void _viaSource;
+void _viaEffect;
 
 /** `Databases` — the key *is* the client, and it has exactly one method. */
 type _databasesShape = Expect<Equal<keyof DatabasesShape, "db">>;
 
 /** `Db<C>` is `ReadDb<C>` plus `transact` and `install`, and nothing else. */
 type _readDbKeys = Expect<
-  Equal<keyof ReadDb<typeof Movies>, "name" | "catalog" | "q" | "pull" | "live" | "basis" | "asOf" | "history">
+  Equal<keyof ReadDb<typeof Movies>, "name" | "catalog" | "q" | "pull" | "livePull" | "live" | "basis" | "asOf" | "history">
 >;
 type _dbKeys = Expect<
   Equal<Exclude<keyof Db<typeof Movies>, keyof ReadDb<typeof Movies>>, "transact" | "install">

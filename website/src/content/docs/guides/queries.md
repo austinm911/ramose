@@ -117,6 +117,41 @@ Scalars decode through Effect Schema (`Instant` → `Date`, and so on). A query
 with no `.select` yields `readonly Eid<C>[]`. `db.live` re-emits only when the
 rows changed — a tick the query's rows did not notice is not a re-render.
 
+## Naming a row type
+
+The query already carries its row type; `Ripple.Row` names it so a React prop
+or a helper never restates the shape by hand:
+
+```ts
+export const boardQuery = Ripple.query(Issue)
+  .orderBy(Issue.rank, "asc")
+  .select({
+    id: Issue.id,
+    title: Issue.title,
+    creator: Issue.creator.select({ name: User.name }),
+    assignee: Issue.assignee.select({ name: User.name }).optional,
+  });
+
+export type BoardRow = Ripple.Row<typeof boardQuery>;
+// { readonly id: number; readonly title: string;
+//   readonly creator: { readonly name: string };
+//   readonly assignee: { readonly name: string } | undefined }
+
+export type BoardRows = Ripple.Rows<typeof boardQuery>;
+// readonly BoardRow[] — what db.q resolves to and db.live emits
+```
+
+Both take the builder or its `.build()` value — the same inputs `db.q` takes.
+A nested `.select` is part of the row (`BoardRow["creator"]` names it),
+`.optional` surfaces as `| undefined`, and with no `.select` the row is the
+entity id (unbranded `Eid` — `db.q` on a catalog-typed db additionally brands
+the ids `Eid<C>`). Change the query and every consumer's type moves with it —
+no cast at the use site.
+
+The two result-naming helpers pair up: `Row<Q>` names what a **query** yields,
+`Pull<C, P>` names what a **shape** pulls — reach for `Row` when you hold the
+query, `Pull` when you only hold the shape.
+
 ## `pull` — one entity, one shape
 
 `db.pull(eid, shape)` is the entity-by-id door, using the same shape grammar
@@ -138,9 +173,13 @@ const movie = yield* db.pull(eid, shape);
   (`[User.email, "grace@acme.dev"]`).
 - `Pull<C, P>` is a plain type: a React prop can be
   `Ripple.Pull<typeof Movies, typeof shape>`.
+- `db.livePull(eid, shape)` is the live terminal for the same pull —
+  `db.live`'s exact contract (re-run on every basis tick and after a local
+  `transact`, dedupe by digest, `asOf`/`history` emit once and complete),
+  emitting the projection or `null`. A retracted entity emits `null` and the
+  stream keeps standing.
 
-Prefer a navigational query when you need filters, live, or `asOf` on the
-same artifact.
+Prefer a navigational query when you need filters on the same artifact.
 
 ## Reading the past
 
