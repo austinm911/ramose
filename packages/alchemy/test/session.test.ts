@@ -191,19 +191,44 @@ describe("reads become frames", () => {
 });
 
 describe("a socket that goes away", () => {
-  test("fails what is in flight as NetworkError", async () => {
-    const peer = fakePeer({ answer: () => undefined });
+  test("re-issues what was in flight on a fresh socket", async () => {
+    let n = 0;
+    const peer = fakePeer({
+      answer: () => {
+        n++;
+        if (n === 1) {
+          // the isolate dies before it answers
+          queueMicrotask(() => peer.socket.drop());
+          return undefined;
+        }
+        return rows([[1001]]);
+      },
+    });
     const c = client(peer);
-    const inFlight = runFail(
-      c.ripple.db("movies", Movies).q(eids),
-    );
-    await settle(5);
-    expect(peer.frames).toHaveLength(1);
-
-    peer.drop();
-    expect((await inFlight)._tag).toBe("NetworkError");
+    expect(await run(c.ripple.db("movies", Movies).q(eids))).toEqual([
+      { id: 1001 },
+    ]);
+    // one frame per socket: the first died with its socket, the retry landed
+    expect(peer.sockets).toHaveLength(2);
+    expect(peer.frames).toHaveLength(2);
     await c.dispose();
   });
+
+  // A read that keeps failing walks the whole transient ladder (six attempts,
+  // ~2–6s of jittered sleep) before the failure is the caller's.
+  test(
+    "and is NetworkError once the retries are spent",
+    async () => {
+      const peer = fakePeer({ answer: () => rows([]), refuseUpgrades: 99 });
+      const c = client(peer);
+      expect((await runFail(c.ripple.db("movies", Movies).q(eids)))._tag).toBe(
+        "NetworkError",
+      );
+      expect(peer.sockets).toHaveLength(6);
+      await c.dispose();
+    },
+    15_000,
+  );
 
   test("but the next read reconnects, re-reading the token", async () => {
     let issued = 0;
@@ -224,14 +249,14 @@ describe("a socket that goes away", () => {
     await c.dispose();
   });
 
-  test("a refused upgrade is a NetworkError, and the one after it succeeds", async () => {
+  test("a refused upgrade is retried, and the read lands on the socket after it", async () => {
     const peer = fakePeer({ answer: () => rows([]), refuseUpgrades: 1 });
     const c = client(peer);
     const db = c.ripple.db("movies", Movies);
 
-    expect((await runFail(db.q(names)))._tag).toBe("NetworkError");
     expect(await run(db.q(names))).toEqual([]);
     expect(peer.sockets).toHaveLength(2);
+    expect(peer.frames).toHaveLength(1);
     await c.dispose();
   });
 });

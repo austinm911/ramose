@@ -82,25 +82,40 @@ export interface SendOptions {
   readonly body?: unknown;
 }
 
-/** One request, classified. The only place the client touches `fetch`. */
-export const send = (
-  options: SendOptions,
-  attempt = 0,
-): Effect.Effect<RawResult, DbError> =>
-  sendOnce(options, attempt > 0).pipe(
+/** Attempts a transient failure gets before it is the caller's. */
+const TRANSIENT_ATTEMPTS = 6;
+
+/**
+ * Retry the transient half of `DbError` — `Unavailable`, `NetworkError` — on a
+ * jittered exponential ladder (~150ms doubling to 2s; ~4s of sleep before the
+ * last attempt). Every transport goes through here, HTTPS and the session
+ * socket alike, so a read does not lose its resilience by taking the socket.
+ * `attempt` receives the attempt index; the first is `0`.
+ */
+export const retryTransient = <A>(
+  attempt: (n: number) => Effect.Effect<A, DbError>,
+  n = 0,
+): Effect.Effect<A, DbError> =>
+  attempt(n).pipe(
     Effect.catch((e: DbError) => {
-      if (attempt + 1 >= 6 || !isTransientPlatform(e)) {
+      if (n + 1 >= TRANSIENT_ATTEMPTS || !isTransientPlatform(e)) {
         return Effect.fail(e);
       }
       // Jittered so concurrent callers do not retry in lockstep.
       const ms = Math.round(
-        Math.min(2000, 150 * 2 ** attempt) * (0.5 + Math.random()),
+        Math.min(2000, 150 * 2 ** n) * (0.5 + Math.random()),
       );
       return Effect.sleep(`${ms} millis`).pipe(
-        Effect.andThen(() => send(options, attempt + 1)),
+        Effect.andThen(() => retryTransient(attempt, n + 1)),
       );
     }),
   );
+
+/** One request, classified. The only place the client touches `fetch`. */
+export const send = (
+  options: SendOptions,
+): Effect.Effect<RawResult, DbError> =>
+  retryTransient((n) => sendOnce(options, n > 0));
 
 // Platform errors arrive classified: Errors.ts maps workers.dev HTML 404s,
 // Cloudflare 1xxx pages and "Worker not found" onto Unavailable.

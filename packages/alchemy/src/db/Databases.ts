@@ -26,6 +26,7 @@ import {
   globalFetch,
   minTHeader,
   record,
+  retryTransient,
   send,
 } from "./http.ts";
 import {
@@ -148,30 +149,36 @@ export const makeDatabases = (
     return existing;
   };
 
-  /** A read as one session frame. */
+  /**
+   * A read as one session frame. Transient failures walk the same retry
+   * ladder as HTTPS: a platform error the peer relays over the socket, or a
+   * socket that dropped mid-request (the next attempt reopens it).
+   */
   const frame = (
     socket: Session,
     op: "q" | "pull",
     body: Record<string, unknown>,
     minT: number | undefined,
   ): Effect.Effect<unknown, DbError> =>
-    Effect.tryPromise({
-      try: () =>
-        socket.request({
-          op,
-          ...record(toJson(body)),
-          ...(minT === undefined ? {} : { minT }),
-        }),
-      catch: networkError,
-    }).pipe(
-      Effect.flatMap((reply) =>
-        reply.status >= 200 && reply.status < 300
-          ? Effect.succeed(fromJson(reply.body))
-          : Effect.fail(
-              fromResponse(reply.status, reply.body, {
-                get: (h) => reply.headers?.[h.toLowerCase()] ?? null,
-              }),
-            ),
+    retryTransient(() =>
+      Effect.tryPromise({
+        try: () =>
+          socket.request({
+            op,
+            ...record(toJson(body)),
+            ...(minT === undefined ? {} : { minT }),
+          }),
+        catch: networkError,
+      }).pipe(
+        Effect.flatMap((reply) =>
+          reply.status >= 200 && reply.status < 300
+            ? Effect.succeed(fromJson(reply.body))
+            : Effect.fail(
+                fromResponse(reply.status, reply.body, {
+                  get: (h) => reply.headers?.[h.toLowerCase()] ?? null,
+                }),
+              ),
+        ),
       ),
     );
 

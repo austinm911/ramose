@@ -397,6 +397,29 @@ describe("failures arrive tagged, not thrown", () => {
     await c.dispose();
   });
 
+  test("a platform error relayed over the session socket is retried too", async () => {
+    // A read that took the socket must not lose the resilience the HTTPS
+    // path has: the peer relays "Worker not found" from a Durable Object
+    // namespace that has not converged yet, and the next frame is fine.
+    let n = 0;
+    const peer = fakePeer({
+      answer: () => {
+        n++;
+        return n === 1
+          ? { status: 500, body: { error: "Worker not found." } }
+          : { body: { t: 2, root: 2, result: [[{ name: "Ada" }]] } };
+      },
+    });
+    const c = client(peer);
+    expect(await run(c.ripple.db("movies", Movies).q(names))).toEqual([
+      { name: "Ada" },
+    ]);
+    expect(n).toBe(2);
+    expect(peer.frameOps("q")).toHaveLength(2);
+    expect(peer.calls).toEqual([]);
+    await c.dispose();
+  });
+
   // Unavailable and NetworkError are transient: `send` walks its whole
   // jittered retry ladder (up to ~6.4s) before the failure surfaces, which is
   // longer than bun's default 5s test timeout.
