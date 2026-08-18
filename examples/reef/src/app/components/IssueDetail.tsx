@@ -1,14 +1,15 @@
 /**
  * The issue side panel. Status / priority / assignee / labels come straight
  * from the live board row (so they update in place); description and the
- * admin-only note ride a small `db.pull` re-read on every board tick. Every
- * control is enabled regardless of role — the peer's policy is the
- * enforcement, and a denial surfaces as a toast. `privateNote` demonstrates
- * per-attribute rules: read-masked and write-denied below `admin`.
+ * admin-only note ride one standing `usePull`, so an edit from any tab lands
+ * without a refetch. Every control is enabled regardless of role — the
+ * peer's policy is the enforcement, and a denial surfaces as a toast.
+ * `privateNote` demonstrates per-attribute rules: read-masked and
+ * write-denied below `admin`.
  */
 
+import { errorMessage, useLive, usePull, useTransact } from "@ramose/react";
 import * as stylex from "@stylexjs/stylex";
-import * as Effect from "effect/Effect";
 import { useEffect, useMemo, useState } from "react";
 import {
   commentsQuery,
@@ -17,6 +18,7 @@ import {
   type CommentRow,
   type LabelRow,
   type Person,
+  type ReefDb,
 } from "../../domain/queries.ts";
 import type { RamoseClass } from "../../domain/shared.ts";
 import {
@@ -31,7 +33,6 @@ import {
   setTitle,
   toggleLabel,
 } from "../mutations.ts";
-import type { Workspace } from "../ramose.ts";
 import { PRIORITIES, STATUSES, STATUS_LABELS, type Status } from "../../domain/schema.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
 import {
@@ -44,18 +45,9 @@ import {
   Select,
   Tag,
   TextArea,
+  useToast,
 } from "../ui.tsx";
-import { useLive } from "../useLive.ts";
 import { COLUMN_TINTS } from "./Board.tsx";
-
-/** Every `Db` method needs no environment; the hooks port (#44) removes this. */
-const run = Effect.runPromise;
-
-type Extra = {
-  readonly title: string;
-  readonly description?: string | undefined;
-  readonly privateNote?: string | undefined;
-};
 
 const slideIn = stylex.keyframes({
   from: { opacity: 0, transform: "translateX(12px)" },
@@ -232,8 +224,7 @@ const isMac =
   typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
 export const IssueDetail = ({
-  workspace,
-  attempt,
+  db,
   row,
   myEid,
   cls,
@@ -241,9 +232,7 @@ export const IssueDetail = ({
   people,
   onClose,
 }: {
-  workspace: Workspace;
-  /** Runs a write; policy denials become toasts upstream. */
-  attempt: (effect: Effect.Effect<unknown, unknown>) => void;
+  db: ReefDb;
   /** The live board row — already re-rendering on every basis tick. */
   row: BoardRow;
   myEid: number | undefined;
@@ -252,44 +241,39 @@ export const IssueDetail = ({
   people: readonly Person[];
   onClose: () => void;
 }) => {
-  const { db } = workspace;
   const issueId = row.id;
-  const [extra, setExtra] = useState<Extra | null>(null);
+  const toast = useToast();
+  const { run } = useTransact({
+    onError: (error) => toast("error", errorMessage(error)),
+  });
+
   const [title, setTitleDraft] = useState("");
   const [description, setDescriptionDraft] = useState("");
   const [note, setNoteDraft] = useState("");
   const [commentDraft, setCommentDraft] = useState("");
 
-  // `row` is new on every live emission, so edits from any tab re-pull.
+  // A standing pull: `{ id: issueId }` inline is fine (the subject is
+  // structural), and every emission — an edit from any tab — resets the
+  // drafts, so the panel updates in place.
+  const extra = usePull(db, { id: issueId }, issueExtraShape).rows ?? null;
   useEffect(() => {
-    let alive = true;
-    void run(db.pull({ id: issueId }, issueExtraShape))
-      .then((pulled) => {
-        if (!alive || pulled === null) return;
-        const e = pulled as Extra;
-        setExtra(e);
-        setTitleDraft(e.title);
-        setDescriptionDraft(e.description ?? "");
-        setNoteDraft(e.privateNote ?? "");
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [issueId, row]);
+    if (extra === null) return;
+    setTitleDraft(extra.title);
+    setDescriptionDraft(extra.description ?? "");
+    setNoteDraft(extra.privateNote ?? "");
+  }, [extra]);
 
-  const commentStream = useMemo(
-    () => db.live(commentsQuery(issueId)),
-    [db, issueId],
+  // built per id, so memoise the query on `issueId` — its one dependency
+  const comments = useLive(
+    db,
+    useMemo(() => commentsQuery(issueId), [issueId]),
   );
-  const comments = useLive(commentStream);
 
   const submitComment = () => {
     const body = commentDraft.trim();
     if (body === "" || myEid === undefined) return;
     setCommentDraft("");
-    attempt(addComment(db, myEid, issueId, body));
+    void run(addComment(db, myEid, issueId, body));
   };
 
   const status = row.status as Status;
@@ -310,7 +294,7 @@ export const IssueDetail = ({
           icon="trash"
           label="Delete issue"
           tone="danger"
-          onClick={() => attempt(deleteIssue(db, issueId))}
+          onClick={() => void run(deleteIssue(db, issueId))}
         />
         <IconButton icon="x" label="Close panel" onClick={onClose} />
       </div>
@@ -326,7 +310,7 @@ export const IssueDetail = ({
             }}
             onBlur={() => {
               if (title.trim() !== "" && title !== row.title) {
-                attempt(setTitle(db, issueId, title.trim()));
+                void run(setTitle(db, issueId, title.trim()));
               }
             }}
           />
@@ -350,7 +334,7 @@ export const IssueDetail = ({
             <Select
               value={row.status}
               onChange={(e) =>
-                attempt(setStatus(db, issueId, e.target.value as Status))
+                void run(setStatus(db, issueId, e.target.value as Status))
               }
             >
               {STATUSES.map((s) => (
@@ -365,7 +349,7 @@ export const IssueDetail = ({
             <Select
               value={row.priority}
               onChange={(e) =>
-                attempt(setPriority(db, issueId, Number(e.target.value)))
+                void run(setPriority(db, issueId, Number(e.target.value)))
               }
             >
               {PRIORITIES.map((p, i) => (
@@ -380,7 +364,7 @@ export const IssueDetail = ({
             <Select
               value={row.assignee?.id ?? ""}
               onChange={(e) =>
-                attempt(
+                void run(
                   setAssignee(
                     db,
                     issueId,
@@ -408,7 +392,7 @@ export const IssueDetail = ({
                     name={label.name}
                     color={label.color}
                     on={on}
-                    onToggle={() => attempt(toggleLabel(db, issueId, label.id, !on))}
+                    onToggle={() => void run(toggleLabel(db, issueId, label.id, !on))}
                   />
                 );
               })}
@@ -424,7 +408,7 @@ export const IssueDetail = ({
             onChange={(e) => setDescriptionDraft(e.target.value)}
             onBlur={() => {
               if (extra !== null && description !== (extra.description ?? "")) {
-                attempt(setDescription(db, issueId, description.trim()));
+                void run(setDescription(db, issueId, description.trim()));
               }
             }}
           />
@@ -446,7 +430,7 @@ export const IssueDetail = ({
             onChange={(e) => setNoteDraft(e.target.value)}
             onBlur={() => {
               if (extra !== null && note !== (extra.privateNote ?? "")) {
-                attempt(setPrivateNote(db, issueId, note.trim()));
+                void run(setPrivateNote(db, issueId, note.trim()));
               }
             }}
           />
@@ -491,7 +475,7 @@ export const IssueDetail = ({
                         size="sm"
                         label="Delete comment"
                         tone="danger"
-                        onClick={() => attempt(deleteComment(db, comment.id))}
+                        onClick={() => void run(deleteComment(db, comment.id))}
                       />
                     </span>
                   </div>

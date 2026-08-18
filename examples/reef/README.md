@@ -2,10 +2,11 @@
 
 The flagship demo: a Linear-style, multi-tenant, real-time issue tracker where
 **every workspace is its own Ramose database**. One app exercises every
-headline feature — reactivity (`db.live`), multi-tenancy (`db.install()` at
-runtime), auth (Better Auth JWTs verified by the peer against a compiled
-`Ramose.Policy`), immutability (`db.asOf` time travel + `db.history`), and a
-StyleX design system with dark/light themes.
+headline feature — reactivity (`useLive` over `db.live`), multi-tenancy
+(`db.install()` at runtime), auth (Better Auth JWTs verified by the peer
+against a compiled `Ramose.Policy`), immutability (`db.asOf` time travel +
+`db.history`), and a StyleX design system with dark/light themes. The UI is
+written entirely with the `@ramose/react` hooks.
 
 ## Run it
 
@@ -87,7 +88,7 @@ examples/reef/
 | `src/domain/roles.ts` / `shared.ts` | Better Auth access-control roles and the constants both Workers and the SPA share |
 | `src/infra/api.ts` | the auth Worker: BetterAuth (organization + jwt + `@ramose/better-auth` mint plugins) on D1 and the built SPA as Worker assets |
 | `src/infra/resources.ts` / `alchemy.run.ts` | the peer (R2 + DOs + compiled policy via `Ramose.authEnv`) and the one stack wiring both Workers plus the dev-only `Ui` (`Command.Dev` running Vite) |
-| `src/app/ramose.ts` | the whole client wiring, ~20 lines: `Ramose.token.jwt` over `authClient.ramose.token` + `Ramose.connect`, exposed to screens as `{ slug, cls, db, close }` |
+| `src/app/ramose.ts` | the workspace wiring: `Ramose.token.jwt` over `authClient.ramose.token` plus first-entry provisioning, handed to screens as `{ slug, cls, token, myEid }` — the living client is `<RamoseProvider key={slug}>`'s own |
 | `src/app/` | the SPA: `ui.tsx` primitives (icons, buttons, dialog, toasts, priority glyph), auth screen, workspace picker, live kanban board, issue detail, time travel |
 | `test/` | policy compilation + masked-pull checks, role→class mapping, ranking — part of `bun run test` |
 
@@ -95,25 +96,29 @@ examples/reef/
 
 - **Workspace picker** — multi-tenancy. Creating "Coral Team" runs
   `ramose.db("coral-team").install()` under the creator's freshly-minted
-  admin JWT. Switching workspaces closes the client and `Ramose.connect`s a
-  new one whose `Ramose.token.jwt` source re-mints as the token nears `exp`,
-  so 15-minute tokens refresh themselves.
-- **Board** — reactivity. Columns render one `db.live(boardQuery)` stream;
-  a drag writes two datoms (status + rank) and the board re-renders when the
-  peer's basis ticks — the `live` pill in the header pulses on every tick.
-  There is no refetch code anywhere in the app. An empty board offers **Add
-  sample issues**: nine issues, labels and assignees in one `db.transact`.
-- **Issue detail** — policy in the small. The admin-only note is
-  `Issue.privateNote.optional` in pull shapes (required pulls of a masked
-  attribute fail *at compile time* — see `test/policy.test.ts`), and comments
-  carry `preset` authorship.
+  admin JWT. Switching workspaces is React's own remount:
+  `<RamoseProvider key={slug}>` closes the old client and connects a new one
+  whose `Ramose.token.jwt` source re-mints as the token nears `exp`, so
+  15-minute tokens refresh themselves.
+- **Board** — reactivity. Columns render one `useLive(db, boardQuery)` read;
+  a drag is one `useTransact` `run` writing two datoms (status + rank) and
+  the board re-renders when the peer's basis ticks — the `live` pill in the
+  header pulses on every `ticks` bump `useLive` reports. There is no refetch
+  code anywhere in the app. An empty board offers **Add sample issues**: nine
+  issues, labels and assignees in one `db.transact`.
+- **Issue detail** — policy in the small. Description and the admin-only
+  note ride one standing `usePull`, so edits from another tab land in place.
+  That note is `Issue.privateNote.optional` in pull shapes (required pulls of
+  a masked attribute fail *at compile time* — see `test/policy.test.ts`), and
+  comments — a `useLive` on a per-issue query — carry `preset` authorship.
 - **Invite → viewer** — enforcement is server-side. A viewer's UI is polite
   (no + buttons, a `viewer` badge, the admin note tagged *masked*), but the
   proof is that a forced write — drag a card — comes back from the peer as
   `Unauthorized` and surfaces as a toast: "retract denied on :issue/status".
 - **Time travel** — immutability. The slider re-renders the whole board via
-  `db.asOf(t)` — same queries, one extra argument — and deleted issues are
-  recovered from `db.history`.
+  `useQuery(db.asOf(t), boardQuery)` — same query, one extra argument —
+  `useBasis` is the slider's ceiling, and deleted issues are recovered from
+  `db.history`.
 - **Themes** — dark and light are one StyleX `createTheme` over the token
   vars (`src/app/theme/`); the class goes on `<html>` so portaled dialogs and
   toasts inherit it, and the choice persists (first visit follows the OS).
