@@ -305,13 +305,113 @@ const isSelectNestedField = (
   "shape" in value;
 
 /**
- * A constrained collection nav (`Todo.owner.reverse.where(…)`) with no shape.
- * Structural, like {@link isReverseCarrier} — pull stays free of NavQuery.
+ * The hop chain a nav carries: `Todo.owner.name` is `[":todo/owner",
+ * ":user/name"]`, a bare `User.name` is one ident (or none, for an ident
+ * string). Structural, like {@link isReverseCarrier} — pull stays free of
+ * NavQuery.
  */
-const isCollectionCarrier = (value: unknown): boolean =>
+const hopsOf = (
+  attr: unknown,
+): { readonly path: readonly string[]; readonly revs: readonly boolean[] } => {
+  const carrier = attr as
+    | { __path?: unknown; __revs?: unknown }
+    | null
+    | undefined;
+  const path = Array.isArray(carrier?.__path)
+    ? (carrier.__path as readonly string[])
+    : [];
+  const revs = Array.isArray(carrier?.__revs)
+    ? (carrier.__revs as readonly boolean[])
+    : path.map(() => false);
+  return { path, revs };
+};
+
+/** `:todo/owner` → `Todo.owner` — the attr spelled the way the caller wrote it. */
+const spellAttr = (ident: string): string => {
+  const m = /^:([^/]+)\/(.+)$/.exec(ident);
+  if (m === null) return ident;
+  const ns = m[1]!;
+  return `${ns.charAt(0).toUpperCase()}${ns.slice(1)}.${m[2]}`;
+};
+
+const attrNameOf = (ident: string): string =>
+  /^:[^/]+\/(.+)$/.exec(ident)?.[1] ?? ident;
+
+/** The whole path as one expression: `Todo.owner.reverse.title`. */
+const spellPath = (path: readonly string[], revs: readonly boolean[]): string =>
+  path
+    .map(
+      (ident, i) =>
+        `${i === 0 ? spellAttr(ident) : attrNameOf(ident)}${revs[i] ? ".reverse" : ""}`,
+    )
+    .join(".");
+
+/** The same path as the nested select that does mean it. */
+const spellNested = (
+  path: readonly string[],
+  revs: readonly boolean[],
+  leafSelects: boolean,
+): string => {
+  const last = path.length - 1;
+  const leaf = path[last]!;
+  let out = `${attrNameOf(leaf)}: ${spellAttr(leaf)}${
+    revs[last] ? ".reverse" : ""
+  }${revs[last] || leafSelects ? ".select({ … })" : ""}`;
+  for (let i = last - 1; i >= 0; i--) {
+    const hop = path[i]!;
+    out = `${attrNameOf(hop)}: ${spellAttr(hop)}${
+      revs[i] ? ".reverse" : ""
+    }.select({ ${out} })`;
+  }
+  return `{ ${out} }`;
+};
+
+/**
+ * A select field names one attribute of the entity being pulled, so a nav
+ * that walked a ref first (`Todo.owner.name`) cannot be one: the pull would
+ * ask the *todo* for `:user/name` and the row would carry a value it never
+ * had — or be dropped for a datom it was never meant to have. The nested
+ * select is the shape that means what the path reads like, so say so instead
+ * of quietly attaching the leaf ident to the parent.
+ */
+export const assertDirectField = (
+  as: string,
+  attr: unknown,
+  /** The field carries a shape of its own, so the suggestion keeps one. */
+  leafSelects = false,
+): void => {
+  const { path, revs } = hopsOf(attr);
+  if (path.length < 2) return;
+  throw new Error(
+    `ripple/query: select field "${as}": ${spellPath(path, revs)} is a multi-hop path (${path.join(" → ")}) — a select field must be a direct attribute of the queried namespace. Use a nested select: ${spellNested(path, revs, leafSelects)}`,
+  );
+};
+
+/**
+ * A constrained collection nav (`Todo.owner.reverse.where(…)`, or
+ * `User.tags.where(…)`). Structural, like {@link isReverseCarrier} — pull
+ * stays free of NavQuery.
+ */
+const isCollectionCarrier = (
+  value: unknown,
+): value is {
+  readonly _tag: "collection";
+  readonly attr: unknown;
+  readonly constraints?: PullNestedConstraints;
+} =>
   typeof value === "object" &&
   value !== null &&
   (value as { _tag?: unknown })._tag === "collection";
+
+/**
+ * An element cursor (`User.tags.each`). It names one value of a collection
+ * inside that collection's own constraints; as a *field* it would pull the
+ * whole attribute under a name that promises one value.
+ */
+const isElementCarrier = (value: unknown): boolean =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof (value as { __each?: unknown }).__each === "string";
 
 /** Inspect a literate pull field: optional / many / nested pattern. */
 export const inspectPullField = (
@@ -330,10 +430,27 @@ export const inspectPullField = (
     optional = true;
     current = current.field;
   }
-  if (isCollectionCarrier(current)) {
+  if (isElementCarrier(current)) {
     throw new Error(
-      "ripple/schema: a filtered collection needs a shape — write `.where(…).select({ … })`",
+      `ripple/query: ${identOf(current)}.each is an element cursor, not a select field — it names one value of the collection inside its own every / none / some / where / orderBy. Select the attribute itself.`,
     );
+  }
+  if (isCollectionCarrier(current)) {
+    // a scalar collection *is* the field: its elements are values, and a
+    // value has no shape to ask for. A ref one still needs its `.select`.
+    if ((current.attr as { valueType?: unknown })?.valueType === ":db.type/ref") {
+      throw new Error(
+        "ripple/schema: a filtered collection needs a shape — write `.where(…).select({ … })`",
+      );
+    }
+    return {
+      optional,
+      many: true,
+      reverse: false,
+      nestedPattern: undefined,
+      constraints: current.constraints,
+      attr: current.attr,
+    };
   }
   if (isPullNested(current)) {
     return {
@@ -380,6 +497,7 @@ const constraintFields = (
 
 const lowerField = (as: string, field: unknown): unknown => {
   const info = inspectPullField(field);
+  assertDirectField(as, info.attr, info.nestedPattern !== undefined);
   if (info.nestedPattern !== undefined) {
     return {
       kind: "attr",
@@ -397,11 +515,13 @@ const lowerField = (as: string, field: unknown): unknown => {
       `ripple/schema: ${identOf(info.attr)} backlinks need a shape — write \`.reverse.select({ … })\` for the key \`${as}\``,
     );
   }
+  // a card-many scalar carries its own `where` / `order` / `offset` / `limit`
   return {
     kind: "attr",
     attr: identOf(info.attr),
     reverse: false,
     as,
+    ...constraintFields(info.constraints),
   };
 };
 

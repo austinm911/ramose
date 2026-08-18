@@ -23,7 +23,9 @@
       "@ripple/core/*": ["packages/core/src/*"],
       "@ripple/alchemy": ["packages/alchemy/src/index.ts"],
       "@ripple/alchemy/db": ["packages/alchemy/src/db/index.ts"],
-      "@ripple/react": ["packages/react/src/index.ts"]
+      "@ripple/react": ["packages/react/src/index.ts"],
+      "@ripple/better-auth": ["packages/better-auth/src/index.ts"],
+      "@ripple/better-auth/client": ["packages/better-auth/src/client.ts"]
     }
   },
   "include": [

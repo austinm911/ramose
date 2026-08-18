@@ -38,25 +38,14 @@ export const DEV_PEER_PORT = 1337;
 export const DEV_API_PORT = 1338;
 export const DEV_UI_ORIGIN = "http://localhost:5173";
 
+/**
+ * The policy classes, in the order the policy declares them. The role →
+ * class mapping (owner|admin → admin, member → member, else viewer) is
+ * `classOfRole` from `@ripple/better-auth` — the mint plugin's default —
+ * so Reef no longer spells it itself.
+ */
 export const CLASSES = ["admin", "member", "viewer"] as const;
 export type RippleClass = (typeof CLASSES)[number];
-
-/**
- * Better Auth org role → the `ripple.class` claim its JWT carries. Roles can
- * be comma-separated in Better Auth; the first one decides.
- */
-export const classOfRole = (role: string): RippleClass => {
-  const primary = role.split(",")[0]?.trim() ?? role;
-  switch (primary) {
-    case "owner":
-    case "admin":
-      return "admin";
-    case "member":
-      return "member";
-    default:
-      return "viewer";
-  }
-};
 
 /**
  * Workspace slug = Ripple database name. `SLUG_RE` is Reef's friendlier

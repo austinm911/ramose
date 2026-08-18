@@ -8,6 +8,8 @@
  *   unmount, `error` stays `undefined`.
  * - Over `db.asOf(t)` the stream completes; the last `rows` stay and
  *   completion is not an error.
+ * - The view is structural: an inline `db.asOf(t)` keeps one subscription
+ *   per `t` — equal views never re-subscribe, a new `t` does.
  * - A terminal `Unauthorized` lands in `error`; the last `rows` stay.
  * - Unmount interrupts: the peer sees no re-run on the next tick.
  * - StrictMode's mount → unmount → mount subscribes exactly once at steady
@@ -183,6 +185,40 @@ describe("useLive (query form)", () => {
       await settle();
       expect(qFrames().length).toBe(1);
       expect(result.current.rows).toEqual(ids(3));
+      expect(result.current.ticks).toBe(0);
+      expect(result.current.error).toBeUndefined();
+    } finally {
+      await close();
+    }
+  });
+
+  test("one subscription per view: equal inline asOf views never re-subscribe, a new t does", async () => {
+    const { db, answer, qFrames, close } = setup();
+    try {
+      answer((frame) => ({
+        body: { t: frame.asOf as number, result: [[frame.asOf as number]] },
+      }));
+      const { result, rerender } = renderHook(
+        // built inline on purpose: a new view object every render, same t
+        ({ t }: { t: number }) => useLive(db.asOf(t), allTodos),
+        { initialProps: { t: 5 } },
+      );
+      await waitFor(() => expect(result.current.rows).toEqual(ids(5)));
+
+      rerender({ t: 5 });
+      rerender({ t: 5 });
+      await settle();
+      // still the one subscription: one live pass, one q frame
+      expect(qFrames()).toHaveLength(1);
+      expect(result.current.rows).toEqual(ids(5));
+      expect(result.current.ticks).toBe(0);
+      expect(result.current.error).toBeUndefined();
+
+      // a different coordinate is a different view: tear down, re-subscribe
+      rerender({ t: 6 });
+      await waitFor(() => expect(result.current.rows).toEqual(ids(6)));
+      expect(qFrames()).toHaveLength(2);
+      expect(qFrames().at(-1)!.asOf as number).toBe(6);
       expect(result.current.ticks).toBe(0);
       expect(result.current.error).toBeUndefined();
     } finally {
