@@ -16,7 +16,7 @@
 
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, describe, expect, test } from "bun:test";
-import { Unauthorized } from "@ripple/alchemy/db";
+import { Unauthorized } from "@ramose/alchemy/db";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import { act, renderHook } from "@testing-library/react";

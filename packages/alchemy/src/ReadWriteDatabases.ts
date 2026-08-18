@@ -4,12 +4,12 @@
  *
  * The binding **is** the client. `ReadWriteDatabases` is a single identifier
  * that is simultaneously the binding's Context tag, its type, and the callable
- * — `yield* Ripple.ReadWriteDatabases(Server)`. Which wire it uses is the
- * transport layer's business (`Ripple.ServerBinding` or `Ripple.ServerHttp`);
+ * — `yield* Ramose.ReadWriteDatabases(Server)`. Which wire it uses is the
+ * transport layer's business (`Ramose.ServerBinding` or `Ramose.ServerHttp`);
  * the Worker body is identical under either.
  *
  * @binding
- * @product Ripple
+ * @product Ramose
  * @category Storage & Databases
  */
 
@@ -21,10 +21,10 @@ import type { Server } from "./Server.ts";
 export interface ReadWriteDatabases
   extends Binding.Service<
     ReadWriteDatabases,
-    "Ripple.ReadWriteDatabases",
+    "Ramose.ReadWriteDatabases",
     (server: Server) => Effect.Effect<DatabasesShape>
   > {}
 
 export const ReadWriteDatabases = Binding.Service<ReadWriteDatabases>(
-  "Ripple.ReadWriteDatabases",
+  "Ramose.ReadWriteDatabases",
 );

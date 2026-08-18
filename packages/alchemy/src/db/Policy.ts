@@ -1,6 +1,6 @@
 /**
  * Typed policy authoring. Combinators over catalog attributes and JWT claims
- * lower to `@ripple/core`'s compiled AST; every check is deploy-time.
+ * lower to `@ramose/core`'s compiled AST; every check is deploy-time.
  */
 
 import * as Schema from "effect/Schema";
@@ -10,7 +10,7 @@ import {
   POLICY_VERSION,
   PolicyAst,
   parsePolicy,
-} from "@ripple/core/policy/ast.ts";
+} from "@ramose/core/policy/ast.ts";
 import type {
   AttrRules,
   CompiledPolicy,
@@ -19,7 +19,7 @@ import type {
   PolicyOp,
   PolicyOperand,
   PolicyRules,
-} from "@ripple/core/policy/ast.ts";
+} from "@ramose/core/policy/ast.ts";
 import type { AnyAttribute, ValueOf } from "./Attribute.ts";
 import { isAttrRef } from "./attrRef.ts";
 import type { AnyCatalog } from "./Catalog.ts";
@@ -67,7 +67,7 @@ export interface PolicySpec<
   /** attribute whose value is the JWT `sub` */
   readonly principal: AttrRef & { readonly ident: CatalogIdent<C> };
   readonly classes: readonly string[];
-  /** shape of `ripple.attrs` */
+  /** shape of `ramose.attrs` */
   readonly claims?: Schema.Struct<CF>;
   readonly ns: { readonly [K in keyof C["namespaces"]]?: NsRuleSpec };
 }
@@ -93,13 +93,13 @@ export interface Policy<C extends AnyCatalog = AnyCatalog> {
 }
 
 const fail = (message: string, ident?: string, cause?: unknown): never => {
-  throw new PolicyError({ message: `ripple/policy: ${message}`, ident, cause });
+  throw new PolicyError({ message: `ramose/policy: ${message}`, ident, cause });
 };
 
 // ── claims ─────────────────────────────────────────────────────────────────
 
 /**
- * The JWT Ripple verifies. `ripple.attrs` is decoded by the policy's own
+ * The JWT Ramose verifies. `ramose.attrs` is decoded by the policy's own
  * `claims` struct; here it stays open.
  */
 export const Claims = Schema.Struct({
@@ -108,7 +108,7 @@ export const Claims = Schema.Struct({
   aud: Schema.String,
   exp: Schema.Number,
   iat: Schema.optional(Schema.Number),
-  ripple: Schema.Struct({
+  ramose: Schema.Struct({
     db: Schema.String,
     class: Schema.String,
     attrs: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
@@ -123,7 +123,7 @@ export interface ClaimAccess<Attrs> {
   readonly iss: ClaimOperand;
   readonly aud: ClaimOperand;
   readonly exp: ClaimOperand;
-  /** app claims (`ripple.attrs`) */
+  /** app claims (`ramose.attrs`) */
   readonly attrs: Attrs;
 }
 
@@ -210,7 +210,7 @@ export const ref = (attr: RefAttrRef, target: Expr | AttrRef): Expr => {
   return expr;
 };
 
-/** `c === ripple.class`. Validated against the policy's `classes` at `policy()`. */
+/** `c === ramose.class`. Validated against the policy's `classes` at `policy()`. */
 const classExpr = (c: string): Expr => PolicyAst.class(c);
 export { classExpr as class };
 

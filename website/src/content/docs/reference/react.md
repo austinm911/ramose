@@ -1,30 +1,30 @@
 ---
 title: React
-description: "@ripple/react — RippleProvider owns one Client per subtree; useDb, useLive, useQuery, usePull, useBasis and useTransact work from it."
+description: "@ramose/react — RamoseProvider owns one Client per subtree; useDb, useLive, useQuery, usePull, useBasis and useTransact work from it."
 ---
 
-`@ripple/react` is the React binding: hooks only, no UI. Named imports, not a
+`@ramose/react` is the React binding: hooks only, no UI. Named imports, not a
 namespace:
 
 ```tsx
-import { RippleProvider, useDb, useLive, useTransact } from "@ripple/react";
+import { RamoseProvider, useDb, useLive, useTransact } from "@ramose/react";
 ```
 
 ## Provider
 
 | name | signature |
 | --- | --- |
-| `RippleProvider` | `(props: ClientOptions & { children? }) => JSX` |
-| `useRipple` | `() => Client` — throws outside a provider |
+| `RamoseProvider` | `(props: ClientOptions & { children? }) => JSX` |
+| `useRamose` | `() => Client` — throws outside a provider |
 | `useDb` | `(name: string, catalog: C) => Db<C>` |
 
-`RippleProvider` calls `Ripple.connect(options)`, memoised on `url` and the
+`RamoseProvider` calls `Ramose.connect(options)`, memoised on `url` and the
 *identity* of `token` / `fetch` / `webSocket`, and closes the previous client
 when any of them change and on unmount. StrictMode's mount → close → mount
 re-connects, so the tree never holds a closed client. Two rules the memo
 imposes: `token` must be a stable `TokenSource` (built at module scope or in
 a `useMemo`, not inline in the render), and multi-tenant remount is React's
-own `key` — `<RippleProvider key={tenant} url={…}>`.
+own `key` — `<RamoseProvider key={tenant} url={…}>`.
 
 `useDb(name, catalog)` is `client.db(name, catalog)`, memoised on
 `[client, name, catalog]`. The call is pure — no network, no socket — so the
@@ -57,7 +57,7 @@ requires nothing, so the drain is a plain `Effect.runFork`.
   under this subscription. Reef's "live" pill is `ticks` changing.
 
 ```tsx
-const todoQuery = Ripple.query(Todo)
+const todoQuery = Ramose.query(Todo)
   .orderBy(Todo.createdAt, "asc")
   .select({ id: Todo.id, title: Todo.title, done: Todo.done });
 

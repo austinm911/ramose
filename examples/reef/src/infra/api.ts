@@ -1,25 +1,25 @@
 /**
  * The Reef auth Worker — Better Auth on Cloudflare D1 via
- * `@alchemy.run/better-auth`. The bridge to Ripple is not a custom route any
- * more: it is `@ripple/better-auth`'s `rippleToken` plugin.
+ * `@alchemy.run/better-auth`. The bridge to Ramose is not a custom route any
+ * more: it is `@ramose/better-auth`'s `ramoseToken` plugin.
  *
  * What it serves:
  *
  *   /api/auth/*         Better Auth: email+password sign-in, the organization
  *                       plugin (a Reef workspace *is* an org; its slug is the
- *                       Ripple database name), the jwt plugin (JWKS at
- *                       /api/auth/jwks — the peer's `RIPPLE_JWKS_URL`), and
- *                       the rippleToken plugin: POST /api/auth/ripple/token
- *                       mints the workspace-scoped JWT the Ripple peer
+ *                       Ramose database name), the jwt plugin (JWKS at
+ *                       /api/auth/jwks — the peer's `RAMOSE_JWKS_URL`), and
+ *                       the ramoseToken plugin: POST /api/auth/ramose/token
+ *                       mints the workspace-scoped JWT the Ramose peer
  *                       verifies — `sub` is the Better Auth user id,
- *                       `ripple: { db, class }` comes from the caller's org
+ *                       `ramose: { db, class }` comes from the caller's org
  *                       membership (role → class via `orgClassOf`), signed
  *                       with the same managed JWKS key.
  *   /*                  The built SPA (examples/reef/dist), assets-first with
  *                       single-page-app fallback. `bunx vite build` fills it;
  *                       during local dev the Vite dev server is used instead.
  *
- * This Worker never talks to the Ripple peer — the browser is the only data
+ * This Worker never talks to the Ramose peer — the browser is the only data
  * plane client. That keeps the resource graph acyclic: the peer's env needs
  * this Worker's URL (JWKS), and this Worker needs nothing back.
  *
@@ -29,7 +29,7 @@
 
 import { BetterAuth } from "@alchemy.run/better-auth";
 import { CloudflareD1 } from "@alchemy.run/better-auth/CloudflareD1";
-import { orgClassOf, rippleToken } from "@ripple/better-auth";
+import { orgClassOf, ramoseToken } from "@ramose/better-auth";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { jwt } from "better-auth/plugins/jwt";
 import { organization } from "better-auth/plugins/organization";
@@ -104,15 +104,15 @@ export const Api = Cloudflare.Worker(
             expirationTime: `${REEF_AUTH.ttl}s`,
           },
         }),
-        // `POST /api/auth/ripple/token { db }` → `{ token, class, exp }`.
+        // `POST /api/auth/ramose/token { db }` → `{ token, class, exp }`.
         // The session cookie authenticates the caller; `orgClassOf` maps
         // their membership in the org whose slug is `db` to a policy class
         // (owner|admin → admin, member → member, else viewer; no org and no
-        // membership are the same 403); `Ripple.claims` builds the claim set
+        // membership are the same 403); `Ramose.claims` builds the claim set
         // the peer verifies from the same REEF_AUTH the peer's env pins,
         // validated against the compiled policy; signing uses the same JWKS
         // key the /api/auth/jwks endpoint publishes.
-        rippleToken({
+        ramoseToken({
           auth: REEF_AUTH,
           policy: compiledPolicy(),
           classOf: orgClassOf(),

@@ -1,5 +1,5 @@
 /**
- * @ripple/storage — Cloudflare-side storage adapters.
+ * @ramose/storage — Cloudflare-side storage adapters.
  *
  *  - R2NodeStore: content-addressed segment/dir-node store
  *      peek → in-memory LRU
@@ -27,7 +27,7 @@ import {
   objectKey,
   reachable,
   serializeNode,
-} from "@ripple/core";
+} from "@ramose/core";
 
 export const IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable";
 
@@ -219,7 +219,7 @@ export class R2NodeStore implements NodeStore {
 // ---------------------------------------------------------------------------
 
 /** Wrap the Workers Cache API as a byte tier keyed by a synthetic URL. */
-export function cacheApiTier(cache: any /* Cache */, origin = "https://ripple-cache.invalid"): CacheTier {
+export function cacheApiTier(cache: any /* Cache */, origin = "https://ramose-cache.invalid"): CacheTier {
   return {
     async match(key) {
       const req = new Request(`${origin}/${key}`);

@@ -1,12 +1,12 @@
 /**
- * Ripple through the Alchemy 2 + Effect interface, in the shape the KV docs
+ * Ramose through the Alchemy 2 + Effect interface, in the shape the KV docs
  * use: declare the deployment as a resource, bind it as a capability, use the
  * Effect-native client.
  *
- * The resource is the *server* (a Ripple peer Worker). A database is a *name*
+ * The resource is the *server* (a Ramose peer Worker). A database is a *name*
  * on it — nothing is provisioned, so there is no resource per database: you
- * call `ripple.db(name, catalog)` (pure, no request) and install the catalog
- * once, either with `Ripple.Database` at deploy or `db.install()` at
+ * call `ramose.db(name, catalog)` (pure, no request) and install the catalog
+ * once, either with `Ramose.Database` at deploy or `db.install()` at
  * tenant-creation.
  *
  * This directory is a *type-checked* example, not part of the deployed stack —
@@ -15,7 +15,7 @@
  * `bun alchemy dev examples/kv-style/alchemy.run.ts`. To adopt it, copy the
  * four files into a project of your own.
  *
- *   resources.ts    ← you are here: the Ripple deployment (Worker + Server)
+ *   resources.ts    ← you are here: the Ramose deployment (Worker + Server)
  *   schema.ts       shared catalog (User / Movies)
  *   app.ts          an app Worker that binds the server (its own module, so
  *                   `main: import.meta.url` bundles only the app)
@@ -24,14 +24,14 @@
  * The split is not cosmetic: under alchemy 2.0.0-beta.72 a self-referential
  * `main: import.meta.url` in the same module as `Alchemy.Stack(…, { providers })`
  * pulls the engine into the Worker bundle and workerd dies with
- * `TypeError: t.resolve is not a function` (reproducible with zero Ripple code),
+ * `TypeError: t.resolve is not a function` (reproducible with zero Ramose code),
  * so the Worker declaration lives in its own file and is imported by the stack.
  */
 
-import * as Ripple from "@ripple/alchemy";
+import * as Ramose from "@ramose/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 
-// ── the Ripple deployment ──────────────────────────────────────────────────
+// ── the Ramose deployment ──────────────────────────────────────────────────
 //
 // The server Worker is an *async* Worker: its entrypoint also re-exports both
 // Durable Object classes (single-script pattern), so its bindings are declared
@@ -41,22 +41,22 @@ const Store = Cloudflare.R2.Bucket("Store");
 const Transactor = Cloudflare.DurableObject("TransactorDO", { className: "TransactorDO" });
 const Replica = Cloudflare.DurableObject("QueryReplicaDO", { className: "QueryReplicaDO" });
 
-export const RippleWorker = Cloudflare.Worker("Peer", {
+export const RamoseWorker = Cloudflare.Worker("Peer", {
   main: "./packages/worker/src/index.ts",
   compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
   env: { STORE: Store, TRANSACTOR: Transactor, REPLICA: Replica },
 });
 
 /**
- * The Ripple server on that Worker. Nothing is provisioned and no database
+ * The Ramose server on that Worker. Nothing is provisioned and no database
  * name is pinned here — the resource is the deployment: it resolves the
  * Worker's `url`, carries the shared `token`, and proves it answers `/health`
  * before anything downstream binds to it.
  *
  * Databases come later and per use: the bound capability *is* the client, so
- * `ripple.db("movies", Movies)` hands back a typed `Db` for `/db/movies/…`
- * with no request at all. `Ripple.Database` (at deploy) or `db.install()` (at
+ * `ramose.db("movies", Movies)` hands back a typed `Db` for `/db/movies/…`
+ * with no request at all. `Ramose.Database` (at deploy) or `db.install()` (at
  * tenant creation) is the one place the catalog lands. The Transactor DO is
  * `idFromName("movies")`.
  */
-export const Server = Ripple.Server("Ripple", { worker: RippleWorker });
+export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });

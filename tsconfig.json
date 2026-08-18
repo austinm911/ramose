@@ -19,13 +19,13 @@
     "types": ["bun", "@cloudflare/workers-types"],
     "baseUrl": ".",
     "paths": {
-      "@ripple/core": ["packages/core/src/index.ts"],
-      "@ripple/core/*": ["packages/core/src/*"],
-      "@ripple/alchemy": ["packages/alchemy/src/index.ts"],
-      "@ripple/alchemy/db": ["packages/alchemy/src/db/index.ts"],
-      "@ripple/react": ["packages/react/src/index.ts"],
-      "@ripple/better-auth": ["packages/better-auth/src/index.ts"],
-      "@ripple/better-auth/client": ["packages/better-auth/src/client.ts"]
+      "@ramose/core": ["packages/core/src/index.ts"],
+      "@ramose/core/*": ["packages/core/src/*"],
+      "@ramose/alchemy": ["packages/alchemy/src/index.ts"],
+      "@ramose/alchemy/db": ["packages/alchemy/src/db/index.ts"],
+      "@ramose/react": ["packages/react/src/index.ts"],
+      "@ramose/better-auth": ["packages/better-auth/src/index.ts"],
+      "@ramose/better-auth/client": ["packages/better-auth/src/client.ts"]
     }
   },
   "include": [

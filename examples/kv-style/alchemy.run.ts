@@ -10,7 +10,7 @@
  * alchemy 2.0.0-beta.72 bundling issue that forces the split.
  */
 
-import * as Ripple from "@ripple/alchemy";
+import * as Ramose from "@ramose/alchemy";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
@@ -21,7 +21,7 @@ import { Movies } from "./schema.ts";
 
 // ── the catalog install ────────────────────────────────────────────────────
 //
-// `Ripple.Database` is not a cloud object: a database is a name, and this is
+// `Ramose.Database` is not a cloud object: a database is a name, and this is
 // "install this catalog on that name". The engine orders it after the server
 // (the `server` prop is the dependency), and the provider talks plain HTTPS to
 // whatever URL the server just resolved to — the local dev server's, under
@@ -30,12 +30,14 @@ import { Movies } from "./schema.ts";
 // Names invented per request (`/t/:tenant` in app.ts) are not resources: they
 // call `db.install()` at tenant-creation instead.
 
-export const MoviesDb = Ripple.Database("movies", { server: Server, catalog: Movies });
+export const MoviesDb = Ramose.Database("movies", { server: Server, catalog: Movies });
 
 export default Alchemy.Stack(
+  // physical name pinned; product is Ramose — the app id keys deployed state
+  // (and the Worker names derived from it), so renaming it would orphan it.
   "ripple-example",
   {
-    providers: Layer.mergeAll(Cloudflare.providers(), Ripple.providers()),
+    providers: Layer.mergeAll(Cloudflare.providers(), Ramose.providers()),
     state: Alchemy.localState(),
   },
   Effect.gen(function* () {

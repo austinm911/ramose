@@ -13,7 +13,7 @@ import {
   pull,
   query as coreQuery,
   toJson,
-} from "@ripple/core";
+} from "@ramose/core";
 import * as Effect from "effect/Effect";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Schema from "effect/Schema";
@@ -157,7 +157,7 @@ const inProcessPeer = async () => {
   );
 
   return {
-    ripple: runtime.runSync(Databases),
+    ramose: runtime.runSync(Databases),
     seen,
     dispose: () => runtime.dispose(),
   };
@@ -205,7 +205,7 @@ describe("nav query", () => {
 
   test("db.q navigational find-pull end to end", async () => {
     const peer = await inProcessPeer();
-    const db = peer.ripple.db("todos", Todos);
+    const db = peer.ramose.db("todos", Todos);
 
     await run(db.install());
     await run(
@@ -276,7 +276,7 @@ describe("a select field is a direct attribute, never a flattened path", () => {
           .build(),
       ),
     ).toThrow(
-      `ripple/query: select field "ownerName": Todo.owner.name is a multi-hop path (:todo/owner → :user/name) — a select field must be a direct attribute of the queried namespace. Use a nested select: { owner: Todo.owner.select({ name: User.name }) }`,
+      `ramose/query: select field "ownerName": Todo.owner.name is a multi-hop path (:todo/owner → :user/name) — a select field must be a direct attribute of the queried namespace. Use a nested select: { owner: Todo.owner.select({ name: User.name }) }`,
     );
   });
 
@@ -735,7 +735,7 @@ describe("lowering: or / not scope to the root entity variable", () => {
 
 describe("predicates and combinators end to end: the peer counts the rows", () => {
   const seed = (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
-    const db = peer.ripple.db("todos", Todos);
+    const db = peer.ramose.db("todos", Todos);
     return run(
       Effect.gen(function* () {
         yield* db.install();
@@ -1239,7 +1239,7 @@ describe("quantifiers and backlinks end to end", () => {
    * Cyd — friends [],          no todos      (the vacuous-truth case)
    */
   const seed = (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
-    const db = peer.ripple.db("todos", Todos);
+    const db = peer.ramose.db("todos", Todos);
     return run(
       Effect.gen(function* () {
         yield* db.install();
@@ -1738,7 +1738,7 @@ describe("nested collections end to end: filtered on the peer, `[]` never a drop
    * Ada friends [Bob, Cyd]
    */
   const seed = (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
-    const db = peer.ripple.db("todos", Todos);
+    const db = peer.ramose.db("todos", Todos);
     return run(
       Effect.gen(function* () {
         yield* db.install();
@@ -1894,7 +1894,7 @@ describe("card-many scalars end to end: `.each` on the peer", () => {
    * Ada's friends are Bob and Cyd.
    */
   const seed = (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
-    const db = peer.ripple.db("todos", Todos);
+    const db = peer.ramose.db("todos", Todos);
     return run(
       Effect.gen(function* () {
         yield* db.install();
@@ -2038,7 +2038,7 @@ describe("card-many scalars end to end: `.each` on the peer", () => {
 
 describe("paging end to end: the peer pages, the client keeps what it gets", () => {
   const seed = (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
-    const db = peer.ripple.db("todos", Todos);
+    const db = peer.ramose.db("todos", Todos);
     return run(
       Effect.gen(function* () {
         yield* db.install();

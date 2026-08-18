@@ -1,18 +1,18 @@
 /**
  * Worker→DO shared secret. The Transactor and QueryReplica objects are only
- * ever reached from the peer Worker; when `RIPPLE_INTERNAL_SECRET` is set every
+ * ever reached from the peer Worker; when `RAMOSE_INTERNAL_SECRET` is set every
  * internal fetch (including `/subscribe`) must carry it. Unset = no gate.
  */
 
-import type { RippleEnv } from "./env.ts";
+import type { RamoseEnv } from "./env.ts";
 
-export const INTERNAL_HEADER = "x-ripple-internal";
+export const INTERNAL_HEADER = "x-ramose-internal";
 
-type SecretEnv = Pick<RippleEnv, "RIPPLE_INTERNAL_SECRET">;
+type SecretEnv = Pick<RamoseEnv, "RAMOSE_INTERNAL_SECRET">;
 
 /** The header to put on a Worker→DO (or DO→DO) fetch; empty when no secret is configured. */
 export function internalHeaders(env: SecretEnv): Record<string, string> {
-  const secret = env.RIPPLE_INTERNAL_SECRET;
+  const secret = env.RAMOSE_INTERNAL_SECRET;
   return secret ? { [INTERNAL_HEADER]: secret } : {};
 }
 
@@ -26,7 +26,7 @@ function same(a: string, b: string): boolean {
 
 /** Does this request carry the internal secret (always true when none is configured)? */
 export function isInternal(env: SecretEnv, request: Request): boolean {
-  const secret = env.RIPPLE_INTERNAL_SECRET;
+  const secret = env.RAMOSE_INTERNAL_SECRET;
   if (!secret) return true;
   return same(request.headers.get(INTERNAL_HEADER) ?? "", secret);
 }

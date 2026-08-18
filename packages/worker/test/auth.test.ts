@@ -1,10 +1,10 @@
 /**
  * The peer's handshake and enforcement, against the in-process peer
  * (harness.ts). Tokens are real JWTs, signed here with a throwaway ES256 key
- * whose public JWK is handed to the peer as `RIPPLE_JWKS_JSON` — the same
+ * whose public JWK is handed to the peer as `RAMOSE_JWKS_JSON` — the same
  * verifier path as a remote JWKS, without the network.
  *
- * The amendments this locks: `ripple.db` is an exact match, and `RIPPLE_TOKEN`
+ * The amendments this locks: `ramose.db` is an exact match, and `RAMOSE_TOKEN`
  * is not a data-plane principal on a named database.
  */
 
@@ -15,7 +15,7 @@ import { type Peer, makePeer, post } from "./harness.ts";
 // ---- signing ---------------------------------------------------------------
 
 const ISS = "https://auth.acme.test";
-const AUD = "ripple:peer:test";
+const AUD = "ramose:peer:test";
 let sign: (claims: Record<string, unknown>, over?: Record<string, unknown>) => Promise<string>;
 let JWKS: string;
 
@@ -33,7 +33,7 @@ beforeAll(async () => {
 
 /** A token for `db` with `class` (and optional app attrs). */
 const token = (db: string, cls: string, sub = "user_ada", attrs?: Record<string, unknown>, over?: Record<string, unknown>) =>
-  sign({ ripple: { db, class: cls, ...(attrs === undefined ? {} : { attrs }) } }, { sub, ...over });
+  sign({ ramose: { db, class: cls, ...(attrs === undefined ? {} : { attrs }) } }, { sub, ...over });
 
 // ---- the policy ------------------------------------------------------------
 
@@ -82,10 +82,10 @@ const SCHEMA = [
 ];
 
 const policyEnv = (extra: Record<string, string | undefined> = {}) => ({
-  RIPPLE_POLICY: JSON.stringify(POLICY),
-  RIPPLE_JWKS_JSON: JWKS,
-  RIPPLE_JWT_ISS: ISS,
-  RIPPLE_JWT_AUD: AUD,
+  RAMOSE_POLICY: JSON.stringify(POLICY),
+  RAMOSE_JWKS_JSON: JWKS,
+  RAMOSE_JWT_ISS: ISS,
+  RAMOSE_JWT_AUD: AUD,
   ...extra,
 });
 
@@ -118,7 +118,7 @@ const titles = async (peer: Peer, tok?: string) => {
 // ---------------------------------------------------------------------------
 
 describe("no policy — today's behaviour, unchanged", () => {
-  test("no RIPPLE_TOKEN: open, and the demo console is served", async () => {
+  test("no RAMOSE_TOKEN: open, and the demo console is served", async () => {
     const peer = makePeer("demo");
     await peer.seed(SCHEMA);
     expect((await peer.json("/db/demo/query", post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } }))).status).toBe(200);
@@ -126,8 +126,8 @@ describe("no policy — today's behaviour, unchanged", () => {
     peer.close();
   });
 
-  test("RIPPLE_TOKEN set: shared-token mode, full access with it and 401 without", async () => {
-    const peer = makePeer("demo", { env: { RIPPLE_TOKEN: "s3cret" } });
+  test("RAMOSE_TOKEN set: shared-token mode, full access with it and 401 without", async () => {
+    const peer = makePeer("demo", { env: { RAMOSE_TOKEN: "s3cret" } });
     await peer.seed(SCHEMA);
     const q = post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } });
     expect((await peer.json("/db/demo/query", { ...q, token: "s3cret" })).status).toBe(200);
@@ -147,8 +147,8 @@ describe("policy configured", () => {
     peer.close();
   });
 
-  test("RIPPLE_TOKEN is not a data-plane principal on a named database", async () => {
-    const { peer } = await fixture({ RIPPLE_TOKEN: "s3cret" });
+  test("RAMOSE_TOKEN is not a data-plane principal on a named database", async () => {
+    const { peer } = await fixture({ RAMOSE_TOKEN: "s3cret" });
     expect((await peer.json("/health", { token: "s3cret" })).status).toBe(200);
     const q = post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } }, "s3cret");
     expect((await peer.json("/db/acme/query", q)).status).toBe(401);
@@ -161,7 +161,7 @@ describe("policy configured", () => {
   });
 
   test("a broken verifier denies every /db/* and leaves /health alone", async () => {
-    for (const broken of [{ RIPPLE_JWKS_JSON: undefined }, { RIPPLE_JWT_ISS: undefined }, { RIPPLE_JWT_AUD: undefined }, { RIPPLE_POLICY: "{" }]) {
+    for (const broken of [{ RAMOSE_JWKS_JSON: undefined }, { RAMOSE_JWT_ISS: undefined }, { RAMOSE_JWT_AUD: undefined }, { RAMOSE_POLICY: "{" }]) {
       const peer = makePeer("acme", { env: policyEnv(broken as Record<string, string | undefined>) });
       expect((await peer.json("/health")).status).toBe(200);
       const tok = await token("acme", "admin");
@@ -170,7 +170,7 @@ describe("policy configured", () => {
     }
   });
 
-  test("ripple.db is an exact match — nothing else opens another name", async () => {
+  test("ramose.db is an exact match — nothing else opens another name", async () => {
     const { peer } = await fixture();
     const acme = await token("acme", "member");
     const other = await token("other", "member");
@@ -185,7 +185,7 @@ describe("policy configured", () => {
     const { peer } = await fixture();
     const q = post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } });
     const bad = [
-      await token("acme", "member", "user_ada", undefined, { aud: "ripple:peer:other" }),
+      await token("acme", "member", "user_ada", undefined, { aud: "ramose:peer:other" }),
       await token("acme", "member", "user_ada", undefined, { iss: "https://evil.test" }),
       await token("acme", "member", "user_ada", undefined, { iat: Math.floor(Date.now() / 1000) - 600, exp: Math.floor(Date.now() / 1000) - 10 }),
       await token("acme", "member", "user_ada", undefined, { iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 7200 }),
@@ -208,7 +208,7 @@ describe("policy configured", () => {
 
   test("no token is 401 when the policy declares no anonymous class", async () => {
     const closed = { ...POLICY, classes: ["member", "admin"] };
-    const peer = makePeer("acme", { env: policyEnv({ RIPPLE_POLICY: JSON.stringify(closed) }) });
+    const peer = makePeer("acme", { env: policyEnv({ RAMOSE_POLICY: JSON.stringify(closed) }) });
     await peer.seed(SCHEMA);
     expect((await peer.json("/db/acme/query", post({ query: { find: ["?t"], where: [["?e", ":doc/title", "?t"]] } }))).status).toBe(401);
     peer.close();
@@ -314,7 +314,7 @@ describe("writes", () => {
 
 describe("ensure and privileged surfaces", () => {
   test("a non-admin's ensure of an already-deployed subset is skipped silently; a new ident is 403", async () => {
-    const { peer } = await fixture({ RIPPLE_TOKEN: "s3cret" });
+    const { peer } = await fixture({ RAMOSE_TOKEN: "s3cret" });
     const member = await token("acme", "member");
     const subset = { tx: [attr(":doc/title", "string"), attr(":user/sub", "string", { ":db/unique": ":db.unique/identity" })] };
     for (const tok of [member, "s3cret"]) {
@@ -386,8 +386,8 @@ describe("ensure and privileged surfaces", () => {
     peer.close();
   });
 
-  test("CORS narrows to RIPPLE_ALLOWED_ORIGINS once a policy is configured", async () => {
-    const { peer } = await fixture({ RIPPLE_ALLOWED_ORIGINS: "https://app.acme.test" });
+  test("CORS narrows to RAMOSE_ALLOWED_ORIGINS once a policy is configured", async () => {
+    const { peer } = await fixture({ RAMOSE_ALLOWED_ORIGINS: "https://app.acme.test" });
     const ok = await peer.fetch("/health", { headers: { origin: "https://app.acme.test" } });
     expect(ok.headers.get("access-control-allow-origin")).toBe("https://app.acme.test");
     const nope = await peer.fetch("/health", { headers: { origin: "https://evil.test" } });
@@ -398,10 +398,10 @@ describe("ensure and privileged surfaces", () => {
 
 describe("the Worker→DO internal secret", () => {
   test("the DOs refuse a fetch that does not carry it, and the Worker's own always does", async () => {
-    const { peer } = await fixture({ RIPPLE_INTERNAL_SECRET: "deploy-minted" });
+    const { peer } = await fixture({ RAMOSE_INTERNAL_SECRET: "deploy-minted" });
     expect((await peer.transactorFetch("/info?db=acme")).status).toBe(401);
     expect((await peer.replicaFetch("/basis?db=acme")).status).toBe(401);
-    expect((await peer.transactorFetch("/info?db=acme", { headers: { "x-ripple-internal": "deploy-minted" } })).status).toBe(200);
+    expect((await peer.transactorFetch("/info?db=acme", { headers: { "x-ramose-internal": "deploy-minted" } })).status).toBe(200);
     // the Worker reaches both on every read, so a working query proves it forwards the header
     expect(await titles(peer, await token("acme", "member", "user_ada"))).toEqual(["Roadmap"]);
     peer.close();

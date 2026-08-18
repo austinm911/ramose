@@ -7,14 +7,14 @@
  * the Cache API tier is keyed by content hash and shared.
  */
 
-import { R2NodeStore, cacheApiTier, dbPrefix, prefixedBucket } from "@ripple/storage";
-import { type RippleEnv, internalHeaders } from "@ripple/transactor";
-import type { Basis } from "@ripple/replica";
+import { R2NodeStore, cacheApiTier, dbPrefix, prefixedBucket } from "@ramose/storage";
+import { type RamoseEnv, internalHeaders } from "@ramose/transactor";
+import type { Basis } from "@ramose/replica";
 
 const sources = new Map<string, R2NodeStore>();
 const MAX_SOURCES = 64;
 
-export function segmentSource(env: RippleEnv, db: string): R2NodeStore {
+export function segmentSource(env: RamoseEnv, db: string): R2NodeStore {
   let source = sources.get(db);
   if (!source) {
     if (sources.size >= MAX_SOURCES) sources.delete(sources.keys().next().value!);
@@ -33,7 +33,7 @@ export function clearSegmentSources(): void {
 /** Deterministic replica choice: hash(db, region) → one of `shards` replicas per region.
  *  The location hint is part of the id, so switching hints (e.g. wnam → enam) creates a
  *  fresh DO placed near the new hint instead of reusing one placed elsewhere. */
-export function replicaId(env: RippleEnv, db: string, region: string, shards = 1, hint: string | undefined = hintFor(region)): DurableObjectId {
+export function replicaId(env: RamoseEnv, db: string, region: string, shards = 1, hint: string | undefined = hintFor(region)): DurableObjectId {
   const shard = shards > 1 ? fnv1a(`${db}|${region}`) % shards : 0;
   return env.REPLICA.idFromName(hint ? `${db}|${region}|${hint}|${shard}` : `${db}|${region}|${shard}`);
 }
@@ -55,20 +55,20 @@ export function regionOf(request: Request): string {
 
 // ---- read-path knobs (per request by header, default by env, else the shipped default) ----
 //
-//   x-ripple-replica-hint: wnam|enam|…|auto|continent
+//   x-ramose-replica-hint: wnam|enam|…|auto|continent
 //                                            DO placement (hint is part of the replica id); `auto` = colo→hint
 //                                            (IAD→enam, SJC→wnam, …), `continent` = the old NA→wnam mapping.
-//                                            Default: env RIPPLE_REPLICA_HINT, else `auto` (gate 2026-08-16: same-colo
+//                                            Default: env RAMOSE_REPLICA_HINT, else `auto` (gate 2026-08-16: same-colo
 //                                            basis misses 12–13 ms vs 68–77 ms; see bench/RESULTS.md).
-//   x-ripple-cache-basis: 0|1                 reuse an isolate-cached basis instead of calling the replica.
-//                                            Default: env RIPPLE_CACHE_BASIS, else 1 (gate: 0 ms server p50 on hits).
-//   x-ripple-cache-mode: ttl|peer             ttl  = entry expires after 5 s (cross-isolate freshness bound = 5 s).
+//   x-ramose-cache-basis: 0|1                 reuse an isolate-cached basis instead of calling the replica.
+//                                            Default: env RAMOSE_CACHE_BASIS, else 1 (gate: 0 ms server p50 on hits).
+//   x-ramose-cache-mode: ttl|peer             ttl  = entry expires after 5 s (cross-isolate freshness bound = 5 s).
 //                                            peer = no freshness timer; only a write through this isolate or an
-//                                                   `x-ripple-min-t` the entry can't satisfy refetches; a long safety
-//                                                   TTL only bounds memory. Default: env RIPPLE_CACHE_MODE, else ttl
+//                                                   `x-ramose-min-t` the entry can't satisfy refetches; a long safety
+//                                                   TTL only bounds memory. Default: env RAMOSE_CACHE_MODE, else ttl
 //                                                   (gate: peer measured identical to ttl on the hit path, and its
 //                                                   cross-isolate staleness without min-t could not be measured).
-//   x-ripple-min-t: <t>                       client's last seen t; the read refetches if the cached basis is older
+//   x-ramose-min-t: <t>                       client's last seen t; the read refetches if the cached basis is older
 //                                            (honored in both modes — read-your-writes across isolates).
 
 export type CacheMode = "ttl" | "peer";
@@ -88,11 +88,11 @@ export function coloHint(colo: string | undefined): string | undefined {
   return colo ? COLO_HINT[colo.toUpperCase()] : undefined;
 }
 
-/** Location hint for a request. Header wins, then env RIPPLE_REPLICA_HINT, then the continent default.
+/** Location hint for a request. Header wins, then env RAMOSE_REPLICA_HINT, then the continent default.
  *  `auto` (header or env) resolves colo→hint and falls back to the continent when the colo is unknown. */
-export function hintOf(request: Request, env?: Pick<RippleEnv, "RIPPLE_REPLICA_HINT">): string | undefined {
+export function hintOf(request: Request, env?: Pick<RamoseEnv, "RAMOSE_REPLICA_HINT">): string | undefined {
   const cf = (request as any).cf as { colo?: string } | undefined;
-  const pick = request.headers.get("x-ripple-replica-hint") ?? env?.RIPPLE_REPLICA_HINT ?? "auto";
+  const pick = request.headers.get("x-ramose-replica-hint") ?? env?.RAMOSE_REPLICA_HINT ?? "auto";
   if (pick === "auto") return coloHint(cf?.colo) ?? hintFor(regionOf(request));
   if (pick && HINTS.has(pick)) return pick;
   return hintFor(regionOf(request)); // "continent" or anything unknown
@@ -106,29 +106,29 @@ export function coloOf(request: Request): string {
   return String((request as any).cf?.colo ?? "unknown");
 }
 export function coloHeader(request: Request): Record<string, string> {
-  return { "x-ripple-colo": coloOf(request) };
+  return { "x-ramose-colo": coloOf(request) };
 }
 
 /** Nearest replica stub for a request (deterministic id + location hint). */
-export function nearestReplica(env: RippleEnv, db: string, request: Request): DurableObjectStub {
+export function nearestReplica(env: RamoseEnv, db: string, request: Request): DurableObjectStub {
   const region = regionOf(request);
   const hint = hintOf(request, env);
   return env.REPLICA.get(replicaId(env, db, region, 1, hint), { locationHint: hint } as any);
 }
 
-export function wantsBasisCache(request: Request, env?: Pick<RippleEnv, "RIPPLE_CACHE_BASIS">): boolean {
-  const h = request.headers.get("x-ripple-cache-basis") ?? env?.RIPPLE_CACHE_BASIS ?? "1";
+export function wantsBasisCache(request: Request, env?: Pick<RamoseEnv, "RAMOSE_CACHE_BASIS">): boolean {
+  const h = request.headers.get("x-ramose-cache-basis") ?? env?.RAMOSE_CACHE_BASIS ?? "1";
   return h !== "0";
 }
 
-export function cacheModeOf(request: Request, env?: Pick<RippleEnv, "RIPPLE_CACHE_MODE">): CacheMode {
-  const h = request.headers.get("x-ripple-cache-mode") ?? env?.RIPPLE_CACHE_MODE;
+export function cacheModeOf(request: Request, env?: Pick<RamoseEnv, "RAMOSE_CACHE_MODE">): CacheMode {
+  const h = request.headers.get("x-ramose-cache-mode") ?? env?.RAMOSE_CACHE_MODE;
   return h === "peer" ? "peer" : "ttl";
 }
 
-/** `x-ripple-min-t` (client's last seen t), or undefined. */
+/** `x-ramose-min-t` (client's last seen t), or undefined. */
 export function minTOf(request: Request): number | undefined {
-  const h = request.headers.get("x-ripple-min-t");
+  const h = request.headers.get("x-ramose-min-t");
   if (h === null || h === "") return undefined;
   const n = Number(h);
   return Number.isFinite(n) && n >= 0 ? n : undefined;
@@ -136,7 +136,7 @@ export function minTOf(request: Request): number | undefined {
 
 // ---- isolate basis cache ----
 // Keyed by db|hint. Reused until a write through this Worker (invalidateBasis), the entry
-// ages past the mode's TTL, or a read carries an x-ripple-min-t the entry can't satisfy.
+// ages past the mode's TTL, or a read carries an x-ramose-min-t the entry can't satisfy.
 const basisCache = new Map<string, { basis: Basis; at: number }>();
 export const BASIS_TTL_MS = 5_000; // ttl mode: cross-isolate freshness bound
 export const BASIS_SAFETY_TTL_MS = 10 * 60_000; // peer mode: memory bound only, not a consistency promise
@@ -165,7 +165,7 @@ export interface BasisFetch {
 }
 
 /** Fetch a basis for `db`: isolate cache (per knobs) or the nearest replica's GET /basis. */
-export async function fetchBasisWithStats(env: RippleEnv, db: string, request: Request): Promise<BasisFetch> {
+export async function fetchBasisWithStats(env: RamoseEnv, db: string, request: Request): Promise<BasisFetch> {
   const useCache = wantsBasisCache(request, env);
   const mode = cacheModeOf(request, env);
   const minT = minTOf(request);
@@ -199,22 +199,22 @@ export async function fetchBasisWithStats(env: RippleEnv, db: string, request: R
   return { basis, hit: false, reason, calls, behind };
 }
 
-export async function fetchBasis(env: RippleEnv, db: string, request: Request): Promise<Basis> {
+export async function fetchBasis(env: RamoseEnv, db: string, request: Request): Promise<Basis> {
   return (await fetchBasisWithStats(env, db, request)).basis;
 }
 
 /** Diagnostic response headers describing how the basis was obtained. */
-export function basisHeaders(request: Request, env: RippleEnv, f: BasisFetch): Record<string, string> {
+export function basisHeaders(request: Request, env: RamoseEnv, f: BasisFetch): Record<string, string> {
   return {
-    "x-ripple-basis-t": String(f.basis.t),
-    "x-ripple-basis-hit": f.hit ? "1" : "0",
-    "x-ripple-basis-reason": f.reason,
-    "x-ripple-basis-calls": String(f.calls),
-    ...(f.behind ? { "x-ripple-basis-behind": "1" } : {}),
-    "x-ripple-replica-hint": hintOf(request, env) ?? "",
-    "x-ripple-cache-basis": wantsBasisCache(request, env) ? "1" : "0",
-    "x-ripple-cache-mode": cacheModeOf(request, env),
-    "x-ripple-colo": String((request as any).cf?.colo ?? ""),
+    "x-ramose-basis-t": String(f.basis.t),
+    "x-ramose-basis-hit": f.hit ? "1" : "0",
+    "x-ramose-basis-reason": f.reason,
+    "x-ramose-basis-calls": String(f.calls),
+    ...(f.behind ? { "x-ramose-basis-behind": "1" } : {}),
+    "x-ramose-replica-hint": hintOf(request, env) ?? "",
+    "x-ramose-cache-basis": wantsBasisCache(request, env) ? "1" : "0",
+    "x-ramose-cache-mode": cacheModeOf(request, env),
+    "x-ramose-colo": String((request as any).cf?.colo ?? ""),
   };
 }
 

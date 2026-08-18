@@ -1,17 +1,17 @@
 ---
-title: Ripple — the typed, realtime database for Cloudflare
-description: Ripple is a typed, realtime database for apps you ship on Cloudflare. Write TypeScript, get queries that update themselves and per-user permissions, all running in your own Cloudflare account.
+title: Ramose — the typed, realtime database for Cloudflare
+description: Ramose is a typed, realtime database for apps you ship on Cloudflare. Write TypeScript, get queries that update themselves and per-user permissions, all running in your own Cloudflare account.
 template: splash
 head:
   - tag: title
-    content: Ripple — the typed, realtime database for Cloudflare
+    content: Ramose — the typed, realtime database for Cloudflare
   - tag: meta
     attrs:
       property: og:type
       content: website
 hero:
-  title: Ripple — the typed, realtime database for Cloudflare
-  tagline: Define your schema in TypeScript. Queries update themselves as data changes, every user only sees their own rows, and one deploy puts it all in your own Cloudflare account.
+  title: Ramose — the typed, realtime database for Cloudflare
+  tagline: Reactive applications that grow safely. Define your schema in TypeScript. Queries update themselves as data changes, every user only sees their own rows, and one deploy puts it all in your own Cloudflare account.
   actions:
     - text: Get started
       link: /getting-started/quickstart/
@@ -47,13 +47,13 @@ hero:
 
 <p class="rg-eyebrow">Install the package</p>
 
-<p class="rg-run-note">Add Ripple to an app the way you add any other library. The <a href="/getting-started/quickstart/">Quickstart</a> stands up a local peer and a live query — nothing else to run.</p>
+<p class="rg-run-note">Add Ramose to an app the way you add any other library. The <a href="/getting-started/quickstart/">Quickstart</a> stands up a local peer and a live query — nothing else to run.</p>
 
 ```sh title="In your project" frame="terminal" wrap
-npm install @ripple/alchemy @ripple/worker @ripple/react
+npm install @ramose/alchemy @ramose/worker @ramose/react
 ```
 
-<p class="rg-run-after">Import <code>@ripple/alchemy/db</code> from the browser, point a <code>Cloudflare.Worker</code> at <code>@ripple/worker</code>, and <code>db.live</code> keeps the list current. There is no refetch call anywhere in the app. <span class="rg-caveat">On the local emulator writes do not cross isolates, so a second tab picks them up on reload; your own tab always updates, and against a deployed peer every connected client does.</span></p>
+<p class="rg-run-after">Import <code>@ramose/alchemy/db</code> from the browser, point a <code>Cloudflare.Worker</code> at <code>@ramose/worker</code>, and <code>db.live</code> keeps the list current. There is no refetch call anywhere in the app. <span class="rg-caveat">On the local emulator writes do not cross isolates, so a second tab picks them up on reload; your own tab always updates, and against a deployed peer every connected client does.</span></p>
 
 <p class="rg-run-more">Want a complete app to read? <a href="https://github.com/tvanhens/ripple/tree/master/examples/reef">Reef</a> is a Linear-style issue tracker, one database per workspace, behind Better Auth JWTs and a compiled policy:</p>
 
@@ -84,23 +84,23 @@ npm install @ripple/alchemy @ripple/worker @ripple/react
   <div class="rg-moment-code">
 
 ```ts title="schema.ts"
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
 import * as Schema from "effect/Schema";
 
-export const User = Ripple.Namespace("user", {
-  sub: Ripple.Attr(Schema.String, { unique: "identity" }),
+export const User = Ramose.Namespace("user", {
+  sub: Ramose.Attr(Schema.String, { unique: "identity" }),
 });
 
-export const Todo = Ripple.Namespace("todo", {
-  title: Ripple.Attr(Schema.String),
-  done: Ripple.Attr(Schema.Boolean),
-  createdAt: Ripple.Attr(Ripple.Instant),
-  owner: Ripple.Attr(Ripple.Ref(() => User)),
+export const Todo = Ramose.Namespace("todo", {
+  title: Ramose.Attr(Schema.String),
+  done: Ramose.Attr(Schema.Boolean),
+  createdAt: Ramose.Attr(Ramose.Instant),
+  owner: Ramose.Attr(Ramose.Ref(() => User)),
   /** private: only the owner reads it — see policy.ts */
-  note: Ripple.Attr(Schema.String),
+  note: Ramose.Attr(Schema.String),
 });
 
-export const Todos = Ripple.Catalog({ user: User, todo: Todo });
+export const Todos = Ramose.Catalog({ user: User, todo: Todo });
 ```
 
 ```ts title="todos.ts"
@@ -131,7 +131,7 @@ await Effect.runPromise(
       write site.
     </p>
     <p class="rg-aside">
-      Ripple is built on <a href="https://effect.website">Effect</a>: a
+      Ramose is built on <a href="https://effect.website">Effect</a>: a
       transaction is a generator, and <code>Effect.runPromise(…)</code> runs
       anything a <code>db</code> returns — no runtime to set up. In React the
       glue is shipped: <a href="/reference/react/"><code>useLive</code></a> turns
@@ -151,7 +151,7 @@ export const todoShape = {
 
 // A value, not a callback: `db.q` runs it once,
 // `db.live` keeps it standing.
-export const todoQuery = Ripple.query(Todo)
+export const todoQuery = Ramose.query(Todo)
   .orderBy(Todo.createdAt, "asc")
   .select(todoShape);
 ```
@@ -187,7 +187,7 @@ const TodoList = () => {
     </p>
     <p>
       The policy and the shapes your app reads are both values, so
-      <code>Ripple.Policy.compile</code> checks them against each other at
+      <code>Ramose.Policy.compile</code> checks them against each other at
       deploy time: tighten a rule a screen depends on and the deploy fails,
       rather than that screen quietly emptying for one customer.
     </p>
@@ -197,7 +197,7 @@ const TodoList = () => {
       <li>the deploy-time check</li>
     </ol>
     <p class="rg-aside">
-      Ripple verifies tokens, it never issues them — bring Clerk, Auth0,
+      Ramose verifies tokens, it never issues them — bring Clerk, Auth0,
       WorkOS, or any JWKS issuer.
     </p>
   </div>
@@ -205,10 +205,10 @@ const TodoList = () => {
 
 ```ts title="policy.ts"
 // `Policy` lives in the deploy-time half of the package
-import * as Ripple from "@ripple/alchemy";
+import * as Ramose from "@ramose/alchemy";
 import { Todo, Todos, User } from "./schema";
 
-const P = Ripple.Policy;
+const P = Ramose.Policy;
 
 export const policy = P.policy(Todos, {
   principal: User.sub,   // the token's `sub` claim
@@ -251,7 +251,7 @@ await Effect.runPromise(db.transact(function* (tx) {
 // `pulls` are the shapes your app reads. `todo/note` has a
 // narrowed read rule, so a shape asking for it as a required
 // key fails here — at deploy, not on somebody's screen.
-Ripple.Policy.compile(policy, { pulls: [todoShape] });
+Ramose.Policy.compile(policy, { pulls: [todoShape] });
 ```
 
   </div>
@@ -281,7 +281,7 @@ Ripple.Policy.compile(policy, { pulls: [todoShape] });
   <div class="rg-benefit">
     <h3>One database per customer, for free</h3>
     <p>
-      <code>ripple.db("acme", Catalog)</code> is a pure function call — no
+      <code>ramose.db("acme", Catalog)</code> is a pure function call — no
       create, no provisioning, no request. One deployed peer serves every name,
       each with its own writer and key prefix in storage.
       <a href="/concepts/databases-are-names/">How that works →</a>
@@ -305,7 +305,7 @@ Ripple.Policy.compile(policy, { pulls: [todoShape] });
 <h2 class="rg-h2">Instead of what?</h2>
 
 <p class="rg-lede">
-  Ripple is small and pre-release. Here is the honest trade against what you
+  Ramose is small and pre-release. Here is the honest trade against what you
   are probably using today.
 </p>
 
@@ -324,7 +324,7 @@ Ripple.Policy.compile(policy, { pulls: [todoShape] });
   </div>
   <div class="rg-vs-row">
     <h3>Supabase</h3>
-    <p>Row rules are here, per attribute, deny-by-default and running at the edge, and a database per tenant costs one function call. Ripple only verifies JWTs, though: bring your own identity provider and your own file storage.</p>
+    <p>Row rules are here, per attribute, deny-by-default and running at the edge, and a database per tenant costs one function call. Ramose only verifies JWTs, though: bring your own identity provider and your own file storage.</p>
   </div>
   <div class="rg-vs-row">
     <h3>Instant</h3>
@@ -333,7 +333,7 @@ Ripple.Policy.compile(policy, { pulls: [todoShape] });
 </div>
 
 <div class="rg-limits">
-  <strong>What Ripple does not have</strong>
+  <strong>What Ramose does not have</strong>
   <ul>
     <li>SQL, or joins across databases</li>
     <li>A hosted dashboard</li>
@@ -372,9 +372,9 @@ Ripple.Policy.compile(policy, { pulls: [todoShape] });
 </div>
 
 <div class="rg-closing">
-  <p class="rg-eyebrow">Changes ripple.</p>
+  <p class="rg-eyebrow">Changes propagate.</p>
   <p class="rg-big">Install the package, write a schema, run a live query.</p>
-  <p class="rg-closing-note"><code>npm install @ripple/alchemy</code> — then the Quickstart stands up a local peer in your own app.</p>
+  <p class="rg-closing-note"><code>npm install @ramose/alchemy</code> — then the Quickstart stands up a local peer in your own app.</p>
   <div class="rg-actions">
     <a class="rg-button primary" href="/getting-started/quickstart/">Open the quickstart</a>
     <a class="rg-button secondary" href="https://github.com/tvanhens/ripple/tree/master/examples/reef">See Reef</a>

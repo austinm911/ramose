@@ -13,13 +13,13 @@ export type DbValueType =
   | ":db.type/instant"
   | ":db.type/bytes";
 
-declare const RippleVt: unique symbol;
+declare const RamoseVt: unique symbol;
 declare const RefTarget: unique symbol;
 declare const SelfRef: unique symbol;
 
 /** Type-level brand so `Attr(Long)` stamps `valueType` without an option. */
-export type RippleVt<VT extends DbValueType> = {
-  readonly [RippleVt]: VT;
+export type RamoseVt<VT extends DbValueType> = {
+  readonly [RamoseVt]: VT;
 };
 
 /**
@@ -27,7 +27,7 @@ export type RippleVt<VT extends DbValueType> = {
  * decoded `string` / `number` / `boolean` → string / double / boolean.
  * Anything else is `undefined` (pass `valueType` on `Attr`).
  */
-export type InferDbValueType<S> = S extends RippleVt<infer V>
+export type InferDbValueType<S> = S extends RamoseVt<infer V>
   ? V
   : S extends { readonly Type: infer T }
     ? [T] extends [string]
@@ -44,9 +44,9 @@ const known = new WeakMap<object, DbValueType>();
 const asVt = <S extends Schema.Top, const VT extends DbValueType>(
   schema: S,
   vt: VT,
-): S & RippleVt<VT> => {
+): S & RamoseVt<VT> => {
   known.set(schema, vt);
-  return schema as S & RippleVt<VT>;
+  return schema as S & RamoseVt<VT>;
 };
 
 /** Uuid as the engine currently reads it: `{ vt: 6, v: "…" }`, not a string. */
@@ -61,14 +61,14 @@ export type Uuid = Schema.Schema.Type<typeof Uuid>;
 
 /** Write-side uuid: a canonical string. Lowers to `:db.type/uuid`. */
 export const UuidString = asVt(
-  Schema.String.annotate({ identifier: "ripple/uuid-string" }),
+  Schema.String.annotate({ identifier: "ramose/uuid-string" }),
   ":db.type/uuid",
 );
 export type UuidString = Schema.Schema.Type<typeof UuidString>;
 
 /** Untargeted entity reference (eid). Prefer {@link Ref} with a target. */
 const RefUntargeted = asVt(
-  Schema.Number.annotate({ identifier: "ripple/ref" }),
+  Schema.Number.annotate({ identifier: "ramose/ref" }),
   ":db.type/ref",
 );
 
@@ -92,7 +92,7 @@ type RefFn = {
   /** Self-ref; `Namespace` substitutes the enclosing attr map. */
   readonly self: TargetedRef<SelfMarker>;
 } & typeof RefUntargeted &
-  RippleVt<":db.type/ref">;
+  RamoseVt<":db.type/ref">;
 
 /**
  * Entity reference. Use `Ref(() => User)` or `Ref.self` so navigational
@@ -105,7 +105,7 @@ export const Ref: RefFn = Object.assign(
   ): TargetedRef<N["attributes"]> | typeof RefUntargeted => {
     if (target === undefined) return RefUntargeted;
     const schema = asVt(
-      Schema.Number.annotate({ identifier: "ripple/ref" }),
+      Schema.Number.annotate({ identifier: "ramose/ref" }),
       ":db.type/ref",
     );
     return Object.assign(schema, {
@@ -116,7 +116,7 @@ export const Ref: RefFn = Object.assign(
   {
     self: Object.assign(
       asVt(
-        Schema.Number.annotate({ identifier: "ripple/ref-self" }),
+        Schema.Number.annotate({ identifier: "ramose/ref-self" }),
         ":db.type/ref",
       ),
       { _self: true as const },
@@ -148,21 +148,21 @@ export const refTargetOf = (
 
 /** Integer long. Lowers to `:db.type/long` (plain `Schema.Number` is double). */
 export const Long = asVt(
-  Schema.Number.annotate({ identifier: "ripple/long" }),
+  Schema.Number.annotate({ identifier: "ramose/long" }),
   ":db.type/long",
 );
 export type Long = Schema.Schema.Type<typeof Long>;
 
 /** Instant. Lowers to `:db.type/instant`. */
 export const Instant = asVt(
-  Schema.Date.annotate({ identifier: "ripple/instant" }),
+  Schema.Date.annotate({ identifier: "ramose/instant" }),
   ":db.type/instant",
 );
 export type Instant = Schema.Schema.Type<typeof Instant>;
 
 /** Byte array. Lowers to `:db.type/bytes`. */
 export const Bytes = asVt(
-  Schema.Uint8Array.annotate({ identifier: "ripple/bytes" }),
+  Schema.Uint8Array.annotate({ identifier: "ramose/bytes" }),
   ":db.type/bytes",
 );
 export type Bytes = Schema.Schema.Type<typeof Bytes>;
@@ -198,6 +198,6 @@ export const inferDbValueType = (
   const vt = tryInferDbValueType(schema, override);
   if (vt !== undefined) return vt;
   throw new Error(
-    `ripple/schema: cannot infer :db.type/* from this Schema (ast._tag=${schema.ast._tag}). Pass valueType on the attribute.`,
+    `ramose/schema: cannot infer :db.type/* from this Schema (ast._tag=${schema.ast._tag}). Pass valueType on the attribute.`,
   );
 };

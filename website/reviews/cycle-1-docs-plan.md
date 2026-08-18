@@ -39,7 +39,7 @@ todo:  title, done, createdAt, due, owner -> Ref(() => User)
 | `guides/transactions.md` | todos catalog; complete snippets; `Entity` has three verbs; tempids are not returned |
 | `guides/queries.md` | catalog defined on page; hedging/legacy-builder into `:::note` at top of section; `orderBy` silent no-op + `limit` not bounding server work; drop `docs/QUERY.md` pointer |
 | `guides/live-queries.md` | complete snippets; needs a WebSocket (not `ServerBinding`); miniflare caveat; terminal errors incl. `QueryBudgetExceeded` |
-| `guides/permissions.md` | **new**: three modes table first, "Ripple verifies, never issues", one policy, local loop (`RIPPLE_JWKS_JSON` + `jose`, honestly: no minting helper ships), one denied write at both enforcement points, one filtered read, `compile(policy, { pulls })` |
+| `guides/permissions.md` | **new**: three modes table first, "Ramose verifies, never issues", one policy, local loop (`RAMOSE_JWKS_JSON` + `jose`, honestly: no minting helper ships), one denied write at both enforcement points, one filtered read, `compile(policy, { pulls })` |
 | `guides/auth.md` | keep as the deep reference; fix §12.3, 12.8, 12.9, 12.10; combination rule as a table |
 | `guides/workers.md` | fix §12.4 (imports/symbols) and §12.5 (`live` does not work under `ServerBinding`) |
 | `guides/before-production.md` | **new**: checklist, every item checked against shipped-api |

@@ -1,12 +1,12 @@
 /**
- * The peer's handshake, selected by `RIPPLE_POLICY`:
+ * The peer's handshake, selected by `RAMOSE_POLICY`:
  *
- *   unset  legacy — open, or a shared `RIPPLE_TOKEN` if one is set; class `admin`
- *   set    JWT only; `RIPPLE_TOKEN` is not a data-plane principal on `/db/:name`
+ *   unset  legacy — open, or a shared `RAMOSE_TOKEN` if one is set; class `admin`
+ *   set    JWT only; `RAMOSE_TOKEN` is not a data-plane principal on `/db/:name`
  *
  * A configured policy makes verification mandatory: a missing JWKS / issuer /
  * audience denies every `/db/*` and logs once, never falls open. Keys come from
- * `RIPPLE_JWKS_URL`, or `RIPPLE_JWKS_JSON` for offline runs.
+ * `RAMOSE_JWKS_URL`, or `RAMOSE_JWKS_JSON` for offline runs.
  */
 
 import {
@@ -21,22 +21,22 @@ import {
   componentLogger,
   filterDb,
   isAdmin,
-} from "@ripple/core";
-import { type Basis, dbFromBasis } from "@ripple/replica/basis.ts";
-import { type RippleEnv, envInt, policyOf } from "@ripple/transactor";
+} from "@ramose/core";
+import { type Basis, dbFromBasis } from "@ramose/replica/basis.ts";
+import { type RamoseEnv, envInt, policyOf } from "@ramose/transactor";
 import { type JWTPayload, type JWTVerifyGetKey, createLocalJWKSet, createRemoteJWKSet, jwtVerify } from "jose";
 import { Unauthorized } from "./errors.ts";
 
 /** Verifier algorithms, explicit — never whatever the token's header asks for. */
 const ALGS = ["RS256", "ES256", "EdDSA"];
-/** Cap on `exp - iat` when `RIPPLE_JWT_MAX_TTL` is unset, in seconds. */
+/** Cap on `exp - iat` when `RAMOSE_JWT_MAX_TTL` is unset, in seconds. */
 export const DEFAULT_JWT_MAX_TTL = 900;
 /** Per-isolate memo lifetime for a verified principal. */
 export const PRINCIPAL_MEMO_MS = 60_000;
 /** The class a policy must declare for tokenless callers to get in. */
 export const ANONYMOUS_CLASS = "anonymous";
 /**
- * The `RIPPLE_TOKEN` holder under a policy. Undeclarable as a policy class, so
+ * The `RAMOSE_TOKEN` holder under a policy. Undeclarable as a policy class, so
  * every rule denies it; the routes let it reach `ensure`'s no-op case only.
  */
 export const TOKEN_ONLY_CLASS = "$token";
@@ -44,7 +44,7 @@ export const TOKEN_ONLY_CLASS = "$token";
 const log = componentLogger("peer");
 
 export interface AuthState {
-  /** `RIPPLE_POLICY` is set */
+  /** `RAMOSE_POLICY` is set */
   readonly configured: boolean;
   readonly policy?: CompiledPolicy;
   /** set = deny every `/db/*` (malformed policy, or an incomplete verifier) */
@@ -56,8 +56,8 @@ export interface AuthState {
 }
 
 type AuthEnv = Pick<
-  RippleEnv,
-  "RIPPLE_POLICY" | "RIPPLE_TOKEN" | "RIPPLE_JWKS_URL" | "RIPPLE_JWKS_JSON" | "RIPPLE_JWT_ISS" | "RIPPLE_JWT_AUD" | "RIPPLE_JWT_MAX_TTL" | "RIPPLE_ALLOWED_ORIGINS"
+  RamoseEnv,
+  "RAMOSE_POLICY" | "RAMOSE_TOKEN" | "RAMOSE_JWKS_URL" | "RAMOSE_JWKS_JSON" | "RAMOSE_JWT_ISS" | "RAMOSE_JWT_AUD" | "RAMOSE_JWT_MAX_TTL" | "RAMOSE_ALLOWED_ORIGINS"
 >;
 
 const states = new Map<string, AuthState>();
@@ -70,20 +70,20 @@ const csv = (v: string | undefined): string[] =>
     .filter((s) => s.length > 0);
 
 function keySetOf(env: AuthEnv): JWTVerifyGetKey {
-  if (env.RIPPLE_JWKS_URL) return createRemoteJWKSet(new URL(env.RIPPLE_JWKS_URL));
-  return createLocalJWKSet(JSON.parse(env.RIPPLE_JWKS_JSON as string));
+  if (env.RAMOSE_JWKS_URL) return createRemoteJWKSet(new URL(env.RAMOSE_JWKS_URL));
+  return createLocalJWKSet(JSON.parse(env.RAMOSE_JWKS_JSON as string));
 }
 
 function build(env: AuthEnv): AuthState {
   const parsed = policyOf(env);
-  const maxTtl = envInt(env.RIPPLE_JWT_MAX_TTL, DEFAULT_JWT_MAX_TTL);
+  const maxTtl = envInt(env.RAMOSE_JWT_MAX_TTL, DEFAULT_JWT_MAX_TTL);
   if (!parsed.configured) return { configured: false, maxTtl };
-  const issuers = csv(env.RIPPLE_JWT_ISS);
+  const issuers = csv(env.RAMOSE_JWT_ISS);
   const missing: string[] = [];
-  if (parsed.error !== undefined) missing.push(`RIPPLE_POLICY is malformed (${parsed.error})`);
-  if (!env.RIPPLE_JWKS_URL && !env.RIPPLE_JWKS_JSON) missing.push("RIPPLE_JWKS_URL is not set");
-  if (issuers.length === 0) missing.push("RIPPLE_JWT_ISS is not set");
-  if (!env.RIPPLE_JWT_AUD) missing.push("RIPPLE_JWT_AUD is not set");
+  if (parsed.error !== undefined) missing.push(`RAMOSE_POLICY is malformed (${parsed.error})`);
+  if (!env.RAMOSE_JWKS_URL && !env.RAMOSE_JWKS_JSON) missing.push("RAMOSE_JWKS_URL is not set");
+  if (issuers.length === 0) missing.push("RAMOSE_JWT_ISS is not set");
+  if (!env.RAMOSE_JWT_AUD) missing.push("RAMOSE_JWT_AUD is not set");
   let keys: JWTVerifyGetKey | undefined;
   if (missing.length === 0) {
     try {
@@ -93,12 +93,12 @@ function build(env: AuthEnv): AuthState {
     }
   }
   if (missing.length > 0) return { configured: true, policy: parsed.policy, broken: missing.join("; "), maxTtl };
-  return { configured: true, policy: parsed.policy, issuers, aud: env.RIPPLE_JWT_AUD, maxTtl, keys };
+  return { configured: true, policy: parsed.policy, issuers, aud: env.RAMOSE_JWT_AUD, maxTtl, keys };
 }
 
 /** The peer's auth configuration, resolved once per isolate. */
 export function authState(env: AuthEnv): AuthState {
-  const key = [env.RIPPLE_POLICY, env.RIPPLE_JWKS_URL, env.RIPPLE_JWKS_JSON, env.RIPPLE_JWT_ISS, env.RIPPLE_JWT_AUD, env.RIPPLE_JWT_MAX_TTL].join("|");
+  const key = [env.RAMOSE_POLICY, env.RAMOSE_JWKS_URL, env.RAMOSE_JWKS_JSON, env.RAMOSE_JWT_ISS, env.RAMOSE_JWT_AUD, env.RAMOSE_JWT_MAX_TTL].join("|");
   const hit = states.get(key);
   if (hit) return hit;
   const state = build(env);
@@ -126,7 +126,7 @@ export function clearAuthCache(): void {
 const serviceAdmin = (db: string): Principal => ({ kind: "service", class: "admin", claims: {}, db });
 const tokenOnly = (db: string): Principal => ({ kind: "service", class: TOKEN_ONLY_CLASS, claims: {}, db });
 
-/** The `RIPPLE_TOKEN` holder under a policy: no class, no data plane. */
+/** The `RAMOSE_TOKEN` holder under a policy: no class, no data plane. */
 export const isTokenOnly = (p: Principal): boolean => p.class === TOKEN_ONLY_CLASS;
 
 /** Past `exp`? Checked on every use of a memoized principal and on every session frame. */
@@ -153,15 +153,15 @@ export function bearerOf(request: Request): string | undefined {
 const principals = new Map<string, { principal: Principal; at: number }>();
 
 /** The verified caller for `dbName`. Throws `Unauthorized`; never falls open. */
-export function principalOf(env: RippleEnv, request: Request, dbName: string): Promise<Principal> {
+export function principalOf(env: RamoseEnv, request: Request, dbName: string): Promise<Principal> {
   return principalForToken(env, bearerOf(request), dbName);
 }
 
 /** Same, for a token off the wire (the session's `auth` frame). */
-export async function principalForToken(env: RippleEnv, token: string | undefined, dbName: string): Promise<Principal> {
+export async function principalForToken(env: RamoseEnv, token: string | undefined, dbName: string): Promise<Principal> {
   const st = authState(env);
   if (!st.configured) {
-    if (!env.RIPPLE_TOKEN || token === env.RIPPLE_TOKEN) return serviceAdmin(dbName);
+    if (!env.RAMOSE_TOKEN || token === env.RAMOSE_TOKEN) return serviceAdmin(dbName);
     throw new Unauthorized({});
   }
   if (st.broken !== undefined || st.policy === undefined || st.keys === undefined) throw new Unauthorized({});
@@ -169,7 +169,7 @@ export async function principalForToken(env: RippleEnv, token: string | undefine
     if (st.policy.classes.includes(ANONYMOUS_CLASS)) return anonymousPrincipal(dbName);
     throw new Unauthorized({});
   }
-  if (env.RIPPLE_TOKEN && token === env.RIPPLE_TOKEN) return tokenOnly(dbName);
+  if (env.RAMOSE_TOKEN && token === env.RAMOSE_TOKEN) return tokenOnly(dbName);
   return verify(st, token, dbName);
 }
 
@@ -198,16 +198,16 @@ async function verify(st: AuthState, token: string, dbName: string): Promise<Pri
   if (typeof payload.exp !== "number") throw new Unauthorized({});
   if (typeof payload.iat === "number" && payload.exp - payload.iat > st.maxTtl) throw new Unauthorized({ message: "token lifetime exceeds this peer's cap" });
   if (typeof payload.sub !== "string" || payload.sub.length === 0) throw new Unauthorized({});
-  const ripple = claimObject(payload.ripple);
-  if (ripple === undefined || typeof ripple.db !== "string" || typeof ripple.class !== "string") throw new Unauthorized({});
+  const ramose = claimObject(payload.ramose);
+  if (ramose === undefined || typeof ramose.db !== "string" || typeof ramose.class !== "string") throw new Unauthorized({});
   // an undeclared class grants nothing — and says so, rather than being an outage
-  if (!(st.policy as CompiledPolicy).classes.includes(ripple.class)) throw new Unauthorized({ message: "token class is not declared by this peer's policy" });
-  const attrs = ripple.attrs === undefined ? undefined : claimObject(ripple.attrs);
-  if (ripple.attrs !== undefined && attrs === undefined) throw new Unauthorized({});
+  if (!(st.policy as CompiledPolicy).classes.includes(ramose.class)) throw new Unauthorized({ message: "token class is not declared by this peer's policy" });
+  const attrs = ramose.attrs === undefined ? undefined : claimObject(ramose.attrs);
+  if (ramose.attrs !== undefined && attrs === undefined) throw new Unauthorized({});
 
   const principal: Principal = Object.freeze({
     kind: "user",
-    class: ripple.class,
+    class: ramose.class,
     sub: payload.sub,
     claims: Object.freeze({
       sub: payload.sub,
@@ -216,7 +216,7 @@ async function verify(st: AuthState, token: string, dbName: string): Promise<Pri
       exp: payload.exp,
       ...(attrs === undefined ? {} : { attrs }),
     }),
-    db: ripple.db,
+    db: ramose.db,
   });
   if (!allows(principal, dbName)) throw new Unauthorized({ message: "token is not valid for this database" });
   if (principals.size > 256) principals.clear();
@@ -258,7 +258,7 @@ export async function withEid(policy: CompiledPolicy, principal: Principal, rule
  * to resolve one under). Informational, so unlike {@link withEid} it resolves
  * for admins too: an admin is exempt from filtering, not from having a row.
  */
-export async function describePrincipal(env: RippleEnv, principal: Principal, store: NodeSource, basis: Basis): Promise<{ eid: number | null; class: string }> {
+export async function describePrincipal(env: RamoseEnv, principal: Principal, store: NodeSource, basis: Basis): Promise<{ eid: number | null; class: string }> {
   const st = authState(env);
   if (st.policy === undefined || principal.sub === undefined) return { eid: principal.eid ?? null, class: principal.class };
   if (principal.eid !== undefined) return { eid: principal.eid, class: principal.class };
@@ -275,7 +275,7 @@ export async function describePrincipal(env: RippleEnv, principal: Principal, st
  * the rules read from the *current* basis (so history cannot re-grant).
  */
 export async function viewDb(
-  env: RippleEnv,
+  env: RamoseEnv,
   principal: Principal,
   store: NodeSource,
   basis: Basis,
@@ -313,7 +313,7 @@ export type WriteCheck = { readonly kind: "send"; readonly tx: unknown[]; readon
  * the replica lags the writer, so this is a latency optimisation and the
  * transactor's own check is the authority.
  */
-export async function checkWrite(env: RippleEnv, principal: Principal, store: NodeSource, basis: Basis, tx: unknown[]): Promise<WriteCheck> {
+export async function checkWrite(env: RamoseEnv, principal: Principal, store: NodeSource, basis: Basis, tx: unknown[]): Promise<WriteCheck> {
   const st = authState(env);
   if (st.policy === undefined || isAdmin(principal)) return { kind: "send", tx, principal };
   const db = await dbFromBasis(store, basis);
@@ -343,9 +343,9 @@ export async function checkWrite(env: RippleEnv, principal: Principal, store: No
  * `access-control-allow-origin` under a policy: `undefined` leaves today's `*`,
  * `null` means send no header at all.
  */
-export function allowedOrigin(env: RippleEnv, request: Request): string | null | undefined {
+export function allowedOrigin(env: RamoseEnv, request: Request): string | null | undefined {
   if (!authState(env).configured) return undefined;
-  const list = csv(env.RIPPLE_ALLOWED_ORIGINS);
+  const list = csv(env.RAMOSE_ALLOWED_ORIGINS);
   if (list.length === 0) return null;
   const origin = request.headers.get("origin");
   if (origin === null) return list[0];

@@ -1,5 +1,5 @@
 /**
- * Tagged failures for the Ripple database capabilities.
+ * Tagged failures for the Ramose database capabilities.
  *
  * These mirror, one-for-one, the error surface the peer Worker already
  * speaks over HTTP (packages/worker/src/errors.ts,
@@ -186,7 +186,7 @@ export const fromResponse = (
       // (and {@link send}'s retries) can wait it out under parallel CI.
       if (isCloudflarePlatform(message)) {
         return new Unavailable({
-          message: "ripple: workers.dev edge returned HTML 404 (transient)",
+          message: "ramose: workers.dev edge returned HTML 404 (transient)",
           retryAfterMs: 200,
         });
       }
@@ -209,7 +209,7 @@ export const fromResponse = (
         /Worker not found|Handler does not export a fetch/i.test(message)
       ) {
         return new Unavailable({
-          message: "ripple: Cloudflare edge returned a transient platform error",
+          message: "ramose: Cloudflare edge returned a transient platform error",
           retryAfterMs: 200,
         });
       }

@@ -3,11 +3,11 @@ title: Auth and policy
 description: The full policy reference — modes, claims, combinators, how rules combine, and exactly where each check runs.
 ---
 
-This page is the deep reference for Ripple's authorization layer. If you have
+This page is the deep reference for Ramose's authorization layer. If you have
 not written a policy yet, start with [Permissions in 10
 minutes](/guides/permissions/) and come back for the details.
 
-Ripple verifies tokens; it never issues them. Signing, login, refresh, and
+Ramose verifies tokens; it never issues them. Signing, login, refresh, and
 identity-provider integration belong to your auth provider.
 
 ## Modes
@@ -15,10 +15,10 @@ identity-provider integration belong to your auth provider.
 | mode | environment | who gets in |
 | --- | --- | --- |
 | Open | neither variable set | everyone, as a full-rights service caller |
-| Shared token | `RIPPLE_TOKEN` | one bearer token, full rights on every database |
-| Policy | `RIPPLE_POLICY` plus a verifier | JWT-verified callers, each bound to one database |
+| Shared token | `RAMOSE_TOKEN` | one bearer token, full rights on every database |
+| Policy | `RAMOSE_POLICY` plus a verifier | JWT-verified callers, each bound to one database |
 
-Under a policy, `RIPPLE_TOKEN`'s holder is given the class `$token`, which no
+Under a policy, `RAMOSE_TOKEN`'s holder is given the class `$token`, which no
 policy can declare, so every rule denies it; it reaches `/health` and the
 no-op schema case only. A configured policy also disables the demo console the
 peer serves at `/`.
@@ -29,46 +29,46 @@ Three class names carry special meaning:
 | --- | --- |
 | `admin` | **skips every check** — the filtered read path and both write checks are bypassed. Also the only class allowed to call `explain` and the `/admin/*` routes |
 | `anonymous` | a caller with no token gets this class, and only if the policy declares it. Otherwise tokenless requests are `Unauthorized` |
-| `$token` | assigned to the `RIPPLE_TOKEN` holder under a policy; undeclarable, so it can do nothing |
+| `$token` | assigned to the `RAMOSE_TOKEN` holder under a policy; undeclarable, so it can do nothing |
 
 ## The token
 
-```json title="a decoded Ripple JWT"
+```json title="a decoded Ramose JWT"
 {
   "iss": "https://auth.acme.example",
   "sub": "user_01HQ8ZK",
-  "aud": "ripple:peer:prod",
+  "aud": "ramose:peer:prod",
   "exp": 1755500000,
-  "ripple": { "db": "acme", "class": "member", "attrs": { "org": "org_42" } }
+  "ramose": { "db": "acme", "class": "member", "attrs": { "org": "org_42" } }
 }
 ```
 
-- `iss` must be in `RIPPLE_JWT_ISS`; `aud` must equal `RIPPLE_JWT_AUD`;
-  `exp - iat` is capped by `RIPPLE_JWT_MAX_TTL` (900 seconds by default).
+- `iss` must be in `RAMOSE_JWT_ISS`; `aud` must equal `RAMOSE_JWT_AUD`;
+  `exp - iat` is capped by `RAMOSE_JWT_MAX_TTL` (900 seconds by default).
 - Signature algorithms are pinned to RS256, ES256, and EdDSA — never taken
   from the token's own header.
-- `ripple.db` must equal the database in the request path. A token is bound to
+- `ramose.db` must equal the database in the request path. A token is bound to
   one database; it cannot be pointed at another with a query parameter.
-- `ripple.class` must be a class the policy declares, or the request is
+- `ramose.class` must be a class the policy declares, or the request is
   `Unauthorized`.
-- `ripple.attrs` carries your app's own claims, shaped by the policy's
+- `ramose.attrs` carries your app's own claims, shaped by the policy's
   `claims` struct and readable in rules as `P.claims.attrs.<key>`.
 
 Verified principals are memoized per isolate for 60 seconds.
 
 ## Minting
 
-Ripple verifies tokens; it never issues them. But the shape it verifies is a
+Ramose verifies tokens; it never issues them. But the shape it verifies is a
 contract with two consumers — the peer's env and your mint route — so declare
 it once as an `AuthConfig`:
 
 ```ts title="auth.ts"
-import * as Ripple from "@ripple/alchemy";
+import * as Ramose from "@ramose/alchemy";
 
-export const AUTH: Ripple.AuthConfig = {
-  issuer: "https://auth.acme.example", // RIPPLE_JWT_ISS
-  audience: "ripple:peer:prod", // RIPPLE_JWT_AUD
-  ttl: 900, // seconds — RIPPLE_JWT_MAX_TTL, and exp - iat
+export const AUTH: Ramose.AuthConfig = {
+  issuer: "https://auth.acme.example", // RAMOSE_JWT_ISS
+  audience: "ramose:peer:prod", // RAMOSE_JWT_AUD
+  ttl: 900, // seconds — RAMOSE_JWT_MAX_TTL, and exp - iat
 };
 ```
 
@@ -78,14 +78,14 @@ The mint route's contract is `POST → { token }`, and the JWT itself carries
 ### With Better Auth: the shipped plugin
 
 If your auth provider is [Better Auth](https://better-auth.com),
-`@ripple/better-auth` ships the mint route as a server plugin. It requires
+`@ramose/better-auth` ships the mint route as a server plugin. It requires
 Better Auth's `jwt` plugin (it signs with the same JWKS the peer's
-`RIPPLE_JWKS_URL` reads — point that at the jwt plugin's `/jwks` endpoint)
+`RAMOSE_JWKS_URL` reads — point that at the jwt plugin's `/jwks` endpoint)
 and leaves your app exactly one decision, `classOf`: the caller's policy
 class for the requested database, or `null` for 403.
 
 ```ts title="auth-worker.ts"
-import { orgClassOf, rippleToken } from "@ripple/better-auth";
+import { orgClassOf, ramoseToken } from "@ramose/better-auth";
 import { jwt } from "better-auth/plugins/jwt";
 import { organization } from "better-auth/plugins/organization";
 
@@ -94,7 +94,7 @@ betterAuth({
     organization(),
     jwt({ jwt: { issuer: AUTH.issuer, audience: AUTH.audience,
                  expirationTime: `${AUTH.ttl}s` } }),
-    rippleToken({
+    ramoseToken({
       auth: AUTH,             // the same AuthConfig authEnv pins
       policy: compiledPolicy, // optional: fail an undeclared class at mint
       classOf: orgClassOf(),  // or your own ({ session, db, ctx }) => class | null
@@ -103,7 +103,7 @@ betterAuth({
 });
 ```
 
-That serves `POST {basePath}/ripple/token { db }` → `{ token, class, exp }`
+That serves `POST {basePath}/ramose/token { db }` → `{ token, class, exp }`
 behind the session cookie. `orgClassOf()` is the opt-in default for apps
 where an organization's slug *is* the database name: the caller's member row
 decides the class (`owner`/`admin` → `admin`, `member` → `member`, anything
@@ -111,18 +111,18 @@ else → `viewer` — the exported `classOfRole`); no org and no membership are
 the same 403, so the route never leaks whether a workspace exists.
 
 The paired client plugin gives the auth client one action that feeds
-`Ripple.token.jwt` directly; see [From the browser](#from-the-browser).
+`Ramose.token.jwt` directly; see [From the browser](#from-the-browser).
 
-### With anything else: `Ripple.claims`
+### With anything else: `Ramose.claims`
 
 `claims` builds the payload the peer verifies. It is pure — no signing, no
 I/O — so sign it with whatever you have (Better Auth's `signJWT`, `jose`, …):
 
 ```ts title="mint-route.ts"
-const payload = Ripple.claims(
+const payload = Ramose.claims(
   AUTH,
   { sub: user.id, db: workspace, class: role, attrs: { org } },
-  compiledPolicy, // optional: the Ripple.Policy.compile(policy) JSON
+  compiledPolicy, // optional: the Ramose.Policy.compile(policy) JSON
 );
 // Spread: Better Auth's `signJWT` wants jose's index-signed `JWTPayload`,
 // which a named interface is not assignable to.
@@ -133,15 +133,15 @@ Either way, what the peer would reject is validated at mint: `db` must be a
 valid database name, and — when the compiled policy is passed — `class` must
 be one the policy declares, because an undeclared class grants nothing, never
 an outage. `exp - iat` is exactly `ttl`, and `authEnv({ auth: AUTH })` pins
-`RIPPLE_JWT_MAX_TTL` to the same `ttl`, so the cap holds by construction.
+`RAMOSE_JWT_MAX_TTL` to the same `ttl`, so the cap holds by construction.
 
-On the client, wrap the mint call in `Ripple.token.jwt(mint)` — see
+On the client, wrap the mint call in `Ramose.token.jwt(mint)` — see
 [From the browser](#from-the-browser).
 
 ## Combinators
 
-`Ripple.Policy` is deploy-time only: import it from `@ripple/alchemy`, not
-from `@ripple/alchemy/db`.
+`Ramose.Policy` is deploy-time only: import it from `@ramose/alchemy`, not
+from `@ramose/alchemy/db`.
 
 | combinator | means |
 | --- | --- |
@@ -160,7 +160,7 @@ from `@ripple/alchemy/db`.
 | `P.attr(a, rules)` | an attribute rule, which only ever narrows its namespace rule |
 | `P.compile(policy, { pulls })` | lower to the JSON the Worker reads, checking pull patterns |
 | `P.checkPulls(policy, pulls)` | the same pull check on its own |
-| `P.Claims` | the JWT struct Ripple verifies |
+| `P.Claims` | the JWT struct Ramose verifies |
 
 The five operations are `read`, `add`, `retract`, `retractEntity`, and
 `create` — `create` being the first `add` for an entity that has no facts yet.
@@ -177,40 +177,40 @@ This is the larger worked example — documents
 owned by users, shared through projects and organizations:
 
 ```ts title="policy.ts"
-import * as Ripple from "@ripple/alchemy";
+import * as Ramose from "@ramose/alchemy";
 import * as Schema from "effect/Schema";
 
-const User = Ripple.Namespace("user", {
-  sub: Ripple.Attr(Schema.String, { unique: "identity" }),
+const User = Ramose.Namespace("user", {
+  sub: Ramose.Attr(Schema.String, { unique: "identity" }),
 });
-const Org = Ripple.Namespace("org", {
-  members: Ripple.Attr(Ripple.Ref(() => User), { cardinality: "many" }),
+const Org = Ramose.Namespace("org", {
+  members: Ramose.Attr(Ramose.Ref(() => User), { cardinality: "many" }),
 });
-const Project = Ripple.Namespace("project", {
-  org: Ripple.Attr(Ripple.Ref(() => Org)),
+const Project = Ramose.Namespace("project", {
+  org: Ramose.Attr(Ramose.Ref(() => Org)),
 });
-export const Doc = Ripple.Namespace("doc", {
-  title: Ripple.Attr(Schema.String),
-  owner: Ripple.Attr(Ripple.Ref(() => User)),
-  project: Ripple.Attr(Ripple.Ref(() => Project)),
-  audit: Ripple.Attr(Schema.String),
+export const Doc = Ramose.Namespace("doc", {
+  title: Ramose.Attr(Schema.String),
+  owner: Ramose.Attr(Ramose.Ref(() => User)),
+  project: Ramose.Attr(Ramose.Ref(() => Project)),
+  audit: Ramose.Attr(Schema.String),
 });
 
-export const App = Ripple.Catalog({
+export const App = Ramose.Catalog({
   user: User,
   org: Org,
   project: Project,
   doc: Doc,
 });
 
-const P = Ripple.Policy;
+const P = Ramose.Policy;
 // doc → project → org → members contains the caller
 const inOrg = P.ref(Doc.project, P.ref(Project.org, Org.members));
 
 export const policy = P.policy(App, {
   principal: User.sub,
   classes: ["anonymous", "member", "admin"],
-  claims: Schema.Struct({ org: Schema.String }), // shape of `ripple.attrs`
+  claims: Schema.Struct({ org: Schema.String }), // shape of `ramose.attrs`
   ns: {
     doc: {
       read: P.allow(P.or(P.eq(Doc.owner, P.principal), inOrg)),
@@ -295,13 +295,13 @@ was requested as a required field, the client drops the row and `db.pull`
 resolves to `null` — indistinguishable from an entity that does not exist. A
 refused write names the attribute and a code, never a value.
 
-**Ripple fails closed.** A malformed policy, or a policy with an incomplete
+**Ramose fails closed.** A malformed policy, or a policy with an incomplete
 verifier, denies every database request and logs once at startup; the writer
 substitutes a deny-everything policy rather than falling open.
 
 :::caution[Required pulls of masked attributes]
 Because a masked required field removes the whole row, hand your pull patterns
-to the compiler: `Ripple.Policy.compile(policy, { pulls: [shapeA, shapeB] })`
+to the compiler: `Ramose.Policy.compile(policy, { pulls: [shapeA, shapeB] })`
 fails the deploy with the offending key. Called without `pulls`, `compile`
 skips the check entirely.
 :::
@@ -309,31 +309,31 @@ skips the check entirely.
 ## Wiring it up
 
 ```ts title="alchemy.run.ts"
-import * as Ripple from "@ripple/alchemy";
+import * as Ramose from "@ramose/alchemy";
 import { AUTH } from "./auth.ts";
 import { Doc, policy } from "./policy.ts";
 
 // the pull patterns this app actually sends, so `compile` can check them
 const docShape = { title: Doc.title } as const;
 
-const auth: Ripple.PeerAuth = {
-  policy: Ripple.Policy.compile(policy, { pulls: [docShape] }),
-  jwksUrl: process.env.RIPPLE_JWKS_URL,
+const auth: Ramose.PeerAuth = {
+  policy: Ramose.Policy.compile(policy, { pulls: [docShape] }),
+  jwksUrl: process.env.RAMOSE_JWKS_URL,
   auth: AUTH, // issuer, audience and ttl — the same value your mint route uses
-  allowedOrigins: process.env.RIPPLE_ALLOWED_ORIGINS,
+  allowedOrigins: process.env.RAMOSE_ALLOWED_ORIGINS,
   // only a configured policy arms the Worker→writer gate; pin the secret so it
   // does not change on every deploy
   internalSecret:
-    process.env.RIPPLE_POLICY === undefined
+    process.env.RAMOSE_POLICY === undefined
       ? undefined
-      : Ripple.internalSecret(process.env.RIPPLE_INTERNAL_SECRET),
+      : Ramose.internalSecret(process.env.RAMOSE_INTERNAL_SECRET),
 };
 ```
 
 The three loose keys still work — `issuers`, `aud` and `maxTtl` may be set
 directly (say, from env), and an explicitly set loose key wins over the
-`AuthConfig`. Spread `...Ripple.authEnv(auth)` into the peer Worker's `env`, and
-pass the same `auth` object to `Ripple.Server`. The Server does not push the
+`AuthConfig`. Spread `...Ramose.authEnv(auth)` into the peer Worker's `env`, and
+pass the same `auth` object to `Ramose.Server`. The Server does not push the
 environment onto the Worker for you; it uses `auth` for a deploy-time check
 that fails the deploy when a policy is set without `jwksUrl`, `issuers`, or
 `aud`.
@@ -348,7 +348,7 @@ reference](/reference/configuration/).
 ## From the browser
 
 Your auth Worker mints database-scoped JWTs; the client's job is only to hand
-the current one to `Ripple.connect`. `Ripple.token.jwt(mint)` is the shipped
+the current one to `Ramose.connect`. `Ramose.token.jwt(mint)` is the shipped
 source for that: it calls `mint` lazily on the first read, caches the token,
 shares one in-flight mint between concurrent readers, and re-mints once the
 cached token is within two minutes of its `exp` (configurable via
@@ -356,23 +356,23 @@ cached token is within two minutes of its `exp` (configurable via
 `/transact`, so short-lived tokens refresh themselves with no other plumbing.
 
 With the Better Auth plugin, the client half is one line each way —
-`rippleTokenClient()` adds `authClient.ripple.token({ db })`, which resolves
+`ramoseTokenClient()` adds `authClient.ramose.token({ db })`, which resolves
 the mint route's body, exactly what `token.jwt` accepts:
 
 ```ts title="src/db.ts"
-import * as Ripple from "@ripple/alchemy/db";
-import { rippleTokenClient } from "@ripple/better-auth/client";
+import * as Ramose from "@ramose/alchemy/db";
+import { ramoseTokenClient } from "@ramose/better-auth/client";
 import { createAuthClient } from "better-auth/client";
 
-const authClient = createAuthClient({ plugins: [rippleTokenClient()] });
+const authClient = createAuthClient({ plugins: [ramoseTokenClient()] });
 
-const source = Ripple.token.jwt(() => authClient.ripple.token({ db: "acme" }));
+const source = Ramose.token.jwt(() => authClient.ramose.token({ db: "acme" }));
 
-const ripple = Ripple.connect({ url: RIPPLE_URL, token: source });
-// Effect users: Ripple.layer({ url: RIPPLE_URL, token: source }) — same client
+const ramose = Ramose.connect({ url: RAMOSE_URL, token: source });
+// Effect users: Ramose.layer({ url: RAMOSE_URL, token: source }) — same client
 ```
 
-A 401/403 from the mint route (signed out, not a member) throws Ripple's
+A 401/403 from the mint route (signed out, not a member) throws Ramose's
 `Unauthorized` through `token.jwt`, so a standing `live` fails terminally
 instead of retrying a mint that cannot succeed; any other failure is
 `NetworkError` and retries as transient.
@@ -381,8 +381,8 @@ Any other mint route slots in the same way — `token.jwt` only wants a
 promise of the JWT or of `{ token }`:
 
 ```ts title="src/db.ts"
-const source = Ripple.token.jwt(() =>
-  fetch("/api/ripple-token", {
+const source = Ramose.token.jwt(() =>
+  fetch("/api/ramose-token", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ workspace: "acme" }),
@@ -397,7 +397,7 @@ const source = Ripple.token.jwt(() =>
   with no `exp` is minted once and refreshed only by `source.invalidate()`
   (sign-out, tenant switch).
 - `source.claims()` is the decoded payload — **not verified**, UI hints only:
-  show `ripple.class` for role-aware chrome, never trust it for access. It is
+  show `ramose.class` for role-aware chrome, never trust it for access. It is
   a peek at the cache, not a refresh.
 - A `mint` that throws surfaces as `NetworkError`: `transact` fails typed and
   a standing `live` retries with its usual backoff. Throw an `Unauthorized`

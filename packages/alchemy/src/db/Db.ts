@@ -1,7 +1,7 @@
 /**
  * `Db<C>` — one database, typed from its catalog.
  *
- * A db is a **value**: `ripple.db(name, catalog)` is pure, `asOf(t)` and
+ * A db is a **value**: `ramose.db(name, catalog)` is pure, `asOf(t)` and
  * `history` are `Db -> ReadDb` with zero I/O, and `dbAfter` on a
  * {@link TxReport} is the same db carrying a min-`t` floor. Nothing here names
  * a transport: reads take the session socket when there is one and HTTPS when
@@ -199,7 +199,7 @@ interface View {
 // ── the hook seam ──────────────────────────────────────────────────────────
 
 /**
- * @internal What `@ripple/react`'s hooks need that the public surface
+ * @internal What `@ramose/react`'s hooks need that the public surface
  * deliberately does not say: a **structural** identity for a view (so
  * `db.asOf(t)` built inline in a render compares equal across renders
  * instead of re-subscribing — or looping — on every one), the pinned
@@ -230,7 +230,7 @@ export interface DbSeam {
 }
 
 /** @internal The registry key {@link DbSeam} is attached under. */
-export const DB_SEAM: symbol = Symbol.for("ripple.db.seam");
+export const DB_SEAM: symbol = Symbol.for("ramose.db.seam");
 
 /** One token per client, so views over different clients never compare equal. */
 const clientTokens = new WeakMap<Wire, number>();
@@ -428,7 +428,7 @@ const makeRead = <C extends AnyCatalog>(
             queue,
             Cause.die(
               new Error(
-                "ripple: db.live needs the session socket — pass `webSocket` to Ripple.connect or Ripple.layer (or run where a global WebSocket exists)",
+                "ramose: db.live needs the session socket — pass `webSocket` to Ramose.connect or Ramose.layer (or run where a global WebSocket exists)",
               ),
             ),
           );
@@ -552,7 +552,7 @@ const awaitWake = (
     });
   });
 
-/** @internal `ripple.db(name, catalog)`. Pure: no request, no ensure, no socket. */
+/** @internal `ramose.db(name, catalog)`. Pure: no request, no ensure, no socket. */
 export const makeDb = <C extends AnyCatalog>(
   wire: Wire,
   name: string,

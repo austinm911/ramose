@@ -1,10 +1,10 @@
 ---
 title: Alchemy resources
-description: What @ripple/alchemy adds on top of the portable client — the Server and Database resources, capabilities, and transports.
+description: What @ramose/alchemy adds on top of the portable client — the Server and Database resources, capabilities, and transports.
 ---
 
-`@ripple/alchemy` re-exports all of [`@ripple/alchemy/db`](/reference/client-api/)
-and adds the deploy-time names. Import it as `* as Ripple`.
+`@ramose/alchemy` re-exports all of [`@ramose/alchemy/db`](/reference/client-api/)
+and adds the deploy-time names. Import it as `* as Ramose`.
 
 | name | signature |
 | --- | --- |
@@ -18,10 +18,10 @@ and adds the deploy-time names. Import it as `* as Ripple`.
 | `Providers` | the resource-provider service |
 | `PeerAuth` / `authEnv` / `internalSecret` | auth config for the peer Worker's env — see [Auth and policy](/guides/auth/) |
 
-## `Ripple.Server`
+## `Ramose.Server`
 
 Wraps the peer Worker. Nothing is provisioned and no database name is pinned —
-a Ripple database is a name, so the first transaction materializes it. The
+a Ramose database is a name, so the first transaction materializes it. The
 resource buys the deployment:
 
 - the resolved `url` of the peer,
@@ -30,10 +30,10 @@ resource buys the deployment:
   before anything binds to it.
 
 ```ts
-export const Server = Ripple.Server("Ripple", { worker: Worker, auth });
+export const Server = Ramose.Server("Ramose", { worker: Worker, auth });
 ```
 
-## `Ripple.Database`
+## `Ramose.Database`
 
 "Install this catalog on that name", ordered after the server it names.
 `db.install()` is an ordinary idempotent transaction, so a redeploy costs one
@@ -41,7 +41,7 @@ no-op tx. Use it for databases known at deploy time; per-tenant names call
 `db.install()` at tenant creation instead.
 
 ```ts
-export const TodosDb = Ripple.Database("todos", {
+export const TodosDb = Ramose.Database("todos", {
   server: Server,
   catalog: Todos,
 });
@@ -52,9 +52,9 @@ export const TodosDb = Ripple.Database("todos", {
 Privilege is the capability you bind; the transport is a Layer:
 
 ```ts
-const ripple = yield* Ripple.ReadWriteDatabases(Server);
+const ramose = yield* Ramose.ReadWriteDatabases(Server);
 // …
-Effect.provide(Ripple.ServerBinding); // or Ripple.ServerHttp
+Effect.provide(Ramose.ServerBinding); // or Ramose.ServerHttp
 ```
 
 The Worker body is identical under either transport. See
@@ -62,13 +62,13 @@ The Worker body is identical under either transport. See
 
 ## Stack wiring
 
-Merge Ripple's providers next to Cloudflare's:
+Merge Ramose's providers next to Cloudflare's:
 
 ```ts
 export default Alchemy.Stack(
   "my-app",
   {
-    providers: Layer.mergeAll(Cloudflare.providers(), Ripple.providers()),
+    providers: Layer.mergeAll(Cloudflare.providers(), Ramose.providers()),
     state: Cloudflare.state(),
   },
   Effect.gen(function* () {

@@ -8,11 +8,22 @@
  *   bun alchemy deploy website/alchemy.run.ts --stage prod
  *   bun alchemy destroy website/alchemy.run.ts
  *
+ * The public site is https://ramose.ai.
+ *
+ * `ripple-docs` (Worker) and `ripple-website` (Alchemy app) are *pinned
+ * physical names*, deliberately kept from the pre-rebrand deployment: renaming
+ * them would mint a new Worker and orphan the live one, along with its state
+ * and its workers.dev hostname. They are infrastructure identifiers, not brand
+ * strings — the brand lives in the custom domain and the site content.
+ *
  * `--stage prod` pins the Worker name to `ripple-docs` so the URL
  * https://ripple-docs.tvanhens.workers.dev stays stable across deploys
- * (and after CI cache eviction). Set `RIPPLE_DOCS_DOMAIN` to attach a
- * custom domain; the zone must already exist in the account. Merges to
- * master publish this stage via `.github/workflows/docs-publish.yml`.
+ * (and after CI cache eviction), and serves the site at https://ramose.ai:
+ * the zone is onboarded in the Cloudflare account, and Alchemy manages the
+ * DNS record and edge certificate. `RAMOSE_DOCS_DOMAIN` overrides the
+ * hostname — on any stage, which is also how the domain-attach path is
+ * tested without touching prod. Merges to master publish this stage via
+ * `.github/workflows/docs-publish.yml`.
  *
  * No `main` is provided, so no Worker script is uploaded: Cloudflare's asset
  * layer answers every request, with Starlight's built 404.html serving misses.
@@ -31,7 +42,10 @@ export const Website = Cloudflare.Website.StaticSite(
   "Website",
   Effect.gen(function* () {
     const stage = yield* Alchemy.Stage;
-    const domain = process.env.RIPPLE_DOCS_DOMAIN;
+    // `||` (not `??`): CI passes the variable through unconditionally, so an
+    // unset GitHub variable arrives as "" and must still mean "the default".
+    const domain =
+      process.env.RAMOSE_DOCS_DOMAIN || (stage === "prod" ? "ramose.ai" : undefined);
     return {
       cwd: here,
       command: "bun run build",
@@ -41,13 +55,16 @@ export const Website = Cloudflare.Website.StaticSite(
       dev: { command: "bun run dev", url: "http://localhost:4321" },
       // Stable physical name on prod only — preview stages keep Alchemy's
       // per-stage name so `pr-<n>` Workers never collide with production.
+      // `ripple-docs` is pinned pre-rebrand infrastructure; do not rename.
       ...(stage === "prod" ? { name: "ripple-docs" } : {}),
-      ...(stage === "prod" && domain ? { domain } : {}),
+      ...(domain ? { domain } : {}),
     };
   }),
 );
 
 export default Alchemy.Stack(
+  // Pinned physical app name (pre-rebrand); renaming it would strand the
+  // existing stack state. The public site is https://ramose.ai.
   "ripple-website",
   {
     providers: Cloudflare.providers(),

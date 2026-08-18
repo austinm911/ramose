@@ -41,7 +41,7 @@ type _claimsShape = Expect<
       readonly sub: string;
       readonly aud: string;
       readonly exp: number;
-      readonly ripple: { readonly db: string; readonly class: string };
+      readonly ramose: { readonly db: string; readonly class: string };
     }
   >
 >;

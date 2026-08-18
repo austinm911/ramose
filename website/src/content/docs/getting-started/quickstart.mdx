@@ -5,7 +5,7 @@ description: Install the package, stand up a local peer, and get a todo app with
 
 import { Steps } from "@astrojs/starlight/components";
 
-You will add Ripple to a Vite React app: a typed schema, a database behind it,
+You will add Ramose to a Vite React app: a typed schema, a database behind it,
 and a list that updates itself when you write. The local half needs no
 account and no external database — everything runs on your laptop.
 
@@ -13,7 +13,7 @@ You need [Node](https://nodejs.org) 20+ or [Bun](https://bun.sh). Nothing
 else: no Docker, no Postgres, no Cloudflare account.
 
 :::note[Pre-release]
-Ripple is pre-release. The packages are on npm; the API may still move.
+Ramose is pre-release. The packages are on npm; the API may still move.
 :::
 
 ## Add it to an app
@@ -26,16 +26,16 @@ Ripple is pre-release. The packages are on npm; the API may still move.
    ```sh title="Terminal"
    npm create vite@latest todos -- --template react-ts
    cd todos
-   npm install @ripple/alchemy @ripple/worker @ripple/react alchemy effect
+   npm install @ramose/alchemy @ramose/worker @ramose/react alchemy effect
    ```
 
-   `bun add` and `pnpm add` work the same. Three Ripple packages, on purpose:
+   `bun add` and `pnpm add` work the same. Three Ramose packages, on purpose:
 
    | package | what it is |
    | --- | --- |
-   | `@ripple/alchemy` | the catalog, the client (`@ripple/alchemy/db`), and the Alchemy resources |
-   | `@ripple/worker` | the peer Worker — you name it as `main`, you do not copy it |
-   | `@ripple/react` | `useLive` and `useTransact` |
+   | `@ramose/alchemy` | the catalog, the client (`@ramose/alchemy/db`), and the Alchemy resources |
+   | `@ramose/worker` | the peer Worker — you name it as `main`, you do not copy it |
+   | `@ramose/react` | `useLive` and `useTransact` |
 
    The packages ship TypeScript source. Vite and Alchemy resolve them; if
    `tsc` complains, set `"moduleResolution": "bundler"`.
@@ -44,16 +44,16 @@ Ripple is pre-release. The packages are on npm; the API may still move.
    Worker that talks to this database:
 
    ```ts title="src/schema.ts"
-   import * as Ripple from "@ripple/alchemy/db";
+   import * as Ramose from "@ramose/alchemy/db";
    import * as Schema from "effect/Schema";
 
-   export const Todo = Ripple.Namespace("todo", {
-     title: Ripple.Attr(Schema.String),
-     done: Ripple.Attr(Schema.Boolean),
-     createdAt: Ripple.Attr(Ripple.Instant),
+   export const Todo = Ramose.Namespace("todo", {
+     title: Ramose.Attr(Schema.String),
+     done: Ramose.Attr(Schema.Boolean),
+     createdAt: Ramose.Attr(Ramose.Instant),
    });
 
-   export const Todos = Ripple.Catalog({ todo: Todo });
+   export const Todos = Ramose.Catalog({ todo: Todo });
    ```
 
 3. **Declare the peer.** Naming a database is all there is to creating one —
@@ -61,7 +61,7 @@ Ripple is pre-release. The packages are on npm; the API may still move.
    package:
 
    ```ts title="resources.ts"
-   import * as Ripple from "@ripple/alchemy";
+   import * as Ramose from "@ramose/alchemy";
    import * as Cloudflare from "alchemy/Cloudflare";
 
    const Store = Cloudflare.R2.Bucket("Store");
@@ -72,17 +72,17 @@ Ripple is pre-release. The packages are on npm; the API may still move.
      className: "QueryReplicaDO",
    });
 
-   export const RippleWorker = Cloudflare.Worker("Peer", {
-     main: "@ripple/worker",
+   export const RamoseWorker = Cloudflare.Worker("Peer", {
+     main: "@ramose/worker",
      compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
      env: { STORE: Store, TRANSACTOR: Transactor, REPLICA: Replica },
    });
 
-   export const Server = Ripple.Server("Ripple", { worker: RippleWorker });
+   export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
    ```
 
    ```ts title="alchemy.run.ts"
-   import * as Ripple from "@ripple/alchemy";
+   import * as Ramose from "@ramose/alchemy";
    import * as Alchemy from "alchemy";
    import * as Cloudflare from "alchemy/Cloudflare";
    import * as Effect from "effect/Effect";
@@ -90,7 +90,7 @@ Ripple is pre-release. The packages are on npm; the API may still move.
    import { Server } from "./resources.ts";
    import { Todos } from "./src/schema.ts";
 
-   export const TodosDb = Ripple.Database("todos", {
+   export const TodosDb = Ramose.Database("todos", {
      server: Server,
      catalog: Todos,
    });
@@ -98,7 +98,7 @@ Ripple is pre-release. The packages are on npm; the API may still move.
    export default Alchemy.Stack(
      "todos",
      {
-       providers: Layer.mergeAll(Cloudflare.providers(), Ripple.providers()),
+       providers: Layer.mergeAll(Cloudflare.providers(), Ramose.providers()),
        state: Alchemy.localState(),
      },
      Effect.gen(function* () {
@@ -109,25 +109,25 @@ Ripple is pre-release. The packages are on npm; the API may still move.
    );
    ```
 
-4. **Connect from the app.** One `Ripple.connect` handle for the page: a
-   plain object, nothing to dispose but `ripple.close()`. Your local peer has
+4. **Connect from the app.** One `Ramose.connect` handle for the page: a
+   plain object, nothing to dispose but `ramose.close()`. Your local peer has
    no token — pass nothing rather than an empty credential:
 
    ```ts title="src/db.ts"
-   import * as Ripple from "@ripple/alchemy/db";
+   import * as Ramose from "@ramose/alchemy/db";
    import { Todos } from "./schema.ts";
 
-   const token = import.meta.env.VITE_RIPPLE_TOKEN;
+   const token = import.meta.env.VITE_RAMOSE_TOKEN;
 
-   const ripple = Ripple.connect({
-     url: import.meta.env.VITE_RIPPLE_URL ?? "http://localhost:1337",
-     token: token ? Ripple.token.static(token) : undefined,
+   const ramose = Ramose.connect({
+     url: import.meta.env.VITE_RAMOSE_URL ?? "http://localhost:1337",
+     token: token ? Ramose.token.static(token) : undefined,
    });
 
-   export const db = ripple.db("todos", Todos);
+   export const db = ramose.db("todos", Todos);
    ```
 
-   Ripple is built on [Effect](https://effect.website). Its API returns Effect
+   Ramose is built on [Effect](https://effect.website). Its API returns Effect
    values — descriptions of work — and nothing a `Db` returns needs an
    environment, so the shipped React hooks run them for you and `yield*`
    inside `db.transact` sequences the steps of a write. That is all the
@@ -137,8 +137,8 @@ Ripple is pre-release. The packages are on npm; the API may still move.
    any test drive the same code:
 
    ```ts title="src/todos.ts"
-   import * as Ripple from "@ripple/alchemy/db";
-   import type { Db } from "@ripple/alchemy/db";
+   import * as Ramose from "@ramose/alchemy/db";
+   import type { Db } from "@ramose/alchemy/db";
    import { Todo, type Todos } from "./schema.ts";
 
    export type TodosDb = Db<typeof Todos>;
@@ -150,11 +150,11 @@ Ripple is pre-release. The packages are on npm; the API may still move.
      createdAt: Todo.createdAt,
    } as const;
 
-   export const todoQuery = Ripple.query(Todo)
+   export const todoQuery = Ramose.query(Todo)
      .orderBy(Todo.createdAt, "asc")
      .select(todoShape);
 
-   export type TodoRow = Ripple.Row<typeof todoQuery>;
+   export type TodoRow = Ramose.Row<typeof todoQuery>;
 
    export const addTodo = (db: TodosDb, title: string) =>
      db.transact(function* (tx) {
@@ -166,12 +166,12 @@ Ripple is pre-release. The packages are on npm; the API may still move.
    ```
 
 6. **Render the list.** `useLive(db, todoQuery)` from
-   [`@ripple/react`](/reference/react/) is the subscription; `useTransact().run`
+   [`@ramose/react`](/reference/react/) is the subscription; `useTransact().run`
    runs each write from its event handler:
 
    ```tsx title="src/App.tsx"
    import { useState } from "react";
-   import { useLive, useTransact } from "@ripple/react";
+   import { useLive, useTransact } from "@ramose/react";
    import { db } from "./db.ts";
    import { addTodo, todoQuery } from "./todos.ts";
 
@@ -250,7 +250,7 @@ Ripple is pre-release. The packages are on npm; the API may still move.
 8. **Start the app.** From a second terminal, in the same directory:
 
    ```sh title="Terminal — the app"
-   VITE_RIPPLE_URL=http://localhost:1337 npm run dev
+   VITE_RAMOSE_URL=http://localhost:1337 npm run dev
    ```
 
    Open `http://localhost:5173`. You should see a text box and an empty list.
@@ -262,7 +262,7 @@ Ripple is pre-release. The packages are on npm; the API may still move.
    query on that connection re-runs against the new position.
 
    Check the peer any time with `curl http://localhost:1337/health` — you
-   want `{"ok":true,"service":"ripple",…}`.
+   want `{"ok":true,"service":"ramose",…}`.
 
    :::note[Two tabs, locally]
    On the local emulator writes do not propagate between isolates, so a second
@@ -300,7 +300,7 @@ administrator. That is right for a laptop and wrong for the internet.
 - [Live queries](/guides/live-queries/) — what re-runs, when, and what it
   costs.
 
-Want a complete app to read rather than assemble? These live in the Ripple
+Want a complete app to read rather than assemble? These live in the Ramose
 repository and use the same packages:
 
 - [`examples/reef`](https://github.com/tvanhens/ripple/tree/master/examples/reef)

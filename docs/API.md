@@ -1,4 +1,4 @@
-# Ripple: a smaller Effect-native client
+# Ramose: a smaller Effect-native client
 
 Proposal. Breaking. No shims. Nothing on `master` is frozen.
 
@@ -10,17 +10,17 @@ Everything that exists only because the implementation grew that way (`SchemaFx`
 `RuntimeContext`, `create` vs `connect`, the capability trio, nine transport
 layers, the untyped `Client.*` twin, the `/schema` Vite alias) is deleted rather
 than renamed. What is left is **41 names** across two entry points, both
-imported as `* as Ripple`.
+imported as `* as Ramose`.
 
 ## 2. The names a consumer imports
 
-- **`@ripple/alchemy/db`** — portable: browser, Node/Bun, tests. A real `exports`
+- **`@ramose/alchemy/db`** — portable: browser, Node/Bun, tests. A real `exports`
   entry, so the Vite alias dies. It must not import `alchemy` (implementation:
-  deep-import the `@ripple/core` codec, not the barrel; `sideEffects: false`).
-- **`@ripple/alchemy`** — all of `/db`, plus the resources, the capability and
+  deep-import the `@ramose/core` codec, not the barrel; `sideEffects: false`).
+- **`@ramose/alchemy`** — all of `/db`, plus the resources, the capability and
   the two transport layers.
 
-### `@ripple/alchemy/db`
+### `@ramose/alchemy/db`
 
 **Schema**
 
@@ -49,7 +49,7 @@ Static token: `Effect.succeed(Redacted.make(t))`. The layer is scoped, the socke
 |---|---|
 | `Db<C>` | `ReadDb<C> & { transact; install }` |
 | `ReadDb<C>` | `{ name; catalog; q; pull; live; basis; asOf; history }` |
-| `db.q` | `<R>(query: NavQuery\<R\> \| NavQueryBuilder\<_, R\>) => Effect<R, DbError>` — a `Ripple.query(N)` value (see `docs/QUERY.md`); with no `.select`, `R` is `readonly Eid<C>[]` |
+| `db.q` | `<R>(query: NavQuery\<R\> \| NavQueryBuilder\<_, R\>) => Effect<R, DbError>` — a `Ramose.query(N)` value (see `docs/QUERY.md`); with no `.select`, `R` is `readonly Eid<C>[]` |
 | `db.live` | same input as `db.q` → `Stream<R, DbError>` |
 | `db.pull` | `<const P>(subject: Eid<C> \| LookupRef<C>, shape: P) => Effect<Pull<C, P> \| null, DbError>` |
 | `db.transact` | `<A, E, R>(body: (tx: Tx<C>) => Generator<Effect<unknown, E, R>, A>) => Effect<TxReport<C>, DbError \| E, R>` |
@@ -58,7 +58,7 @@ Static token: `Effect.succeed(Redacted.make(t))`. The layer is scoped, the socke
 | `db.principal` | `() => Effect<DbPrincipal<C>, DbError>` — who this session is, resolved by the peer (`/info`'s `principal`, also on the session `auth` ack): `{ eid: Eid<C> \| null, class }`, `eid: null` until the policy's principal attribute has a row; a `null` is never cached, a resolved eid is cached per session generation and re-read on reconnect |
 | `db.asOf` | `(t: number) => ReadDb<C>` |
 | `db.history` | `ReadDb<C>` |
-| `query` | `Ripple.query(N)` — navigational query builder (`.where` `.select` `.orderBy` `.limit` `.offset`); order and paging run on the peer |
+| `query` | `Ramose.query(N)` — navigational query builder (`.where` `.select` `.orderBy` `.limit` `.offset`); order and paging run on the peer |
 | `Pull<C, P>` | result of shape `P`. Nest with `attr.select({…})`, maybe with `.optional` |
 | `Eid<C>` | `{ readonly id: number }`, catalog-branded. Data — no methods, no I/O |
 | `LookupRef<C>` | `[AttrRef, value]` on a unique attribute |
@@ -71,7 +71,7 @@ Static token: `Effect.succeed(Redacted.make(t))`. The layer is scoped, the socke
 `TxRejected` `Unavailable` `InvalidRequest` `DatabaseNotFound` `Unauthorized`
 `QueryBudgetExceeded` `InternalError` `NetworkError`, and the union `DbError`.
 
-### `@ripple/alchemy` (adds)
+### `@ramose/alchemy` (adds)
 
 | name | signature |
 |---|---|
@@ -88,27 +88,27 @@ Static token: `Effect.succeed(Redacted.make(t))`. The layer is scoped, the socke
 **schema.ts** — shared by the stack, the Worker and the browser.
 
 ```ts
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
 import * as Schema from "effect/Schema";
 
-export const Todo = Ripple.Namespace("todo", {
-  title: Ripple.Attr(Schema.String),
-  done: Ripple.Attr(Schema.Boolean),
-  createdAt: Ripple.Attr(Ripple.Instant),
+export const Todo = Ramose.Namespace("todo", {
+  title: Ramose.Attr(Schema.String),
+  done: Ramose.Attr(Schema.Boolean),
+  createdAt: Ramose.Attr(Ramose.Instant),
 });
-export const Todos = Ripple.Catalog({ todo: Todo });
+export const Todos = Ramose.Catalog({ todo: Todo });
 ```
 
 **alchemy.run.ts** — the server, and the one place the catalog is installed.
 
 ```ts
-import * as Ripple from "@ripple/alchemy";
+import * as Ramose from "@ramose/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Todos } from "./schema.ts";
 
-const RippleWorker = Cloudflare.Worker("RippleWorker", { main: "@ripple/worker" });
-export const Server = Ripple.Server("Ripple", { worker: RippleWorker });
-export const TodosDb = Ripple.Database("todos", { server: Server, catalog: Todos });
+const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: "@ramose/worker" });
+export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
+export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
 ```
 
 **An app Worker** — db-per-tenant is a function call.
@@ -116,49 +116,49 @@ export const TodosDb = Ripple.Database("todos", { server: Server, catalog: Todos
 ```ts
 export default Cloudflare.Worker("App", { main: import.meta.url },
   Effect.gen(function* () {
-    const ripple = yield* Ripple.ReadWriteDatabases(Server);   // once, at init
+    const ramose = yield* Ramose.ReadWriteDatabases(Server);   // once, at init
     return {
       fetch: Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        const db = ripple.db(tenantOf(request), Todos);
+        const db = ramose.db(tenantOf(request), Todos);
         const { dbAfter } = yield* db.transact(function* (tx) {
           const todo = yield* tx.entity();
           yield* todo.add(Todo.title, "ship it");
           yield* todo.add(Todo.done, false);
         });
         const rows = yield* dbAfter.q(
-          Ripple.query(Todo).select({ title: Todo.title }),
+          Ramose.query(Todo).select({ title: Todo.title }),
         );
         return yield* HttpServerResponse.json(rows);           // readonly { title: string }[]
       }),
     };
-  }).pipe(Effect.provide(Ripple.ServerBinding)));
+  }).pipe(Effect.provide(Ramose.ServerBinding)));
 ```
 
 **Browser** — no `run`, no `RuntimeContext.phantom`, no Vite alias, no `await`.
 
 ```ts
 // db.ts — one client, closed with the page
-import * as Ripple from "@ripple/alchemy/db";
+import * as Ramose from "@ramose/alchemy/db";
 import { Todos } from "./schema.ts";
 
-const token = Effect.succeed(Redacted.make(import.meta.env.VITE_RIPPLE_TOKEN));
-const ripple = Ripple.connect({ url: import.meta.env.VITE_RIPPLE_URL, token });
-export const db = ripple.db("todos", Todos);
-// Effect users: Ripple.layer({ url, token }) is the same client as a scoped
+const token = Effect.succeed(Redacted.make(import.meta.env.VITE_RAMOSE_TOKEN));
+const ramose = Ramose.connect({ url: import.meta.env.VITE_RAMOSE_URL, token });
+export const db = ramose.db("todos", Todos);
+// Effect users: Ramose.layer({ url, token }) is the same client as a scoped
 // Layer<Databases>.
 ```
 
 ```tsx
 // App.tsx — query value hoisted so the hook's dep is stable
-const todoQuery = Ripple.query(Todo).select({
+const todoQuery = Ramose.query(Todo).select({
   id: Todo.id,
   title: Todo.title,
   done: Todo.done,
   createdAt: Todo.createdAt,
 });
 const todos = db.live(todoQuery);
-//    Stream<readonly { id; title; done; createdAt }[], Ripple.DbError>
+//    Stream<readonly { id; title; done; createdAt }[], Ramose.DbError>
 
 const add = (title: string) =>
   Effect.runPromise(db.transact(function* (tx) {
@@ -167,7 +167,7 @@ const add = (title: string) =>
     yield* todo.add(Todo.createdAt, new Date());
   }));
 
-const one = (e: Ripple.Eid<typeof Todos>) =>
+const one = (e: Ramose.Eid<typeof Todos>) =>
   Effect.runPromise(
     db.pull(e, { title: Todo.title, done: Todo.done, createdAt: Todo.createdAt }),
   );
@@ -198,10 +198,10 @@ export const useLive = <A, E>(stream: Stream.Stream<A, E>) => {
 - **`live` requires nothing.** Its `Stream`'s requirements channel is `never` — no `Scope` in the type; teardown is fiber interruption.
 - **`live` survives the network.** Dropped sockets, 5xx and `NetworkError` are retried with backoff and the socket reconnects in place; the stream fails only on terminal `InvalidRequest`, `Unauthorized` or `DatabaseNotFound`.
 - **`live` over `asOf(t)` / `history` emits once and completes** — a pinned view has no news.
-- **Install is explicit and once.** `Ripple.Database(...)` at deploy, or `db.install()` at tenant-creation; `ripple.db(name, catalog)` is pure, so a Worker binding does zero network per request and a browser never installs schema.
+- **Install is explicit and once.** `Ramose.Database(...)` at deploy, or `db.install()` at tenant-creation; `ramose.db(name, catalog)` is pure, so a Worker binding does zero network per request and a browser never installs schema.
 - **Against an uninstalled database:** `q` fails `InvalidRequest`, `transact` fails `TxRejected`, `pull` silently omits the attribute — that last one is a bug to fix, not a contract.
 - **Token is one form.** `Effect<Redacted<string>>`, re-read on every (re)connect and every `/transact`; socket auth is handshake-scoped, so `Unauthorized` on the socket re-reads and reconnects in place.
-- **Capability is the client, transport is a Layer.** `yield* Ripple.ReadWriteDatabases(Server)` hands back `Databases`; `ServerBinding` or `ServerHttp` decides the wire, and the Worker body is identical under either.
+- **Capability is the client, transport is a Layer.** `yield* Ramose.ReadWriteDatabases(Server)` hands back `Databases`; `ServerBinding` or `ServerHttp` decides the wire, and the Worker body is identical under either.
 - **Provisioning mistakes are defects.** A missing binding or a malformed URL is `Effect.die`, not a `DbError` — every signature's `R` is `never`.
 
 ## 5. Kill-list
@@ -216,29 +216,29 @@ export const useLive = <A, E>(stream: Stream.Stream<A, E>) => {
 | `isDatabaseError`, `HeaderLike`, `fromResponse`, `ProviderRequirements`, `Equal`, `Expect`, `Extends` | internal or test-only |
 | `ReadSystem`, `WriteSystem`, `ReadWriteSystem` | → `ReadWriteDatabases`; `ReadDatabases` returns with #14 |
 | 9 × `{Read,Write,ReadWrite}System{Binding,Http,Local}` | → `ServerBinding`, `ServerHttp` |
-| `System`, `SystemProps`, `SystemPeer`, `SystemProbe` | → `Ripple.Server`, prop `worker` |
+| `System`, `SystemProps`, `SystemPeer`, `SystemProbe` | → `Ramose.Server`, prop `worker` |
 | `isSystem`, `resolvePeer`, `ProviderLive`, `ProviderLocal`, `SystemProvider` | internal; bad name is `InvalidRequest` |
 | `DATABASE_NAME_RE` | public again, on `/db` with `isDatabaseName` (#37) |
 | `openSession`, `Session`, `SessionOptions`, `sessionUrl`, `TypedSession`, `TypedSessionOptions`, `Session.connect`'s `{ session, db }` | internal; `layer` provides `Databases` |
 | `SchemaFx` (the namespace name) | deleted; flattened into `/db` |
-| `create` / `connect` on a system | → `ripple.db(name, catalog)`, pure |
+| `create` / `connect` on a system | → `ramose.db(name, catalog)`, pure |
 | `fromRead`, `fromWrite`, `fromReadWrite`, `makeSystem`, `make*SystemClient` (×6), `unsafe*Database` (×3) | deleted or internal fixtures |
 | `AnyAttribute`, `AttributeOptions`, `Cardinality`, `Uniqueness`, `ValueOf` | internal, inferred |
 | `AnyCatalog`, `AnyNamespace`, `NamespaceMap`, `NamespaceOf`, `AttributeMap`, `AttrOf`, `IdentOf`, `merge`, `Stamped*` | → `Catalog.Any`; rest internal |
-| `DbValueType`, `RippleVt`, `InferDbValueType`, `tryInferDbValueType`, `inferDbValueType` | internal |
+| `DbValueType`, `RamoseVt`, `InferDbValueType`, `tryInferDbValueType`, `inferDbValueType` | internal |
 | `SchemaEnsureError`, `MissingPeer`, `missingPeer`, `noPeer` | deleted; provisioning is a defect |
 | `schemaTx`, `attributeTx`, `SchemaAttrTx` | internal; `db.install()` is the door |
 | `Eid.of`, `makeEid`, `isEid`, `EidPull`, `EidPullError`, `eid.pull` | deleted; `Eid<C>` is data |
 | `entity(eid)` read op, socket `op:"entity"`, `info()`, `health()`, `DatabaseHealth` | deleted; `db.pull`, deploy-time probe |
 | all `Live*` (`LiveStore`, `LiveFn`, `LiveQuery*`, `LiveFind`, `LiveRow`, `TypedLiveDatabaseClient`, `EidVar`, `LiveRun`, `makeLive`) | deleted; `db.live` is a `Stream` |
 | `PullResult`, `pick`, `ValidatePull`, `PullOptional`, `PullNested`, `AttrPull`, `IdentPull*`, `StructPullResult`, `isPull*`, `lowerPullPattern`, `reshapePullResult` | → `Pull<C, P>`; rest internal |
-| the callback query builder (`db.q((q) => q.where("?e", …).find("?e"))`, `Query<C, R>`, `QueryBuilder`, `QueryVar`, `QueryBlank`, `*Slot`, `FindRow(s)`, `Bind*`, `ValueFromAttr`, `AttrRef`, `QuerySpec`, `toQueryObject`, `queryBuilder`) | deleted; `Ripple.query(N)` is the one read surface |
+| the callback query builder (`db.q((q) => q.where("?e", …).find("?e"))`, `Query<C, R>`, `QueryBuilder`, `QueryVar`, `QueryBlank`, `*Slot`, `FindRow(s)`, `Bind*`, `ValueFromAttr`, `AttrRef`, `QuerySpec`, `toQueryObject`, `queryBuilder`) | deleted; `Ramose.query(N)` is the one read surface |
 | `q(string \| object)`, `db.query`, `builder.query`, the `explain` terminal | deleted |
 | all `Tx*` builder & wire types (`TxBuilder`, `EntityHandle`, `TxAttr/Value/Entity`, `TxOp`, `TxSpec`, `AttrRefLookup`, `Yield*`, `Tx*Body`, `txBuilder`, `lowerWireTx`) | → `Tx<C>` / `Entity<C>`; rest internal |
 | `WireTx*`, `WireEntity`, `AddOp`, `RetractOp`, `RetractEntityOp`, `transactWire`, `transactUntyped` | deleted; one tx form, the generator |
 | `Ident`, `EntityRef`, `CatalogIdent`, `AttrAtIdent`, `ValueAtIdent`, `CardAtIdent`, `WriteAtIdent`, `ReadAtIdent` | internal; `LookupRef` stays |
-| admin (`/admin/{index,gc,replica/reconnect}`, `RippleDb.{index,gc,reconnectReplica}`) | Worker routes; `docs/RUNBOOK.md` |
-| `@ripple/client` package (`RippleClient`, `RippleDb`, `RippleError`, `ClientOptions`, `TxAck`, `QueryResponse`, `attribute`) | package deleted; zero real consumers |
+| admin (`/admin/{index,gc,replica/reconnect}`, `RamoseDb.{index,gc,reconnectReplica}`) | Worker routes; `docs/RUNBOOK.md` |
+| `@ramose/client` package (`RamoseClient`, `RamoseDb`, `RamoseError`, `ClientOptions`, `TxAck`, `QueryResponse`, `attribute`) | package deleted; zero real consumers |
 | `RuntimeContext` requirement, `RuntimeContext.phantom`, hand-rolled `run` | deleted from every signature |
 | Vite `/schema` alias + tsconfig path | deleted; `"./db"` is a real `exports` entry |
 
@@ -248,13 +248,13 @@ export const useLive = <A, E>(stream: Stream.Stream<A, E>) => {
 - **Dense `t`.** `t` is only ever read (`report.t`, `db.asOf(t)`); no API mints, skips or supplies one.
 - **Persist-before-ack.** `transact` resolves only with a `TxReport`, and `dbAfter` carries that `t`.
 - **QueryReplica first-class.** Reads take their basis from the server's replica path; no replica selection, no novelty access.
-- **A database is a name.** `ripple.db(name, catalog)` is the whole creation step — no create / list / delete, one resource for N tenants.
+- **A database is a name.** `ramose.db(name, catalog)` is the whole creation step — no create / list / delete, one resource for N tenants.
 - **HTTP is Worker internals.** No endpoint, source, URL or admin type is exported; the two transports are Layers, not clients.
 - **Browser sockets terminate in the Worker isolate.** The client speaks only `GET /db/:name/session`; no DO route is reachable or nameable.
 - **Write-WS is not the default, and `processTx` / `SortedNovelty.flush` are untouched.** Writes go over HTTPS `/transact`; `install()` is an ordinary transaction.
 
 ## 7. Open question
 
-Ship the portable half as the `@ripple/alchemy/db` subpath, or as its own
-`@ripple/db` package? **Default: subpath now** — one package, one version; the
+Ship the portable half as the `@ramose/alchemy/db` subpath, or as its own
+`@ramose/db` package? **Default: subpath now** — one package, one version; the
 split costs nothing once a non-Alchemy deploy target exists.

@@ -1,29 +1,43 @@
 /**
  * One open workspace: header, live kanban, issue panel, time travel.
  *
- * Everything on screen is derived from three hoisted `db.live` streams; every
- * write is a `db.transact` that the peer's policy may deny — denials become
- * toasts, because enforcement is server-side and the UI is only a hint.
+ * Everything on screen is derived from three `useLive(db, query)` reads;
+ * every write goes through `useTransact` and the peer's policy may deny it —
+ * denials become toasts, because enforcement is server-side and the UI is
+ * only a hint.
  */
 
+import {
+  errorMessage,
+  useBasis,
+  useDb,
+  useLive,
+  useQuery,
+  useTransact,
+} from "@ramose/react";
 import * as stylex from "@stylexjs/stylex";
-import * as Effect from "effect/Effect";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import {
   boardQuery,
   everyIssueEverQuery,
   labelsQuery,
   peopleQuery,
   type BoardRow,
+  type ReefDb,
 } from "../../domain/queries.ts";
-import { PRIORITIES, STATUS_LABELS, type Status } from "../../domain/schema.ts";
+import {
+  PRIORITIES,
+  Reef,
+  STATUS_LABELS,
+  type Status,
+} from "../../domain/schema.ts";
 import { ThemeToggle } from "../App.tsx";
 import { authClient, inviteMember, listWorkspaces, type SessionUser } from "../auth.ts";
 import { Board, COLUMN_TINTS } from "../components/Board.tsx";
 import { IssueDetail } from "../components/IssueDetail.tsx";
 import { TimeTravelBar } from "../components/TimeTravel.tsx";
 import { createIssue, moveIssue, seedSampleIssues, type NewIssue } from "../mutations.ts";
-import type { Workspace } from "../ripple.ts";
+import type { Workspace } from "../ramose.ts";
 import { INVITABLE_ROLES } from "../../domain/roles.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
 import {
@@ -46,10 +60,6 @@ import {
   useEscape,
   useToast,
 } from "../ui.tsx";
-import { useLive } from "../useLive.ts";
-
-/** Every `Db` method needs no environment; the hooks port (#44) removes this. */
-const run = Effect.runPromise;
 
 const pulse = stylex.keyframes({
   "0%": { boxShadow: "0 0 0 0 rgba(63, 185, 112, 0.6)" },
@@ -207,100 +217,32 @@ const styles = stylex.create({
 export const BoardScreen = ({
   workspace,
   name,
-  myEid,
   user,
   onLeave,
 }: {
   workspace: Workspace;
   name: string;
-  myEid: number | undefined;
   user: SessionUser;
   onLeave: () => void;
 }) => {
-  const { db, cls, slug } = workspace;
+  const { cls, slug, myEid } = workspace;
   const toast = useToast();
+  const db = useDb(slug, Reef);
 
-  const streams = useMemo(
-    () => ({
-      board: db.live(boardQuery),
-      people: db.live(peopleQuery),
-      labels: db.live(labelsQuery),
-    }),
-    [db],
-  );
-  const board = useLive(streams.board);
-  const people = useLive(streams.people);
-  const labels = useLive(streams.labels);
+  const board = useLive(db, boardQuery);
+  const people = useLive(db, peopleQuery);
+  const labels = useLive(db, labelsQuery);
 
   const [selected, setSelected] = useState<number | null>(null);
   const [draftStatus, setDraftStatus] = useState<Status | null>(null);
   const [invite, setInvite] = useState(false);
-  const [past, setPast] = useState<{
-    t: number;
-    maxT: number;
-    rows: readonly BoardRow[];
-    deleted: readonly { id: number; title: string }[];
-  } | null>(null);
+  const [timeTraveling, setTimeTraveling] = useState(false);
 
-  // A tick counter for the "live" pill: every emission of the board stream
-  // is a basis change the peer pushed — the pulse makes reactivity visible.
-  const [ticks, setTicks] = useState(0);
-  const firstEmission = useRef(true);
-  useEffect(() => {
-    if (board.rows === undefined) return;
-    if (firstEmission.current) {
-      firstEmission.current = false;
-      return;
-    }
-    setTicks((n) => n + 1);
-  }, [board.rows]);
-
-  /** Run a write; a policy denial (or any DbError) becomes a toast. */
-  const attempt = useCallback(
-    (effect: Effect.Effect<unknown, unknown>) => {
-      void run(
-        Effect.catch(effect, (error: unknown) =>
-          Effect.sync(() => {
-            const e = error as { _tag?: string; message?: string };
-            toast("error", e.message ?? e._tag ?? String(error));
-          }),
-        ),
-      );
-    },
-    [toast],
-  );
-
-  const scrub = useCallback(
-    (t: number) => {
-      setPast((p) => (p === null ? p : { ...p, t }));
-      void run(db.asOf(t).q(boardQuery))
-        .then((rows) =>
-          setPast((p) => (p === null || p.t !== t ? p : { ...p, rows })),
-        )
-        .catch(() => {});
-    },
-    [db],
-  );
-
-  const enterTimeTravel = useCallback(() => {
-    void (async () => {
-      try {
-        const { t } = await run(db.basis());
-        const [rows, everything] = await Promise.all([
-          run(db.asOf(t).q(boardQuery)),
-          run(db.history.q(everyIssueEverQuery)),
-        ]);
-        const live = new Set((board.rows ?? []).map((r) => r.id));
-        const deleted = (everything as readonly { id: number; title: string }[]).filter(
-          (r) => !live.has(r.id),
-        );
-        setSelected(null);
-        setPast({ t, maxT: t, rows, deleted });
-      } catch (err) {
-        toast("error", err instanceof Error ? err.message : String(err));
-      }
-    })();
-  }, [db, board.rows, toast]);
+  // Every write is one `run(...)`; a policy denial (or any DbError) becomes
+  // a toast — enforcement is server-side, the UI is only a hint.
+  const { run } = useTransact({
+    onError: (error) => toast("error", errorMessage(error)),
+  });
 
   useEscape(
     useCallback(() => {
@@ -320,8 +262,9 @@ export const BoardScreen = ({
   if (board.rows === undefined) return <Loading text={`opening ${slug}…`} />;
 
   const liveRows = board.rows;
-  const rows = past?.rows ?? liveRows;
-  const timeTraveling = past !== null;
+  // `ticks` counts emissions after the first — every one is a basis change
+  // the peer pushed, and the pulse makes that reactivity visible.
+  const ticks = board.ticks;
   // Derived from the live rows, so a deleted issue closes its own panel.
   const selectedRow =
     selected === null ? undefined : liveRows.find((r) => r.id === selected);
@@ -336,7 +279,7 @@ export const BoardScreen = ({
         <span {...stylex.props(styles.wsSlug, styles.wide)}>db/{slug}</span>
         <Tag
           tone={cls === "admin" ? "accent" : cls === "member" ? "ok" : "neutral"}
-          title="your ripple.class in this workspace"
+          title="your ramose.class in this workspace"
         >
           {cls}
         </Tag>
@@ -361,7 +304,13 @@ export const BoardScreen = ({
           )}
         </span>
         {!timeTraveling && (
-          <Button size="sm" onClick={enterTimeTravel}>
+          <Button
+            size="sm"
+            onClick={() => {
+              setSelected(null);
+              setTimeTraveling(true);
+            }}
+          >
             <Icon name="history" size={13} /> Time travel
           </Button>
         )}
@@ -378,85 +327,79 @@ export const BoardScreen = ({
         <IconButton icon="logout" label="Sign out" onClick={() => void authClient.signOut()} />
       </header>
 
-      {timeTraveling && (
-        <>
-          <TimeTravelBar
-            t={past.t}
-            maxT={past.maxT}
-            deleted={past.deleted}
-            onScrub={scrub}
-            onExit={() => setPast(null)}
-          />
-          <div {...stylex.props(styles.pastNotice)}>
-            <Icon name="eye" size={12} />
-            Read-only view as of transaction {past.t}. Same queries, pinned
-            basis — nothing was copied.
-          </div>
-        </>
-      )}
-
-      <div {...stylex.props(styles.main)}>
-        <div {...stylex.props(styles.boardWrap)}>
-          <Board
-            rows={rows}
-            readOnly={timeTraveling}
-            canCreate={canWrite}
-            selectedId={selected}
-            onSelect={(id) => setSelected(id)}
-            onNew={(status) => setDraftStatus(status)}
-            onMove={(id, status, rank) => attempt(moveIssue(db, id, status, rank))}
-          />
-          {!timeTraveling && liveRows.length === 0 && (
-            <div {...stylex.props(styles.emptyOverlay)}>
-              <div {...stylex.props(styles.emptyCard)}>
-                <Empty
-                  icon="sparkles"
-                  title="This board is empty"
-                  hint={
-                    canWrite ? (
-                      <>
-                        Add your first issue, or start from a sample board —
-                        nine issues in one <Code>db.transact</Code>.
-                      </>
-                    ) : (
-                      "You are a viewer here — issues will appear as members add them."
-                    )
-                  }
-                  actions={
-                    canWrite ? (
-                      <>
-                        <Button
-                          variant="primary"
-                          onClick={() =>
-                            attempt(seedSampleIssues(db, myEid, labels.rows ?? []))
-                          }
-                        >
-                          <Icon name="sparkles" size={14} /> Add sample issues
-                        </Button>
-                        <Button onClick={() => setDraftStatus("todo")}>
-                          <Icon name="plus" size={14} /> New issue
-                        </Button>
-                      </>
-                    ) : undefined
-                  }
-                />
+      {timeTraveling ? (
+        <TimeTravelView
+          db={db}
+          liveRows={liveRows}
+          onExit={() => setTimeTraveling(false)}
+        />
+      ) : (
+        <div {...stylex.props(styles.main)}>
+          <div {...stylex.props(styles.boardWrap)}>
+            <Board
+              rows={liveRows}
+              readOnly={false}
+              canCreate={canWrite}
+              selectedId={selected}
+              onSelect={(id) => setSelected(id)}
+              onNew={(status) => setDraftStatus(status)}
+              onMove={(id, status, rank) =>
+                void run(moveIssue(db, id, status, rank))
+              }
+            />
+            {liveRows.length === 0 && (
+              <div {...stylex.props(styles.emptyOverlay)}>
+                <div {...stylex.props(styles.emptyCard)}>
+                  <Empty
+                    icon="sparkles"
+                    title="This board is empty"
+                    hint={
+                      canWrite ? (
+                        <>
+                          Add your first issue, or start from a sample board —
+                          nine issues in one <Code>db.transact</Code>.
+                        </>
+                      ) : (
+                        "You are a viewer here — issues will appear as members add them."
+                      )
+                    }
+                    actions={
+                      canWrite ? (
+                        <>
+                          <Button
+                            variant="primary"
+                            onClick={() =>
+                              void run(
+                                seedSampleIssues(db, myEid, labels.rows ?? []),
+                              )
+                            }
+                          >
+                            <Icon name="sparkles" size={14} /> Add sample issues
+                          </Button>
+                          <Button onClick={() => setDraftStatus("todo")}>
+                            <Icon name="plus" size={14} /> New issue
+                          </Button>
+                        </>
+                      ) : undefined
+                    }
+                  />
+                </div>
               </div>
-            </div>
+            )}
+          </div>
+          {selectedRow !== undefined && (
+            <IssueDetail
+              db={db}
+              row={selectedRow}
+              myEid={myEid}
+              cls={cls}
+              labels={labels.rows ?? []}
+              people={people.rows ?? []}
+              onClose={() => setSelected(null)}
+            />
           )}
         </div>
-        {selectedRow !== undefined && !timeTraveling && (
-          <IssueDetail
-            workspace={workspace}
-            attempt={attempt}
-            row={selectedRow}
-            myEid={myEid}
-            cls={cls}
-            labels={labels.rows ?? []}
-            people={people.rows ?? []}
-            onClose={() => setSelected(null)}
-          />
-        )}
-      </div>
+      )}
 
       {draftStatus !== null && (
         <NewIssueDialog
@@ -469,7 +412,9 @@ export const BoardScreen = ({
               return;
             }
             const column = liveRows.filter((r) => r.status === draft.status);
-            attempt(createIssue(db, myEid, column[column.length - 1]?.rank, draft));
+            void run(
+              createIssue(db, myEid, column[column.length - 1]?.rank, draft),
+            );
             setDraftStatus(null);
           }}
         />
@@ -479,6 +424,68 @@ export const BoardScreen = ({
         <InviteDialog slug={slug} user={user} onClose={() => setInvite(false)} />
       )}
     </div>
+  );
+};
+
+// ── time travel ──────────────────────────────────────────────────────────────
+
+/**
+ * The immutability demo, hooks-shaped: `useBasis(db)` is the slider's
+ * ceiling, every scrub is `useQuery(db.asOf(t), boardQuery)` — the view is
+ * structural, so the inline `db.asOf(t)` re-runs per `t`, not per render —
+ * and the graveyard is `useQuery(db.history, everyIssueEverQuery)` minus the
+ * issues still alive.
+ */
+const TimeTravelView = ({
+  db,
+  liveRows,
+  onExit,
+}: {
+  db: ReefDb;
+  liveRows: readonly BoardRow[];
+  onExit: () => void;
+}) => {
+  const maxT = useBasis(db);
+  const [scrubbed, setScrubbed] = useState<number | null>(null);
+  const t = scrubbed ?? maxT;
+  // Until the basis lands, read the live view — the same rows the board
+  // already shows — so the hook order never varies.
+  const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
+  const everything = useQuery(db.history, everyIssueEverQuery);
+
+  if (t === undefined || maxT === undefined) {
+    return <Loading text="reading basis…" />;
+  }
+  const live = new Set(liveRows.map((r) => r.id));
+  const deleted = (everything.data ?? []).filter((r) => !live.has(r.id));
+  return (
+    <>
+      <TimeTravelBar
+        t={t}
+        maxT={maxT}
+        deleted={deleted}
+        onScrub={setScrubbed}
+        onExit={onExit}
+      />
+      <div {...stylex.props(styles.pastNotice)}>
+        <Icon name="eye" size={12} />
+        Read-only view as of transaction {t}. Same queries, pinned basis —
+        nothing was copied.
+      </div>
+      <div {...stylex.props(styles.main)}>
+        <div {...stylex.props(styles.boardWrap)}>
+          <Board
+            rows={past.data ?? liveRows}
+            readOnly
+            canCreate={false}
+            selectedId={null}
+            onSelect={() => {}}
+            onNew={() => {}}
+            onMove={() => {}}
+          />
+        </div>
+      </div>
+    </>
   );
 };
 

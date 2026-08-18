@@ -1,5 +1,5 @@
 /**
- * An app Worker that uses the Ripple server declared in `resources.ts`.
+ * An app Worker that uses the Ramose server declared in `resources.ts`.
  *
  * This lives in its own module for a reason: `main: import.meta.url` makes the
  * Worker its own bundle entrypoint, and alchemy's virtual entry does
@@ -12,7 +12,7 @@
  * module's default export (see alchemy/src/Runtime.ts).
  */
 
-import * as Ripple from "@ripple/alchemy";
+import * as Ramose from "@ramose/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
@@ -22,7 +22,7 @@ import { Movies, User } from "./schema.ts";
 
 // The Effect form: the outer generator runs at deploy time (it lowers a
 // `service` binding to the server Worker, plus the shared token); the handler
-// runs per request against `env.Ripple.fetch` — same colo, no public hop, no
+// runs per request against `env.Ramose.fetch` — same colo, no public hop, no
 // TLS handshake.
 
 export const App = Cloudflare.Worker(
@@ -30,33 +30,33 @@ export const App = Cloudflare.Worker(
   { main: import.meta.url },
   Effect.gen(function* () {
     // The binding *is* the client. One `Databases`, bound once at init.
-    const ripple = yield* Ripple.ReadWriteDatabases(Server);
+    const ramose = yield* Ramose.ReadWriteDatabases(Server);
 
     // ── databases are names ──────────────────────────────────────────────────
     //
-    // `ripple.db(name, Movies)` is pure: it validates nothing over the wire,
+    // `ramose.db(name, Movies)` is pure: it validates nothing over the wire,
     // opens no socket and issues no request. Db-per-tenant is therefore a
     // function call — one per request, no resource, no deploy, no provisioning
     // per tenant. An illegal name fails the first operation with
     // `InvalidRequest`, so it never reaches the peer.
     //
-    // The catalog is installed once, at deploy (`Ripple.Database` in
+    // The catalog is installed once, at deploy (`Ramose.Database` in
     // alchemy.run.ts) or at tenant creation with `db.install()` — never per
     // request. The token is shared across every name: it is the peer's one
-    // `RIPPLE_TOKEN`, checked for every tenant database and ignored when the
+    // `RAMOSE_TOKEN`, checked for every tenant database and ignored when the
     // peer has it unset (docs/RUNBOOK.md).
 
     /** `PUT /t/:tenant` — the one place a tenant's catalog lands. One tx. */
     const createTenant = (tenantId: string) =>
       Effect.gen(function* () {
-        const report = yield* ripple.db(tenantId, Movies).install();
+        const report = yield* ramose.db(tenantId, Movies).install();
         return yield* HttpServerResponse.json({ tenant: tenantId, t: report.t });
       });
 
-    /** Every other tenant request: pure `ripple.db`, zero network to open. */
+    /** Every other tenant request: pure `ramose.db`, zero network to open. */
     const tenantRoute = (tenantId: string) =>
       Effect.gen(function* () {
-        const tenant = ripple.db(tenantId, Movies);
+        const tenant = ramose.db(tenantId, Movies);
 
         const { t, dbAfter } = yield* tenant.transact(function* (tx) {
           const ada = yield* tx.entity();
@@ -64,7 +64,7 @@ export const App = Cloudflare.Worker(
         });
         // `dbAfter` carries the min-`t` floor, so this reads its own write
         const names = yield* dbAfter.q(
-          Ripple.query(User).select({ name: User.name }),
+          Ramose.query(User).select({ name: User.name }),
         );
         return yield* HttpServerResponse.json({
           tenant: tenantId,
@@ -88,9 +88,9 @@ export const App = Cloudflare.Worker(
             : tenantRoute(tenantId);
         }
 
-        // The default database. `Ripple.Database("movies", …)` in
+        // The default database. `Ramose.Database("movies", …)` in
         // alchemy.run.ts installed Movies on this name at deploy time.
-        const db = ripple.db("movies", Movies);
+        const db = ramose.db("movies", Movies);
 
         const report = yield* db.transact(function* (tx) {
           const ada = yield* tx.entity();
@@ -101,20 +101,20 @@ export const App = Cloudflare.Worker(
         // so a replica that has not caught up refetches its basis. No `sync`,
         // no second round trip, no public `minT`.
         const nameRows = yield* report.dbAfter.q(
-          Ripple.query(User).select({ name: User.name }),
+          Ramose.query(User).select({ name: User.name }),
         );
         const names = nameRows.map((r) => r.name);
 
         // …and the same query as of a past transaction. `asOf` is pure.
         const beforeRows = yield* db
           .asOf(report.t - 1)
-          .q(Ripple.query(User).select({ name: User.name }));
+          .q(Ramose.query(User).select({ name: User.name }));
         const before = beforeRows.map((r) => r.name);
 
         // Entity ids come back from `select({ id: User.id })`; pulling one is
         // `db.pull` — a missing required field is `null`.
         const rows = yield* report.dbAfter.q(
-          Ripple.query(User).select({ id: User.id }),
+          Ramose.query(User).select({ id: User.id }),
         );
         const ada =
           rows.length === 0
@@ -143,7 +143,7 @@ export const App = Cloudflare.Worker(
         }),
       ),
     };
-  }).pipe(Effect.provide(Ripple.ServerBinding)),
+  }).pipe(Effect.provide(Ramose.ServerBinding)),
 );
 
 export default App;

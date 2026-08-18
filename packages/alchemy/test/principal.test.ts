@@ -52,7 +52,7 @@ describe("db.principal()", () => {
     const state = { principal: { eid: 7, class: "member" } as const };
     const peer = peerWith(state);
     const c = client(peer, { token: Effect.succeed(redacted("s3cret")) });
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
 
     expect(await run(db.principal())).toEqual({
       eid: { id: 7 },
@@ -80,7 +80,7 @@ describe("db.principal()", () => {
     };
     const peer = peerWith(state);
     const c = client(peer);
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
 
     expect(await run(db.principal())).toEqual({ eid: null, class: "member" });
     expect(await run(db.principal())).toEqual({ eid: null, class: "member" });
@@ -105,7 +105,7 @@ describe("db.principal()", () => {
     const state = { principal: { eid: 7, class: "member" } };
     const peer = peerWith(state);
     const c = client(peer);
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
 
     await run(db.q(names)); // opens the socket: generation moves
     expect(await run(db.principal())).toEqual({
@@ -143,7 +143,7 @@ describe("db.principal()", () => {
       },
     });
     const c = client(peer, { token: Effect.succeed(redacted("t")) });
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
 
     await run(db.q(names)); // 401 → auth frame → retried on the same socket
     expect(peer.frameOps("auth")).toHaveLength(1);
@@ -185,7 +185,7 @@ describe("db.principal()", () => {
           : { body: { t: 2, txEid: 1, tempids: {}, datoms: 1 } },
     });
     const c = client(peer, { token: Effect.succeed(redacted("t")) });
-    const db = c.ripple.db("movies", Movies);
+    const db = c.ramose.db("movies", Movies);
 
     await run(db.q(names));
     expect(await run(db.principal())).toEqual({
@@ -246,7 +246,7 @@ describe("db.principal()", () => {
   test("a peer that reports no principal is an InternalError, not a guess", async () => {
     const peer = peerWith({ principal: undefined });
     const c = client(peer);
-    const e = await runFail(c.ripple.db("movies", Movies).principal());
+    const e = await runFail(c.ramose.db("movies", Movies).principal());
     expect(e._tag).toBe("InternalError");
     await c.dispose();
   });
@@ -254,7 +254,7 @@ describe("db.principal()", () => {
   test("a bad database name fails InvalidRequest without touching the wire", async () => {
     const peer = peerWith({ principal: { eid: 1, class: "member" } });
     const c = client(peer);
-    const e = await runFail(c.ripple.db("no spaces", Movies).principal());
+    const e = await runFail(c.ramose.db("no spaces", Movies).principal());
     expect(e._tag).toBe("InvalidRequest");
     expect(peer.calls).toHaveLength(0);
     await c.dispose();

@@ -1,10 +1,10 @@
-# ripplegraph.ai — the docs site
+# ramose.ai — the docs site
 
-The static documentation site for Ripple: [Astro](https://astro.build) +
-[Starlight](https://starlight.astro.build), branded per the ripplegraph.ai
-brand guide (warm white on void black, signal moss as the one accent, Manrope
-as the Avenir Next web fallback), deployed to Cloudflare with Alchemy — the
-same pattern [alchemy.run](https://alchemy.run) uses for its own website.
+The static documentation site for Ramose: [Astro](https://astro.build) +
+[Starlight](https://starlight.astro.build), branded per the ramose.ai brand
+guide (white on deep black, dark-forest panels, one green signal, Manrope as
+the Avenir Next web fallback), deployed to Cloudflare with Alchemy — the same
+pattern [alchemy.run](https://alchemy.run) uses for its own website.
 
 ## Develop
 
@@ -38,10 +38,16 @@ Requires `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (see
 
 PRs that touch `website/` get an automatic preview deployment (stage
 `pr-<number>`) with the URL commented on the PR; the preview is destroyed when
-the PR closes. Merges to `master` / `main` publish the `prod` stage at
-[ripple-docs.tvanhens.workers.dev](https://ripple-docs.tvanhens.workers.dev).
-Set `RIPPLE_DOCS_DOMAIN` on the Development environment later if a custom
-domain should be attached. See `.github/workflows/docs-preview.yml`,
+the PR closes. Merges to `master` / `main` publish the `prod` stage.
+
+The Cloudflare Worker keeps its original physical name, `ripple-docs`, so the
+existing deployment is updated rather than orphaned; its workers.dev hostname
+[ripple-docs.tvanhens.workers.dev](https://ripple-docs.tvanhens.workers.dev)
+stays live. The public site is **https://ramose.ai** — the default custom
+domain in `alchemy.run.ts` (the zone is onboarded in the Cloudflare account;
+Alchemy manages the DNS record and certificate). Set `RAMOSE_DOCS_DOMAIN` on
+the Development environment to override the hostname. See
+`.github/workflows/docs-preview.yml`,
 `.github/workflows/docs-publish.yml`, and the "Docs previews" / "Docs
 production" sections of `CONTRIBUTING.md`.
 
@@ -52,7 +58,7 @@ production" sections of `CONTRIBUTING.md`.
 | `src/content/docs/` | all pages (Markdown/MDX); `index.mdx` is the landing page |
 | `src/styles/theme.css` | the brand theme mapped onto Starlight variables |
 | `src/components/` | `SiteTitle` (lockup), `ThemeProvider`/`ThemeSelect` (dark-only) |
-| `src/assets/ripple-mark.svg` | the symbol (one path, one ripple) |
+| `src/assets/ramose-mark.svg` | the mark (the two-stroke ramose loop) |
 | `public/favicon.svg` | micro-use mark (loop only, per the brand guide) |
 | `astro.config.mjs` | Starlight config: sidebar, edit links, code theme |
 | `alchemy.run.ts` | the Cloudflare deploy stack |

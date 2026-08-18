@@ -24,11 +24,11 @@ import {
 } from "./db/internal.ts";
 
 export interface ServerEndpoint {
-  /** Base URL, no trailing slash (e.g. `https://ripple.example.workers.dev`). */
+  /** Base URL, no trailing slash (e.g. `https://ramose.example.workers.dev`). */
   readonly url: string;
   /** The server's one bearer token, used for every database name. */
   readonly token?: Redacted.Redacted<string> | string | undefined;
-  /** Extra headers on every request (e.g. `x-ripple-replica-hint`). */
+  /** Extra headers on every request (e.g. `x-ramose-replica-hint`). */
   readonly headers?: Record<string, string> | undefined;
 }
 
@@ -83,7 +83,7 @@ export const databasesOf = (source: ServerSource): DatabasesShape =>
  * The same client, read-only. Least privilege is a *shape*, not a second
  * transport: the wire is identical (the server's one token, or the caller's
  * JWT, is what the peer actually enforces), so what this removes is the
- * ability to name a write at all — `ripple.db(name, catalog)` hands back a
+ * ability to name a write at all — `ramose.db(name, catalog)` hands back a
  * `ReadDb<C>` with no `transact` and no `install`.
  */
 export const readDatabasesOf = (source: ServerSource): ReadDatabasesShape => {

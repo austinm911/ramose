@@ -6,7 +6,7 @@
  * stable discriminator; statuses are unchanged from the pre-Effect handler.
  */
 import { describe, expect, test } from "bun:test";
-import { TxError } from "@ripple/core";
+import { TxError } from "@ramose/core";
 import {
   BadRequest,
   Internal,

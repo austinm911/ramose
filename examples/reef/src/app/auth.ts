@@ -3,7 +3,7 @@
  * /api to the auth Worker; deployed, the auth Worker serves these assets.
  */
 
-import { rippleTokenClient } from "@ripple/better-auth/client";
+import { ramoseTokenClient } from "@ramose/better-auth/client";
 import { organizationClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
 import { AUTH_BASE_PATH } from "../domain/shared.ts";
@@ -11,10 +11,10 @@ import { ac, roles } from "../domain/roles.ts";
 
 export const authClient = createAuthClient({
   baseURL: `${window.location.origin}${AUTH_BASE_PATH}`,
-  // `rippleTokenClient` pairs with the server's `rippleToken` plugin:
-  // `authClient.ripple.token({ db })` resolves the mint route's body,
-  // which `Ripple.token.jwt` accepts unchanged (app/ripple.ts).
-  plugins: [organizationClient({ ac, roles }), rippleTokenClient()],
+  // `ramoseTokenClient` pairs with the server's `ramoseToken` plugin:
+  // `authClient.ramose.token({ db })` resolves the mint route's body,
+  // which `Ramose.token.jwt` accepts unchanged (app/ramose.ts).
+  plugins: [organizationClient({ ac, roles }), ramoseTokenClient()],
 });
 
 export type SessionUser = {

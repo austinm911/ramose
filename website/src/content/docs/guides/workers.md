@@ -3,13 +3,13 @@ title: Workers and tenants
 description: Bind the database to your own Worker as a capability, and give every customer their own database with a function call.
 ---
 
-Your own Worker talks to a Ripple database through a capability, not a URL and
+Your own Worker talks to a Ramose database through a capability, not a URL and
 a token. You declare what the Worker may do — read and write, or read only —
 and separately how the call travels. The body of the Worker is identical either
 way, and a Worker that only declared reads cannot write, by type.
 
 ```ts title="app.ts"
-import * as Ripple from "@ripple/alchemy";
+import * as Ramose from "@ramose/alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
@@ -22,7 +22,7 @@ export const App = Cloudflare.Worker(
   { main: import.meta.url },
   Effect.gen(function* () {
     // the binding is the client: one of these, bound once at startup
-    const ripple = yield* Ripple.ReadWriteDatabases(Server);
+    const ramose = yield* Ramose.ReadWriteDatabases(Server);
 
     return {
       fetch: Effect.gen(function* () {
@@ -30,7 +30,7 @@ export const App = Cloudflare.Worker(
         const tenant = request.url.split("?")[0]?.split("/")[2] ?? "acme";
 
         // pure: no request, no socket, no provisioning
-        const db = ripple.db(tenant, Todos);
+        const db = ramose.db(tenant, Todos);
 
         const { dbAfter } = yield* db.transact(function* (tx) {
           const todo = yield* tx.entity();
@@ -40,18 +40,18 @@ export const App = Cloudflare.Worker(
         });
 
         const rows = yield* dbAfter.q(
-          Ripple.query(Todo).select({ id: Todo.id, title: Todo.title }),
+          Ramose.query(Todo).select({ id: Todo.id, title: Todo.title }),
         );
         return yield* HttpServerResponse.json(rows);
       }),
     };
-  }).pipe(Effect.provide(Ripple.ServerBinding)),
+  }).pipe(Effect.provide(Ramose.ServerBinding)),
 );
 
 export default App;
 ```
 
-`ripple.db(name, catalog)` costs nothing: no network, no handshake, no
+`ramose.db(name, catalog)` costs nothing: no network, no handshake, no
 provisioning step. Resolving the customer from the request and naming their
 database *is* the whole multi-tenancy story — see [A database is a
 name](/concepts/databases-are-names/).
@@ -60,8 +60,8 @@ name](/concepts/databases-are-names/).
 
 | capability | your Worker gets |
 | --- | --- |
-| `Ripple.ReadWriteDatabases(Server)` | `q`, `pull`, `asOf`, `history`, `transact`, `install` |
-| `Ripple.ReadDatabases(Server)` | the same client with the writes removed |
+| `Ramose.ReadWriteDatabases(Server)` | `q`, `pull`, `asOf`, `history`, `transact`, `install` |
+| `Ramose.ReadDatabases(Server)` | the same client with the writes removed |
 
 There is no write-only twin, deliberately: a writer that cannot read cannot
 resolve a lookup or check an invariant.
@@ -69,17 +69,17 @@ resolve a lookup or check an invariant.
 :::caution[Live queries need a browser]
 `db.live` is in the type of both capabilities, but it needs a WebSocket to the
 peer, and a Worker-to-Worker binding has none. Calling it there fails the fiber
-outright with `ripple: db.live needs the session socket` rather than returning
+outright with `ramose: db.live needs the session socket` rather than returning
 an error you can catch. Stand live queries up in the browser through
-`Ripple.connect`, and let your Worker do request-shaped reads and writes.
+`Ramose.connect`, and let your Worker do request-shaped reads and writes.
 :::
 
 ## Transports
 
 | layer | how the call travels |
 | --- | --- |
-| `Ripple.ServerBinding` | a Worker service binding: same colo, no public hop, no TLS handshake |
-| `Ripple.ServerHttp` | the peer's public URL over ordinary `fetch` — also what `alchemy dev` and deploy-time actions use |
+| `Ramose.ServerBinding` | a Worker service binding: same colo, no public hop, no TLS handshake |
+| `Ramose.ServerHttp` | the peer's public URL over ordinary `fetch` — also what `alchemy dev` and deploy-time actions use |
 
 Provide one of them at the edge of the program; nothing inside changes when you
 swap.
@@ -123,7 +123,7 @@ Name the database, install the catalog once, then use it like any other:
 ```ts title="app.ts"
 const onboard = (key: string) =>
   Effect.gen(function* () {
-    const db = ripple.db(`tenant-${key}`, Todos);
+    const db = ramose.db(`tenant-${key}`, Todos);
     const report = yield* db.install(); // at signup, never per request
     return yield* HttpServerResponse.json({ tenant: key, t: report.t });
   });
@@ -141,4 +141,4 @@ thousands of writes per second, and there are no joins across databases. See
 A complete Worker that does all of the above is
 [`examples/kv-style`](https://github.com/tvanhens/ripple/tree/master/examples/kv-style)
 — copy the four files into your project, or read them as a reference. The
-peer Worker they bind is `@ripple/worker`.
+peer Worker they bind is `@ramose/worker`.

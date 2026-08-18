@@ -1,14 +1,14 @@
 /**
- * `RippleProvider` — one `Client`, owned by the tree: `Ripple.connect` in a
+ * `RamoseProvider` — one `Client`, owned by the tree: `Ramose.connect` in a
  * `useMemo` keyed on `url` and the identity of `token` / `fetch` /
  * `webSocket`, close in the effect cleanup on change and on unmount.
  *
  * Two rules the memo imposes on consumers:
  *
- * - `token` must be a **stable** `TokenSource` (`Ripple.token.jwt(...)` built
+ * - `token` must be a **stable** `TokenSource` (`Ramose.token.jwt(...)` built
  *   once — module scope or a `useMemo`), not an Effect built inline in the
  *   render, or the client re-connects every render.
- * - Multi-tenant remount is React's own `key`: `<RippleProvider key={slug}
+ * - Multi-tenant remount is React's own `key`: `<RamoseProvider key={slug}
  *   url={…}>` closes the old tenant's client and connects the new one.
  */
 
@@ -16,7 +16,7 @@ import {
   type Client,
   type ClientOptions,
   connect,
-} from "@ripple/alchemy/db";
+} from "@ramose/alchemy/db";
 import {
   type ReactNode,
   useEffect,
@@ -24,17 +24,17 @@ import {
   useReducer,
   useRef,
 } from "react";
-import { RippleContext } from "./context.ts";
+import { RamoseContext } from "./context.ts";
 
 /**
  * `ClientOptions` plus `children`. React's own `key` is the multi-tenant
  * remount seam: change it to close the old client and connect a new one.
  */
-export interface RippleProviderProps extends ClientOptions {
+export interface RamoseProviderProps extends ClientOptions {
   readonly children?: ReactNode;
 }
 
-export const RippleProvider = (props: RippleProviderProps) => {
+export const RamoseProvider = (props: RamoseProviderProps) => {
   const { url, token, fetch, webSocket, children } = props;
   const [generation, reconnect] = useReducer((n: number) => n + 1, 0);
   /** The client the last cleanup closed — identity, not a flag on the memo. */
@@ -62,6 +62,6 @@ export const RippleProvider = (props: RippleProviderProps) => {
   }, [client]);
 
   return (
-    <RippleContext.Provider value={client}>{children}</RippleContext.Provider>
+    <RamoseContext.Provider value={client}>{children}</RamoseContext.Provider>
   );
 };
