@@ -31,6 +31,8 @@ export interface Reply {
   ok?: boolean;
   body?: unknown;
   headers?: Record<string, string>;
+  /** An `auth` ack may name the swapped principal. */
+  principal?: { eid: number | null; class: string };
   /** Answer after this many ms instead of on the next microtask. */
   delay?: number;
 }

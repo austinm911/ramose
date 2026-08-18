@@ -330,7 +330,7 @@ describe("ensure and privileged surfaces", () => {
     peer.close();
   });
 
-  test("explain and /admin/* are admin-only; /info reduces to { db, t }", async () => {
+  test("explain and /admin/* are admin-only; /info reduces to { db, t, principal }", async () => {
     const { peer } = await fixture();
     const member = await token("acme", "member");
     const admin = await token("acme", "admin");
@@ -341,7 +341,7 @@ describe("ensure and privileged surfaces", () => {
     expect((await peer.json("/db/acme/admin/index", { method: "POST", token: admin })).status).toBe(200);
 
     const info = await peer.json("/db/acme/info", { token: member });
-    expect(Object.keys(info.body).sort()).toEqual(["db", "t"]);
+    expect(Object.keys(info.body).sort()).toEqual(["db", "principal", "t"]);
     expect(typeof info.body.t).toBe("number");
     // one shape: the admin answer carries the same top-level `t`, plus the internals
     const adminInfo = await peer.json("/db/acme/info", { token: admin });
@@ -349,6 +349,40 @@ describe("ensure and privileged surfaces", () => {
     expect(adminInfo.body.t).toBe(info.body.t);
     expect(adminInfo.body.transactor).toBeDefined();
     expect(typeof adminInfo.body.transactor.t).toBe("number");
+    peer.close();
+  });
+
+  test("/info tells the caller who it is: sub → eid via the policy's principal attribute", async () => {
+    const { peer, eids } = await fixture();
+    // a member whose row exists: the eid, resolved on the peer
+    const ada = await peer.json("/db/acme/info", { token: await token("acme", "member", "user_ada") });
+    expect(ada.body.principal).toEqual({ eid: eids.ada, class: "member" });
+    // informational, so an admin's sub resolves too (filtering exemption is separate)
+    const admin = await peer.json("/db/acme/info", { token: await token("acme", "admin", "user_bob") });
+    expect(admin.body.principal).toEqual({ eid: eids.bob, class: "admin" });
+    // no token: the anonymous class has no sub, so no entity
+    const anon = await peer.json("/db/acme/info");
+    expect(anon.body.principal).toEqual({ eid: null, class: "anonymous" });
+    peer.close();
+  });
+
+  test("a session with no row yet is { eid: null } — and resolves once the row is written", async () => {
+    const { peer } = await fixture();
+    const zoe = await token("acme", "member", "user_zoe");
+    const before = await peer.json("/db/acme/info", { token: zoe });
+    expect(before.body.principal).toEqual({ eid: null, class: "member" });
+    // the row lands (say, an ensureSelf-style transact); a missing eid is never memoized
+    const ack = await peer.seed([{ ":db/id": "zoe", ":user/sub": "user_zoe" }]);
+    const after = await peer.json("/db/acme/info", { token: zoe });
+    expect(after.body.principal).toEqual({ eid: ack.tempids.zoe, class: "member" });
+    peer.close();
+  });
+
+  test("no policy: /info still names the caller — class admin, no entity to resolve", async () => {
+    const peer = makePeer("demo");
+    await peer.seed(SCHEMA);
+    const info = await peer.json("/db/demo/info");
+    expect(info.body.principal).toEqual({ eid: null, class: "admin" });
     peer.close();
   });
 

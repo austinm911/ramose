@@ -14,7 +14,7 @@
  *   POST /db/:name/query      { query, inputs?, asOf?, history? }   → { t, result }
  *   POST /db/:name/pull       { eid, pattern, asOf?, history? }     → { t, result }
  *   GET  /db/:name/entity/:eid[?asOf=]                              → { t, entity }
- *   GET  /db/:name/info                                            → { db, t, … } — top-level `t` for everyone; transactor/replica internals for admin
+ *   GET  /db/:name/info                                            → { db, t, principal, … } — `t` and `principal` for everyone; transactor/replica internals for admin
  *   GET  /db/:name/session    (Upgrade: websocket)                 → the session socket (session.ts)
  *   POST /db/:name/admin/index | /admin/gc                         → indexer controls
  *
@@ -37,7 +37,7 @@ import { TransactorDO } from "@ripple/transactor/transactor-do.ts";
 import { QueryReplicaDO } from "@ripple/replica";
 import * as Effect from "effect/Effect";
 import { Analytics, type Route, bindingOf, fromBinding, httpPoint, routeOf } from "./analytics.ts";
-import { allowedOrigin, authState, checkWrite, isTokenOnly, principalForToken, principalOf, viewDb } from "./auth.ts";
+import { allowedOrigin, authState, checkWrite, describePrincipal, isTokenOnly, principalForToken, principalOf, viewDb } from "./auth.ts";
 import { BadRequest, type Internal, NotFound, type QueryBudgetExceeded, type RippleError, Unauthorized, UpstreamError, fromThrown, toHttp } from "./errors.ts";
 import { basisHeaders, coloHeader, fetchBasisWithStats, hintOf, invalidateBasis, regionOf, replicaId, segmentSource } from "./peer.ts";
 import { type SocketLike, openSession } from "./session.ts";
@@ -287,9 +287,13 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
   if (rest === "/info" && request.method === "GET") {
     // every principal may ask where the basis is; only admin sees the peer's internals.
     // top-level `t` is the one shape both answers share — it is what `db.basis()` reads.
-    const basisT = (await fetchBasisWithStats(env, db, request)).basis.t;
+    // `principal` is on both too: it is what `db.principal()` reads (`eid: null`
+    // until the principal attribute has a row for this `sub`).
+    const basis = (await fetchBasisWithStats(env, db, request)).basis;
+    const basisT = basis.t;
+    const who = await describePrincipal(env, principal, segmentSource(env, db), basis);
     if (policy !== undefined && !isAdmin(principal)) {
-      return json({ db, t: basisT }, 200, { "x-ripple-ms": String(Date.now() - t0) });
+      return json({ db, t: basisT, principal: who }, 200, { "x-ripple-ms": String(Date.now() - t0) });
     }
     const [tx, rep] = await Promise.all([
       transactor().fetch(txUrl("/info"), { headers: { ...coloHeader(request), ...internalHeaders(env) } }).then((r) => r.json()),
@@ -298,6 +302,7 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
     return json({
       db,
       t: basisT,
+      principal: who,
       region: regionOf(request),
       transactor: tx,
       replica: rep,
@@ -315,6 +320,7 @@ async function route(request: Request, env: RippleEnv, url: URL, db: string, res
     const session = openSession(server as unknown as SocketLike, {
       principal,
       authenticate: (token) => principalForToken(env, token.length === 0 ? undefined : token, db),
+      describe: async (p) => describePrincipal(env, p, segmentSource(env, db), (await fetchBasisWithStats(env, db, request)).basis),
       dispatch: async (r, init, p) => {
         const sub = subRequest(request, env, db, r, init);
         try {

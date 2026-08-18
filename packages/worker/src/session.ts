@@ -22,10 +22,17 @@ export interface ReplyFrame {
   headers?: Record<string, string>;
 }
 
-/** The `auth` frame's success reply: the principal was swapped. */
+/** Who a session is, as the wire tells it: `eid` is `null` when the policy's principal attribute has no row yet. */
+export interface WirePrincipal {
+  eid: number | null;
+  class: string;
+}
+
+/** The `auth` frame's success reply: the principal was swapped (and, when the session can describe it, who it now is). */
 export interface AuthAck {
   id: number;
   ok: true;
+  principal?: WirePrincipal;
 }
 
 /** Unsolicited: the basis this session reads from has moved to `t`. */
@@ -71,6 +78,8 @@ export interface SessionOptions {
   principal?: Principal;
   /** re-verify a token for this same database; rejects when it is refused */
   authenticate?: (token: string) => Promise<Principal>;
+  /** `{ eid, class }` for the `auth` ack — the swapped principal's entity, `null` when its row does not exist yet */
+  describe?: (principal: Principal) => Promise<WirePrincipal>;
   /** reads the current basis `t` (isolate-local, cache-bypassing) — omit to disable polling */
   pollBasis?: () => Promise<number>;
   /** sessions sharing this key share one basis reading (the read path's `db|hint`) */
@@ -273,7 +282,16 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     }
     try {
       principal = await options.authenticate(typeof f.token === "string" ? f.token : "");
-      send({ id, ok: true });
+      let who: WirePrincipal | undefined;
+      if (options.describe !== undefined) {
+        try {
+          who = await options.describe(principal);
+        } catch {
+          // a transient replica error must not fail the swap; the ack just cannot name the entity
+          who = { eid: null, class: principal.class };
+        }
+      }
+      send({ id, ok: true, ...(who === undefined ? {} : { principal: who }) });
     } catch (err) {
       const e = err as { status?: number; code?: string; message?: string };
       send({ id, status: typeof e?.status === "number" ? e.status : 401, body: { error: e?.message || "unauthorized", ...(typeof e?.code === "string" ? { code: e.code } : {}) } });

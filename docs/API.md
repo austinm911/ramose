@@ -55,6 +55,7 @@ Static token: `Effect.succeed(Redacted.make(t))`. The layer is scoped, the socke
 | `db.transact` | `<A, E, R>(body: (tx: Tx<C>) => Generator<Effect<unknown, E, R>, A>) => Effect<TxReport<C>, DbError \| E, R>` |
 | `db.install` | `() => Effect<TxReport<C>, DbError>` — idempotent catalog upsert |
 | `db.basis` | `() => Effect<{ t: number }, DbError>` — the basis this view reads at: one `GET /db/:name/info` for a live db; `asOf(t)` answers `{ t }` with no request |
+| `db.principal` | `() => Effect<DbPrincipal<C>, DbError>` — who this session is, resolved by the peer (`/info`'s `principal`, also on the session `auth` ack): `{ eid: Eid<C> \| null, class }`, `eid: null` until the policy's principal attribute has a row; a `null` is never cached, a resolved eid is cached per session generation and re-read on reconnect |
 | `db.asOf` | `(t: number) => ReadDb<C>` |
 | `db.history` | `ReadDb<C>` |
 | `query` | `Ripple.query(N)` — navigational query builder (`.where` `.select` `.orderBy` `.limit` `.offset`); order and paging run on the peer |
