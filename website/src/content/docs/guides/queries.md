@@ -273,5 +273,6 @@ headers report what it cost: `x-ramose-ms`, `x-ramose-r2-gets`, and
 `x-ramose-cache-hits` — all listed in `access-control-expose-headers`, so a
 browser can read them.
 
-**Checkpoint.** `bun test examples/todos` — four passing tests, driving the
-same `todoQuery` and `addTodo` these examples are built from.
+**Checkpoint.** `todoQuery` from the Quickstart is the same value these
+examples grow — run it with `db.q` once, then keep it standing with
+`db.live`.

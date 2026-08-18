@@ -173,7 +173,7 @@ duplicated classes, and reference nesting deeper than three.
 
 ## A larger policy
 
-This is the repository's own worked example (`docs/AUTH_LAYER.md`) — documents
+This is the larger worked example — documents
 owned by users, shared through projects and organizations:
 
 ```ts title="policy.ts"

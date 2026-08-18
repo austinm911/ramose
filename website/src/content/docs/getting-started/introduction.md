@@ -1,12 +1,28 @@
 ---
 title: Introduction
-description: Ramose in one page — the mental model, what it is good for, what it is not, and how to run it today.
+description: Ramose in one page — the mental model, the packages you install, what it is good for, and what it is not.
 ---
 
 Ramose is a database for apps you deploy on Cloudflare. You describe your data
 in TypeScript, write it through a typed API, and read it with queries that
 update themselves when the data changes. Who may read or write each field is
 part of the database, not middleware you remember to add.
+
+## Install
+
+```sh
+npm install @ramose/alchemy
+```
+
+`@ramose/alchemy` is the package. Import `@ramose/alchemy/db` from the
+browser, tests, and anything else that should never see the deploy engine.
+Import `@ramose/alchemy` from your Alchemy stack for `Server`, `Database`,
+and `Policy`. A React app also takes `@ramose/react`. The peer — the Worker
+that serves your databases — is `@ramose/worker`: you name it as `main` on a
+`Cloudflare.Worker`, you do not copy it into your repo.
+
+`bun add` and `pnpm add` work the same. Ramose is pre-release: expect the API
+to still move.
 
 ## The mental model
 
@@ -57,17 +73,12 @@ deploys into your own Cloudflare account, and a per-customer database is a
 function call rather than a provisioning step. The full trade is on the [home
 page](/).
 
-## Status: pre-release
-
-Nothing is published to npm yet: the packages are private and point at
-TypeScript source, so today you clone the repository and work inside it — three
-commands, under two minutes, in the Quickstart.
-
 ## Start here
 
-- [Quickstart](/getting-started/quickstart/) — a running app and a live query.
+- [Quickstart](/getting-started/quickstart/) — install the package, stand up a
+  local peer, and get a live query.
 - [Permissions in 10 minutes](/guides/permissions/) — watch a write get denied.
 - [Define your data](/guides/catalog/) — the catalog in full.
-- [Reef](https://github.com/tvanhens/ripple/tree/master/examples/reef) — the
-  flagship demo: multi-tenant workspaces, JWT auth and a compiled policy in one
-  app.
+- [Reef](https://github.com/tvanhens/ripple/tree/master/examples/reef) — a
+  complete example: multi-tenant workspaces, JWT auth and a compiled policy in
+  one app.

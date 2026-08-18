@@ -24,7 +24,7 @@
  * import * as Cloudflare from "alchemy/Cloudflare";
  * import * as Ramose from "@ramose/alchemy";
  *
- * const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: "./src/index.ts" });
+ * const RamoseWorker = Cloudflare.Worker("RamoseWorker", { main: "@ramose/worker" });
  * export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
  * export const TodosDb = Ramose.Database("todos", { server: Server, catalog: Todos });
  * ```
@@ -212,7 +212,7 @@ export const internalSecret = (
  * @example
  * ```typescript
  * export const RamoseWorker = Cloudflare.Worker("RamoseWorker", {
- *   main: "./packages/worker/src/index.ts",
+ *   main: "@ramose/worker",
  *   env: { STORE: Store, ...Ramose.authEnv({ policy, jwksUrl, auth: AUTH }) },
  * });
  * ```

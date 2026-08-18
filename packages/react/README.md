@@ -1,5 +1,9 @@
 # @ramose/react
 
+```sh
+npm install @ramose/react @ramose/alchemy
+```
+
 React bindings for Ramose. The provider owns one `Client` per subtree —
 connect on mount, close on unmount or when its options change — and the hooks
 hand it back. Named imports, not a namespace:

@@ -90,21 +90,22 @@ declares a class literally named `anonymous`, which is how you build a
 public-read app.
 :::
 
-The repository's larger worked example — documents, projects, and org
-membership — is on [Auth and policy](/guides/auth/#a-larger-policy).
+A larger worked example — documents, projects, and org membership — is on
+[Auth and policy](/guides/auth/#a-larger-policy).
 
 ## Running it locally
 
-These are files you create — `scripts/local-jwt.ts`, `policy.ts` and the
-`resources.ts` edits below do not exist in the clone, and the queries they
-import (`todoDetail`, `openTodos`) are the ones you added to `src/todos.ts` in
-[Query and pull](/guides/queries/). `examples/todos` ships without a policy.
+Add these files to the project you started in the Quickstart.
+`scripts/local-jwt.ts` and `policy.ts` are new; the `resources.ts` edits
+below replace the open peer. The queries they import (`todoDetail`,
+`openTodos`) are the ones you added to `src/todos.ts` in
+[Query and pull](/guides/queries/).
 
 Ramose ships no token minter and no CLI, so a local loop is: generate a key
 pair, hand the public half to the peer, and sign your own tokens with it. That
-is about fifteen lines of [`jose`](https://github.com/panva/jose), and it is
-exactly what Ramose's own tests do. (In production, `Ramose.claims` builds the
-payload from the same `AuthConfig` the peer verifies against — see
+is about fifteen lines of [`jose`](https://github.com/panva/jose)
+(`npm install jose`). (In production, `Ramose.claims` builds the payload from
+the same `AuthConfig` the peer verifies against — see
 [Minting](/guides/auth/#minting); here a hand-written payload is enough.)
 
 ```ts title="scripts/local-jwt.ts"
@@ -151,7 +152,7 @@ const Replica = Cloudflare.DurableObject("QueryReplicaDO", {
 });
 
 export const RamoseWorker = Cloudflare.Worker("Peer", {
-  main: "./packages/worker/src/index.ts",
+  main: "@ramose/worker",
   compatibility: { date: "2025-06-01", flags: ["nodejs_compat"] },
   env: {
     STORE: Store,
@@ -170,31 +171,27 @@ export const RamoseWorker = Cloudflare.Worker("Peer", {
 export const Server = Ramose.Server("Ramose", { worker: RamoseWorker });
 ```
 
-Then run it in two terminals. This is the manual form rather than `bun run
-dev:todos`, because the token has to reach Vite's environment and you are the
-one putting it there. Generate the key set and the token **once** — the script
-mints a fresh key pair every run, so a second invocation would not match the
-first:
+Then run it in two terminals. Generate the key set and the token **once** —
+the script mints a fresh key pair every run, so a second invocation would not
+match the first. The token has to reach Vite's environment, so you put it
+there yourself:
 
 ```sh title="Terminal 1 — the peer"
-bun run scripts/local-jwt.ts > .local-jwt.txt
+npx tsx scripts/local-jwt.ts > .local-jwt.txt
 CI=1 ALCHEMY_STATE=local \
   CLOUDFLARE_ACCOUNT_ID=0123456789abcdef0123456789abcdef \
   CLOUDFLARE_API_TOKEN=x \
   RAMOSE_JWKS_JSON="$(head -1 .local-jwt.txt)" \
-  bun alchemy dev examples/todos/alchemy.run.ts
+  npx alchemy dev
 ```
-
-That stack starts its own Vite on :5173 with no token, so give your
-authenticated one a different port:
 
 ```sh title="Terminal 2 — the app"
 VITE_RAMOSE_URL=http://localhost:1337 \
   VITE_RAMOSE_TOKEN="$(tail -1 .local-jwt.txt)" \
-  bunx vite examples/todos --port 5174
+  npm run dev
 ```
 
-Open `http://localhost:5174` — that is the tab whose requests carry the token.
+Open the Vite URL — that is the tab whose requests carry the token.
 
 :::note[Deploying, not just running]
 Passing `auth` to `Ramose.Server` turns on a deploy-time check: a policy with
