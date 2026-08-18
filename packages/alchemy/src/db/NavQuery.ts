@@ -692,26 +692,23 @@ const lowerIdPredicate = (
 /**
  * Reshape the peer's rows: pull maps into the selected shape, bare ids into
  * `Eid`s. Order, paging and every row-dropping constraint already happened on
- * the peer, so this changes the shape of a row, never the number of them.
+ * the peer (`requiredClauses` put each required field in `:where`), so this
+ * changes the shape of a row and never the number of them — a `[null]` cell,
+ * unreachable on a well-lowered query, comes back as a `null` row rather than
+ * a quietly shorter page.
  */
 export const finalizeNavResult = (
   raw: unknown,
   pullMap: Record<string, unknown> | undefined,
 ): unknown => {
   const rows: unknown[] = Array.isArray(raw) ? raw : [];
-
-  // find-pull → [[map] | [null], ...] or pull scalar forms; normalize to maps/eids
+  // find-pull → [[map], ...]; bare find → [[eid], ...]. Unwrap the one cell.
+  const cellOf = (row: unknown): unknown => (Array.isArray(row) ? row[0] : row);
   if (pullMap !== undefined) {
-    return rows
-      .map((row) => {
-        const cell = Array.isArray(row) ? row[0] : row;
-        if (cell === null || cell === undefined) return null;
-        return reshapePullResult(pullMap, cell);
-      })
-      .filter((x) => x !== null);
+    return rows.map((row) => reshapePullResult(pullMap, cellOf(row)));
   }
   return rows.map((row) => {
-    const cell = Array.isArray(row) ? row[0] : row;
+    const cell = cellOf(row);
     return typeof cell === "number" ? makeEid(cell) : cell;
   });
 };

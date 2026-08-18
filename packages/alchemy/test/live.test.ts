@@ -80,7 +80,7 @@ const namesWire = {
 };
 
 /** One find-pull row, as the peer sends it. */
-const row = (name: string | null) => [name === null ? null : { name }];
+const row = (name: string) => [{ name }];
 
 /** A peer whose relation and basis the test moves under it. */
 const peerAt = (state: {
@@ -120,14 +120,14 @@ describe("q and live are two terminals over one query", () => {
     await c.dispose();
   });
 
-  test("the pull rides in the query: null rows drop, no second op", async () => {
-    const state = { t: 5, rows: [row("Ada"), row(null), row("Cy")] };
+  test("the pull rides in the query: one op, and the rows are the peer's", async () => {
+    const state = { t: 5, rows: [row("Ada"), row("Cy")] };
     const peer = peerAt(state);
     const c = client(peer);
     const live = collect(c.ripple.db("movies", Movies).live(names));
     await settle();
 
-    // a row whose pull came back null is dropped
+    // exactly what the peer sent, reshaped — the client drops nothing
     expect(live.seen[0]).toEqual([{ name: "Ada" }, { name: "Cy" }]);
     // one op for the whole pass — no client-side N+1
     expect(peer.frameOps("pull")).toHaveLength(0);

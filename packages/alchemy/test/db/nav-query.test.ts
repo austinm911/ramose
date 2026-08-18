@@ -423,6 +423,12 @@ describe("lowering: everything that changes the row set is the peer's", () => {
       { title: "a" },
       { title: "c" },
     ]);
+    // a null pull cell (unreachable once required fields are in :where) is
+    // still a row: the client never makes a page shorter than the peer sent
+    expect(finalizeNavResult([[{ title: "a" }], [null]], pullMap)).toEqual([
+      { title: "a" },
+      null,
+    ]);
     // no select: bare ids wrap as Eids, same count, same order
     expect(finalizeNavResult([[30], [10], [20]], undefined)).toEqual([
       { id: 30 },
