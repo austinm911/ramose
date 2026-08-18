@@ -56,6 +56,7 @@ import { isResourceOfType, Resource } from "alchemy/Resource";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
+import type { AuthConfig } from "./Auth.ts";
 import { InvalidRequest, NetworkError } from "./db/Errors.ts";
 import type { Providers } from "./Providers.ts";
 
@@ -109,6 +110,13 @@ export interface PeerAuth {
   readonly aud?: string | undefined;
   /** Cap on `exp - iat`, in seconds. @default 900 */
   readonly maxTtl?: number | undefined;
+  /**
+   * The pinned verifier/minter contract ({@link import("./Auth.ts").claims}
+   * builds the matching payload). Stands in for `issuers`, `aud` and
+   * `maxTtl`; when one of those is also set explicitly, the explicit key
+   * wins.
+   */
+  readonly auth?: AuthConfig | undefined;
   /** Origins the server answers CORS for once a policy narrows it. */
   readonly allowedOrigins?: readonly string[] | string | undefined;
   /** Worker→DO shared secret; every internal fetch carries it. See {@link internalSecret}. */
@@ -145,10 +153,25 @@ export const AUTH_ENV_KEYS = {
   maxTtl: "RIPPLE_JWT_MAX_TTL",
   allowedOrigins: "RIPPLE_ALLOWED_ORIGINS",
   internalSecret: "RIPPLE_INTERNAL_SECRET",
-} as const satisfies Record<keyof PeerAuth, string>;
+  // `auth` is not a key: it lowers onto issuers / aud / maxTtl.
+} as const satisfies Record<Exclude<keyof PeerAuth, "auth">, string>;
 
 /** Cap on a token's lifetime when `RIPPLE_JWT_MAX_TTL` is unset, in seconds. */
 export const DEFAULT_JWT_MAX_TTL = 900;
+
+/**
+ * Fold an {@link AuthConfig} into the three loose keys it stands in for.
+ * Additive: an explicitly set loose key wins over the config's value.
+ */
+const withAuthConfig = (auth: PeerAuth): PeerAuth =>
+  auth.auth === undefined
+    ? auth
+    : {
+        ...auth,
+        issuers: auth.issuers ?? auth.auth.issuer,
+        aud: auth.aud ?? auth.auth.audience,
+        maxTtl: auth.maxTtl ?? auth.auth.ttl,
+      };
 
 const list = (value: readonly string[] | string | undefined): string | undefined => {
   const items = (typeof value === "string" ? value.split(",") : (value ?? []))
@@ -183,18 +206,22 @@ export const internalSecret = (
  * binds {@link internalSecret}, since an unset key leaves the Worker→DO gate
  * off.
  *
+ * An {@link AuthConfig} (`auth`) stands in for `issuers` / `aud` / `maxTtl`,
+ * so the verifier pins the exact contract the mint route builds claims from.
+ *
  * @example
  * ```typescript
  * export const RippleWorker = Cloudflare.Worker("RippleWorker", {
  *   main: "./packages/worker/src/index.ts",
- *   env: { STORE: Store, ...Ripple.authEnv({ policy, jwksUrl, issuers, aud }) },
+ *   env: { STORE: Store, ...Ripple.authEnv({ policy, jwksUrl, auth: AUTH }) },
  * });
  * ```
  */
 export const authEnv = (
-  auth: PeerAuth | undefined,
+  peerAuth: PeerAuth | undefined,
 ): Record<string, string | Redacted.Redacted<string>> => {
-  if (auth === undefined) return {};
+  if (peerAuth === undefined) return {};
+  const auth = withAuthConfig(peerAuth);
   const k = AUTH_ENV_KEYS;
   const env: Record<string, string | Redacted.Redacted<string>> = {};
   const set = (key: string, value: string | Redacted.Redacted<string> | undefined) => {
@@ -221,8 +248,11 @@ export const authEnv = (
  * Fail closed at deploy: a policy with no verifier configured would deny every
  * `/db/*` at runtime, so it fails here instead.
  */
-const checkAuth = (auth: PeerAuth | undefined): string | undefined => {
-  if (auth === undefined || auth.policy === undefined || auth.policy === "") return undefined;
+const checkAuth = (peerAuth: PeerAuth | undefined): string | undefined => {
+  if (peerAuth === undefined || peerAuth.policy === undefined || peerAuth.policy === "") {
+    return undefined;
+  }
+  const auth = withAuthConfig(peerAuth);
   const missing: string[] = [];
   if (auth.jwksUrl === undefined || auth.jwksUrl === "") missing.push(AUTH_ENV_KEYS.jwksUrl);
   if (list(auth.issuers) === undefined) missing.push(AUTH_ENV_KEYS.issuers);

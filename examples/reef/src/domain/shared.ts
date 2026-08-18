@@ -1,27 +1,34 @@
 /**
  * Constants shared by the auth Worker (infra/api.ts), the peer wiring
  * (infra/resources.ts) and the SPA (app/). Import-light on purpose: this module ends up in
- * the auth Worker bundle.
+ * the auth Worker bundle (`@ripple/alchemy/db` is the portable barrel, and
+ * the `AuthConfig` import is type-only, so it erases).
  */
 
+import type { AuthConfig } from "@ripple/alchemy";
 import { isDatabaseName } from "@ripple/alchemy/db";
 
 /**
- * The `iss` every Reef JWT carries and the peer pins (`RIPPLE_JWT_ISS`). An
- * opaque agreed string — verification keys come from the JWKS URL, not from
- * resolving this.
+ * The one verifier/minter contract (docs/AUTH_LAYER.md §1):
+ *
+ * - `issuer` — the `iss` every Reef JWT carries and the peer pins
+ *   (`RIPPLE_JWT_ISS`). An opaque agreed string — verification keys come
+ *   from the JWKS URL, not from resolving this.
+ * - `audience` — the `aud` every Reef JWT carries and the peer pins
+ *   (`RIPPLE_JWT_AUD`).
+ * - `ttl` — token lifetime in seconds. Better Auth signs `exp - iat` of
+ *   exactly this and the peer caps accepted lifetimes at the same value
+ *   (`RIPPLE_JWT_MAX_TTL`); the SPA re-mints slightly earlier.
+ *
+ * The jwt plugin's config, the mint route's payload (`Ripple.claims`) and the
+ * peer's env (`Ripple.authEnv({ auth })`) all read this one value, so they
+ * cannot drift.
  */
-export const JWT_ISSUER = "reef-demo-auth";
-
-/** The `aud` every Reef JWT carries and the peer pins (`RIPPLE_JWT_AUD`). */
-export const JWT_AUDIENCE = "ripple:reef";
-
-/**
- * Token lifetime. Better Auth signs `exp - iat` of exactly this many seconds
- * and the peer caps accepted lifetimes at the same value
- * (`RIPPLE_JWT_MAX_TTL`); the SPA re-mints slightly earlier.
- */
-export const JWT_TTL_SECONDS = 900;
+export const REEF_AUTH: AuthConfig = {
+  issuer: "reef-demo-auth",
+  audience: "ripple:reef",
+  ttl: 900,
+};
 
 /** Where the SPA's Better Auth routes live on the auth Worker. */
 export const AUTH_BASE_PATH = "/api/auth";
