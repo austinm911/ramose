@@ -7,8 +7,7 @@
  *
  * `RippleProvider` owns one `Client` per subtree (connect on mount / prop
  * change, close on unmount / prop change, StrictMode-safe), `useRipple()`
- * hands it back, and `useDb(name, catalog)` memoises a `Db` from it. Later
- * slices add `useLive`, `useQuery` / `usePull` / `useBasis`, `useTransact`.
+ * hands it back, and `useDb(name, catalog)` memoises a `Db` from it.
  */
 
 export { RippleProvider, type RippleProviderProps } from "./RippleProvider.tsx";

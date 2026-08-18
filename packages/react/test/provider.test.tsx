@@ -13,12 +13,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import * as Ripple from "@ripple/alchemy/db";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import {
-  Component,
-  type ReactNode,
-  StrictMode,
-  useEffect,
-} from "react";
+import { type ReactNode, StrictMode, useEffect } from "react";
 import { render, renderHook, waitFor } from "@testing-library/react";
 import { fakePeer, type FakePeer } from "./peer.ts";
 import { RippleProvider, useDb, useRipple } from "../src/index.ts";
@@ -55,48 +50,14 @@ const ReadOnce = () => {
 
 describe("useRipple", () => {
   test("outside a provider it throws, and the message names RippleProvider", () => {
-    class Catcher extends Component<
-      { children?: ReactNode },
-      { error: Error | null }
-    > {
-      override state = { error: null as Error | null };
-      static getDerivedStateFromError(error: Error) {
-        return { error };
-      }
-      override render() {
-        return this.state.error === null ? this.props.children : null;
-      }
-    }
-
-    const Probe = () => {
-      useRipple();
-      return null;
-    };
-
-    let caught: Error | null = null;
-    class Recording extends Catcher {
-      static override getDerivedStateFromError(error: Error) {
-        caught = error;
-        return { error };
-      }
-    }
-
-    // an error boundary observes the throw without depending on how the
-    // renderer of the day re-throws uncaught render errors
     const noisy = console.error;
     console.error = () => {};
     try {
-      render(
-        <Recording>
-          <Probe />
-        </Recording>,
-      );
+      expect(() => renderHook(() => useRipple())).toThrow(/RippleProvider/);
+      expect(() => renderHook(() => useRipple())).toThrow(/useRipple/);
     } finally {
       console.error = noisy;
     }
-    expect(caught).not.toBeNull();
-    expect(String(caught)).toMatch(/RippleProvider/);
-    expect(String(caught)).toMatch(/useRipple/);
   });
 });
 
@@ -139,6 +100,25 @@ describe("RippleProvider", () => {
     await waitFor(() => expect(peer.sockets[0]!.closed).toBe(true));
     await waitFor(() => expect(peer.sockets.length).toBe(2));
     expect(peer.sockets[1]!.url).toContain("b.example.com");
+    expect(peer.sockets[1]!.closed).toBe(false);
+  });
+
+  test("a token identity change closes the old client too", async () => {
+    const peer = fakePeer();
+    const ui = (source: Ripple.TokenSource) => (
+      <RippleProvider {...providerProps(peer)} token={source}>
+        <ReadOnce />
+      </RippleProvider>
+    );
+
+    const { rerender } = render(ui(Ripple.token.static("a")));
+    await waitFor(() => expect(peer.sockets.length).toBe(1));
+    expect(peer.sockets[0]!.url).toContain("token=a");
+
+    rerender(ui(Ripple.token.static("b")));
+    await waitFor(() => expect(peer.sockets[0]!.closed).toBe(true));
+    await waitFor(() => expect(peer.sockets.length).toBe(2));
+    expect(peer.sockets[1]!.url).toContain("token=b");
     expect(peer.sockets[1]!.closed).toBe(false);
   });
 

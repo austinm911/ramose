@@ -35,6 +35,3 @@ const db = useDb("todos", Todos); // inside <App />
 - **Multi-tenant remount is React's `key`.** `<RippleProvider key={tenant}
   url={…}>` closes the old tenant's client and connects the new one when
   `tenant` changes.
-
-Later slices add `useLive`, `useQuery` / `usePull` / `useBasis`, and
-`useTransact` on top of these.
