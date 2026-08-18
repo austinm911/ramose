@@ -9,7 +9,7 @@
     "website"
   ],
   "scripts": {
-    "test": "bun test packages/core packages/storage packages/transactor packages/replica packages/worker packages/alchemy examples/todos examples/reef test/support",
+    "test": "bun test packages/core packages/storage packages/transactor packages/replica packages/worker packages/alchemy packages/react examples/todos examples/reef test/support",
     "test:all": "bun test",
     "test:e2e": "bun test test/e2e",
     "test:e2e:cf": "bash scripts/e2e-cloudflare.sh",

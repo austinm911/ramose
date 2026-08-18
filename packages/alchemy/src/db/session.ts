@@ -192,9 +192,12 @@ export const openSession = (options: SessionOptions): Session => {
       const token = tokenValue(
         options.token === undefined ? undefined : await options.token(),
       );
-      const ws = options.connect(
-        sessionUrl(await options.url(), options.name, token),
-      );
+      const target = sessionUrl(await options.url(), options.name, token);
+      // a close that landed while the token/url resolved wins: a socket
+      // opened for a closed session would leak, because `close()` has no
+      // handle on it yet
+      if (closed) throw new SocketGone("ripple: the client is closed");
+      const ws = options.connect(target);
       connects += 1;
       let settle!: (e?: unknown) => void;
       const opened = new Promise<void>((resolve, reject) => {
