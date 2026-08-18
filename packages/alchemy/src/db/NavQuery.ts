@@ -268,11 +268,11 @@ export type OrderDir = "asc" | "desc";
 export interface OrderBy {
   readonly path: readonly string[];
   /**
-   * Parallel to `path`, and in practice always all-false: `.orderBy` rejects a
-   * key that crosses a cardinality-many hop (the sort key would be a set), and
-   * `.reverse` is always many — any number of entities may point at one. It
-   * still travels with the path, so lowering reads the two together and a
-   * future single-valued backlink needs no new plumbing.
+   * Parallel to `path`. `.orderBy` rejects a key that crosses a
+   * cardinality-many hop (the sort key would be a set), so the only reversed
+   * hop that can appear here is the card-one one: the backlink of a
+   * `:db/isComponent` ref, which reaches at most one entity. Lowering reads
+   * the two together and flips that hop's datom.
    */
   readonly revs?: readonly boolean[];
   readonly dir: OrderDir;
@@ -316,8 +316,10 @@ export type PathCarrier = {
   readonly __cards?: readonly Cardinality[];
   /**
    * Which hops in `__path` are walked backwards — parallel to it. A reversed
-   * hop is `[?next :a ?e]` instead of `[?e :a ?next]`, and is always
-   * cardinality-many: any number of entities may point at one.
+   * hop is `[?next :a ?e]` instead of `[?e :a ?next]`. It is cardinality-many
+   * (any number of entities may point at one) unless the ref is a
+   * `:db/isComponent` one, whose referrer is unique — that backlink is
+   * card-one, and `__cards` says so.
    */
   readonly __revs?: readonly boolean[];
   /** @internal Set on the node `attr.reverse` returns. */
@@ -406,7 +408,8 @@ export type InValue<A> = A extends { readonly valueType: ":db.type/ref" }
 /**
  * `some` / `every` / `none` quantify over the elements a hop reaches, so they
  * are defined exactly on cardinality-many attributes — including the many hop
- * a `.reverse` backlink always is.
+ * an ordinary `.reverse` backlink is. The backlink of a component ref is
+ * card-one (one owner), so it has no elements and they are `never` there.
  *
  * A cardinality-many *scalar* has elements too: its values. They are named by
  * {@link AttrNav.each}, so `User.tags.every(User.tags.each.startsWith("a"))`
@@ -1617,6 +1620,10 @@ const lowerOrderPath = (
  * through the ref); `.optional` and cardinality-many fields never drop the
  * row (a missing many is `[]`), and `:db/id` is always there.
  *
+ * The card-one backlink of a component ref is required like any other card-one
+ * field, and its clause reads the datom backwards — the entity that must exist
+ * is the *owner* pointing at this row.
+ *
  * A defaulted field is not required either — the whole point of `.orDefault`
  * is that the entity without the datom is a row, reading as the default. A
  * clause here would drop exactly the rows it exists to keep, and `:limit`
@@ -1634,12 +1641,19 @@ const requiredClauses = (e: string, pattern: unknown): unknown[] => {
     if (info.optional || info.many || info.hasDefault) continue;
     const ident = lowerAttr(info.attr);
     if (ident === ID) continue;
+    // a backlink reads the datom the other way: the required entity is the one
+    // *pointing at* `?e` (a component backlink is card-one, so it gets here)
     if (info.nestedPattern === undefined) {
-      out.push([e, ident, "_"]);
+      out.push(info.reverse ? [gensym("r"), ident, e] : [e, ident, "_"]);
       continue;
     }
     const target = gensym("r");
     const sub = requiredClauses(target, info.nestedPattern);
+    if (info.reverse) {
+      // the entity position of a clause has to be a variable, never `_`
+      out.push([target, ident, e], ...sub);
+      continue;
+    }
     out.push([e, ident, sub.length > 0 ? target : "_"], ...sub);
   }
   return out;

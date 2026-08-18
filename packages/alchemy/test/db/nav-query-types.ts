@@ -32,12 +32,15 @@ declare const db: Db<typeof Movies>;
 
 /** A second catalog whose refs are targeted, so a path can hop. */
 const Author = Namespace("author", { name: Attr(Schema.String) });
+/** A component target: the cover is owned by the book that refers to it. */
+const Cover = Namespace("cover", { art: Attr(Schema.String) });
 const Book = Namespace("book", {
   title: Attr(Schema.String),
   published: Attr(Instant),
   author: Attr(Ref(() => Author)),
+  cover: Attr(Ref(() => Cover), { isComponent: true }),
 });
-const Library = Catalog({ author: Author, book: Book });
+const Library = Catalog({ author: Author, book: Book, cover: Cover });
 declare const library: Db<typeof Library>;
 
 // ── no `.select` yields the matched entity ids ─────────────────────────────
@@ -249,6 +252,45 @@ type _backlinks = Expect<
 
 /** an untargeted ref has a backlink too — only the owning namespace matters */
 query(User).where(User.bestFriend.reverse.name.eq("Ada"));
+
+// ── the backlink of a component ref is single-valued ───────────────────────
+
+/**
+ * A `:db/isComponent` ref owns what it points at, so at most one entity
+ * points *back*: the backlink is card-one, its shape is one nested object,
+ * and `.optional` is how a component without an owner is spelled.
+ */
+const componentBacklink = library.q(
+  query(Cover).select({
+    art: Cover.art,
+    book: Book.cover.reverse.select({ title: Book.title }),
+    maybeBook: Book.cover.reverse.select({ published: Book.published }).optional,
+  }),
+);
+type _componentBacklink = Expect<
+  Equal<
+    Effect.Success<typeof componentBacklink>,
+    readonly {
+      readonly art: string;
+      readonly book: { readonly title: string };
+      readonly maybeBook: { readonly published: Date } | undefined;
+    }[]
+  >
+>;
+
+/** the hop is card-one, so a path through it is an ordinary predicate… */
+library.q(query(Cover).where(Book.cover.reverse.title.eq("Calculus")));
+/** …and a legal sort key, which a many backlink never is */
+library.q(query(Cover).orderBy(Book.cover.reverse.published, "desc"));
+
+// @ts-expect-error one owner is no collection: nothing to quantify over
+query(Cover).where(Book.cover.reverse.some(Book.title.eq("x")));
+// @ts-expect-error …nothing to filter…
+Book.cover.reverse.where(Book.title.eq("x"));
+// @ts-expect-error …and nothing to page
+Book.cover.reverse.limit(1);
+// @ts-expect-error a backlink is still a ref: no value to stand in for
+Book.cover.reverse.orDefault("x");
 
 // ── nested where / orderBy / limit on a collection ─────────────────────────
 

@@ -178,6 +178,25 @@ const Todo = Namespace("todo", {
 
 const Todos = Catalog({ user: User, todo: Todo });
 
+const Address = Namespace("address", {
+  city: Attr(Schema.String),
+  zip: Attr(Schema.String),
+});
+
+/**
+ * `:person/address` is a **component** ref: the address is owned by its
+ * person, so at most one person points at it and the backlink answers one
+ * entity. `:person/mailbox` is the same target without componenthood — the
+ * ordinary, many-valued backlink, for contrast.
+ */
+const Person = Namespace("person", {
+  name: Attr(Schema.String),
+  address: Attr(Ref(() => Address), { isComponent: true }),
+  mailbox: Attr(Ref(() => Address)),
+});
+
+const People = Catalog({ person: Person, address: Address });
+
 describe("nav query", () => {
   test("Todo.owner.name path + lowerer", () => {
     const q = query(Todo)
@@ -1425,6 +1444,324 @@ describe("lowering: reverse refs walk a ref hop backwards", () => {
     expect(() => query(User).orderBy(Todo.owner.reverse.title)).toThrow(
       /orderBy\(:todo\/owner → :todo\/title\) crosses a cardinality-many attribute/,
     );
+  });
+});
+
+describe("lowering: a component ref's backlink is single-valued", () => {
+  const addressScope = [
+    "or",
+    ["?e", ":address/city", "_"],
+    ["?e", ":address/zip", "_"],
+  ];
+
+  test("the backlink of a component ref is a card-one reversed hop", () => {
+    // it is a nav, not a throw: componenthood picks the cardinality
+    const back = Person.address.reverse;
+    expect(pathOf(back)).toEqual([":person/address"]);
+    expect(cardsOf(back)).toEqual(["one"]);
+    expect(revsOf(back)).toEqual([true]);
+    // the same ref without `isComponent` is the ordinary many backlink
+    expect(cardsOf(Person.mailbox.reverse)).toEqual(["many"]);
+    expect(revsOf(Person.mailbox.reverse)).toEqual([true]);
+    // walking on from the backlink is unchanged: forwards, in :person/…
+    expect(pathOf(back.name)).toEqual([":person/address", ":person/name"]);
+    expect(cardsOf(back.name)).toEqual(["one", "one"]);
+    expect(revsOf(back.name)).toEqual([true, false]);
+  });
+
+  test("a predicate through a component backlink flips the datom", () => {
+    const { query: q } = lowerNavQuery(
+      query(Address).where(Person.address.reverse.name.eq("Ada")).build(),
+    );
+    expect(q.where).toEqual([
+      addressScope,
+      ["?j0", ":person/address", "?e"],
+      ["?j0", ":person/name", "Ada"],
+    ]);
+  });
+
+  test("`.reverse.select` is card-one: required, and read backwards", () => {
+    const { query: q } = lowerNavQuery(
+      query(Address)
+        .select({
+          city: Address.city,
+          owner: Person.address.reverse.select({ name: Person.name }),
+        })
+        .build(),
+    );
+    expect(q.find).toEqual([
+      [
+        "pull",
+        "?e",
+        [
+          { kind: "attr", attr: ":address/city", reverse: false, as: "city" },
+          {
+            kind: "attr",
+            attr: ":person/address",
+            reverse: true,
+            as: "owner",
+            sub: [
+              { kind: "attr", attr: ":person/name", reverse: false, as: "name" },
+            ],
+          },
+        ],
+      ],
+    ]);
+    // the required clause is the datom the other way: the owner points at ?e
+    expect(q.where).toEqual([
+      addressScope,
+      ["?e", ":address/city", "_"],
+      ["?r0", ":person/address", "?e"],
+      ["?r0", ":person/name", "_"],
+    ]);
+  });
+
+  test("a reversed required clause binds a variable even with nothing nested", () => {
+    // the entity position of a clause cannot be `_`: it *is* the join target
+    const { query: q } = lowerNavQuery(
+      query(Address)
+        .select({
+          owner: Person.address.reverse.select({ name: Person.name.optional }),
+        })
+        .build(),
+    );
+    expect(q.where).toEqual([addressScope, ["?r0", ":person/address", "?e"]]);
+  });
+
+  test("`.optional` on a component backlink drops no rows", () => {
+    const { query: q } = lowerNavQuery(
+      query(Address)
+        .select({
+          city: Address.city,
+          owner: Person.address.reverse.select({ name: Person.name }).optional,
+        })
+        .build(),
+    );
+    expect(q.where).toEqual([addressScope, ["?e", ":address/city", "_"]]);
+  });
+
+  test("a many backlink is still never required", () => {
+    const { query: q } = lowerNavQuery(
+      query(Address)
+        .select({
+          residents: Person.mailbox.reverse.select({ name: Person.name }),
+        })
+        .build(),
+    );
+    expect((q.find[0] as unknown[])[2]).toEqual([
+      {
+        kind: "attr",
+        attr: ":person/mailbox",
+        reverse: true,
+        as: "residents",
+        sub: [{ kind: "attr", attr: ":person/name", reverse: false, as: "name" }],
+      },
+    ]);
+    expect(q.where).toEqual([addressScope]);
+  });
+
+  test("a bare component backlink still needs a shape", () => {
+    expect(() =>
+      lowerNavQuery(
+        query(Address).select({ owner: Person.address.reverse as never }).build(),
+      ),
+    ).toThrow(/backlinks need a shape/);
+  });
+
+  test("a single-valued backlink has no elements to quantify or filter", () => {
+    const many = (x: unknown) => x as { [k: string]: (...args: any[]) => any };
+    expect(() => many(Person.address.reverse).some(Person.name.eq("Ada"))).toThrow(
+      /only a cardinality-many attribute has elements to quantify over/,
+    );
+    expect(() => many(Person.address.reverse).where(Person.name.eq("Ada"))).toThrow(
+      /cardinality-many collection/,
+    );
+    expect(() => many(Person.address.reverse).limit(1)).toThrow(
+      /cardinality-many collection/,
+    );
+    // the many backlink keeps them
+    expect(() =>
+      many(Person.mailbox.reverse).some(Person.name.eq("Ada")),
+    ).not.toThrow();
+  });
+
+  test("orderBy may cross a component backlink — the key is one value", () => {
+    const { query: q } = lowerNavQuery(
+      query(Address).orderBy(Person.address.reverse.name).build(),
+    );
+    expect(q.order).toEqual([{ var: "?o0", dir: "asc", empty: "last" }]);
+    expect(q.where).toEqual([
+      addressScope,
+      [
+        "or-join",
+        ["?e", "?o0"],
+        [
+          "and",
+          ["?j1", ":person/address", "?e"],
+          ["?j1", ":person/name", "?o0"],
+        ],
+        [
+          "and",
+          [
+            "not",
+            ["?j2", ":person/address", "?e"],
+            ["?j2", ":person/name", "_"],
+          ],
+          [["ground", [null]], ["?o0", "..."]],
+        ],
+      ],
+    ]);
+  });
+});
+
+describe("component backlinks end to end", () => {
+  /**
+   * Ada — address Paris, mailbox Oslo
+   * Bob — address Rome,  mailbox Oslo
+   * Oslo — nobody's address (the orphan component)
+   */
+  const seedPeople = async (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
+    const db = peer.ripple.db("people", People);
+    await run(
+      Effect.gen(function* () {
+        yield* db.install();
+        yield* db.transact(function* (tx) {
+          const paris = yield* tx.entity();
+          yield* paris.add(Address.city, "Paris");
+          yield* paris.add(Address.zip, "75001");
+          const rome = yield* tx.entity();
+          yield* rome.add(Address.city, "Rome");
+          yield* rome.add(Address.zip, "00184");
+          const oslo = yield* tx.entity();
+          yield* oslo.add(Address.city, "Oslo");
+          yield* oslo.add(Address.zip, "0155");
+
+          const ada = yield* tx.entity();
+          yield* ada.add(Person.name, "Ada");
+          yield* ada.add(Person.address, paris.eid as never);
+          yield* ada.add(Person.mailbox, oslo.eid as never);
+          const bob = yield* tx.entity();
+          yield* bob.add(Person.name, "Bob");
+          yield* bob.add(Person.address, rome.eid as never);
+          yield* bob.add(Person.mailbox, oslo.eid as never);
+        });
+      }),
+    );
+    return db;
+  };
+
+  test("`db.install` tells the peer the ref is a component", async () => {
+    const peer = await inProcessPeer();
+    await seedPeople(peer);
+    const install = peer.seen.find((c) => c.op === "transact")!;
+    expect(
+      (install.body.tx as Record<string, unknown>[]).find(
+        (m) => m[":db/ident"] === ":person/address",
+      ),
+    ).toEqual({
+      ":db/ident": ":person/address",
+      ":db/valueType": ":db.type/ref",
+      ":db/cardinality": ":db.cardinality/one",
+      ":db/isComponent": true,
+    });
+    await peer.dispose();
+  });
+
+  test("a component backlink reads as one nested object, not an array", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedPeople(peer);
+    peer.seen.length = 0;
+
+    const rows = await run(
+      db.q(
+        query(Address)
+          .orderBy(Address.city)
+          .select({
+            city: Address.city,
+            owner: Person.address.reverse.select({ name: Person.name }).optional,
+          }),
+      ),
+    );
+    expect(rows).toEqual([
+      // the orphan keeps its row, and its owner is simply absent
+      { city: "Oslo", owner: undefined },
+      { city: "Paris", owner: { name: "Ada" } },
+      { city: "Rome", owner: { name: "Bob" } },
+    ]);
+    expect(Array.isArray(rows[1]?.owner)).toBe(false);
+    expect(peer.seen[0]?.rows).toBe(3);
+
+    await peer.dispose();
+  });
+
+  test("a required component backlink drops the orphan — on the peer", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedPeople(peer);
+    peer.seen.length = 0;
+
+    const rows = await run(
+      db.q(
+        query(Address)
+          .orderBy(Address.city)
+          .select({
+            city: Address.city,
+            owner: Person.address.reverse.select({ name: Person.name }),
+          }),
+      ),
+    );
+    expect(rows).toEqual([
+      { city: "Paris", owner: { name: "Ada" } },
+      { city: "Rome", owner: { name: "Bob" } },
+    ]);
+    // the required reversed clause did the dropping, so `:limit` pages honestly
+    expect(peer.seen[0]?.rows).toBe(2);
+
+    await peer.dispose();
+  });
+
+  test("the same target's non-component backlink is still an array", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedPeople(peer);
+
+    const rows = await run(
+      db.q(
+        query(Address)
+          .orderBy(Address.city)
+          .select({
+            city: Address.city,
+            residents: Person.mailbox.reverse.select({ name: Person.name }),
+          }),
+      ),
+    );
+    expect(
+      rows.map((r) => ({
+        city: r.city,
+        residents: r.residents.map((p) => p.name).sort(),
+      })),
+    ).toEqual([
+      { city: "Oslo", residents: ["Ada", "Bob"] },
+      { city: "Paris", residents: [] },
+      { city: "Rome", residents: [] },
+    ]);
+
+    await peer.dispose();
+  });
+
+  test("a component backlink is a card-one sort key, end to end", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedPeople(peer);
+
+    const rows = await run(
+      db.q(
+        query(Address)
+          .orderBy(Person.address.reverse.name, "asc", { empty: "last" })
+          .select({ city: Address.city }),
+      ),
+    );
+    // Ada's address, then Bob's, then the one nobody owns
+    expect(rows.map((r) => r.city)).toEqual(["Paris", "Rome", "Oslo"]);
+
+    await peer.dispose();
   });
 });
 
