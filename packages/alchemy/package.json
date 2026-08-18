@@ -1,9 +1,20 @@
 {
   "name": "@ramose/alchemy",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Alchemy 2 + Effect interface for Ramose: the portable `@ramose/alchemy/db` entry, the Ramose.Server and Ramose.Database resources, the ReadWriteDatabases / ReadDatabases capabilities and the ServerBinding / ServerHttp transports.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tvanhens/ramose.git",
+    "directory": "packages/alchemy"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": false
+  },
+  "files": [
+    "src"
+  ],
   "main": "src/index.ts",
   "types": "src/index.ts",
   "exports": {

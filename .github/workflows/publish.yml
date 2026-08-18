@@ -1,0 +1,81 @@
+name: Publish
+
+# Publishes @ramose/core then @ramose/alchemy to npm via trusted publishing
+# (OIDC). No NPM_TOKEN anywhere: npm mints a short-lived credential from the
+# workflow's OIDC token. The trusted publisher on npmjs.com matches on the
+# repo (tvanhens/ramose), this exact filename (publish.yml), and the `npm`
+# environment name.
+#
+# Triggered only by publishing a GitHub Release (drafts are safe; a plain push
+# to master never publishes). The release tag vX.Y.Z is the source of truth:
+# the job fails unless both package.json versions already equal X.Y.Z.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: publish to npm
+    # OIDC trusted publishing only works on GitHub-hosted runners.
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          # Never restore a cache on a release build.
+          package-manager-cache: false
+
+      # Trusted publishing requires npm CLI >= 11.5.1.
+      - name: Update npm
+        run: npm install -g npm@latest
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run typecheck
+
+      - run: bun run test
+
+      - name: Check package versions match the release tag
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION="${TAG#v}"
+          for pkg in packages/core packages/alchemy; do
+            actual="$(node -p "require('./$pkg/package.json').version")"
+            if [ "$actual" != "$VERSION" ]; then
+              echo "::error::$pkg/package.json version is $actual but the release tag is $TAG (expected $VERSION). Bump the package versions before tagging."
+              exit 1
+            fi
+          done
+
+      - name: Publish @ramose/core
+        working-directory: packages/core
+        run: npm publish
+
+      # The tarball must not contain workspace:*. Rewrite the @ramose/core
+      # dependency to the real (lockstep) version in the job workspace only —
+      # nothing is committed back to git.
+      - name: Rewrite workspace:* dependency in @ramose/alchemy
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const path = "packages/alchemy/package.json";
+            const pkg = JSON.parse(fs.readFileSync(path, "utf8"));
+            pkg.dependencies["@ramose/core"] = pkg.version;
+            fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
+          '
+
+      - name: Publish @ramose/alchemy
+        working-directory: packages/alchemy
+        run: npm publish

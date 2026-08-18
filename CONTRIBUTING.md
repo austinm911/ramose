@@ -65,8 +65,11 @@ stage name is unguessable and torn down at the end of the run.
 | `.github/workflows/e2e-cloudflare.yml` | every PR, push to `master`, and `workflow_dispatch` | `bun run test:e2e:cf` |
 | `.github/workflows/docs-preview.yml` | PRs touching `website/` | deploy a `pr-<n>` preview of the docs site, comment the URL, destroy on close |
 | `.github/workflows/docs-publish.yml` | every push to `master` / `main`, and `workflow_dispatch` | deploy the docs site `prod` stage to Cloudflare |
+| `.github/workflows/publish.yml` | publishing a GitHub Release (`vX.Y.Z`) | publish `@ramose/core` + `@ramose/alchemy` to npm via trusted publishing (OIDC) — see [`docs/RELEASING.md`](docs/RELEASING.md) |
 
-The e2e, docs-preview, and docs-publish jobs use the GitHub **Development**
+The publish job uses the GitHub **npm** environment and needs no secrets
+(OIDC trusted publishing). The e2e, docs-preview, and docs-publish jobs use
+the GitHub **Development**
 environment (`environment: Development`). Put `CLOUDFLARE_API_TOKEN` there as
 a secret and `CLOUDFLARE_ACCOUNT_ID` as a variable (or secret). Optional:
 `RAMOSE_DOCS_DOMAIN` (variable) overrides the production docs hostname
