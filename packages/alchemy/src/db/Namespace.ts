@@ -194,6 +194,10 @@ const OWN_ATTR_KEYS = new Set([
   "some",
   "every",
   "none",
+  "where",
+  "orderBy",
+  "limit",
+  "offset",
   "__path",
   "__cards",
   "__revs",
@@ -294,11 +298,15 @@ const stampOne = (
       // Extend the *receiver's* path, not the target's: two hops in
       // (`Todo.owner.boss`), `target` is the bare `User.boss` stamp while
       // `receiver` is the `withPath` proxy that still remembers `:todo/owner`.
+      // The reversal flags travel with the path: a forward hop taken after a
+      // `.reverse` (`Todo.owner.reverse.owner`) must keep the earlier hop
+      // backwards, and only append its own `false`.
       const from = receiver as PathCarrier;
       return withPath(
         childAttr,
         [...pathOfSafe(from), childAttr.ident!],
         [...cardsOf(from), childAttr.cardinality ?? "one"],
+        [...revsOf(from), false],
       );
     },
   }) as StampedAttribute<string, string, AnyAttribute>;
