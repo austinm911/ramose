@@ -1,6 +1,6 @@
 {
   "name": "@ramose/better-auth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Better Auth plugins for Ramose: `ramoseToken` adds the mint route that signs the workspace-scoped JWT a Ramose peer verifies (same JWKS as the jwt plugin), and `ramoseTokenClient` pairs it with `Ramose.token.jwt` in the browser.",
   "license": "Apache-2.0",

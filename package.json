@@ -1,6 +1,6 @@
 {
   "name": "ramose",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Ramose — an immutable, Datomic-inspired database for Cloudflare (Workers + Durable Objects + R2).",
   "license": "Apache-2.0",

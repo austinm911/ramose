@@ -1,6 +1,6 @@
 {
   "name": "@ramose/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Ramose core engine: datoms, segments, segment trees, novelty, datalog. Pure TypeScript, no Cloudflare dependencies.",
   "license": "Apache-2.0",

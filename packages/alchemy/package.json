@@ -1,6 +1,6 @@
 {
   "name": "@ramose/alchemy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Alchemy 2 + Effect interface for Ramose: the portable `@ramose/alchemy/db` entry, the Ramose.Server and Ramose.Database resources, the ReadWriteDatabases / ReadDatabases capabilities and the ServerBinding / ServerHttp transports.",
   "license": "Apache-2.0",

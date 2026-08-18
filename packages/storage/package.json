@@ -1,6 +1,6 @@
 {
   "name": "@ramose/storage",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Ramose storage adapters for Cloudflare: R2-backed content-addressed node store (memory → Cache API / SQLite → R2), root records, log chunks.",
   "license": "Apache-2.0",

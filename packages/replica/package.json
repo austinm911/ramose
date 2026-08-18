@@ -1,6 +1,6 @@
 {
   "name": "@ramose/replica",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Ramose QueryReplica Durable Object: long-lived novelty subscriber (WS to the Transactor), hot-segment cache, basis/novelty endpoint for Workers.",
   "license": "Apache-2.0",
