@@ -25,6 +25,15 @@ const db = useDb("todos", Todos); // inside <App />
 - `useDb(name, catalog): Db` — `client.db(name, catalog)`, memoised on
   `[client, name, catalog]`, so a stable `Db` reference falls out for effect
   and memo deps.
+- `useLive(db, query): Live` / `useLive(stream): Live` — a standing read as
+  state: `{ rows, error, ticks }`. The query form memoises `db.live(query)`
+  on `[db, query]` (pass a hoisted query and the `Db` from `useDb`, or an
+  `asOf(t)` / `history` view held in a memo); the stream form takes a stream
+  built elsewhere and re-subscribes when its identity changes — no provider
+  needed. `rows` is `undefined` until the first emission and resets when the
+  inputs change; `error` is the terminal failure only (completion of a
+  pinned view keeps the last `rows`); `ticks` counts emissions after the
+  first.
 - `useTransact(options?): Transact` — one hook for running writes (any
   Effect with `R = never`, really) from event handlers:
 

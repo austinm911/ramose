@@ -29,23 +29,45 @@ stable dependency for a React hook.
 
 ## Consuming the stream
 
-Hoist the stream (build it once, not per render), then drain it on its own
-fiber. The `useLive` hook from the todos example is twelve lines:
+In React, the hook is shipped — `useLive` from
+[`@ripple/react`](/reference/react/):
 
 ```tsx
-export const useLive = <A, E>(stream: Stream.Stream<A, E>) => {
-  const [s, set] = useState<{ rows?: A; error?: Cause.Cause<E> }>({});
-  useEffect(() => {
-    const fiber = Effect.runFork(
-      Stream.runForEach(stream, (rows) => Effect.sync(() => set({ rows }))).pipe(
-        Effect.catchCause((error) => Effect.sync(() => set((p) => ({ ...p, error })))),
-      ),
-    );
-    return () => void Effect.runFork(Fiber.interrupt(fiber));
-  }, [stream]); // `stream` must be hoisted, not built in render
-  return s;
-};
+import { useLive } from "@ripple/react";
+
+const { rows, error, ticks } = useLive(db, todoQuery);
 ```
+
+It owns the memoisation (keyed on `[db, query]`, so nothing re-subscribes per
+render), resets when the inputs change, and exposes `ticks` — the number of
+emissions after the first, i.e. how many times the basis moved under this
+subscription. Effect users who built the stream themselves pass it directly:
+`useLive(stream)` re-subscribes when the stream's identity changes.
+
+<details>
+<summary>What the hook does</summary>
+
+Drain the stream on its own fiber; interrupt the fiber on cleanup — that is
+the whole lifecycle, because `live` requires nothing and teardown is fiber
+interruption:
+
+```tsx
+useEffect(() => {
+  setState(INITIAL); // new inputs, blank slate
+  const fiber = Effect.runFork(
+    Stream.runForEach(stream, (rows) => Effect.sync(() => setState({ rows, … }))).pipe(
+      Effect.catchCause((error) => Effect.sync(() => setState((p) => ({ ...p, error })))),
+    ),
+  );
+  return () => void Effect.runFork(Fiber.interrupt(fiber));
+}, [stream]);
+```
+
+Only a terminal failure reaches the `catchCause`: interruption skips
+recovery, and completion (a pinned `asOf` / `history` view emitted its one
+pass) is not a `Cause` — the last `rows` stay.
+
+</details>
 
 ## Semantics
 
