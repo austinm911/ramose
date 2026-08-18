@@ -3,8 +3,9 @@
  * records every socket, every frame, and whether the client closed it, plus
  * a recording `fetch`. Just enough of the session protocol for the hooks:
  * an `answer` decides each frame's reply (`{ id, body: { t, root, result } }`
- * by default, `undefined` to hold it), and `push` delivers an unsolicited
- * server frame — `{ op: "t", t }` is how a test moves the basis.
+ * by default, `undefined` to hold it, `delay` to answer late), `push`
+ * delivers an unsolicited server frame — `{ op: "t", t }` is how a test
+ * moves the basis — and `http` answers HTTPS (`GET /db/:name/info` included).
  *
  * The full-protocol fake lives in `packages/alchemy/test/peer.ts`; this one
  * stays local so the react package's tests do not reach into another
@@ -22,6 +23,15 @@ export interface Frame {
 export interface Reply {
   readonly status?: number;
   readonly body?: unknown;
+  /** Answer after this many ms instead of on the next microtask. */
+  readonly delay?: number;
+}
+
+/** An HTTPS request, recorded. */
+export interface Call {
+  readonly url: string;
+  readonly method: string;
+  readonly body: unknown;
 }
 
 /** Decides each frame's reply; `undefined` holds the frame unanswered. */
@@ -43,10 +53,11 @@ export interface FakePeer {
   readonly webSocket: typeof WebSocket;
   /** Every socket handed out, oldest first. */
   readonly sockets: FakeSocket[];
-  /** Every HTTPS request, as `"METHOD url"`. */
-  readonly calls: string[];
+  /** Every HTTPS request, oldest first. */
+  readonly calls: Call[];
   /** Every frame across every socket, oldest first. */
   readonly frames: Frame[];
+  frameOps(op: string): Frame[];
   /** Deliver a server frame on the newest socket. */
   push(frame: unknown): void;
 }
@@ -54,13 +65,23 @@ export interface FakePeer {
 export interface PeerOptions {
   /** Answers socket frames. Defaults to `{ t: 1, root: 1, result: [] }`. */
   readonly answer?: Answer | undefined;
+  /** Answers HTTPS; the default acks transact and answers `/info` at `t: 1`. */
+  readonly http?: ((call: Call) => Reply | undefined) | undefined;
 }
+
+const defaultHttp = (call: Call): Reply => {
+  const info = /^\/db\/([^/]+)\/info$/.exec(new URL(call.url).pathname);
+  if (info !== null && call.method === "GET") {
+    return { body: { db: decodeURIComponent(info[1]!), t: 1 } };
+  }
+  return { body: { t: 1, txEid: 1, tempids: {}, datoms: 0 } };
+};
 
 export const fakePeer = (options: PeerOptions = {}): FakePeer => {
   const answer: Answer =
     options.answer ?? (() => ({ body: { t: 1, root: 1, result: [] } }));
   const sockets: FakeSocket[] = [];
-  const calls: string[] = [];
+  const calls: Call[] = [];
   const frames: Frame[] = [];
 
   class Socket {
@@ -98,12 +119,15 @@ export const fakePeer = (options: PeerOptions = {}): FakePeer => {
       frames.push(frame);
       const reply = answer(frame);
       if (reply === undefined) return;
-      queueMicrotask(() => {
+      const { delay, ...rest } = reply;
+      const deliver = () => {
         if (this.dead) return;
         this.emit("message", {
-          data: JSON.stringify({ id: frame.id, ...reply }),
+          data: JSON.stringify({ id: frame.id, ...rest }),
         });
-      });
+      };
+      if (delay === undefined) queueMicrotask(deliver);
+      else setTimeout(deliver, delay);
     }
 
     close(): void {
@@ -124,11 +148,17 @@ export const fakePeer = (options: PeerOptions = {}): FakePeer => {
   }
 
   const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
-    calls.push(`${init?.method ?? "GET"} ${String(url)}`);
-    return new Response(
-      JSON.stringify({ t: 1, txEid: 1, tempids: {}, datoms: 0 }),
-      { status: 200, headers: { "content-type": "application/json" } },
-    );
+    const call: Call = {
+      url: String(url),
+      method: init?.method ?? "GET",
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+    };
+    calls.push(call);
+    const reply = options.http?.(call) ?? defaultHttp(call);
+    return new Response(JSON.stringify(reply.body), {
+      status: reply.status ?? 200,
+      headers: { "content-type": "application/json" },
+    });
   }) as unknown as typeof fetch;
 
   return {
@@ -137,6 +167,7 @@ export const fakePeer = (options: PeerOptions = {}): FakePeer => {
     sockets,
     calls,
     frames,
+    frameOps: (op) => frames.filter((f) => f.op === op),
     push: (frame) => sockets[sockets.length - 1]?.push(frame),
   };
 };
