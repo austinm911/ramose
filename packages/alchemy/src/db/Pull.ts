@@ -580,8 +580,9 @@ const lowerField = (as: string, field: unknown): unknown => {
     };
   }
   if (info.reverse) {
-    // the peer answers a bare backlink with `{":db/id": n}` objects, which is
-    // neither a scalar nor the selected shape — ask for the shape you want
+    // the peer answers a bare backlink with `{":db/id": n}` — one of them for
+    // a component ref, an array of them otherwise — which is neither a scalar
+    // nor the selected shape, so ask for the shape you want
     throw new Error(
       `ramose/schema: ${identOf(info.attr)} backlinks need a shape — write \`.reverse.select({ … })\` for the key \`${as}\``,
     );
