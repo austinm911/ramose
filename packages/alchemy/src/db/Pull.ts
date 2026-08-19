@@ -570,21 +570,13 @@ export const inspectPullField = (
   let hasDefault = false;
   let defaultValue: unknown;
   let current = field;
-  // the two markers wrap in either order (neither is typed to stack, but a
-  // cast can still put one inside the other) — unwrap until neither is on top
-  for (;;) {
-    if (isPullOptional(current)) {
-      optional = true;
-      current = current.field;
-      continue;
-    }
-    if (isPullDefault(current)) {
-      hasDefault = true;
-      defaultValue = current.value;
-      current = current.field;
-      continue;
-    }
-    break;
+  if (isPullOptional(current)) {
+    optional = true;
+    current = current.field;
+  } else if (isPullDefault(current)) {
+    hasDefault = true;
+    defaultValue = current.value;
+    current = current.field;
   }
   if (isElementCarrier(current)) {
     throw new Error(

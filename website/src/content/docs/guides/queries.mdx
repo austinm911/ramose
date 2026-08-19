@@ -76,7 +76,7 @@ export const boardShape = {
 
 - A field without `.optional` is required: an issue with no `title` is dropped from the results.
 - `.optional` keeps the row and types the field `| undefined` — `assignee` may be unset.
-- `.orDefault(v)` is the other kind of absence: a missing single-value scalar reads as `v` instead of dropping the row or typing `| undefined`. It is not stackable with `.optional`. A field a policy hides from you still has to be `.optional` — a default would stand in for the hidden value.
+- `.orDefault(v)` keeps the row and reads a missing card-one scalar as `v`. Not stackable with `.optional`. A field a policy hides from you still has to be `.optional`.
 - `Issue.creator.select(personShape)` follows the reference and returns `{ id, name }` inline; a many-valued reference (`labels`) returns an array. One round trip, not one per row.
 
 The row type is inferred: `Ramose.Row<typeof boardQuery>` is one row, `Ramose.Rows<…>` the array; change the query and every consumer's type moves with it. `id: Issue.id` is a `number` (`key={row.id}` in React); a query with no `.select` returns `{ id }` objects. `Ramose.all(Issue)` is the wildcard: every attribute the matched record has, keyed by name (`":issue/title"`), not by the keys you chose.
