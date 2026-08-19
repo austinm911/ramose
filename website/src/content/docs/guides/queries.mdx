@@ -79,7 +79,7 @@ export const boardShape = {
 - `.orDefault(v)` keeps the row and reads a missing card-one scalar as `v`. Not stackable with `.optional`. A field a policy hides from you still has to be `.optional`.
 - `Issue.creator.select(personShape)` follows the reference and returns `{ id, name }` inline; a many-valued reference (`labels`) returns an array. One round trip, not one per row.
 
-The row type is inferred: `Ramose.Row<typeof boardQuery>` is one row, `Ramose.Rows<…>` the array; change the query and every consumer's type moves with it. `id: Issue.id` is a `number` (`key={row.id}` in React); a query with no `.select` returns `{ id }` objects. `Ramose.all(Issue)` is the wildcard: every attribute the matched record has, keyed by name (`":issue/title"`), not by the keys you chose.
+The row type is inferred: `Ramose.Row<typeof boardQuery>` is one row, `Ramose.Rows<…>` the array; change the query and every consumer's type moves with it. `id: Issue.id` is a `number` (`key={row.id}` in React); a query with no `.select` returns `{ id }` objects. `Ramose.all(Issue)` is the wildcard: every attribute the matched record has, keyed by name (`":issue/title"`), not by the keys you chose. The same term nests under a reference: `Issue.creator.select(Ramose.all(Person))` is that person's wildcard row.
 
 ## Order, limit, page
 

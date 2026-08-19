@@ -344,7 +344,7 @@ Ramose.query(Todo).where(
 );
 ```
 
-**Paths and shapes.** A **reference** field points at another record ([glossary](/concepts/glossary/#reference)); hop through it with `Todo.owner.name`, walk it backwards with `Todo.owner.reverse` (many-valued, unless the reference is `{ isComponent: true }` — then the reverse is one record). The **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)): direct fields, `ref.select({ … })` for nested records, `.optional` for fields that may be absent, `.orDefault(v)` for a missing single-value scalar that should read as `v`. `Ramose.all(Todo)` is the wildcard shape — every attribute the matched record has, keyed by name.
+**Paths and shapes.** A **reference** field points at another record ([glossary](/concepts/glossary/#reference)); hop through it with `Todo.owner.name`, walk it backwards with `Todo.owner.reverse` (many-valued, unless the reference is `{ isComponent: true }` — then the reverse is one record). The **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)): direct fields, `ref.select({ … })` for nested records, `ref.select(Ramose.all(N))` for the target's wildcard row (ident-keyed), `.optional` for fields that may be absent, `.orDefault(v)` for a missing single-value scalar that should read as `v`. `Ramose.all(Todo)` is the wildcard shape — every attribute the matched record has, keyed by name.
 
 ```ts title="examples/reef/src/domain/queries.ts:24-34"
 export const boardShape = {

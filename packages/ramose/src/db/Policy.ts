@@ -25,7 +25,7 @@ import { isAttrRef } from "./attrRef.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import { PolicyError } from "./SchemaErrors.ts";
 import type { CatalogIdent } from "./idents.ts";
-import { inspectPullField } from "./Pull.ts";
+import { inspectPullField, isAllShape } from "./Pull.ts";
 
 // ── shapes ─────────────────────────────────────────────────────────────────
 
@@ -456,7 +456,14 @@ export interface CompileOptions {
 export const checkPulls = (p: Policy, pulls: readonly unknown[]): void => {
   if (p.maskedReads.size === 0) return;
   const walk = (pattern: unknown, where: string): void => {
-    if (pattern === null || typeof pattern !== "object" || Array.isArray(pattern)) return;
+    if (
+      pattern === null ||
+      typeof pattern !== "object" ||
+      Array.isArray(pattern) ||
+      isAllShape(pattern)
+    ) {
+      return;
+    }
     for (const [key, field] of Object.entries(pattern as Record<string, unknown>)) {
       const info = inspectPullField(field);
       const ident = isAttrRef(info.attr)

@@ -35,9 +35,14 @@ export interface PullOptional<F = unknown> {
    * (`valueType: ":db.type/ref"`). Prefer `attr.select(shape).optional`.
    */
   readonly select: F extends { readonly valueType: ":db.type/ref" }
-    ? <const P extends Record<string, unknown>>(
-        pattern: P,
-      ) => PullOptional<PullNested<F, P>>
+    ? {
+        <const N extends AnyNamespace>(
+          pattern: AllShape<N>,
+        ): PullOptional<PullNested<F, AllShape<N>>>;
+        <const P extends Record<string, unknown>>(
+          pattern: P,
+        ): PullOptional<PullNested<F, P>>;
+      }
     : never;
 }
 
@@ -157,7 +162,8 @@ export const pick = <
  *
  * The namespace is what the *type* is read against — see {@link AllRow} — and
  * what the query is already scoped to; the value it carries is unused at
- * runtime.
+ * runtime. The same term nests under a ref `.select`:
+ * `Todo.owner.select(all(User))` lowers to the peer's `{:todo/owner [*]}`.
  */
 export interface AllShape<N extends AnyNamespace = AnyNamespace> {
   readonly _tag: "all";
@@ -165,9 +171,10 @@ export interface AllShape<N extends AnyNamespace = AnyNamespace> {
 }
 
 /**
- * Every attribute of the matched entity: `query(Todo).select(all(Todo))`, or
- * `db.pull(eid, all(Todo))`. The same wildcard `db.pull(eid, ["*"])` asks for,
- * with the namespace's idents typed.
+ * Every attribute of the matched entity: `query(Todo).select(all(Todo))`,
+ * `Todo.owner.select(all(User))` under a ref, or `db.pull(eid, all(Todo))`.
+ * The same wildcard `db.pull(eid, ["*"])` asks for, with the namespace's
+ * idents typed.
  */
 export const all = <const N extends AnyNamespace>(ns: N): AllShape<N> => ({
   _tag: "all",
@@ -217,14 +224,30 @@ type FieldsResult<F> = {
   readonly [K in keyof F]: FieldResult<F[K]>;
 };
 
-type NestedResult<A, P> = A extends { readonly cardinality: "many" }
-  ? readonly FieldsResult<P>[]
-  : FieldsResult<P>;
+/**
+ * A nested `.select`: a named shape, or `all(N)` — the target's wildcard
+ * row ({@link AllRow}), an array when the hop is cardinality-many.
+ */
+type NestedResult<A, P> = [P] extends [
+  { readonly _tag: "all"; readonly ns: infer N extends AnyNamespace },
+]
+  ? A extends { readonly cardinality: "many" }
+    ? readonly AllRow<N>[]
+    : AllRow<N>
+  : A extends { readonly cardinality: "many" }
+    ? readonly FieldsResult<P>[]
+    : FieldsResult<P>;
 
-type FieldResult<F> = F extends PullDefault<infer Inner>
+type FieldResult<F> = F extends {
+  readonly _tag: "default";
+  readonly field: infer Inner;
+}
   ? // a default stands in for the missing datom, so the field always reads
     FieldResult<Inner>
-  : F extends PullOptional<infer Inner>
+  : F extends {
+        readonly _tag: "optional";
+        readonly field: infer Inner;
+      }
   ? FieldResult<Inner> | undefined
   : F extends PullNested<infer A, infer P>
     ? NestedResult<A, P>
@@ -340,23 +363,27 @@ type IdentsIn<P> = [P] extends [PullOptional<infer I>]
   ? IdentsIn<I>
   : [P] extends [PullDefault<infer I>]
   ? IdentsIn<I>
-  : [P] extends [PullNested<infer A, infer Inner>]
-    ? IdentsIn<A> | IdentsIn<Inner>
-    : [P] extends [
-          {
-            readonly _tag: "select";
-            readonly attr: infer A;
-            readonly shape: infer Inner;
-          },
-        ]
+  : [P] extends [
+        { readonly _tag: "all"; readonly ns: { readonly attributes: infer A } },
+      ]
+    ? IdentsIn<A>
+    : [P] extends [PullNested<infer A, infer Inner>]
       ? IdentsIn<A> | IdentsIn<Inner>
-      : [P] extends [{ readonly ident: infer I extends string }]
-        ? I
-        : [P] extends [readonly unknown[]]
-          ? IdentsInArray<P[number]>
-          : [P] extends [object]
-            ? IdentsInFields<P>
-            : never;
+      : [P] extends [
+            {
+              readonly _tag: "select";
+              readonly attr: infer A;
+              readonly shape: infer Inner;
+            },
+          ]
+        ? IdentsIn<A> | IdentsIn<Inner>
+        : [P] extends [{ readonly ident: infer I extends string }]
+          ? I
+          : [P] extends [readonly unknown[]]
+            ? IdentsInArray<P[number]>
+            : [P] extends [object]
+              ? IdentsInFields<P>
+              : never;
 
 /** Ident strings are only idents in the array escape, not on attr objects. */
 type IdentsInArray<E> = [E] extends [string] ? E : IdentsIn<E>;
@@ -669,7 +696,9 @@ const lowerField = (as: string, field: unknown): unknown => {
       as,
       ...defaultField(info),
       ...constraintFields(info.constraints),
-      sub: lowerLiterateMap(info.nestedPattern),
+      // AllShape, an ident array, or a literate map — the same three
+      // `lowerPullPattern` already answers at the top of a pull
+      sub: lowerPullPattern(info.nestedPattern),
     };
   }
   if (info.reverse) {

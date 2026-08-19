@@ -197,7 +197,11 @@ export type ShapeField =
   | { readonly _tag: "optional"; readonly field: unknown }
   | { readonly _tag: "default"; readonly field: unknown; readonly value: unknown }
   | { readonly _tag: "nested"; readonly attr: unknown; readonly pattern: unknown }
-  | { readonly _tag: "select"; readonly attr: unknown; readonly shape: Shape };
+  | {
+      readonly _tag: "select";
+      readonly attr: unknown;
+      readonly shape: Shape | AllShape;
+    };
 
 export type Shape = { readonly [key: string]: ShapeField };
 
@@ -258,6 +262,16 @@ export type ValidShape<S> = {
     : IsElement<S[K]> extends true
       ? ElementField<K & string>
       : S[K];
+};
+
+/**
+ * `.select` on a ref: a named shape, or `all(N)` — the target's wildcard
+ * row. The namespace is the one the type is read against ({@link AllRow});
+ * both lower to the same nested `[*]`.
+ */
+type RefSelect<A> = {
+  <const N extends AnyNamespace>(shape: AllShape<N>): SelectNested<A, AllShape<N>>;
+  <const S extends Shape>(shape: S & ValidShape<S>): SelectNested<A, S>;
 };
 
 export type OrderEmpty = "first" | "last";
@@ -367,9 +381,7 @@ export type Hopped<M> = { readonly [K in keyof M]: HopAttr<M[K]> };
  */
 type HopAttr<F> = {
   readonly select: F extends { readonly valueType: ":db.type/ref" }
-    ? <const S extends Shape>(
-        shape: S & ValidShape<S>,
-      ) => SelectNested<F & Hop, S>
+    ? RefSelect<F & Hop>
     : never;
   readonly optional: { readonly _tag: "optional"; readonly field: F & Hop };
   readonly orDefault: IsDefaultable<F> extends true
@@ -546,7 +558,7 @@ export type AttrNav<A extends PathCarrier, E = never> = A & {
     ? (value: AttrValue<A>) => PullDefault<A>
     : never;
   readonly select: A extends { readonly valueType: ":db.type/ref" }
-    ? <const S extends Shape>(shape: S & ValidShape<S>) => SelectNested<A, S>
+    ? RefSelect<A>
     : never;
 };
 
@@ -750,7 +762,7 @@ export interface CollectionNav<A extends PathCarrier = PathCarrier> {
   limit(n: number): CollectionNav<A>;
   offset(n: number): CollectionNav<A>;
   readonly select: A extends { readonly valueType: ":db.type/ref" }
-    ? <const S extends Shape>(shape: S & ValidShape<S>) => SelectNested<A, S>
+    ? RefSelect<A>
     : never;
 }
 
@@ -1041,7 +1053,7 @@ const collectionNav = <A extends PathCarrier>(
       }),
     limit: (n) => collectionNav(attr, { ...constraints, limit: n }),
     offset: (n) => collectionNav(attr, { ...constraints, offset: n }),
-    select: ((shape: Shape) => {
+    select: ((shape: Shape | AllShape) => {
       if (!isRefNav(attr)) {
         throw new Error(
           `ramose/query: ${collection.join(" → ")} is a cardinality-many scalar — its elements are values, which have no shape. The constrained collection is the field itself: \`.select({ ${spellIdent(scope.ident).split(".")[1] ?? "values"}: ${spellIdent(scope.ident)}.where(…) })\``,
@@ -1093,10 +1105,10 @@ export interface SelectNested<A = unknown, S = unknown> {
 
 const makeSelectNested = (
   attr: PathCarrier,
-  shape: Shape,
+  shape: Shape | AllShape,
   constraints?: PullNestedConstraints,
-): SelectNested<PathCarrier, Shape> => {
-  const nestedSelect: SelectNested<PathCarrier, Shape> = {
+): SelectNested<PathCarrier, Shape | AllShape> => {
+  const nestedSelect: SelectNested<PathCarrier, Shape | AllShape> = {
     _tag: "select",
     attr,
     shape,
@@ -1211,7 +1223,7 @@ export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
     offset(this: PathCarrier, n: number) {
       return collectionOf(this, "offset").offset(n);
     },
-    select(this: PathCarrier, shape: Shape) {
+    select(this: PathCarrier, shape: Shape | AllShape) {
       return makeSelectNested(this, shape);
     },
     // like `.optional`, it wraps the *receiver*, so a path keeps walking
@@ -1272,18 +1284,16 @@ export const isSelectNested = (x: unknown): x is SelectNested =>
   (x as { _tag?: unknown })._tag === "select";
 
 /**
- * `all(N)` is the whole shape of a query, never one field of one: the peer
- * answers a wildcard rooted at the *matched* entity, and a nested `[*]` — which
- * the engine does support — would key its map by the target's idents inside a
- * row keyed by the caller's names. Say so rather than lowering the marker's own
- * properties as if they were fields.
+ * `all(N)` is a shape, not a field: there is no attribute to hang a
+ * wildcard on. `ref.select(all(N))` is the nested form — a SelectNested,
+ * not a bare AllShape — and lowers to the peer's `[*]` on that hop.
  */
 const assertNotAll = (shape: unknown, key?: string): void => {
   if (!isAllShape(shape)) return;
   throw new Error(
     key === undefined
-      ? "ramose/query: all(N) is the whole shape of a query — write `.select(Ramose.all(N))` on the query itself, not inside a shape"
-      : `ramose/query: select field "${key}": all(N) is the whole shape of a query, not a nested one — select the fields you want through the ref, or run a second query`,
+      ? "ramose/query: all(N) is a shape — write `.select(Ramose.all(N))` on the query itself, not as the contents of a field map"
+      : `ramose/query: select field "${key}": all(N) is a shape, not a field — write \`ref.select(Ramose.all(N))\``,
   );
 };
 
@@ -1306,6 +1316,7 @@ const shapeFieldToPull = (field: unknown): unknown => {
     return pullDefault(shapeFieldToPull(field.field), field.value);
   }
   if (isSelectNested(field)) {
+    if (isAllShape(field.shape)) return field;
     return nested(
       field.attr as { readonly valueType: ":db.type/ref" },
       shapeToPullMap(field.shape as Shape),
@@ -1323,6 +1334,20 @@ const shapeFieldToPull = (field: unknown): unknown => {
 export type SelectResult<S> = {
   readonly [K in keyof S]: SelectFieldResult<S[K]>;
 };
+
+/**
+ * A nested `.select`: a named shape, or `all(N)` — {@link AllRow} of that
+ * namespace, an array when the hop is cardinality-many.
+ */
+type NestedSelectResult<A, S> = [S] extends [
+  { readonly _tag: "all"; readonly ns: infer N extends AnyNamespace },
+]
+  ? A extends { readonly cardinality: "many" }
+    ? readonly AllRow<N>[]
+    : AllRow<N>
+  : A extends { readonly cardinality: "many" }
+    ? readonly SelectResult<S & object>[]
+    : SelectResult<S & object>;
 
 type SchemaType<S> = S extends { readonly Type: infer T }
   ? T
@@ -1350,17 +1375,13 @@ type SelectFieldResult<F> = F extends {
         readonly attr: infer A;
         readonly shape: infer S;
       }
-    ? A extends { readonly cardinality: "many" }
-      ? readonly SelectResult<S & object>[]
-      : SelectResult<S & object>
+    ? NestedSelectResult<A, S>
     : F extends {
           readonly _tag: "nested";
           readonly attr: infer A;
           readonly pattern: infer P;
         }
-      ? A extends { readonly cardinality: "many" }
-        ? readonly SelectResult<P & object>[]
-        : SelectResult<P & object>
+      ? NestedSelectResult<A, P>
       : F extends {
             readonly schema: infer S;
             readonly cardinality: infer Card;
@@ -1407,7 +1428,8 @@ export interface NavQueryBuilder<
    * `select(Ramose.all(N))` — every attribute the matched entity has, as the
    * peer's wildcard pull. The row is ident-keyed ({@link AllRow}), not the
    * named shape a field map gives. The namespace must be the one the query is
-   * scoped to: `query(Todo).select(all(User))` is a type error.
+   * scoped to: `query(Todo).select(all(User))` is a type error. Nested under
+   * a ref, `Todo.owner.select(all(User))` is the same wildcard on that hop.
    */
   select(shape: AllShape<N>): NavQueryBuilder<N, CardOf<R, readonly AllRow<N>[]>>;
   /**
@@ -1746,7 +1768,8 @@ const lowerOrderPath = (
  * would page a set the client never sees.
  */
 const requiredClauses = (e: string, pattern: unknown): unknown[] => {
-  if (Array.isArray(pattern)) return [];
+  // a wildcard has no required field: every key is optional
+  if (Array.isArray(pattern) || isAllShape(pattern)) return [];
   const out: unknown[] = [];
   for (const [key, field] of Object.entries(fieldsOf(pattern))) {
     const info = inspectPullField(field);

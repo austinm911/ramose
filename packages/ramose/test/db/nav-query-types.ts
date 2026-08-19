@@ -17,6 +17,7 @@ import {
   type Expect,
   Instant,
   Namespace,
+  type AllRow,
   type NotOne,
   type QueryError,
   all,
@@ -780,6 +781,81 @@ type _allRows = Expect<Equal<Rows<typeof allQuery>, readonly Everything[]>>;
 query(User).select(all(Movie));
 
 query(User).select({
-  // @ts-expect-error `all(N)` is the whole shape of a query, never one field
+  // @ts-expect-error `all(N)` is a shape, not a field
   everything: all(User),
 });
+
+// ── nested `all(N)` under a ref `.select` ──────────────────────────────────
+
+const nestedAll = library.q(
+  query(Book).select({
+    title: Book.title,
+    author: Book.author.select(all(Author)),
+    maybeAuthor: Book.author.select(all(Author)).optional,
+  }),
+);
+type NestedAll = Effect.Success<typeof nestedAll>[number];
+type _nestedAllTitle = Expect<Equal<NestedAll["title"], string>>;
+/** card-one ref: the target's wildcard row, ident-keyed */
+type _nestedAllAuthor = Expect<Equal<NestedAll["author"], AllRow<typeof Author>>>;
+type _nestedAllMaybe = Expect<
+  Equal<NestedAll["maybeAuthor"], AllRow<typeof Author> | undefined>
+>;
+type _nestedAllAuthorId = Expect<Equal<NestedAll["author"][":db/id"], number>>;
+type _nestedAllAuthorName = Expect<
+  Equal<NestedAll["author"][":author/name"], string | undefined>
+>;
+
+const manyAll = db.q(
+  query(User).select({
+    friends: User.friends.select(all(User)),
+    maybeBest: User.bestFriend.select(all(User)).optional,
+  }),
+);
+type ManyAll = Effect.Success<typeof manyAll>[number];
+/** card-many ref: an array of wildcard rows */
+type _manyAll = Expect<Equal<ManyAll["friends"], readonly AllRow<typeof User>[]>>;
+type _maybeBestAll = Expect<
+  Equal<ManyAll["maybeBest"], AllRow<typeof User> | undefined>
+>;
+
+const backlinkAll = library.q(
+  query(Author).select({
+    books: Book.author.reverse.select(all(Book)),
+  }),
+);
+type _backlinkAll = Expect<
+  Equal<
+    Effect.Success<typeof backlinkAll>[number]["books"],
+    readonly AllRow<typeof Book>[]
+  >
+>;
+
+const componentAll = library.q(
+  query(Cover).select({
+    book: Book.cover.reverse.select(all(Book)),
+  }),
+);
+/** a component backlink is card-one: one wildcard row, not an array */
+type _componentAll = Expect<
+  Equal<
+    Effect.Success<typeof componentAll>[number]["book"],
+    AllRow<typeof Book>
+  >
+>;
+
+const filteredAll = library.q(
+  query(Author).select({
+    books: Book.author.reverse
+      .where(Book.title.startsWith("A"))
+      .limit(3)
+      .select(all(Book)),
+  }),
+);
+/** collection constraints do not change the row type */
+type _filteredAll = Expect<
+  Equal<
+    Effect.Success<typeof filteredAll>[number]["books"],
+    readonly AllRow<typeof Book>[]
+  >
+>;
