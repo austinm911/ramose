@@ -238,10 +238,16 @@ type NestedResult<A, P> = [P] extends [
     ? readonly FieldsResult<P>[]
     : FieldsResult<P>;
 
-type FieldResult<F> = F extends PullDefault<infer Inner>
+type FieldResult<F> = F extends {
+  readonly _tag: "default";
+  readonly field: infer Inner;
+}
   ? // a default stands in for the missing datom, so the field always reads
     FieldResult<Inner>
-  : F extends PullOptional<infer Inner>
+  : F extends {
+        readonly _tag: "optional";
+        readonly field: infer Inner;
+      }
   ? FieldResult<Inner> | undefined
   : F extends PullNested<infer A, infer P>
     ? NestedResult<A, P>

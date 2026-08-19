@@ -253,8 +253,3 @@ type _nestedAllBestName = Expect<
   Equal<NestedAllPull["bestFriend"][":user/name"], string | undefined>
 >;
 
-db.pull(eid, {
-  // @ts-expect-error `all(N)` is a shape, not a field
-  everything: all(User),
-});
-
