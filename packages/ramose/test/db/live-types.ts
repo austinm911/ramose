@@ -16,7 +16,7 @@ import type {
   Expect,
   NotOne,
 } from "../../src/db/internal.ts";
-import { query } from "../../src/db/internal.ts";
+import { count, query } from "../../src/db/internal.ts";
 
 import { Movies, User } from "./fixture.ts";
 
@@ -138,6 +138,17 @@ type _pastPull = Expect<
 db.livePull(eid, { name: User.nope });
 
 // ── the query is still attribute-checked ───────────────────────────────────
+
+/** having does not change the live row — it only drops groups */
+const groupedLive = db.live(
+  query(User).groupBy({ name: User.name }).aggregate({ n: count() }).having((g) => g.n.gt(1)),
+);
+type _groupedLive = Expect<
+  Equal<
+    Stream.Success<typeof groupedLive>,
+    readonly { readonly name: string; readonly n: number }[]
+  >
+>;
 
 // @ts-expect-error `:user/name` is a string attribute
 db.live(query(User).where(User.name.eq(42)));

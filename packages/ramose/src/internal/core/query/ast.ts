@@ -61,6 +61,14 @@ export interface AggregateElem {
   fn: string;
   /** constant args come first, the variable last (Datomic style: (sum ?x), (max 3 ?x)) */
   args: Term[];
+  /**
+   * Name of this cell in `:having` (and anywhere else that must name an
+   * aggregate distinctly from the variable it summarizes). Written
+   * `(as (count ?e) ?n)`. Absent, the cell is the summarized variable —
+   * the same rule `:order` uses — which collides when two aggregates
+   * share that variable, or when it is also a group key.
+   */
+  as?: string;
 }
 export interface PullElem {
   kind: "pull";
@@ -97,6 +105,17 @@ export interface Query {
   with: string[];
   in: InputSpec[];
   where: Clause[];
+  /**
+   * Post-group filter. After aggregates are computed, each group is one
+   * `:find` tuple. `:having` keeps the groups whose cells satisfy every
+   * clause — on the server, before `:order` / `:offset` / `:limit`.
+   * Variables name `:find` cells: a variable element by its name, an
+   * aggregate by `as` (`(as (count ?e) ?n)` → `?n`), or by the variable
+   * it summarizes when `as` is omitted and that name is unique.
+   * Clauses are predicates (and `not` / `or` of them) over those cells,
+   * not data patterns and not function bindings.
+   */
+  having?: Clause[];
   /** sort keys, applied before :offset/:limit and before pulls are resolved */
   order?: OrderSpec[];
   /**

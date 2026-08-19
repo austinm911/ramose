@@ -175,6 +175,14 @@ function toFindElem(x: unknown): FindElem {
       const pat = expr[2];
       return { kind: "pull", var: expr[1], pattern: isVarName(pat) ? { kind: "var", name: pat } : parsePullPattern(pat) };
     }
+    if (head === "as") {
+      if (expr.length !== 3) fail("as is (as <aggregate> ?var)", x);
+      const inner = toFindElem(expr[1]);
+      if (inner.kind !== "agg") fail("as names an aggregate find element", x);
+      if (inner.as !== undefined) fail("as does not nest", x);
+      if (!isVarName(expr[2])) fail("as needs a variable", x);
+      return { ...inner, as: expr[2] };
+    }
     if (typeof head !== "string") fail("aggregate name must be a symbol", x);
     return { kind: "agg", fn: head, args: expr.slice(1).map(toTerm) };
   }
@@ -276,7 +284,7 @@ function toAfter(form: unknown, order: OrderSpec[] | undefined, find: FindSpec):
 // query
 // ---------------------------------------------------------------------------
 
-const SECTIONS = [":find", ":in", ":where", ":with", ":keys", ":strs", ":syms", ":order", ":after", ":limit", ":offset"];
+const SECTIONS = [":find", ":in", ":where", ":with", ":keys", ":strs", ":syms", ":having", ":order", ":after", ":limit", ":offset"];
 /** Sections that take a single value rather than a sequence of forms. */
 const SCALAR_SECTIONS = ["after", "limit", "offset"];
 const QUERY_KEYS = new Set(SECTIONS.map((s) => s.slice(1)));
@@ -324,11 +332,44 @@ export function parseQuery(form: unknown): Query {
   const keys = keysForm === undefined ? undefined : (keysForm as unknown[]).map(String);
   if (keys && find.kind !== "rel") fail(":keys requires a relation find spec");
   if (keys && find.kind === "rel" && keys.length !== find.elems.length) fail(":keys length must match :find");
+  const having = toHaving(m.having, find);
   const order = toOrder(m.order);
   const after = toAfter(m.after, order, find);
   const limit = toCount(m.limit, "limit");
   const offset = toCount(m.offset, "offset");
-  return { find, keys, with: withVars, in: inputs, where, order, after, limit, offset };
+  return { find, keys, with: withVars, in: inputs, where, having, order, after, limit, offset };
+}
+
+/** `:having` — post-group predicates over `:find` cells, never datoms. */
+function toHaving(form: unknown, find: FindSpec): Clause[] | undefined {
+  if (form === undefined) return undefined;
+  if (!Array.isArray(form)) fail("having must be a vector", form);
+  const clauses = (form as unknown[]).map(toClause);
+  if (clauses.length === 0) return undefined;
+  const elems = find.kind === "rel" || find.kind === "tuple" ? find.elems : [find.elem];
+  if (!elems.some((e) => e.kind === "agg")) {
+    fail(":having needs aggregates — it filters groups after they are computed", form);
+  }
+  const walk = (c: Clause): void => {
+    switch (c.kind) {
+      case "pattern":
+        fail(":having filters grouped cells, not datoms — put row filters in :where", form);
+        break;
+      case "fn":
+        fail(":having does not bind functions — compare the group cells", form);
+        break;
+      case "pred":
+        break;
+      case "not":
+        c.clauses.forEach(walk);
+        break;
+      case "or":
+        c.branches.forEach((b) => b.forEach(walk));
+        break;
+    }
+  };
+  clauses.forEach(walk);
+  return clauses;
 }
 
 // ---------------------------------------------------------------------------

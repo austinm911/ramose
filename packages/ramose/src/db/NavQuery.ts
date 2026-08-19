@@ -9,7 +9,9 @@
  * set itself — the client never sees the rows a page dropped. `.one()` /
  * `.oneOrFail()` are the same page, asked for one (or two) rows and unwrapped.
  * `.count()` / `.aggregate` / `.groupBy` lower to the engine's existing
- * aggregate find elems; `.after(cursor)` is a keyset seek on the sort keys.
+ * aggregate find elems; `.having` is a post-group filter on those cells
+ * (a new `:having` section — aggregates are not bound until after grouping);
+ * `.after(cursor)` is a keyset seek on the sort keys.
  *
  * Everything that changes the row count is lowered: `.orderBy` binds a sort
  * variable, and a required (non-`.optional`) selected field becomes a `where`
@@ -128,6 +130,12 @@ export interface Predicate<E = never, PS = never> {
    * cannot escape into a scope where it means nothing.
    */
   readonly each?: string;
+  /**
+   * Set by a `.having` cell: the group-key or aggregate alias this
+   * comparison names. A predicate with `cell` belongs in `.having`, not
+   * `.where` — it names a group, not a matched row.
+   */
+  readonly cell?: string;
   /** Phantom — see {@link EachOf}. Never present at runtime. */
   readonly _elem?: E;
   /** Phantom — the params scope of this node's holes. Never at runtime. */
@@ -548,6 +556,45 @@ export type GroupedRow<G, S> = {
       : never;
 };
 
+/**
+ * One group cell as a predicate handle: the same comparisons `.where`
+ * hangs on an attribute, over this grouped row's value for `T`.
+ * `is` is the ref-key form (`Eid`); string tests exist when the cell is
+ * a string. A JS boolean over the result is not a cell.
+ */
+export type HavingNav<T> = {
+  readonly eq: PredMethod<T extends { readonly id: number } ? EidLike : T, never>;
+  readonly ne: PredMethod<T extends { readonly id: number } ? EidLike : T, never>;
+  readonly lt: PredMethod<T extends { readonly id: number } ? EidLike : T, never>;
+  readonly lte: PredMethod<T extends { readonly id: number } ? EidLike : T, never>;
+  readonly gt: PredMethod<T extends { readonly id: number } ? EidLike : T, never>;
+  readonly gte: PredMethod<T extends { readonly id: number } ? EidLike : T, never>;
+  readonly in: PredMethod<
+    readonly (T extends { readonly id: number } ? EidLike : T)[],
+    never
+  >;
+  readonly exists: () => Predicate;
+  readonly missing: () => Predicate;
+  readonly startsWith: string extends T ? PredMethod<string, never> : never;
+  readonly endsWith: string extends T ? PredMethod<string, never> : never;
+  readonly includes: string extends T ? PredMethod<string, never> : never;
+  readonly matches: string extends T ? PredMethod<RegExp | string, never> : never;
+  readonly is: T extends { readonly id: number } ? PredMethod<EidLike, never> : never;
+};
+
+type HavingCellType<G, S, K> = K extends keyof S
+  ? S[K] extends Agg<infer O>
+    ? O
+    : never
+  : K extends keyof G
+    ? GroupKeyCell<G[K]>
+    : never;
+
+/** The cells `.having` names: group-key aliases and aggregate aliases. */
+export type HavingCells<G, S> = {
+  readonly [K in keyof G | keyof S]: HavingNav<HavingCellType<G, S, K>>;
+};
+
 /** @internal A group key, lowered: alias, path, and how its cell reads. */
 export interface GroupKeySpec {
   readonly alias: string;
@@ -639,6 +686,11 @@ export interface NavQuerySpec {
   readonly groupBy: readonly GroupKeySpec[] | undefined;
   /** Aggregate fields, set by `.aggregate` and the scalar sugars. */
   readonly aggregate: readonly AggFieldSpec[] | undefined;
+  /**
+   * Post-group predicates, set by `.having`. Evaluated on the server
+   * against the grouped row's cells; groups that fail never become rows.
+   */
+  readonly having: readonly TopWhereNode[] | undefined;
   /** `.count()` & friends: unwrap the one aggregate row to its one cell. */
   readonly aggScalar: boolean;
   /** Keyset paging: `null` is the first page, `undefined` — not paged. */
@@ -1971,7 +2023,8 @@ export interface NavQueryBuilder<
 /**
  * What `.groupBy` returns: a query whose rows are groups, waiting for the
  * `.aggregate` that says what to compute per group. Filters, like everything
- * that names the *rows*, come before the `.groupBy`.
+ * that names the *rows*, come before the `.groupBy`. Filters that name
+ * *group cells* (keys + aggregates) are `.having`, after `.aggregate`.
  */
 export interface GroupedNavQueryBuilder<N extends AnyNamespace, G, P = never> {
   readonly ns: N;
@@ -1979,8 +2032,34 @@ export interface GroupedNavQueryBuilder<N extends AnyNamespace, G, P = never> {
   /** One row per group: the group keys, then the aggregates, by alias. */
   aggregate<const S extends AggShape>(
     shape: S,
-  ): NavQuery<readonly GroupedRow<G, S>[], P>;
+  ): GroupedAggQuery<G, S, P>;
 }
+
+/**
+ * A grouped aggregate: a runnable query whose rows are groups, plus
+ * `.having` to keep or drop those groups. Having does not change
+ * {@link GroupedRow}; it only drops rows. `cell` is the same aliases the
+ * row carries, with the predicate methods `.where` uses on an attribute.
+ *
+ * Spelling: after `.aggregate`, not before and not an argument — having
+ * names aggregate aliases, which do not exist until the shape is written.
+ * A callback `(g) => g.n.gt(5)` runs at construction and returns clauses;
+ * it is not `if (n > 5)` over the result.
+ */
+export type GroupedAggQuery<G, S, P = never> = NavQuery<
+  readonly GroupedRow<G, S>[],
+  P
+> & {
+  readonly cell: HavingCells<G, S>;
+  having(
+    build: (
+      cell: NoInfer<HavingCells<G, S>>,
+    ) =>
+      | WhereNode<never, unknown>
+      | When<unknown>
+      | readonly (WhereNode<never, unknown> | When<unknown>)[],
+  ): GroupedAggQuery<G, S, P>;
+};
 
 /**
  * The row type a query yields — so an app names it once, from the query,
@@ -2131,8 +2210,151 @@ const groupedBuilder = <N extends AnyNamespace, G, P = never>(
 ): GroupedNavQueryBuilder<N, G, P> => ({
   ns,
   spec,
-  aggregate: (shape) => aggregated(spec, ".aggregate", aggFields(shape), false),
+  aggregate: (shape) => groupedAgg<G, typeof shape, P>(spec, aggFields(shape)),
 });
+
+const havingPred = (cell: string, op: PredTag, value?: unknown): Predicate => ({
+  _tag: "Predicate",
+  op,
+  path: [],
+  cell,
+  value,
+});
+
+const makeHavingCell = (alias: string, ref: boolean): HavingNav<any> => {
+  const cmp = (op: PredTag) => (value: unknown) =>
+    havingPred(
+      alias,
+      op,
+      ref && !isParam(value) && (op === "eq" || op === "ne" || op === "is")
+        ? eidValue(value)
+        : value,
+    );
+  const cell: HavingNav<any> = {
+    eq: cmp("eq"),
+    ne: cmp("ne"),
+    lt: cmp("lt"),
+    lte: cmp("lte"),
+    gt: cmp("gt"),
+    gte: cmp("gte"),
+    in: (values: unknown) => {
+      if (isParam(values)) return havingPred(alias, "in", values);
+      if (!Array.isArray(values)) {
+        throw new Error(
+          `ramose/query: in(...) takes an array of values, got ${String(values)}`,
+        );
+      }
+      if (values.some(isParam)) {
+        throw new Error(
+          "ramose/query: in(...) takes a whole-list hole (in(P.ids)), not per-element ones — make the list itself the param",
+        );
+      }
+      return havingPred(alias, "in", ref ? values.map(inValue) : values);
+    },
+    exists: () => havingPred(alias, "exists"),
+    missing: () => havingPred(alias, "missing"),
+    startsWith: cmp("startsWith"),
+    endsWith: cmp("endsWith"),
+    includes: cmp("includes"),
+    matches: (re: unknown) =>
+      havingPred(alias, "matches", isParam(re) ? re : regexSource(re as RegExp | string)),
+    is: cmp("is"),
+  };
+  return cell;
+};
+
+const makeHavingCells = (
+  keys: readonly GroupKeySpec[],
+  fields: readonly AggFieldSpec[],
+): Record<string, HavingNav<any>> => {
+  const cells: Record<string, HavingNav<any>> = {};
+  for (const k of keys) cells[k.alias] = makeHavingCell(k.alias, k.cell === "ref");
+  for (const f of fields) cells[f.alias] = makeHavingCell(f.alias, false);
+  return cells;
+};
+
+const assertHavingNode = (node: unknown, where = ".having"): void => {
+  if (isWhen(node)) {
+    for (const c of node.clauses) assertHavingNode(c, where);
+    return;
+  }
+  if (isOr(node)) {
+    for (const p of node.preds) assertHavingNode(p, where);
+    return;
+  }
+  if (isNot(node)) {
+    assertHavingNode(node.pred, where);
+    return;
+  }
+  if (isQuantified(node)) {
+    throw new Error(
+      `ramose/query: ${where} names group cells — some / every / none quantify over a collection, and a cell is one value`,
+    );
+  }
+  if (
+    typeof node !== "object" ||
+    node === null ||
+    (node as { _tag?: unknown })._tag !== "Predicate"
+  ) {
+    throw new Error(
+      `ramose/query: ${where} takes a predicate over group cells, not a JS boolean — write (g) => g.n.gt(5), not if (n > 5)`,
+    );
+  }
+  const p = node as Predicate;
+  if (p.cell === undefined) {
+    throw new Error(
+      "ramose/query: .having names group cells (the aliases in .groupBy / .aggregate) — a row predicate belongs in .where, before .groupBy",
+    );
+  }
+  if (p.each !== undefined) {
+    throw new Error(`ramose/query: ${eachScopeHint(p.each)}`);
+  }
+};
+
+const flattenHaving = (
+  args: readonly unknown[],
+  cells: Record<string, HavingNav<any>>,
+): TopWhereNode[] => {
+  const out: TopWhereNode[] = [];
+  const push = (n: unknown): void => {
+    if (Array.isArray(n)) {
+      for (const x of n) push(x);
+      return;
+    }
+    assertHavingNode(n);
+    out.push(n as TopWhereNode);
+  };
+  for (const a of args) {
+    push(typeof a === "function" ? (a as (c: typeof cells) => unknown)(cells) : a);
+  }
+  return out;
+};
+
+const groupedAgg = <G, S, P = never>(
+  spec: NavQuerySpec,
+  fields: readonly AggFieldSpec[],
+): GroupedAggQuery<G, S, P> => {
+  assertAggregable(spec, ".aggregate");
+  for (const f of fields) {
+    if (spec.groupBy?.some((k) => k.alias === f.alias) === true) {
+      throw new Error(
+        `ramose/query: "${f.alias}" is both a group key and an aggregate — every cell of the grouped row needs its own name`,
+      );
+    }
+  }
+  const next: NavQuerySpec = { ...spec, aggregate: fields, aggScalar: false };
+  const cells = makeHavingCells(next.groupBy ?? [], fields);
+  const q = freeze<readonly GroupedRow<G, S>[], P>(next);
+  return {
+    ...q,
+    cell: cells as HavingCells<G, S>,
+    having: ((...args: unknown[]) =>
+      groupedAgg(
+        { ...next, having: [...(next.having ?? []), ...flattenHaving(args, cells)] },
+        fields,
+      )) as GroupedAggQuery<G, S, P>["having"],
+  };
+};
 
 /** The one aggregate the scalar sugars (`.count()`, `.sum(…)`) unwrap to. */
 const scalarAgg = <Out, P = never>(
@@ -2270,6 +2492,7 @@ const emptySpec = (ns: AnyNamespace, paramSet: AnyParamSet | undefined): NavQuer
   params: paramSet,
   groupBy: undefined,
   aggregate: undefined,
+  having: undefined,
   aggScalar: false,
   after: undefined,
 });
@@ -2327,6 +2550,12 @@ export interface LoweredQuery {
   readonly where: unknown[];
   /** Aggregating queries carry the root in `:with` — see the lowerer. */
   readonly with?: readonly string[];
+  /**
+   * Post-group predicates over `:find` cells. The engine's `:having` —
+   * groups that fail never become rows, so a later group page would
+   * count the kept ones.
+   */
+  readonly having?: readonly unknown[];
   readonly order?: readonly OrderClause[];
   /** Keyset cursor values, one per `order` key — the engine's `:after`. */
   readonly after?: readonly unknown[];
@@ -2455,25 +2684,50 @@ export const lowerNavQuery = (
   // reads its `null` as no value.
   if (q.spec.aggregate !== undefined) {
     const find: unknown[] = [];
+    const cellVars: Record<string, string> = {};
+    const nameCells = (q.spec.having?.length ?? 0) > 0;
     for (const k of q.spec.groupBy ?? []) {
       if (k.path.length === 1 && k.path[0] === ID) {
         find.push(root);
+        cellVars[k.alias] = root;
         continue;
       }
       const g = gensym("g");
       where.push(...hopClauses(root, k.path, k.revs, g));
       find.push(g);
+      cellVars[k.alias] = g;
     }
     for (const f of q.spec.aggregate) {
-      if (f.path === undefined) {
-        find.push(["count", root]);
-        continue;
+      const expr =
+        f.path === undefined
+          ? (["count", root] as unknown[])
+          : (() => {
+              const bound = lowerOrderPath(
+                root,
+                f.path,
+                f.revs ?? f.path.map(() => false),
+              );
+              where.push(...bound.clauses);
+              return [f.fn, bound.var] as unknown[];
+            })();
+      if (nameCells) {
+        const as = gensym("h");
+        find.push(["as", expr, as]);
+        cellVars[f.alias] = as;
+      } else {
+        find.push(expr);
       }
-      const bound = lowerOrderPath(root, f.path, f.revs ?? f.path.map(() => false));
-      where.push(...bound.clauses);
-      find.push([f.fn, bound.var]);
     }
-    return { query: { find, where, with: [root] }, pullMap: undefined };
+    const having = (q.spec.having ?? []).flatMap((n) => lowerHaving(n, cellVars));
+    return {
+      query: {
+        find,
+        where,
+        with: [root],
+        ...(having.length > 0 ? { having } : {}),
+      },
+      pullMap: undefined,
+    };
   }
 
   // the wildcard is the peer's own pattern, so it is already lowered: there is
@@ -2779,6 +3033,93 @@ const neverClause = (): unknown[] => [["ground", []], [gensym("n"), "..."]];
  * `or` branch and a `not` body may invent join variables freely, because
  * `or-join` / `not-join` export only `?e`.
  */
+/**
+ * A `.having` node's clauses, against already-bound group cells. Combinators
+ * are boolean (`or` / `not` of predicates), not joins — every alias is a
+ * cell of this group. `when` splices or drops at lowering time, same as
+ * `.where`.
+ */
+const lowerHaving = (
+  node: AnyWhereNode | When<unknown>,
+  cells: Readonly<Record<string, string>>,
+): unknown[] => {
+  if (isWhen(node)) {
+    if (!currentBinder.gateOn(node.gate)) return [];
+    const out: unknown[] = [];
+    for (const c of node.clauses) out.push(...lowerHaving(c, cells));
+    return out;
+  }
+  if (isOr(node)) {
+    if (node.preds.length === 0) return [[["=", 1, 0]]];
+    const join = [...new Set(Object.values(cells))];
+    return [
+      [
+        "or-join",
+        join,
+        ...node.preds.map((p) => ["and", ...lowerHaving(p, cells)]),
+      ],
+    ];
+  }
+  if (isNot(node)) {
+    const inner = lowerHaving(node.pred, cells);
+    if (inner.length === 0) return [[["=", 1, 0]]];
+    return [["not", ...inner]];
+  }
+  if (isQuantified(node)) {
+    throw new Error(
+      "ramose/query: .having names group cells — some / every / none quantify over a collection, and a cell is one value",
+    );
+  }
+  return lowerHavingPred(node, cells);
+};
+
+const lowerHavingPred = (
+  p: Predicate<unknown, any>,
+  cells: Readonly<Record<string, string>>,
+): unknown[] => {
+  const alias = p.cell;
+  if (alias === undefined || cells[alias] === undefined) {
+    throw new Error(
+      `ramose/query: .having names group cells (the aliases in .groupBy / .aggregate) — "${alias ?? "?"}" is not one`,
+    );
+  }
+  const v = cells[alias]!;
+  const bound = boundValue(p.value, p.op, `${p.op}(...)`);
+  // pred clauses only — `:having` rejects function bindings and patterns
+  switch (p.op) {
+    case "eq":
+    case "is":
+      return [[[ "=", v, bound ]]];
+    case "ne":
+      return [[["not=", v, bound]]];
+    case "lt":
+      return [[[ "<", v, bound ]]];
+    case "lte":
+      return [[[ "<=", v, bound ]]];
+    case "gt":
+      return [[[ ">", v, bound ]]];
+    case "gte":
+      return [[[ ">=", v, bound ]]];
+    case "startsWith":
+      return [[["starts-with?", v, bound]]];
+    case "endsWith":
+      return [[["ends-with?", v, bound]]];
+    case "includes":
+      return [[["includes?", v, bound]]];
+    case "matches":
+      return [[["re-find?", bound, v]]];
+    case "in": {
+      const values = bound as readonly unknown[];
+      if (values.length === 0) return [[["=", 1, 0]]];
+      return [[["in", v, values]]];
+    }
+    case "exists":
+      return [[["some?", v]]];
+    case "missing":
+      return [[["nil?", v]]];
+  }
+};
+
 const lowerWhere = (
   root: string,
   node: AnyWhereNode | When<unknown>,
@@ -2807,6 +3148,11 @@ const lowerWhere = (
     return [["not-join", [root], ...inner]];
   }
   if (isQuantified(node)) return lowerQuantified(root, node);
+  if (node.cell !== undefined) {
+    throw new Error(
+      "ramose/query: a .having cell belongs in .having, after .aggregate — .where filters the matched rows",
+    );
+  }
   return lowerPredicate(root, node);
 };
 

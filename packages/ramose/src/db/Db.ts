@@ -156,6 +156,9 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
   readonly catalog: C;
 
   /** Run a {@link NavQuery} once. Bind params as the second argument. */
+  q<R>(
+    input: NavQuery<R, never> | NavQueryBuilder<AnyNamespace, R, never>,
+  ): Effect.Effect<QueryRows<C, R>, QueryError<R, never>>;
   q<R, P = never>(
     input: QueryInput<R, P>,
     ...params: ParamArgs<P>
@@ -169,6 +172,9 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
    * again: a write this query does not see is not a re-render.
    * Bind params as the second argument.
    */
+  live<R>(
+    input: NavQuery<R, never> | NavQueryBuilder<AnyNamespace, R, never>,
+  ): Stream.Stream<QueryRows<C, R>, QueryError<R, never>>;
   live<R, P = never>(
     input: QueryInput<R, P>,
     ...params: ParamArgs<P>
