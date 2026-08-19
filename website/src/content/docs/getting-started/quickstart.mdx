@@ -299,7 +299,7 @@ const TodoRowView = ({ row }: { row: TodoRow }) => {
           checked={row.done}
           onChange={(e) => void run(setDone(db, { id: row.id }, e.target.checked))}
         />
-        <span>{row.title}</span>
+        <span style={{ textDecoration: row.done ? "line-through" : undefined }}>{row.title}</span>
       </label>
       <button type="button" onClick={() => void run(deleteTodo(db, { id: row.id }))}>
         delete
@@ -350,12 +350,12 @@ A cold start takes a few seconds and ends with `Done: 10 succeeded`. Four lines 
 
 ```ansi frame="terminal"
 [Peer] ready at http://localhost:1337
-INFO: [Peer] Started in 214ms
+[20:15:19.237] INFO (#69): [Peer] Started in 858ms
 [todos] created
 [Ui] ready at http://localhost:5173/
 ```
 
-`Started in NNNms` is the line that matters: it means the Worker was bundled and booted, not merely that the port opened. If you see `[Peer] ready` but never `Started in`, check `main` — that is the bare-specifier mistake above, and on this release it fails silently and waits forever.
+The `Started in NNNms` part is what matters — the timestamp and the `(#69)` worker id in front of it change every run, so match on that substring, not the whole line. It means the Worker was bundled and booted, not merely that the port opened. If you see `[Peer] ready` but never `Started in`, check `main` — that is the bare-specifier mistake above, and on this release it fails silently and waits forever.
 
 Open the `[Ui] ready at` URL — `http://localhost:5173` unless something else had the port — and add "buy milk". Then open a second tab on the same URL: the todo is already there. Tick it in one tab and watch it strike through in the other, in about a second. That is one live query in two tabs; there is no code in this app that makes it happen.
 
@@ -379,6 +379,8 @@ Four edits, one per layer. Add the field to the record type in `schema.ts`:
   priority: Ramose.Attr(Ramose.Long),
 ```
 
+`Ramose.Long` is a 64-bit integer — pass it a plain number, not a BigInt.
+
 Add it to `todoShape`, and set it in `addTodo`, both in `src/todos.ts`:
 
 ```ts title="src/todos.ts — one line into todoShape, one into addTodo"
@@ -390,12 +392,12 @@ Add it to `todoShape`, and set it in `addTodo`, both in `src/todos.ts`:
 Then render it in `TodoRowView`, in `src/App.tsx`, next to the title:
 
 ```tsx title="src/App.tsx — inside TodoRowView"
-<span>{row.priority ?? "–"}</span>
+<span style={{ marginLeft: "0.5em" }}>{row.priority ?? "–"}</span>
 ```
 
 `TodoRow` gains `priority` with nothing else to change — the type follows the query. It is `.optional` because the todos you already added have no priority, and a required field in a shape hides every record that lacks it.
 
-Leave `bun run dev` running while you make these edits. It watches the stack files, so saving `schema.ts` re-applies it on its own — the terminal prints `Plan: 1 to update` and then `[todos] updated`. If you restart instead, you will see `[todos] noop`, because the change already landed.
+Leave `bun run dev` running while you make these edits. It watches the stack files, so saving `schema.ts` re-applies it on its own — the terminal prints `Plan: 1 to update, 4 to noop` and then `[todos] updated`. If you restart instead, you will see `[todos] noop`, because the change already landed.
 
 ## Filter live
 
@@ -408,7 +410,13 @@ export const openTodos = Ramose.query(Todo)
   .select(todoShape);
 ```
 
-Import it in `src/App.tsx` alongside `todoQuery`, then switch `TodoList` between the two:
+Widen the `./todos.ts` import in `src/App.tsx` to bring in `openTodos`:
+
+```tsx title="src/App.tsx — the ./todos.ts import"
+import { addTodo, deleteTodo, openTodos, setDone, todoQuery, type TodoRow } from "./todos.ts";
+```
+
+Then switch `TodoList` between the two:
 
 ```tsx title="src/App.tsx — TodoList"
 const TodoList = () => {
