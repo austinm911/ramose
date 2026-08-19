@@ -306,6 +306,7 @@ Rules:
 Ramose.query(Todo)
   .where(...predicates)                 // any number; all must hold
   .select({ key: Todo.field, … })       // or Ramose.all(Todo); without it rows are { id }
+                                        // ref.select(Ramose.again(n)) — same card, again, n hops
   .orderBy(Todo.createdAt, "asc", { empty: "last" })   // "asc" | "desc"; "first" | "last"
   .limit(20)
   .offset(0)
@@ -349,7 +350,7 @@ Ramose.query(Todo).where(
 );
 ```
 
-**Paths and shapes.** A **reference** field points at another record ([glossary](/concepts/glossary/#reference)); hop through it with `Todo.owner.name`, walk it backwards with `Todo.owner.reverse` (many-valued, unless the reference is `{ isComponent: true }` — then the reverse is one record). The **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)): direct fields, `ref.select({ … })` for nested records, `ref.select(Ramose.all(N))` for the target's wildcard row (ident-keyed), `.optional` for fields that may be absent, `.orDefault(v)` for a missing single-value scalar that should read as `v`. `Ramose.all(Todo)` is the wildcard shape — every attribute the matched record has, keyed by name.
+**Paths and shapes.** A **reference** field points at another record ([glossary](/concepts/glossary/#reference)); hop through it with `Todo.owner.name`, walk it backwards with `Todo.owner.reverse` (many-valued, unless the reference is `{ isComponent: true }` — then the reverse is one record). The **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)): direct fields, `ref.select({ … })` for nested records, `ref.select(Ramose.all(N))` for the target's wildcard row (ident-keyed), `ref.select(Ramose.again(n))` for the same card again under itself to a hop bound you name (`1`–`16`; last hop is `{ id }`; a many-valued again edge needs `.limit(n)`; the shape must select `N.id`), `.optional` for fields that may be absent, `.orDefault(v)` for a missing single-value scalar that should read as `v`. `Ramose.all(Todo)` is the wildcard shape — every attribute the matched record has, keyed by name.
 
 ```ts title="examples/reef/src/domain/queries.ts:24-34"
 export const boardShape = {
@@ -393,6 +394,7 @@ const p2 = yield* db.q(pageQ(p1.cursor));   // rows strictly after page one
 Rules the builder enforces:
 
 - A select field must be a direct field of the queried record type, or a nested `ref.select({ … })`. `{ ownerName: Todo.owner.name }` is rejected.
+- `Ramose.again(n)` is only legal as `ref.select(Ramose.again(n))`. `n` is a literal `1`–`16`. A many-valued again edge needs `.limit(n)`. A shape that contains `again` must select `N.id`. The recur edge must land in the same record type as the enclosing shape.
 - `orderBy` across a many-valued hop throws; so does `orderBy(attr.each)`.
 - Everything — filter, order, limit, offset, `.one()` / `.oneOrFail()`, aggregates, the cursor seek — runs on the server; `limit(20)` really is 20 rows, and `.one()` asks for one.
 - `.after` needs an `.orderBy`, and does not combine with `.offset` (a cursor already is the offset) or `.one()`.
@@ -401,7 +403,7 @@ Not shipped: `having`, ordering or paging groups, full-text search, cross-databa
 
 ## Pull
 
-**`db.pull(subject, shape)`** reads one record ([glossary](/concepts/glossary/#pull)). The subject is `{ id }` or a **lookup by unique key** `[User.sub, "abc"]` ([glossary](/concepts/glossary/#lookup)); a bare number is a type error. The shape is the same grammar as `.select`, including `.orDefault(v)` and `Ramose.all(N)`.
+**`db.pull(subject, shape)`** reads one record ([glossary](/concepts/glossary/#pull)). The subject is `{ id }` or a **lookup by unique key** `[User.sub, "abc"]` ([glossary](/concepts/glossary/#lookup)); a bare number is a type error. The shape is the same grammar as `.select`, including `.orDefault(v)`, `Ramose.all(N)`, and `ref.select(Ramose.again(n))`.
 
 ```ts
 db.pull({ id: 17 }, { title: Issue.title, description: Issue.description.optional });
@@ -434,6 +436,7 @@ export const issueExtraShape = {
 | `Ramose.Rows<typeof q>` | `readonly Row[]` — what `db.q` resolves to |
 | `Ramose.Pull<C, P>` | the result of shape `P` |
 | `Ramose.AllRow<N>` / `Ramose.AllShape<N>` | one wildcard row from `Ramose.all(N)`; the shape term itself |
+| `Ramose.Again<n>` / `Ramose.RecurStub<S>` | the `again(n)` shape term; the `{ id }` stub after the bound |
 | `Ramose.Db<C>` / `Ramose.ReadDb<C>` | the handle; `ReadDb` has no `transact`, `install`, `principal` |
 | `Ramose.Eid<C>` | `{ readonly id: number }` — a record id as data. `Eid<N>` over a namespace is the branded id `number` a `select({ id: N.id })` cell carries; `db.pull` takes it uncast |
 | `Ramose.LookupRef<C>` | `[UniqueAttr, value]` |

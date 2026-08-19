@@ -75,20 +75,22 @@ const RefUntargeted = asVt(
 export type SelfMarker = { readonly [SelfRef]: true };
 
 /** Targeted ref schema — carries the target namespace's attribute map. */
-export type TargetedRef<TargetAttrs extends object = object> =
-  typeof RefUntargeted & {
-    readonly [RefTarget]?: TargetAttrs;
-    readonly _resolve?: () => { readonly attributes: TargetAttrs };
-    readonly _self?: boolean;
-  };
+export type TargetedRef<
+  TargetAttrs extends object = object,
+  Ns extends string = string,
+> = typeof RefUntargeted & {
+  readonly [RefTarget]?: TargetAttrs;
+  readonly _resolve?: () => { readonly attributes: TargetAttrs; readonly ns: Ns };
+  readonly _self?: boolean;
+};
 
 type RefFn = {
   /** Untargeted ref (legacy). Prefer `Ref(() => User)` / `Ref.self`. */
   (schema?: undefined): typeof RefUntargeted;
   /** Targeted ref: `Attr(Ref(() => User))`. */
-  <const N extends { readonly attributes: object }>(
+  <const N extends { readonly attributes: object; readonly ns: string }>(
     target: () => N,
-  ): TargetedRef<N["attributes"]>;
+  ): TargetedRef<N["attributes"], N["ns"]>;
   /** Self-ref; `Namespace` substitutes the enclosing attr map. */
   readonly self: TargetedRef<SelfMarker>;
 } & typeof RefUntargeted &
@@ -100,9 +102,9 @@ type RefFn = {
  * branded schema for back-compat.
  */
 export const Ref: RefFn = Object.assign(
-  <const N extends { readonly attributes: object }>(
+  <const N extends { readonly attributes: object; readonly ns: string }>(
     target?: () => N,
-  ): TargetedRef<N["attributes"]> | typeof RefUntargeted => {
+  ): TargetedRef<N["attributes"], N["ns"]> | typeof RefUntargeted => {
     if (target === undefined) return RefUntargeted;
     const schema = asVt(
       Schema.Number.annotate({ identifier: "ramose/ref" }),
@@ -110,7 +112,7 @@ export const Ref: RefFn = Object.assign(
     );
     return Object.assign(schema, {
       _resolve: target,
-    }) as TargetedRef<N["attributes"]>;
+    }) as TargetedRef<N["attributes"], N["ns"]>;
   },
   RefUntargeted,
   {

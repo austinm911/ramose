@@ -23,6 +23,7 @@ import {
   type NotOne,
   type Page,
   type QueryError,
+  again,
   all,
   avg,
   count,
@@ -1128,3 +1129,129 @@ type _gatedSameRow = Expect<
 // a gate does not change the result type
 const ungated = query(User);
 type _gateBlind = Expect<Equal<Row<typeof gated>, Row<typeof ungated>>>;
+
+// ── `again(n)`: unroll a literal hop bound; last hop is a stub ─────────────
+
+const ThreadPerson = Namespace("person", {
+  name: Attr(Schema.String),
+  manager: Attr(Ref.self),
+});
+const ThreadComment = Namespace("comment", {
+  body: Attr(Schema.String),
+  deleted: Attr(Schema.Boolean),
+  createdAt: Attr(Instant),
+  parent: Attr(Ref.self),
+  replies: Attr(Ref.self, { cardinality: "many" }),
+  author: Attr(Ref(() => ThreadPerson)),
+});
+const Threads = Catalog({ comment: ThreadComment, person: ThreadPerson });
+declare const threads: Db<typeof Threads>;
+
+const thread1 = query(ThreadComment).select({
+  id: ThreadComment.id,
+  body: ThreadComment.body,
+  replies: ThreadComment.replies.limit(50).select(again(1)),
+});
+type Thread1 = Row<typeof thread1>;
+type _again1Body = Expect<Equal<Thread1["replies"][number]["body"], string>>;
+type _again1Stub = Expect<
+  Equal<Thread1["replies"][number]["replies"][number], { readonly id: Eid<typeof ThreadComment> }>
+>;
+// @ts-expect-error again(1): the grandchild is a stub — no body
+type _again1Past = Thread1["replies"][number]["replies"][number]["body"];
+
+const thread2 = query(ThreadComment).select({
+  id: ThreadComment.id,
+  body: ThreadComment.body,
+  replies: ThreadComment.replies.limit(50).select(again(2)),
+});
+type Thread2 = Row<typeof thread2>;
+type _again2ChildBody = Expect<Equal<Thread2["replies"][number]["body"], string>>;
+type _again2GrandBody = Expect<
+  Equal<Thread2["replies"][number]["replies"][number]["body"], string>
+>;
+type _again2Stub = Expect<
+  Equal<
+    Thread2["replies"][number]["replies"][number]["replies"][number],
+    { readonly id: Eid<typeof ThreadComment> }
+  >
+>;
+// @ts-expect-error again(2): the hop after two full shapes is a stub — no body
+type _again2Past = Thread2["replies"][number]["replies"][number]["replies"][number]["body"];
+
+const managers = query(ThreadPerson).select({
+  id: ThreadPerson.id,
+  name: ThreadPerson.name,
+  manager: ThreadPerson.manager.select(again(1)),
+});
+type Managers = Row<typeof managers>;
+type _mgrName = Expect<Equal<Managers["manager"]["name"], string>>;
+type _mgrStub = Expect<
+  Equal<Managers["manager"]["manager"], { readonly id: Eid<typeof ThreadPerson> }>
+>;
+// @ts-expect-error card-one again(1): the next manager is a stub
+type _mgrPast = Managers["manager"]["manager"]["name"];
+
+declare const n: number;
+// @ts-expect-error hop bound must be a positive integer literal, not `number`
+again(n);
+// @ts-expect-error 0 is not a hop
+again(0);
+// @ts-expect-error negative is not a hop
+again(-1);
+// @ts-expect-error 17 is above the unroll cap
+again(17);
+// @ts-expect-error a string is not a hop bound
+again("...");
+
+// @ts-expect-error again is not a top-level shape
+query(ThreadComment).select(again(4));
+
+query(ThreadComment).select({
+  id: ThreadComment.id,
+  // @ts-expect-error again is a shape, not a field
+  replies: again(4),
+});
+
+query(ThreadComment).select({
+  id: ThreadComment.id,
+  body: ThreadComment.body,
+  // @ts-expect-error author is a person — again re-applies this comment shape
+  author: ThreadComment.author.select(again(3)),
+});
+
+query(ThreadComment).select({
+  body: ThreadComment.body,
+  // @ts-expect-error a shape that contains again must select N.id
+  replies: ThreadComment.replies.limit(50).select(again(2)),
+});
+
+const pulledAgain = threads.pull({ id: 1 } as Eid<typeof Threads>, {
+  id: ThreadComment.id,
+  body: ThreadComment.body,
+  replies: ThreadComment.replies.limit(50).select(again(1)),
+});
+type PulledAgain = NonNullable<Effect.Success<typeof pulledAgain>>;
+type _pullAgainBody = Expect<Equal<PulledAgain["replies"][number]["body"], string>>;
+type _pullAgainStub = Expect<
+  Equal<
+    PulledAgain["replies"][number]["replies"][number],
+    { readonly id: Eid<typeof ThreadComment> }
+  >
+>;
+
+const twoEdges = query(ThreadPerson).select({
+  id: ThreadPerson.id,
+  name: ThreadPerson.name,
+  manager: ThreadPerson.manager.select(again(2)),
+  reports: ThreadPerson.manager.reverse.limit(10).select(again(1)),
+});
+type TwoEdges = Row<typeof twoEdges>;
+type _twoMgr = Expect<Equal<TwoEdges["manager"]["manager"]["name"], string>>;
+type _twoRep = Expect<Equal<TwoEdges["reports"][number]["name"], string>>;
+type _twoRepStub = Expect<
+  Equal<
+    TwoEdges["reports"][number]["reports"][number],
+    { readonly id: Eid<typeof ThreadPerson> }
+  >
+>;

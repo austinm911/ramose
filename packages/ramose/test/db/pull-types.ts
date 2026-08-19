@@ -15,6 +15,7 @@ import {
   type Expect,
   type AllRow,
   Namespace,
+  again,
   all,
   pick,
 } from "../../src/db/internal.ts";
@@ -264,4 +265,37 @@ type _nestedAllFriends = Expect<
 type _nestedAllBestName = Expect<
   Equal<NestedAllPull["bestFriend"][":user/name"], string | undefined>
 >;
+
+// ── `again(n)` on db.pull: same unroll as the nav builder ──────────────────
+
+const Node = Namespace("node", {
+  label: Attr(Schema.String),
+  next: Attr(Ref.self),
+  kids: Attr(Ref.self, { cardinality: "many" }),
+});
+const Graph = Catalog({ node: Node });
+declare const graph: Db<typeof Graph>;
+declare const nodeEid: Eid<typeof Graph>;
+
+const pulledTree = graph.pull(nodeEid, {
+  id: Node.id,
+  label: Node.label,
+  kids: Node.kids.limit(8).select(again(1)),
+});
+type PulledTree = NonNullable<Effect.Success<typeof pulledTree>>;
+type _pulledKidLabel = Expect<Equal<PulledTree["kids"][number]["label"], string>>;
+type _pulledStub = Expect<
+  Equal<PulledTree["kids"][number]["kids"][number], { readonly id: Eid<typeof Node> }>
+>;
+// @ts-expect-error again(1): the next kids hop is a stub
+type _pulledPast = PulledTree["kids"][number]["kids"][number]["label"];
+
+// @ts-expect-error again is not a top-level pull
+graph.pull(nodeEid, again(2));
+
+graph.pull(nodeEid, {
+  id: Node.id,
+  // @ts-expect-error again is a shape, not a field
+  kids: again(2),
+});
 

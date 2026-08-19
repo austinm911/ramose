@@ -25,7 +25,7 @@ import { isAttrRef } from "./attrRef.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import { PolicyError } from "./SchemaErrors.ts";
 import type { CatalogIdent } from "./idents.ts";
-import { inspectPullField, isAllShape } from "./Pull.ts";
+import { inspectPullField, isAgain, isAllShape } from "./Pull.ts";
 
 // ── shapes ─────────────────────────────────────────────────────────────────
 
@@ -460,7 +460,8 @@ export const checkPulls = (p: Policy, pulls: readonly unknown[]): void => {
       pattern === null ||
       typeof pattern !== "object" ||
       Array.isArray(pattern) ||
-      isAllShape(pattern)
+      isAllShape(pattern) ||
+      isAgain(pattern)
     ) {
       return;
     }

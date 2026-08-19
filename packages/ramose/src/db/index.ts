@@ -49,6 +49,8 @@ export {
 // `Ramose.all(Todo)` — the wildcard pull, as a select shape, a nested
 // `ref.select(all(N))`, or a pull pattern
 export { all } from "./Pull.ts";
+// `Ramose.again(n)` — re-apply the enclosing select on a self-ref, n hops
+export { again } from "./Pull.ts";
 // value holes: declare with `params`, mark unbound-ok with `optional`,
 // gate clauses with `when`
 export { optional, params } from "./Params.ts";
@@ -102,10 +104,13 @@ export type { LookupRef } from "./idents.ts";
 // the pattern-side types too, so `ramose/react`'s `usePull` can accept
 // exactly what `db.pull` accepts (type-only: the runtime surface is unchanged)
 export type {
+  Again,
   AllRow,
   AllShape,
   IdentPullPattern,
   Pull,
+  RecurDepth,
+  RecurStub,
   ValidatePull,
 } from "./Pull.ts";
 export type { Entity, Tx } from "./Tx.ts";
