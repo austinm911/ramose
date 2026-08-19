@@ -71,9 +71,9 @@ type QueryRows<C extends AnyCatalog, R> = Equal<
  * when the peer answers zero or two rows; every other query is {@link DbError}
  * only.
  */
-export type QueryError<R = unknown> = R extends readonly unknown[]
+export type QueryError<R = unknown> = [R] extends [readonly unknown[]]
   ? DbError
-  : null extends R
+  : [null] extends [R]
     ? DbError
     : DbError | NotOne;
 
@@ -351,7 +351,7 @@ const makeRead = <C extends AnyCatalog>(
   bad: InvalidRequest | undefined,
 ): ReadDb<C> => {
   const fenced = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, E> =>
-    bad === undefined ? effect : (Effect.fail(bad) as Effect.Effect<A, E>);
+    bad === undefined ? effect : Effect.fail(bad as E);
 
   const pullOne = (
     subject: unknown,
@@ -441,12 +441,12 @@ const makeRead = <C extends AnyCatalog>(
    * digest moved, sleep until the session's basis does. What varies is only
    * the pass itself — a query for `live`, a pull for `livePull`.
    */
-  const standing = <A, E extends { readonly _tag: string }>(
+  const standing = <A, E extends { readonly _tag: string } = DbError>(
     runPass: (minT: number | undefined) => Effect.Effect<Pass<A>, E>,
   ): Stream.Stream<A, E> =>
     Stream.callback<A, E>((queue) =>
       Effect.gen(function* () {
-        if (bad !== undefined) return yield* Queue.fail(queue, bad as E);
+        if (bad !== undefined) return yield* Queue.fail(queue, bad as unknown as E);
         const session = wire.session(name);
         const pinned = view.asOf !== undefined || view.history === true;
 
@@ -498,7 +498,7 @@ const makeRead = <C extends AnyCatalog>(
       )) as ReadDb<C>["q"],
 
     live: (<R>(input: QueryInput<R>) =>
-      standing<R>((minT) =>
+      standing<R, DbError | NotOne>((minT) =>
         runQuery(input, minT).pipe(
           Effect.map((pass) => ({
             value: pass.rows as R,
