@@ -23,8 +23,20 @@ import type {
 import { lowerAttr } from "./attrRef.ts";
 import type { AnyAttribute, Cardinality } from "./Attribute.ts";
 import { type Eid, makeEid } from "./Eid.ts";
-import { NotOne } from "./Errors.ts";
+import { NotOne, ParamError } from "./Errors.ts";
 import type { AnyNamespace } from "./Namespace.ts";
+import {
+  bindParams,
+  isParam,
+  normalizeBound,
+  type AnyParam,
+  type AnyParamSet,
+  type BindingsOfSet,
+  type Param,
+  type ParamBinder,
+  type ParamIn,
+  type ScopeOf,
+} from "./Params.ts";
 import {
   assertDirectField,
   inspectPullField,
@@ -72,8 +84,13 @@ export type PredTag =
  */
 export type EachOf<I extends string> = { readonly __each: I };
 
-/** A closed predicate over a path of attribute idents from the query root. */
-export interface Predicate<E = never> {
+/**
+ * A closed predicate over a path of attribute idents from the query root.
+ * `PS` is the bindings record of the params set its value hole (if any)
+ * belongs to — `never` for a literal — so `.where` can reject a predicate
+ * whose hole the query is not scoped to.
+ */
+export interface Predicate<E = never, PS = never> {
   readonly _tag: "Predicate";
   readonly op: PredTag;
   /**
@@ -84,6 +101,7 @@ export interface Predicate<E = never> {
   readonly path: readonly string[];
   /** Which hops are walked backwards (`.reverse`) — parallel to `path`. */
   readonly revs?: readonly boolean[];
+  /** The comparison operand — a literal, or a {@link Param} hole for one. */
   readonly value?: unknown;
   /**
    * Set by `attr.each`: the ident of the attribute whose element the empty
@@ -93,6 +111,8 @@ export interface Predicate<E = never> {
   readonly each?: string;
   /** Phantom — see {@link EachOf}. Never present at runtime. */
   readonly _elem?: E;
+  /** Phantom — the params scope of this node's holes. Never at runtime. */
+  readonly _pscope?: PS;
 }
 
 /** How a quantified predicate reads the elements of a cardinality-many hop. */
@@ -110,7 +130,7 @@ export type Quantifier = "some" | "every" | "none";
  * The element scope is discharged here, so a `Quantified` is unbranded: it may
  * stand anywhere a where-node may.
  */
-export interface Quantified {
+export interface Quantified<PS = never> {
   readonly _tag: "Quantified";
   readonly quant: Quantifier;
   /** Idents from the root entity down to (and including) the many hop. */
@@ -119,63 +139,140 @@ export interface Quantified {
   readonly revs: readonly boolean[];
   /** Rooted at the element the path ends on, not at the query root. */
   readonly pred: AnyWhereNode;
+  /** Phantom — the params scope of the inner node's holes. Never at runtime. */
+  readonly _pscope?: PS;
 }
 
 /**
  * Disjunction of where-nodes. Nestable: a branch is itself a predicate, an
- * `Or` or a `Not`, and every branch is scoped to the query root entity, so
- * the join variables a branch invents stay inside it.
+ * `Or` or a `Not` — never a `When`, whose off state (`[]`, always true)
+ * would make a branch vacuous — and every branch is scoped to the query root
+ * entity, so the join variables a branch invents stay inside it.
  */
-export interface Or<E = never> {
+export interface Or<E = never, PS = never> {
   readonly _tag: "Or";
-  readonly preds: readonly WhereNode<E>[];
+  readonly preds: readonly WhereNode<E, PS>[];
 }
 
 /** Negation of a where-node, scoped to the query root entity. */
-export interface Not<E = never> {
+export interface Not<E = never, PS = never> {
   readonly _tag: "Not";
-  readonly pred: WhereNode<E>;
+  readonly pred: WhereNode<E, PS>;
 }
 
 /**
- * What `.where(...)` takes: a predicate or a combinator over predicates. `E`
+ * What a combinator takes: a predicate or a combinator over predicates. `E`
  * is the element scope its `attr.each` predicates need (see {@link EachOf});
- * a node that names no element is scopeless, and fits anywhere.
+ * a node that names no element is scopeless, and fits anywhere. `PS` is the
+ * params scope of the holes it references — `never` when it has none.
+ *
+ * `When` is deliberately not here: it is a top-level where-node only, so
+ * `when` inside `or` / `not` (and inside `when` itself) is a type error.
  */
-export type WhereNode<E = never> = Predicate<E> | Or<E> | Not<E> | Quantified;
+export type WhereNode<E = never, PS = never> =
+  | Predicate<E, PS>
+  | Or<E, PS>
+  | Not<E, PS>
+  | Quantified<PS>;
 
 /** A where-node in any element scope — what the lowerer walks. */
-export type AnyWhereNode = WhereNode<unknown>;
+export type AnyWhereNode = WhereNode<unknown, any>;
+
+/**
+ * `Ramose.when(gate, ...clauses)` — clauses that are part of the query only
+ * while the gate is on. The gate is a `Param<boolean>` (on when bound `true`)
+ * or a `Ramose.optional` param (on when bound at all — and inside the body
+ * that param is bound, so referencing it there is always legal). Never a JS
+ * predicate: the spec stays pure data.
+ *
+ * Gate on, the clauses lower exactly as if written inline; gate off, they
+ * lower to nothing. A gate changes which **rows**, never the row's shape.
+ */
+export interface When<PS = never> {
+  readonly _tag: "When";
+  readonly gate: AnyParam;
+  readonly clauses: readonly WhereNode<never, unknown>[];
+  /** Phantom — the params scope of the gate and clauses. Never at runtime. */
+  readonly _pscope?: PS;
+}
+
+export const isWhen = (x: unknown): x is When<unknown> =>
+  typeof x === "object" &&
+  x !== null &&
+  (x as { _tag?: unknown })._tag === "When";
+
+/** The error a `when` with an ungateable param resolves to. */
+type ValidGate<G> = G extends Param<any, any, true>
+  ? unknown
+  : G extends Param<boolean, any, false>
+    ? unknown
+    : `Ramose.when's gate is a Param<boolean> or a Ramose.optional param — a required non-boolean param has no off state`;
+
+export const when: <G extends AnyParam, PS = never>(
+  gate: G & ValidGate<G>,
+  ...clauses: readonly WhereNode<never, PS>[]
+) => When<ScopeOf<G> | PS> = ((
+  gate: unknown,
+  ...clauses: readonly AnyWhereNode[]
+) => {
+  if (!isParam(gate)) {
+    throw new Error(
+      "ramose/query: Ramose.when's gate must be a param (a Param<boolean>, or a Ramose.optional param that gates on being bound) — a JS value or predicate would fork the query object, which is the thing `when` exists to avoid",
+    );
+  }
+  for (const c of clauses) {
+    if (isWhen(c)) {
+      throw new Error(
+        "ramose/query: Ramose.when(...) does not nest — flatten the clauses into one when, or gate them separately",
+      );
+    }
+    assertNoLooseElem(c);
+  }
+  return { _tag: "When", gate, clauses: [...clauses] };
+}) as never;
+
+/** The runtime half of keeping `when` out of `or` / `not`. */
+const noWhenInside = (node: unknown, where: string): void => {
+  if (isWhen(node)) {
+    throw new Error(
+      `ramose/query: Ramose.when(...) cannot appear inside ${where} — an off gate lowers to no clauses, which under \`or\` would make the branch vacuously true. Lift the when to the query's own .where(...)`,
+    );
+  }
+};
 
 /**
  * `Ramose.or(a, b, …)` — a row matches when **any** branch does. Lowers to
  * `or-join` on the root entity variable, so branches need not bind the same
  * variables. `or()` with no branches matches nothing.
  */
-export const or = <E = never>(...preds: readonly WhereNode<E>[]): Or<E> => ({
-  _tag: "Or",
-  preds: [...preds],
-});
+export const or = <E = never, PS = never>(
+  ...preds: readonly WhereNode<E, PS>[]
+): Or<E, PS> => {
+  for (const p of preds) noWhenInside(p, "or(...)");
+  return { _tag: "Or", preds: [...preds] };
+};
 
 /**
  * `Ramose.not(pred)` — a row matches when `pred` does **not**. Lowers to
  * `not-join` on the root entity variable, so `not(or(…))` and
  * `not(Todo.due.missing())` nest the way they read.
  */
-export const not = <E = never>(pred: WhereNode<E>): Not<E> => ({
-  _tag: "Not",
-  pred,
-});
+export const not = <E = never, PS = never>(
+  pred: WhereNode<E, PS>,
+): Not<E, PS> => {
+  noWhenInside(pred, "not(...)");
+  return { _tag: "Not", pred };
+};
 
-export const isOr = (x: unknown): x is Or<unknown> =>
+export const isOr = (x: unknown): x is Or<unknown, any> =>
   typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "Or";
 
-export const isNot = (x: unknown): x is Not<unknown> =>
+export const isNot = (x: unknown): x is Not<unknown, any> =>
   typeof x === "object" &&
   x !== null &&
   (x as { _tag?: unknown })._tag === "Not";
 
-export const isQuantified = (x: unknown): x is Quantified =>
+export const isQuantified = (x: unknown): x is Quantified<any> =>
   typeof x === "object" &&
   x !== null &&
   (x as { _tag?: unknown })._tag === "Quantified";
@@ -300,37 +397,46 @@ export interface OrderBy {
   readonly empty: OrderEmpty;
 }
 
+/** A top-level where entry: an ordinary node, or a param-gated {@link When}. */
+export type TopWhereNode = WhereNode<never, unknown> | When<unknown>;
+
 export interface NavQuerySpec {
   readonly ns: string;
   /** Attribute idents that define membership in `ns` (for bare scope). */
   readonly nsIdents: readonly string[];
-  readonly where: readonly WhereNode[];
+  readonly where: readonly TopWhereNode[];
   /** A selected shape, the wildcard (`all(N)`), or neither — bare ids. */
   readonly shape: Shape | AllShape | undefined;
   readonly orderBy: readonly OrderBy[];
-  readonly limit: number | undefined;
-  readonly offset: number | undefined;
+  readonly limit: number | AnyParam | undefined;
+  readonly offset: number | AnyParam | undefined;
   /**
    * `.one()` / `.oneOrFail()` — unwrap the page to a single row. Lowering
    * forces `:limit 1` or `:limit 2` so the peer never sends a whole page
    * for the client to discard.
    */
   readonly take: "one" | "oneOrFail" | undefined;
+  /** The params set `Ramose.query(N, P)` scoped this query to, if any. */
+  readonly params: AnyParamSet | undefined;
 }
 
 /**
  * A navigational query value. Phantom `R` is what the query resolves to:
  * a **rows array** by default (`readonly SelectResult<S>[]` after `.select`,
  * `readonly Eid[]` without), one row or `null` after `.one()`, one row after
- * `.oneOrFail()`. {@link Row} names the element either way.
+ * `.oneOrFail()`. {@link Row} names the element either way. Phantom `P` is
+ * the bindings record its params resolve against — `never` for a query with
+ * none — and is what makes `db.q(q, { … })` typed.
  */
-export interface NavQuery<R = unknown> {
+export interface NavQuery<R = unknown, P = never> {
   readonly _tag: "NavQuery";
   readonly spec: NavQuerySpec;
   readonly _result?: R;
+  /** Phantom — the bindings record. Never present at runtime. */
+  readonly _params?: P;
 }
 
-export const isNavQuery = (x: unknown): x is NavQuery =>
+export const isNavQuery = (x: unknown): x is NavQuery<unknown, any> =>
   typeof x === "object" &&
   x !== null &&
   (x as { _tag?: unknown })._tag === "NavQuery";
@@ -483,27 +589,38 @@ export type ElementNav<A extends PathCarrier> = AttrNav<
 >;
 
 /**
+ * A predicate method over values of `T`: takes the literal, or a
+ * {@link Param} hole for one, and carries the hole's params scope onto the
+ * predicate so `.where` can check it against the query's set.
+ */
+export type PredMethod<T, E> = <const V extends T | ParamIn<T>>(
+  value: V,
+) => Predicate<E, ScopeOf<V>>;
+
+/**
  * Predicate / shape methods attached to every stamped attr. `E` is the
  * element scope its predicates belong to: `never` for an ordinary attribute
  * (they fit anywhere), the collection's element for an `attr.each` nav.
+ * Every value position also takes a `Ramose.params` hole.
  */
 export type AttrNav<A extends PathCarrier, E = never> = A & {
-  readonly eq: (value: AttrValue<A>) => Predicate<E>;
-  readonly ne: (value: AttrValue<A>) => Predicate<E>;
-  readonly lt: (value: AttrValue<A>) => Predicate<E>;
-  readonly lte: (value: AttrValue<A>) => Predicate<E>;
-  readonly gt: (value: AttrValue<A>) => Predicate<E>;
-  readonly gte: (value: AttrValue<A>) => Predicate<E>;
-  readonly in: (values: readonly InValue<A>[]) => Predicate<E>;
-  readonly startsWith: (prefix: string) => Predicate<E>;
-  readonly endsWith: (suffix: string) => Predicate<E>;
-  readonly includes: (needle: string) => Predicate<E>;
-  readonly matches: (re: RegExp | string) => Predicate<E>;
+  readonly eq: PredMethod<AttrValue<A>, E>;
+  readonly ne: PredMethod<AttrValue<A>, E>;
+  readonly lt: PredMethod<AttrValue<A>, E>;
+  readonly lte: PredMethod<AttrValue<A>, E>;
+  readonly gt: PredMethod<AttrValue<A>, E>;
+  readonly gte: PredMethod<AttrValue<A>, E>;
+  /** The whole list may be one hole (`in(P.ids)`); its elements may not. */
+  readonly in: PredMethod<readonly InValue<A>[], E>;
+  readonly startsWith: PredMethod<string, E>;
+  readonly endsWith: PredMethod<string, E>;
+  readonly includes: PredMethod<string, E>;
+  readonly matches: PredMethod<RegExp | string, E>;
   readonly exists: () => Predicate<E>;
   readonly missing: () => Predicate<E>;
   /** Ref-only: the entity this ref points at. */
   readonly is: A extends { readonly valueType: ":db.type/ref" }
-    ? (ref: EidLike) => Predicate<E>
+    ? PredMethod<EidLike, E>
     : never;
   /**
    * Card-many only: one element of this collection — the ref's target is an
@@ -514,25 +631,28 @@ export type AttrNav<A extends PathCarrier, E = never> = A & {
   readonly each: IsMany<A> extends true ? ElementNav<A> : never;
   /** Card-many only: at least one element satisfies `pred`. */
   readonly some: IsMany<A> extends true
-    ? (pred: WhereNode<ElemScopeOf<A>>) => Quantified
+    ? <PS = never>(pred: WhereNode<ElemScopeOf<A>, PS>) => Quantified<PS>
     : never;
   /** Card-many only: no element fails `pred` (vacuously true when empty). */
   readonly every: IsMany<A> extends true
-    ? (pred: WhereNode<ElemScopeOf<A>>) => Quantified
+    ? <PS = never>(pred: WhereNode<ElemScopeOf<A>, PS>) => Quantified<PS>
     : never;
   /** Card-many only: no element satisfies `pred` (true when empty). */
   readonly none: IsMany<A> extends true
-    ? (pred: WhereNode<ElemScopeOf<A>>) => Quantified
+    ? <PS = never>(pred: WhereNode<ElemScopeOf<A>, PS>) => Quantified<PS>
     : never;
   /**
    * Card-many only: filter this collection, per element, on the peer. The
    * predicates are rooted at the **element** (`attr.each` for a scalar) and
    * lower to the nested pull's `:where` — never to the query's own, so the
    * outer `.limit` still counts rows and a collection that filters to nothing
-   * is `[]`.
+   * is `[]`. Params are welcome; `Ramose.when` is not (its gate belongs on
+   * the query's own `.where`).
    */
   readonly where: IsMany<A> extends true
-    ? (...preds: readonly WhereNode<ElemScopeOf<A>>[]) => CollectionNav<A>
+    ? <PS = never>(
+        ...preds: readonly WhereNode<ElemScopeOf<A>, PS>[]
+      ) => CollectionNav<A>
     : never;
   /** Card-many only: sort this collection by a card-one key, or by `.each`. */
   readonly orderBy: IsMany<A> extends true
@@ -543,10 +663,12 @@ export type AttrNav<A extends PathCarrier, E = never> = A & {
       ) => CollectionNav<A>
     : never;
   /** Card-many only: keep at most `n` elements. */
-  readonly limit: IsMany<A> extends true ? (n: number) => CollectionNav<A> : never;
+  readonly limit: IsMany<A> extends true
+    ? (n: number | ParamIn<number>) => CollectionNav<A>
+    : never;
   /** Card-many only: drop `n` elements from the front. */
   readonly offset: IsMany<A> extends true
-    ? (n: number) => CollectionNav<A>
+    ? (n: number | ParamIn<number>) => CollectionNav<A>
     : never;
   readonly optional: ReturnType<typeof optional<A>>;
   /**
@@ -648,6 +770,7 @@ const checkElemScope = (
   scalar: boolean,
   where: string,
 ): void => {
+  if (isWhen(node)) throw new Error(nestedWhenError(where));
   if (isOr(node)) {
     for (const p of node.preds) checkElemScope(p, ident, scalar, where);
     return;
@@ -668,6 +791,9 @@ const checkElemScope = (
 
 const elemOnlyError = (ident: string, where: string): string =>
   `ramose/query: in ${where}: the elements of a cardinality-many scalar are values, not entities — write the inner predicate against the element, e.g. ${spellIdent(ident)}.each.eq(…)`;
+
+const nestedWhenError = (where: string): string =>
+  `ramose/query: in ${where}: Ramose.when(...) is not supported inside a collection constraint or quantifier — params are; put the gated clause on the query's own .where(...)`;
 
 /**
  * Build a quantified node, rejecting the shape that cannot mean anything: a
@@ -711,7 +837,11 @@ const quantified = (
  * A quantifier is not walked into — it discharged its element scope when it
  * was built.
  */
-const assertNoLooseElem = (node: AnyWhereNode): void => {
+const assertNoLooseElem = (node: AnyWhereNode | When<unknown>): void => {
+  if (isWhen(node)) {
+    for (const c of node.clauses) assertNoLooseElem(c);
+    return;
+  }
   if (isQuantified(node)) return;
   if (isOr(node)) {
     for (const p of node.preds) assertNoLooseElem(p);
@@ -750,18 +880,22 @@ const assertNoLooseElem = (node: AnyWhereNode): void => {
 export interface CollectionNav<A extends PathCarrier = PathCarrier> {
   readonly _tag: "collection";
   readonly attr: A;
-  /** Already lowered — each call lowers its argument eagerly. */
+  /**
+   * Already lowered — each call lowers its argument eagerly. A params hole
+   * survives the eager lowering as a leaf of the `PullElemPred` tree, and is
+   * substituted with the rest of the query (see `substitutePullPattern`).
+   */
   readonly constraints: PullNestedConstraints;
-  where(
-    ...preds: readonly WhereNode<ElemScopeOf<A>>[]
+  where<PS = never>(
+    ...preds: readonly WhereNode<ElemScopeOf<A>, PS>[]
   ): CollectionNav<A>;
   orderBy<K extends NestedOrderKey>(
     key: K & ValidOrderKey<K, AttrIdent<A>>,
     dir?: OrderDir,
     opts?: { readonly empty?: OrderEmpty },
   ): CollectionNav<A>;
-  limit(n: number): CollectionNav<A>;
-  offset(n: number): CollectionNav<A>;
+  limit(n: number | ParamIn<number>): CollectionNav<A>;
+  offset(n: number | ParamIn<number>): CollectionNav<A>;
   readonly select: A extends { readonly valueType: ":db.type/ref" }
     ? RefSelect<A>
     : never;
@@ -926,6 +1060,9 @@ const lowerElemNode = (
   scope: ElemScope | undefined,
   collection: readonly string[],
 ): PullElemPred => {
+  if (isWhen(node)) {
+    throw new Error(nestedWhenError(`where(...) on ${collection.join(" → ")}`));
+  }
   if (isOr(node)) {
     return {
       or: node.preds.map((p) =>
@@ -981,7 +1118,7 @@ const lowerElemNode = (
 };
 
 const lowerElemCmp = (
-  p: Predicate<unknown>,
+  p: Predicate<unknown, any>,
   prefix: readonly string[],
   prefixRevs: readonly boolean[],
   scope: ElemScope | undefined,
@@ -1170,9 +1307,17 @@ export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
       return pred("gte", this, value);
     },
     in(this: PathCarrier, values: readonly unknown[]) {
+      // a whole-list hole: the array check and per-element normalization
+      // run at substitution time, against the bound list
+      if (isParam(values)) return pred("in", this, values);
       if (!Array.isArray(values)) {
         throw new Error(
           `ramose/query: in(...) takes an array of values, got ${String(values)}`,
+        );
+      }
+      if (values.some(isParam)) {
+        throw new Error(
+          "ramose/query: in(...) takes a whole-list hole (in(P.ids)), not per-element ones — make the list itself the param",
         );
       }
       return pred("in", this, values.map(inValue));
@@ -1187,10 +1332,12 @@ export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
       return pred("includes", this, needle);
     },
     matches(this: PathCarrier, re: RegExp | string) {
-      return pred("matches", this, regexSource(re));
+      // a literal fails where it was written; a hole defers `regexSource`
+      // to substitution time, where it surfaces as a ParamError
+      return pred("matches", this, isParam(re) ? re : regexSource(re));
     },
     is(this: PathCarrier, ref: unknown) {
-      return pred("is", this, eidValue(ref));
+      return pred("is", this, isParam(ref) ? ref : eidValue(ref));
     },
     some(this: PathCarrier, inner: WhereNode) {
       return quantified("some", this, inner);
@@ -1417,15 +1564,48 @@ type OneOf<R> = R extends readonly (infer E)[] ? E | null : Exclude<R, null> | n
 /** Exactly one row — the array element. Zero or two+ fail at run time. */
 type OneOrFailOf<R> = R extends readonly (infer E)[] ? E : Exclude<R, null>;
 
-/** `R` defaults to the matched entity ids — what a query with no `.select` yields. */
+/** The params scope a where-node's holes belong to, `never` for none. */
+type ScopeOfNode<W> = W extends Predicate<any, infer S>
+  ? S
+  : W extends When<infer S>
+    ? S
+    : W extends Or<any, infer S>
+      ? S
+      : W extends Not<any, infer S>
+        ? S
+        : W extends Quantified<infer S>
+          ? S
+          : never;
+
+/**
+ * One `.where(...)` argument, checked against the query's params scope `P`:
+ * a node with no holes always fits; a node whose holes belong to another set
+ * resolves to an error string, {@link ValidShape}-style.
+ */
+type WhereArg<W, P> = (WhereNode<never, unknown> | When<unknown>) &
+  ([ScopeOfNode<W>] extends [never]
+    ? unknown
+    : [ScopeOfNode<W>] extends [P]
+      ? unknown
+      : `this clause references a param from a set this query is not scoped to — declare the set with Ramose.params and pass it to Ramose.query(N, P)`);
+
+/**
+ * `R` defaults to the matched entity ids — what a query with no `.select`
+ * yields. `P` is the bindings record of the params set `Ramose.query(N, P)`
+ * scoped this query to (`never` without one): every `.where` clause's holes
+ * must belong to it, and it is what the terminal binds.
+ */
 export interface NavQueryBuilder<
   N extends AnyNamespace,
   R = readonly Eid[],
+  P = never,
 > {
   readonly ns: N;
   readonly spec: NavQuerySpec;
 
-  where(...preds: WhereNode[]): NavQueryBuilder<N, R>;
+  where<const W extends readonly unknown[]>(
+    ...preds: W & { readonly [K in keyof W]: WhereArg<W[K], P> }
+  ): NavQueryBuilder<N, R, P>;
   /**
    * `select(Ramose.all(N))` — every attribute the matched entity has, as the
    * peer's wildcard pull. The row is ident-keyed ({@link AllRow}), not the
@@ -1433,41 +1613,46 @@ export interface NavQueryBuilder<
    * scoped to: `query(Todo).select(all(User))` is a type error. Nested under
    * a ref, `Todo.owner.select(all(User))` is the same wildcard on that hop.
    */
-  select(shape: AllShape<N>): NavQueryBuilder<N, CardOf<R, readonly AllRow<N>[]>>;
+  select(
+    shape: AllShape<N>,
+  ): NavQueryBuilder<N, CardOf<R, readonly AllRow<N>[]>, P>;
   /**
    * Each field is a **direct** attribute of the queried namespace (or a
    * nested `.select` through one of its refs). A flattened path —
    * `{ ownerName: Todo.owner.name }` — is rejected: see {@link ValidShape}.
+   * No field is a param, and no `when` gates one: a query's shape never
+   * depends on a binding.
    */
   select<const S extends Shape>(
     shape: S & ValidShape<S>,
-  ): NavQueryBuilder<N, CardOf<R, readonly SelectResult<S>[]>>;
+  ): NavQueryBuilder<N, CardOf<R, readonly SelectResult<S>[]>, P>;
   /**
    * A sort key is a card-one path from the row. An element cursor is not one:
    * `.each` names a value inside a collection, and the collection is the thing
-   * a row has — see {@link ValidOrderKey}.
+   * a row has — see {@link ValidOrderKey}. Not a param position: an order key
+   * is structure, and every surveyed system forbids structural holes.
    */
   orderBy<K extends PathCarrier>(
     attr: K & ValidOrderKey<K, never>,
     dir?: OrderDir,
     opts?: { readonly empty?: OrderEmpty },
-  ): NavQueryBuilder<N, R>;
-  limit(n: number): NavQueryBuilder<N, R>;
-  offset(n: number): NavQueryBuilder<N, R>;
+  ): NavQueryBuilder<N, R, P>;
+  limit(n: number | Param<number, P>): NavQueryBuilder<N, R, P>;
+  offset(n: number | Param<number, P>): NavQueryBuilder<N, R, P>;
   /**
    * At most one row. Lowers to `:limit 1`; the result is that row or `null`,
    * the same absence `db.pull` uses. Extra matches are not fetched.
    */
-  one(): NavQueryBuilder<N, OneOf<R>>;
+  one(): NavQueryBuilder<N, OneOf<R>, P>;
   /**
    * Exactly one row. Lowers to `:limit 2` so a second match is witnessed
    * without pulling a page, and fails with {@link NotOne} if the peer
    * answers zero or two.
    */
-  oneOrFail(): NavQueryBuilder<N, OneOrFailOf<R>>;
+  oneOrFail(): NavQueryBuilder<N, OneOrFailOf<R>, P>;
 
   /** Freeze into a runnable query value. */
-  build(): NavQuery<R>;
+  build(): NavQuery<R, P>;
 }
 
 /**
@@ -1483,9 +1668,9 @@ export interface NavQueryBuilder<
  * Takes the builder or the frozen {@link NavQuery} — the same inputs `db.q`
  * takes. With no `.select`, the row is the matched entity id.
  */
-export type Row<Q> = Q extends NavQuery<infer R>
+export type Row<Q> = Q extends NavQuery<infer R, any>
   ? RowOf<R>
-  : Q extends NavQueryBuilder<AnyNamespace, infer R>
+  : Q extends NavQueryBuilder<AnyNamespace, infer R, any>
     ? RowOf<R>
     : never;
 
@@ -1504,26 +1689,29 @@ export type Rows<Q> = readonly Row<Q>[];
  */
 type RowOf<R> = R extends readonly (infer E)[] ? E : Exclude<R, null>;
 
-const freeze = <R>(spec: NavQuerySpec): NavQuery<R> => ({
+const freeze = <R, P = never>(spec: NavQuerySpec): NavQuery<R, P> => ({
   _tag: "NavQuery",
   spec,
 });
 
-const builder = <N extends AnyNamespace, R>(
+const builder = <N extends AnyNamespace, R, P = never>(
   ns: N,
   spec: NavQuerySpec,
-): NavQueryBuilder<N, R> => {
-  const self: NavQueryBuilder<N, R> = {
+): NavQueryBuilder<N, R, P> => {
+  const self: NavQueryBuilder<N, R, P> = {
     ns,
     spec,
     where: (...preds) => {
-      for (const p of preds) assertNoLooseElem(p);
-      return builder(ns, { ...spec, where: [...spec.where, ...preds] });
+      for (const p of preds) assertNoLooseElem(p as AnyWhereNode | When);
+      return builder(ns, {
+        ...spec,
+        where: [...spec.where, ...(preds as readonly TopWhereNode[])],
+      });
     },
     // both overloads carry the same value: the shape (or the wildcard marker)
     // travels on the spec, and lowering reads which one it is
     select: ((shape: Shape | AllShape) =>
-      builder(ns, { ...spec, shape })) as NavQueryBuilder<N, R>["select"],
+      builder(ns, { ...spec, shape })) as NavQueryBuilder<N, R, P>["select"],
     orderBy: (attr, dir = "asc", opts) => {
       const path = pathOf(attr);
       if (attr.__each !== undefined) {
@@ -1546,40 +1734,53 @@ const builder = <N extends AnyNamespace, R>(
     offset: (n) => builder(ns, { ...spec, offset: n }),
     one: () => builder(ns, { ...spec, take: "one", limit: 1 }),
     oneOrFail: () => builder(ns, { ...spec, take: "oneOrFail", limit: 2 }),
-    build: () => freeze<R>(spec),
+    build: () => freeze<R, P>(spec),
   };
   return self;
 };
 
+const emptySpec = (ns: AnyNamespace, paramSet: AnyParamSet | undefined): NavQuerySpec => ({
+  ns: ns.ns,
+  nsIdents: Object.values(ns.attributes).map(
+    (a) => (a as { ident: string }).ident,
+  ),
+  where: [],
+  shape: undefined,
+  orderBy: [],
+  limit: undefined,
+  offset: undefined,
+  take: undefined,
+  params: paramSet,
+});
+
 /**
- * Start a navigational query scoped to namespace `N`.
+ * Start a navigational query scoped to namespace `N`. Pass a
+ * {@link params} set as the second argument to declare value holes — the
+ * query object is created once and never forks; bind the holes at the
+ * terminal (`db.q(q, { … })`).
  *
  * Calling `.where` / `.select` / `.one` / … returns a builder; pass the
  * builder (or `.build()`) to `db.q` / `db.live`. Builders are accepted
  * directly so `db.q(Ramose.query(Todo).where(...).select(...))` works
  * without `.build()`.
  */
-export const query = <N extends AnyNamespace>(ns: N): NavQueryBuilder<N> => {
-  const nsIdents = Object.values(ns.attributes).map(
-    (a) => (a as { ident: string }).ident,
-  );
-  return builder(ns, {
-    ns: ns.ns,
-    nsIdents,
-    where: [],
-    shape: undefined,
-    orderBy: [],
-    limit: undefined,
-    offset: undefined,
-    take: undefined,
-  });
-};
+export function query<N extends AnyNamespace>(ns: N): NavQueryBuilder<N>;
+export function query<N extends AnyNamespace, const S extends AnyParamSet>(
+  ns: N,
+  params: S,
+): NavQueryBuilder<N, readonly Eid[], BindingsOfSet<S>>;
+export function query(
+  ns: AnyNamespace,
+  paramSet?: AnyParamSet,
+): NavQueryBuilder<AnyNamespace> {
+  return builder(ns, emptySpec(ns, paramSet));
+}
 
 /** Accept a builder or a frozen {@link NavQuery}. */
-export const asNavQuery = <R>(
-  q: NavQuery<R> | NavQueryBuilder<AnyNamespace, R>,
-): NavQuery<R> =>
-  isNavQuery(q) ? q : (q as NavQueryBuilder<AnyNamespace, R>).build();
+export const asNavQuery = <R, P = never>(
+  q: NavQuery<R, P> | NavQueryBuilder<AnyNamespace, R, P>,
+): NavQuery<R, P> =>
+  isNavQuery(q) ? q : (q as NavQueryBuilder<AnyNamespace, R, P>).build();
 
 // ── lower to peer query object ─────────────────────────────────────────────
 
@@ -1609,11 +1810,65 @@ export interface LoweredQuery {
 }
 
 /**
+ * The binder the current `lowerNavQuery` pass substitutes with. Same trick
+ * as `gensym`: lowering is synchronous and single-threaded, so threading
+ * the binder through every helper is noise.
+ */
+let currentBinder: ParamBinder = bindParams(undefined, undefined);
+
+/** Resolve a hole (or pass a literal through), then run deferred checks. */
+const boundValue = (
+  value: unknown,
+  op: PredTag,
+  use: string,
+): unknown => {
+  if (!isParam(value)) return value;
+  const raw = currentBinder.resolve(value, use);
+  switch (op) {
+    case "matches":
+      return normalizeBound(value, () => regexSource(raw as RegExp | string));
+    case "is":
+      return normalizeBound(value, () => eidValue(raw));
+    case "in":
+      return normalizeBound(value, () => {
+        if (!Array.isArray(raw)) {
+          throw new Error(
+            `in(...) takes an array of values, got ${String(raw)}`,
+          );
+        }
+        return raw.map(inValue);
+      });
+    default:
+      return raw;
+  }
+};
+
+const boundNumber = (
+  n: number | AnyParam | undefined,
+  use: string,
+): number | undefined => {
+  if (n === undefined) return undefined;
+  if (!isParam(n)) return n;
+  const raw = currentBinder.resolve(n, use);
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    throw new ParamError({
+      message: `ramose/params: param "${n.key}" bound to ${String(raw)} is not a number — ${use} takes a number`,
+      key: n.key,
+    });
+  }
+  return raw;
+};
+
+/**
  * `.one()` asks for one row; `.oneOrFail()` asks for two so a second match
  * is witnessed. A later `.limit(n)` does not widen that — take wins.
  */
 const limitOf = (spec: NavQuerySpec): number | undefined =>
-  spec.take === "one" ? 1 : spec.take === "oneOrFail" ? 2 : spec.limit;
+  spec.take === "one"
+    ? 1
+    : spec.take === "oneOrFail"
+      ? 2
+      : boundNumber(spec.limit, "limit");
 
 /**
  * Unwrap a finalized page for `.one()` / `.oneOrFail()`. The peer already
@@ -1639,7 +1894,8 @@ export const takeNavResult = (
 
 /** Lower predicates, namespace scope, required fields and sort keys. */
 export const lowerNavQuery = (
-  q: NavQuery,
+  q: NavQuery<any, any>,
+  bindings?: Readonly<Record<string, unknown>>,
 ): {
   readonly query: LoweredQuery;
   /**
@@ -1649,6 +1905,7 @@ export const lowerNavQuery = (
   readonly pullMap: Record<string, unknown> | readonly unknown[] | undefined;
 } => {
   resetGensym();
+  currentBinder = bindParams(q.spec.params, bindings);
   const root = "?e";
   const where: unknown[] = [];
 
@@ -1671,7 +1928,10 @@ export const lowerNavQuery = (
       ? undefined
       : isAllShape(q.spec.shape)
         ? (["*"] as readonly unknown[])
-        : shapeToPullMap(q.spec.shape);
+        : (substituteLiterate(shapeToPullMap(q.spec.shape)) as Record<
+            string,
+            unknown
+          >);
   if (pullMap !== undefined) where.push(...requiredClauses(root, pullMap));
 
   const order: OrderClause[] = [];
@@ -1686,16 +1946,136 @@ export const lowerNavQuery = (
       ? [["pull", root, lowerPullPattern(pullMap)]]
       : [root];
 
+  const limit = limitOf(q.spec);
+  const offset = boundNumber(q.spec.offset, "offset");
   return {
     query: {
       find,
       where,
       ...(order.length > 0 ? { order } : {}),
-      ...(limitOf(q.spec) !== undefined ? { limit: limitOf(q.spec) } : {}),
-      ...(q.spec.offset !== undefined ? { offset: q.spec.offset } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+      ...(offset !== undefined ? { offset } : {}),
     },
     pullMap,
   };
+};
+
+/**
+ * Nested collection constraints are lowered eagerly at builder-call time,
+ * so a hole lives as a leaf of the already-built `PullElemPred` tree. Walk
+ * that tree (and the literate wrappers it hangs off) and substitute.
+ */
+const substituteLiterate = (field: unknown): unknown => {
+  if (field === undefined || field === null || isAllShape(field)) return field;
+  if (Array.isArray(field)) return field;
+  if (isPullOptional(field)) {
+    return optional(substituteLiterate(field.field));
+  }
+  if (isPullDefault(field)) {
+    return pullDefault(substituteLiterate(field.field), field.value);
+  }
+  if (isSelectNested(field)) {
+    return makeSelectNested(
+      field.attr as PathCarrier,
+      substituteLiterate(field.shape) as Shape | AllShape,
+      substituteConstraints(field.constraints),
+    );
+  }
+  if (isPullNested(field)) {
+    return nested(
+      field.attr as { readonly valueType: ":db.type/ref" },
+      substituteLiterate(field.pattern) as Record<string, unknown>,
+      substituteConstraints(field.constraints),
+    );
+  }
+  if (
+    typeof field === "object" &&
+    (field as { _tag?: unknown })._tag === "collection"
+  ) {
+    const col = field as {
+      readonly _tag: "collection";
+      readonly attr: unknown;
+      readonly constraints?: PullNestedConstraints;
+    };
+    return {
+      ...col,
+      constraints: substituteConstraints(col.constraints) ?? {},
+    };
+  }
+  if (typeof field === "object" && !("ident" in field) && !("_tag" in field)) {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(field as Record<string, unknown>)) {
+      out[k] = substituteLiterate(v);
+    }
+    return out;
+  }
+  return field;
+};
+
+const substituteConstraints = (
+  c: PullNestedConstraints | undefined,
+): PullNestedConstraints | undefined => {
+  if (c === undefined) return undefined;
+  return {
+    ...c,
+    ...(c.where !== undefined
+      ? { where: c.where.map(substituteElemPred) }
+      : {}),
+    ...(c.limit !== undefined
+      ? { limit: boundNumber(c.limit, "nested limit") }
+      : {}),
+    ...(c.offset !== undefined
+      ? { offset: boundNumber(c.offset, "nested offset") }
+      : {}),
+  };
+};
+
+const substituteElemPred = (pred: PullElemPred): PullElemPred => {
+  if ("and" in pred) return { and: pred.and.map(substituteElemPred) };
+  if ("or" in pred) return { or: pred.or.map(substituteElemPred) };
+  if ("not" in pred) return { not: substituteElemPred(pred.not) };
+  if ("every" in pred) {
+    return {
+      every: { ...pred.every, pred: substituteElemPred(pred.every.pred) },
+    };
+  }
+  if ("some" in pred) {
+    return { some: { ...pred.some, pred: substituteElemPred(pred.some.pred) } };
+  }
+  if (pred.value === undefined || !isParam(pred.value)) return pred;
+  return { ...pred, value: boundNestedCmp(pred.op, pred.value) };
+};
+
+/** A nested comparison's `op` is already the engine name (`=`, `re-find?`, …). */
+const boundNestedCmp = (op: PullElemOp, hole: AnyParam): unknown => {
+  const raw = currentBinder.resolve(hole, `nested ${op}`);
+  if (op === "re-find?") {
+    return normalizeBound(hole, () => regexSource(raw as RegExp | string));
+  }
+  if (op === "in") {
+    return normalizeBound(hole, () => {
+      if (!Array.isArray(raw)) {
+        throw new Error(`in(...) takes an array of values, got ${String(raw)}`);
+      }
+      return raw.map(inValue);
+    });
+  }
+  if (op === "=") {
+    // `is` and `eq` both lower to `=`; unwrap an Eid cell if that's what it is
+    if (
+      typeof raw === "number" ||
+      (typeof raw === "object" &&
+        raw !== null &&
+        typeof (raw as { id?: unknown }).id === "number")
+    ) {
+      try {
+        return eidValue(raw);
+      } catch {
+        return raw;
+      }
+    }
+  }
+  return raw;
 };
 
 /**
@@ -1817,7 +2197,17 @@ const neverClause = (): unknown[] => [["ground", []], [gensym("n"), "..."]];
  * `or` branch and a `not` body may invent join variables freely, because
  * `or-join` / `not-join` export only `?e`.
  */
-const lowerWhere = (root: string, node: AnyWhereNode): unknown[] => {
+const lowerWhere = (
+  root: string,
+  node: AnyWhereNode | When<unknown>,
+): unknown[] => {
+  if (isWhen(node)) {
+    // gate on → splice, byte-identical to writing the clauses inline
+    if (!currentBinder.gateOn(node.gate)) return [];
+    const out: unknown[] = [];
+    for (const c of node.clauses) out.push(...lowerWhere(root, c));
+    return out;
+  }
   if (isOr(node)) {
     if (node.preds.length === 0) return [neverClause()];
     return [
@@ -1849,7 +2239,7 @@ const lowerWhere = (root: string, node: AnyWhereNode): unknown[] => {
  *   *fails*. Both negatives are vacuously true when the hop has no elements:
  *   the chain binds nothing, so the outer `not-join` removes no rows.
  */
-const lowerQuantified = (root: string, node: Quantified): unknown[] => {
+const lowerQuantified = (root: string, node: Quantified<any>): unknown[] => {
   const x = gensym("x");
   const chain = hopClauses(root, node.path, node.revs, x);
   const inner = lowerWhere(x, node.pred);
@@ -1865,11 +2255,14 @@ const lowerQuantified = (root: string, node: Quantified): unknown[] => {
   }
 };
 
-const lowerPredicate = (root: string, p: Predicate<unknown>): unknown[] => {
-  const { path, op, value } = p;
-  if (path.length === 0) return lowerElemPredicate(root, p);
+const lowerPredicate = (root: string, p: Predicate<unknown, any>): unknown[] => {
+  const { path, op } = p;
+  const value = boundValue(p.value, op, `${op}(...)`);
+  if (path.length === 0) return lowerElemPredicate(root, { ...p, value });
   const revs = p.revs ?? path.map(() => false);
-  if (path[path.length - 1] === ID) return lowerIdPredicate(root, path, revs, p);
+  if (path[path.length - 1] === ID) {
+    return lowerIdPredicate(root, path, revs, { ...p, value });
+  }
 
   const clauses: unknown[] = [];
   let e = root;
@@ -1958,7 +2351,10 @@ const lowerPredicate = (root: string, p: Predicate<unknown>): unknown[] => {
  * clause that matches nothing: a bound element is not an absent one. Inside
  * `every`, that reads correctly as "the collection is empty".
  */
-const lowerElemPredicate = (root: string, p: Predicate<unknown>): unknown[] => {
+const lowerElemPredicate = (
+  root: string,
+  p: Predicate<unknown, any>,
+): unknown[] => {
   const { op, value } = p;
   switch (op) {
     case "eq":
@@ -2005,7 +2401,7 @@ const lowerIdPredicate = (
   root: string,
   path: readonly string[],
   revs: readonly boolean[],
-  p: Predicate<unknown>,
+  p: Predicate<unknown, any>,
 ): unknown[] => {
   const clauses: unknown[] = [];
   let e = root;

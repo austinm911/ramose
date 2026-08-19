@@ -40,11 +40,11 @@ In React, `useQuery(db, query)` gives you `{ data, error, loading }` for a one-s
 Every field carries its own predicates. `where` takes any number; all must hold:
 
 ```ts title="examples/reef/src/domain/queries.ts:78-82"
-export const commentsQuery = (issueId: number) =>
-  Ramose.query(Comment)
-    .where(Comment.issue.eq(issueId))
-    .orderBy(Comment.at, "asc")
-    .select(commentShape);
+const CommentP = Ramose.params({ issueId: Issue.id });
+export const commentsQuery = Ramose.query(Comment, CommentP)
+  .where(Comment.issue.is(CommentP.issueId))
+  .orderBy(Comment.at, "asc")
+  .select(commentShape);
 ```
 
 | on | predicates |
@@ -129,7 +129,7 @@ export const issueExtraShape = {
 
 The subject is `{ id }` or a lookup by unique key, `[User.sub, "user_ada"]`. The result is the shape or `null` — `null` when the record is missing *or* a required field is absent (including one permissions hid from you). Outside React it is `db.pull(subject, shape)`.
 
-<Shot src="/reef/issue-detail.png" alt="Reef's issue panel open on one card: title, status, priority, assignee, labels, description and comments" caption="One pull for the panel's extras; the rest rides the live board row." code="examples/reef/src/app/components/IssueDetail.tsx:255-270" />
+<Shot src="/reef/issue-detail.png" alt="Reef's issue panel open on one card: title, status, priority, assignee, labels, description and comments" caption="One pull for the panel's extras; the rest rides the live board row." code="examples/reef/src/app/components/IssueDetail.tsx:255-266" />
 
 ## Read the past
 

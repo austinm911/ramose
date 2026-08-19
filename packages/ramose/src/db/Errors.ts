@@ -79,6 +79,20 @@ export class NetworkError extends Data.TaggedError("NetworkError")<{
 }> {}
 
 /**
+ * A query's params were bound wrong: a required param is missing (or bound to
+ * `undefined` — only `Ramose.optional` params may be), the bindings name a key
+ * the set never declared, or a normalization the builder defers for a hole
+ * failed at bind time (a flagged `RegExp` for `matches`, a non-entity for
+ * `is`). Client-side — the request was never sent. Not a {@link DbError}: a
+ * query with no params cannot produce it.
+ */
+export class ParamError extends Data.TaggedError("ParamError")<{
+  readonly message: string;
+  /** The offending param's key, when the failure names one. */
+  readonly key?: string;
+}> {}
+
+/**
  * `.oneOrFail()` promised exactly one row and the peer answered zero or two
  * (it is asked for `:limit 2`, so "two" means at least two). Client-side —
  * the query succeeded; the cardinality did not. Not a {@link DbError}: a

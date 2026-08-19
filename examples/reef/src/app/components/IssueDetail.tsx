@@ -10,7 +10,7 @@
 
 import { errorMessage, useLive, usePull, useTransact } from "ramose/react";
 import * as stylex from "@stylexjs/stylex";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   commentsQuery,
   issueExtraShape,
@@ -263,11 +263,7 @@ export const IssueDetail = ({
     setNoteDraft(extra.privateNote ?? "");
   }, [extra]);
 
-  // built per id, so memoise the query on `issueId` — its one dependency
-  const comments = useLive(
-    db,
-    useMemo(() => commentsQuery(issueId), [issueId]),
-  );
+  const comments = useLive(db, commentsQuery, { issueId });
 
   const submitComment = () => {
     const body = commentDraft.trim();

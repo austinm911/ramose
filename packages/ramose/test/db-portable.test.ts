@@ -148,6 +148,9 @@ describe("the `/db` barrel's public names", () => {
         "or",
         "not",
         "all",
+        "params",
+        "optional",
+        "when",
         // connecting
         "connect",
         "layer",
@@ -167,6 +170,7 @@ describe("the `/db` barrel's public names", () => {
         "NetworkError",
         // `.oneOrFail()` cardinality — not a DbError (the peer succeeded)
         "NotOne",
+        "ParamError",
       ].sort(),
     );
   });

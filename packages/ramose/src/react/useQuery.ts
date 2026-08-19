@@ -4,13 +4,15 @@
  * Two rules for callers:
  *
  * - The view is structural: `useQuery(db.asOf(t), q)` built inline re-runs
- *   per `t`, not per render. `query` is identity — hoist it.
+ *   per `t`, not per render. `query` is identity — hoist it. Bind changing
+ *   values with `Ramose.params` as the third argument.
  * - The in-flight state is `loading: true` over the *previous* `data` (no
  *   flash to `undefined` on scrub); stale answers are dropped last-write-wins
  *   by issue order, not by resolution order.
  */
 
 import type { Catalog, DbError, QueryError, QueryInput, ReadDb } from "../db/index.ts";
+import { paramsKey, type ParamArgs } from "../db/Params.ts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -27,11 +29,13 @@ export interface Async<A, E = DbError> {
   readonly loading: boolean;
 }
 
-export const useQuery = <C extends Catalog.Any, R>(
+export const useQuery = <C extends Catalog.Any, R, P = never>(
   db: ReadDb<C>,
-  query: QueryInput<R>,
-): Async<R, QueryError<R>> => {
-  const [state, set] = useState<Async<R, QueryError<R>>>({
+  query: QueryInput<R, P>,
+  ...params: ParamArgs<P>
+): Async<R, QueryError<R, P>> => {
+  const bindings = params[0];
+  const [state, set] = useState<Async<R, QueryError<R, P>>>({
     data: undefined,
     error: undefined,
     loading: true,
@@ -44,7 +48,7 @@ export const useQuery = <C extends Catalog.Any, R>(
     let disposed = false;
     /** Land this run's outcome unless a later-issued run already landed. */
     const land = (
-      next: (prev: Async<R, QueryError<R>>) => Async<R, QueryError<R>>,
+      next: (prev: Async<R, QueryError<R, P>>) => Async<R, QueryError<R, P>>,
     ): void => {
       if (disposed || seq < runs.current.applied) return;
       runs.current.applied = seq;
@@ -58,7 +62,7 @@ export const useQuery = <C extends Catalog.Any, R>(
     );
 
     const fiber = Effect.runFork(
-      db.q(query).pipe(
+      db.q(query, ...(params as ParamArgs<P>)).pipe(
         Effect.flatMap((rows) =>
           Effect.sync(() =>
             land(() => ({ data: rows as R, error: undefined, loading: false })),
@@ -80,8 +84,9 @@ export const useQuery = <C extends Catalog.Any, R>(
       Effect.runFork(Fiber.interrupt(fiber));
     };
     // the view is a structural dependency; `db` itself may be a fresh object
-    // every render (`db.asOf(t)` is pure and unmemoised by design)
-  }, [viewDep(db), query]);
+    // every render (`db.asOf(t)` is pure and unmemoised by design). Params
+    // are structural too — `{ issueId }` inline is fine.
+  }, [viewDep(db), query, paramsKey(bindings)]);
 
   return state;
 };

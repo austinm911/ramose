@@ -75,11 +75,11 @@ export const labelsQuery = Ramose.query(Label)
   .orderBy(Label.name, "asc")
   .select(labelShape);
 
-export const commentsQuery = (issueId: number) =>
-  Ramose.query(Comment)
-    .where(Comment.issue.eq(issueId))
-    .orderBy(Comment.at, "asc")
-    .select(commentShape);
+const CommentP = Ramose.params({ issueId: Issue.id });
+export const commentsQuery = Ramose.query(Comment, CommentP)
+  .where(Comment.issue.is(CommentP.issueId))
+  .orderBy(Comment.at, "asc")
+  .select(commentShape);
 
 /** Over `db.history` this also returns issues that no longer exist. */
 export const everyIssueEverQuery = Ramose.query(Issue).select({
@@ -92,4 +92,4 @@ export type BoardRow = Ramose.Row<typeof boardQuery>;
 
 export type Person = BoardRow["creator"];
 export type LabelRow = Ramose.Row<typeof labelsQuery>;
-export type CommentRow = Ramose.Row<ReturnType<typeof commentsQuery>>;
+export type CommentRow = Ramose.Row<typeof commentsQuery>;
