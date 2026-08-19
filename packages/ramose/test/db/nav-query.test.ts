@@ -30,10 +30,12 @@ import {
   pathOf,
   layer,
   lowerNavQuery,
+  NotOne,
   not,
   or,
   query,
   revsOf,
+  takeNavResult,
   type WhereNode,
 } from "../../src/db/internal.ts";
 
@@ -457,6 +459,40 @@ describe("lowering: everything that changes the row set is the peer's", () => {
       where: [todoScope, ["?e", ":todo/title", "_"]],
     });
     expect("order" in q || "limit" in q || "offset" in q).toBe(false);
+  });
+
+  test("`.one()` forces `:limit 1`, even after a wider `.limit`", () => {
+    const { query: q } = lowerNavQuery(
+      query(Todo).limit(20).one().select({ title: Todo.title }).build(),
+    );
+    expect(q.limit).toBe(1);
+    expect(
+      query(Todo).one().select({ title: Todo.title }).build().spec.take,
+    ).toBe("one");
+  });
+
+  test("`.oneOrFail()` forces `:limit 2` so a second row is witnessed", () => {
+    const { query: q } = lowerNavQuery(
+      query(Todo).limit(20).oneOrFail().select({ title: Todo.title }).build(),
+    );
+    expect(q.limit).toBe(2);
+    expect(
+      query(Todo).oneOrFail().select({ title: Todo.title }).build().spec.take,
+    ).toBe("oneOrFail");
+  });
+
+  test("takeNavResult unwraps `.one` and fails `.oneOrFail` on 0 / 2", () => {
+    expect(takeNavResult(["a", "b"], undefined)).toEqual(["a", "b"]);
+    expect(takeNavResult(["a"], "one")).toBe("a");
+    expect(takeNavResult([], "one")).toBe(null);
+    expect(takeNavResult(["a", "b"], "one")).toBe("a");
+    expect(takeNavResult(["a"], "oneOrFail")).toBe("a");
+    const none = takeNavResult([], "oneOrFail");
+    expect(none).toBeInstanceOf(NotOne);
+    expect((none as NotOne).found).toBe(0);
+    const many = takeNavResult(["a", "b"], "oneOrFail");
+    expect(many).toBeInstanceOf(NotOne);
+    expect((many as NotOne).found).toBe(2);
   });
 
   test("a multi-hop sort key is a join chain in one branch, its absence in the other", () => {
@@ -2850,6 +2886,153 @@ describe("`all(N)` end to end: the peer's wildcard row", () => {
     expect(peer.seen[0]?.op).toBe("q");
     expect(peer.seen[0]?.rows).toBe(1);
 
+    await peer.dispose();
+  });
+});
+
+describe("`.one` / `.oneOrFail` end to end: the peer pages, the client unwraps", () => {
+  const seed = (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
+    const db = peer.ramose.db("todos", Todos);
+    return run(
+      Effect.gen(function* () {
+        yield* db.install();
+        yield* db.transact(function* (tx) {
+          const ada = yield* tx.entity();
+          yield* ada.add(User.name, "Ada");
+          const bob = yield* tx.entity();
+          yield* bob.add(User.name, "Bob");
+          const mk = function* (title: string, owner: unknown) {
+            const t = yield* tx.entity();
+            yield* t.add(Todo.title, title);
+            yield* t.add(Todo.done, false);
+            yield* t.add(Todo.owner, owner as never);
+          };
+          yield* mk("alpha", ada.eid);
+          yield* mk("bravo", bob.eid);
+        });
+        return db;
+      }),
+    );
+  };
+
+  test("`.one()` is null when nothing matches, and the peer sent 0", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    peer.seen.length = 0;
+    const row = await run(
+      db.q(
+        query(Todo)
+          .where(Todo.title.eq("missing"))
+          .one()
+          .select({ title: Todo.title }),
+      ),
+    );
+    expect(row).toBe(null);
+    expect(peer.seen[0]?.body.query.limit).toBe(1);
+    expect(peer.seen[0]?.rows).toBe(0);
+    await peer.dispose();
+  });
+
+  test("`.one()` is the row when one matches, and the peer sent 1", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    peer.seen.length = 0;
+    const row = await run(
+      db.q(
+        query(Todo)
+          .where(Todo.title.eq("alpha"))
+          .one()
+          .select({ title: Todo.title }),
+      ),
+    );
+    expect(row).toEqual({ title: "alpha" });
+    expect(peer.seen[0]?.body.query.limit).toBe(1);
+    expect(peer.seen[0]?.rows).toBe(1);
+    await peer.dispose();
+  });
+
+  test("`.one()` takes the first after order and does not pull the rest", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    peer.seen.length = 0;
+    const row = await run(
+      db.q(
+        query(Todo)
+          .orderBy(Todo.title, "desc")
+          .one()
+          .select({ title: Todo.title }),
+      ),
+    );
+    expect(row).toEqual({ title: "bravo" });
+    expect(peer.seen[0]?.body.query.limit).toBe(1);
+    expect(peer.seen[0]?.rows).toBe(1);
+    await peer.dispose();
+  });
+
+  test("`.one()` without `.select` is the eid or null", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    const hit = await run(db.q(query(Todo).where(Todo.title.eq("alpha")).one()));
+    expect(hit).toEqual({ id: expect.any(Number) });
+    const miss = await run(
+      db.q(query(Todo).where(Todo.title.eq("missing")).one()),
+    );
+    expect(miss).toBe(null);
+    await peer.dispose();
+  });
+
+  test("`.oneOrFail()` is the row when there is exactly one", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    peer.seen.length = 0;
+    const row = await run(
+      db.q(
+        query(Todo)
+          .where(Todo.title.eq("alpha"))
+          .oneOrFail()
+          .select({ title: Todo.title }),
+      ),
+    );
+    expect(row).toEqual({ title: "alpha" });
+    expect(peer.seen[0]?.body.query.limit).toBe(2);
+    expect(peer.seen[0]?.rows).toBe(1);
+    await peer.dispose();
+  });
+
+  test("`.oneOrFail()` fails with NotOne when there are none", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    peer.seen.length = 0;
+    const err = await run(
+      db
+        .q(
+          query(Todo)
+            .where(Todo.title.eq("missing"))
+            .oneOrFail()
+            .select({ title: Todo.title }),
+        )
+        .pipe(Effect.flip),
+    );
+    expect(err).toBeInstanceOf(NotOne);
+    expect((err as NotOne).found).toBe(0);
+    expect(peer.seen[0]?.body.query.limit).toBe(2);
+    expect(peer.seen[0]?.rows).toBe(0);
+    await peer.dispose();
+  });
+
+  test("`.oneOrFail()` fails with NotOne when there are two, and the peer sent 2", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+    peer.seen.length = 0;
+    const err = await run(
+      db
+        .q(query(Todo).oneOrFail().select({ title: Todo.title }))
+        .pipe(Effect.flip),
+    );
+    expect(err).toBeInstanceOf(NotOne);
+    expect((err as NotOne).found).toBe(2);
+    expect(peer.seen[0]?.body.query.limit).toBe(2);
+    expect(peer.seen[0]?.rows).toBe(2);
     await peer.dispose();
   });
 });

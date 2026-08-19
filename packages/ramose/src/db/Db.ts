@@ -19,12 +19,14 @@ import { type Eid, makeEid } from "./Eid.ts";
 import { schemaTx } from "./ensure.ts";
 import type { Equal } from "./equal.ts";
 import type { DbError, InvalidRequest } from "./Errors.ts";
+import { NotOne } from "./Errors.ts";
 import { compact, record } from "./http.ts";
 import type { LookupRef } from "./idents.ts";
 import {
   asNavQuery,
   finalizeNavResult,
   lowerNavQuery,
+  takeNavResult,
   type NavQuery,
   type NavQueryBuilder,
 } from "./NavQuery.ts";
@@ -51,10 +53,29 @@ export type QueryInput<R> = NavQuery<R> | NavQueryBuilder<AnyNamespace, R>;
 /**
  * The rows a query yields here. A query is scoped to a namespace, not to a
  * catalog, so a `.select`-less one types its ids against whichever catalog the
- * db that ran it carries.
+ * db that ran it carries — including after `.one()` / `.oneOrFail()`.
  */
-type QueryRows<C extends AnyCatalog, R> =
-  Equal<R, readonly Eid[]> extends true ? readonly Eid<C>[] : R;
+type QueryRows<C extends AnyCatalog, R> = Equal<
+  R,
+  readonly Eid[]
+> extends true
+  ? readonly Eid<C>[]
+  : Equal<R, Eid | null> extends true
+    ? Eid<C> | null
+    : Equal<R, Eid> extends true
+      ? Eid<C>
+      : R;
+
+/**
+ * What `db.q` / `db.live` can fail with. `.oneOrFail()` adds {@link NotOne}
+ * when the peer answers zero or two rows; every other query is {@link DbError}
+ * only.
+ */
+export type QueryError<R = unknown> = [R] extends [readonly unknown[]]
+  ? DbError
+  : [null] extends [R]
+    ? DbError
+    : DbError | NotOne;
 
 // ── the transport seam ─────────────────────────────────────────────────────
 
@@ -121,7 +142,7 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
   readonly catalog: C;
 
   /** Run a {@link NavQuery} once. */
-  q<R>(input: QueryInput<R>): Effect.Effect<QueryRows<C, R>, DbError>;
+  q<R>(input: QueryInput<R>): Effect.Effect<QueryRows<C, R>, QueryError<R>>;
 
   /**
    * Stand a query up: re-run on every basis tick this session sees,
@@ -130,7 +151,7 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
    * completes. A pass that returns the rows already emitted is not emitted
    * again: a write this query does not see is not a re-render.
    */
-  live<R>(input: QueryInput<R>): Stream.Stream<QueryRows<C, R>, DbError>;
+  live<R>(input: QueryInput<R>): Stream.Stream<QueryRows<C, R>, QueryError<R>>;
 
   /** Project one entity. `null` when a required field is missing. */
   pull<const P>(
@@ -281,11 +302,12 @@ const RETRY_MAX = 5000;
  * `Unauthorized` reaches here only after the session already re-read the token
  * and re-authenticated in place, so a second one is terminal.
  */
-const terminal = (e: DbError): boolean =>
+const terminal = (e: { readonly _tag: string }): boolean =>
   e._tag === "InvalidRequest" ||
   e._tag === "DatabaseNotFound" ||
   e._tag === "Unauthorized" ||
-  e._tag === "QueryBudgetExceeded";
+  e._tag === "QueryBudgetExceeded" ||
+  e._tag === "NotOne";
 
 const isGenerator = (
   value: unknown,
@@ -328,8 +350,8 @@ const makeRead = <C extends AnyCatalog>(
   view: View,
   bad: InvalidRequest | undefined,
 ): ReadDb<C> => {
-  const fenced = <A>(effect: Effect.Effect<A, DbError>) =>
-    bad === undefined ? effect : Effect.fail<DbError>(bad);
+  const fenced = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, E> =>
+    bad === undefined ? effect : Effect.fail(bad as E);
 
   const pullOne = (
     subject: unknown,
@@ -364,10 +386,11 @@ const makeRead = <C extends AnyCatalog>(
     minT: number | undefined,
   ): Effect.Effect<
     { readonly rows: unknown; readonly t: number; readonly raw: unknown },
-    DbError
+    DbError | NotOne
   > =>
     Effect.gen(function* () {
-      const lowered = lowerNavQuery(asNavQuery(input));
+      const nav = asNavQuery(input);
+      const lowered = lowerNavQuery(nav);
       const fence = minT ?? view.minT;
       const body = record(
         yield* wire.read(
@@ -383,11 +406,12 @@ const makeRead = <C extends AnyCatalog>(
         ),
       );
       const t = typeof body.t === "number" ? body.t : 0;
-      return {
-        rows: finalizeNavResult(body.result, lowered.pullMap),
-        t,
-        raw: body.result,
-      };
+      const taken = takeNavResult(
+        finalizeNavResult(body.result, lowered.pullMap),
+        nav.spec.take,
+      );
+      if (taken instanceof NotOne) return yield* Effect.fail(taken);
+      return { rows: taken, t, raw: body.result };
     });
 
   /**
@@ -398,12 +422,12 @@ const makeRead = <C extends AnyCatalog>(
    * (an outage longer than the ladder), and for the failures the ladder does
    * not touch (a 5xx `InternalError`). Exponential pause, capped.
    */
-  const withBackoff = <A>(
-    attempt: Effect.Effect<A, DbError>,
-  ): Effect.Effect<A, DbError> => {
-    const step = (wait: number): Effect.Effect<A, DbError> =>
+  const withBackoff = <A, E extends { readonly _tag: string }>(
+    attempt: Effect.Effect<A, E>,
+  ): Effect.Effect<A, E> => {
+    const step = (wait: number): Effect.Effect<A, E> =>
       attempt.pipe(
-        Effect.catch((e: DbError) => {
+        Effect.catch((e: E) => {
           if (terminal(e)) return Effect.fail(e);
           const next = wait === 0 ? RETRY_MIN : Math.min(wait * 2, RETRY_MAX);
           return Effect.sleep(next).pipe(Effect.andThen(() => step(next)));
@@ -417,12 +441,12 @@ const makeRead = <C extends AnyCatalog>(
    * digest moved, sleep until the session's basis does. What varies is only
    * the pass itself — a query for `live`, a pull for `livePull`.
    */
-  const standing = <A>(
-    runPass: (minT: number | undefined) => Effect.Effect<Pass<A>, DbError>,
-  ): Stream.Stream<A, DbError> =>
-    Stream.callback<A, DbError>((queue) =>
+  const standing = <A, E extends { readonly _tag: string } = DbError>(
+    runPass: (minT: number | undefined) => Effect.Effect<Pass<A>, E>,
+  ): Stream.Stream<A, E> =>
+    Stream.callback<A, E>((queue) =>
       Effect.gen(function* () {
-        if (bad !== undefined) return yield* Queue.fail(queue, bad);
+        if (bad !== undefined) return yield* Queue.fail(queue, bad as unknown as E);
         const session = wire.session(name);
         const pinned = view.asOf !== undefined || view.history === true;
 
@@ -458,7 +482,7 @@ const makeRead = <C extends AnyCatalog>(
         }
         return yield* Queue.end(queue);
       }).pipe(
-        Effect.catch((e: DbError) => Queue.fail(queue, e)),
+        Effect.catch((e: E) => Queue.fail(queue, e)),
       ),
     );
 
@@ -474,7 +498,7 @@ const makeRead = <C extends AnyCatalog>(
       )) as ReadDb<C>["q"],
 
     live: (<R>(input: QueryInput<R>) =>
-      standing<R>((minT) =>
+      standing<R, DbError | NotOne>((minT) =>
         runQuery(input, minT).pipe(
           Effect.map((pass) => ({
             value: pass.rows as R,

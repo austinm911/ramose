@@ -6,7 +6,8 @@
  * {@link NavQuery} value. `db.q` / `db.live` run it. Datalog is the IR: we
  * lower to `{ find: [["pull", "?e", pattern]], where, order, limit, offset }`
  * so the peer does pull-in-query (no client N+1) and sorts and pages the row
- * set itself — the client never sees the rows a page dropped.
+ * set itself — the client never sees the rows a page dropped. `.one()` /
+ * `.oneOrFail()` are the same page, asked for one (or two) rows and unwrapped.
  *
  * Everything that changes the row count is lowered: `.orderBy` binds a sort
  * variable, and a required (non-`.optional`) selected field becomes a `where`
@@ -22,6 +23,7 @@ import type {
 import { lowerAttr } from "./attrRef.ts";
 import type { AnyAttribute, Cardinality } from "./Attribute.ts";
 import { type Eid, makeEid } from "./Eid.ts";
+import { NotOne } from "./Errors.ts";
 import type { AnyNamespace } from "./Namespace.ts";
 import {
   assertDirectField,
@@ -293,12 +295,19 @@ export interface NavQuerySpec {
   readonly orderBy: readonly OrderBy[];
   readonly limit: number | undefined;
   readonly offset: number | undefined;
+  /**
+   * `.one()` / `.oneOrFail()` — unwrap the page to a single row. Lowering
+   * forces `:limit 1` or `:limit 2` so the peer never sends a whole page
+   * for the client to discard.
+   */
+  readonly take: "one" | "oneOrFail" | undefined;
 }
 
 /**
- * A navigational query value. Phantom `R` is the **rows array** the query
- * resolves to (`readonly SelectResult<S>[]` after `.select`, `readonly Eid[]`
- * without) — {@link Row} unwraps it to the element.
+ * A navigational query value. Phantom `R` is what the query resolves to:
+ * a **rows array** by default (`readonly SelectResult<S>[]` after `.select`,
+ * `readonly Eid[]` without), one row or `null` after `.one()`, one row after
+ * `.oneOrFail()`. {@link Row} names the element either way.
  */
 export interface NavQuery<R = unknown> {
   readonly _tag: "NavQuery";
@@ -1365,6 +1374,26 @@ type SelectFieldResult<F> = F extends {
           ? number
           : never;
 
+/**
+ * Re-apply `.one()` / `.oneOrFail()` after a later `.select` so
+ * `query(N).one().select({…})` keeps the single-row type.
+ */
+type CardOf<R, NewRows extends readonly unknown[]> = R extends readonly unknown[]
+  ? NewRows
+  : null extends R
+    ? NewRows extends readonly (infer E)[]
+      ? E | null
+      : never
+    : NewRows extends readonly (infer E)[]
+      ? E
+      : never;
+
+/** At most one row — the array element, or `null` when the page is empty. */
+type OneOf<R> = R extends readonly (infer E)[] ? E | null : Exclude<R, null> | null;
+
+/** Exactly one row — the array element. Zero or two+ fail at run time. */
+type OneOrFailOf<R> = R extends readonly (infer E)[] ? E : Exclude<R, null>;
+
 /** `R` defaults to the matched entity ids — what a query with no `.select` yields. */
 export interface NavQueryBuilder<
   N extends AnyNamespace,
@@ -1380,7 +1409,7 @@ export interface NavQueryBuilder<
    * named shape a field map gives. The namespace must be the one the query is
    * scoped to: `query(Todo).select(all(User))` is a type error.
    */
-  select(shape: AllShape<N>): NavQueryBuilder<N, readonly AllRow<N>[]>;
+  select(shape: AllShape<N>): NavQueryBuilder<N, CardOf<R, readonly AllRow<N>[]>>;
   /**
    * Each field is a **direct** attribute of the queried namespace (or a
    * nested `.select` through one of its refs). A flattened path —
@@ -1388,7 +1417,7 @@ export interface NavQueryBuilder<
    */
   select<const S extends Shape>(
     shape: S & ValidShape<S>,
-  ): NavQueryBuilder<N, readonly SelectResult<S>[]>;
+  ): NavQueryBuilder<N, CardOf<R, readonly SelectResult<S>[]>>;
   /**
    * A sort key is a card-one path from the row. An element cursor is not one:
    * `.each` names a value inside a collection, and the collection is the thing
@@ -1401,6 +1430,17 @@ export interface NavQueryBuilder<
   ): NavQueryBuilder<N, R>;
   limit(n: number): NavQueryBuilder<N, R>;
   offset(n: number): NavQueryBuilder<N, R>;
+  /**
+   * At most one row. Lowers to `:limit 1`; the result is that row or `null`,
+   * the same absence `db.pull` uses. Extra matches are not fetched.
+   */
+  one(): NavQueryBuilder<N, OneOf<R>>;
+  /**
+   * Exactly one row. Lowers to `:limit 2` so a second match is witnessed
+   * without pulling a page, and fails with {@link NotOne} if the peer
+   * answers zero or two.
+   */
+  oneOrFail(): NavQueryBuilder<N, OneOrFailOf<R>>;
 
   /** Freeze into a runnable query value. */
   build(): NavQuery<R>;
@@ -1434,8 +1474,11 @@ export type Row<Q> = Q extends NavQuery<infer R>
  */
 export type Rows<Q> = readonly Row<Q>[];
 
-/** The phantom result is the rows array; the row is its element. */
-type RowOf<R> = R extends readonly (infer E)[] ? E : never;
+/**
+ * The phantom result is the rows array, or a single row after `.one` /
+ * `.oneOrFail`; the row is the element either way (`null` is absence, not a row).
+ */
+type RowOf<R> = R extends readonly (infer E)[] ? E : Exclude<R, null>;
 
 const freeze = <R>(spec: NavQuerySpec): NavQuery<R> => ({
   _tag: "NavQuery",
@@ -1477,6 +1520,8 @@ const builder = <N extends AnyNamespace, R>(
     },
     limit: (n) => builder(ns, { ...spec, limit: n }),
     offset: (n) => builder(ns, { ...spec, offset: n }),
+    one: () => builder(ns, { ...spec, take: "one", limit: 1 }),
+    oneOrFail: () => builder(ns, { ...spec, take: "oneOrFail", limit: 2 }),
     build: () => freeze<R>(spec),
   };
   return self;
@@ -1485,9 +1530,10 @@ const builder = <N extends AnyNamespace, R>(
 /**
  * Start a navigational query scoped to namespace `N`.
  *
- * Calling `.where` / `.select` / … returns a builder; pass the builder (or
- * `.build()`) to `db.q` / `db.live`. Builders are accepted directly so
- * `db.q(Ramose.query(Todo).where(...).select(...))` works without `.build()`.
+ * Calling `.where` / `.select` / `.one` / … returns a builder; pass the
+ * builder (or `.build()`) to `db.q` / `db.live`. Builders are accepted
+ * directly so `db.q(Ramose.query(Todo).where(...).select(...))` works
+ * without `.build()`.
  */
 export const query = <N extends AnyNamespace>(ns: N): NavQueryBuilder<N> => {
   const nsIdents = Object.values(ns.attributes).map(
@@ -1501,6 +1547,7 @@ export const query = <N extends AnyNamespace>(ns: N): NavQueryBuilder<N> => {
     orderBy: [],
     limit: undefined,
     offset: undefined,
+    take: undefined,
   });
 };
 
@@ -1536,6 +1583,35 @@ export interface LoweredQuery {
   readonly limit?: number;
   readonly offset?: number;
 }
+
+/**
+ * `.one()` asks for one row; `.oneOrFail()` asks for two so a second match
+ * is witnessed. A later `.limit(n)` does not widen that — take wins.
+ */
+const limitOf = (spec: NavQuerySpec): number | undefined =>
+  spec.take === "one" ? 1 : spec.take === "oneOrFail" ? 2 : spec.limit;
+
+/**
+ * Unwrap a finalized page for `.one()` / `.oneOrFail()`. The peer already
+ * applied the forced `:limit`; this only picks the cell or names the miss.
+ * Returns a {@link NotOne} (not thrown) when `.oneOrFail()` sees 0 or 2.
+ */
+export const takeNavResult = (
+  rows: unknown,
+  take: NavQuerySpec["take"],
+): unknown | NotOne => {
+  if (take === undefined) return rows;
+  const list = Array.isArray(rows) ? rows : [];
+  if (take === "one") return list[0] ?? null;
+  if (list.length === 1) return list[0];
+  return new NotOne({
+    message:
+      list.length === 0
+        ? "ramose/query: expected exactly one row, found none"
+        : "ramose/query: expected exactly one row, found 2",
+    found: list.length === 0 ? 0 : 2,
+  });
+};
 
 /** Lower predicates, namespace scope, required fields and sort keys. */
 export const lowerNavQuery = (
@@ -1591,7 +1667,7 @@ export const lowerNavQuery = (
       find,
       where,
       ...(order.length > 0 ? { order } : {}),
-      ...(q.spec.limit !== undefined ? { limit: q.spec.limit } : {}),
+      ...(limitOf(q.spec) !== undefined ? { limit: limitOf(q.spec) } : {}),
       ...(q.spec.offset !== undefined ? { offset: q.spec.offset } : {}),
     },
     pullMap,
