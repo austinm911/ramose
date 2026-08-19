@@ -374,13 +374,7 @@ type ElementField<K extends string> =
  * the intersection still infers `S` from the argument, and a rejected field
  * has nowhere to go.
  */
-export type ValidShape<S> = HasAgainSelect<S> extends true
-  ? HasIdField<S> extends true
-    ? ValidShapeFields<S>
-    : AgainMissingId
-  : ValidShapeFields<S>;
-
-type ValidShapeFields<S> = {
+export type ValidShape<S> = {
   readonly [K in keyof S]: IsAgainTerm<S[K]> extends true
     ? AgainAsField<K & string>
     : IsHopped<S[K]> extends true
@@ -388,9 +382,13 @@ type ValidShapeFields<S> = {
       : IsElement<S[K]> extends true
         ? ElementField<K & string>
         : IsAgainSelectField<S[K]> extends true
-          ? AgainNsField<S[K], S, K & string>
+          ? AgainSelectField<S[K], S, K & string>
           : S[K];
 };
+
+type AgainSelectField<F, S, K extends string> = HasIdField<S> extends true
+  ? AgainNsField<F, S, K>
+  : AgainMissingId;
 
 type AgainNsField<F, S, K extends string> = AgainTargetNs<F> extends ShapeNs<S>
   ? F
@@ -1866,13 +1864,6 @@ export interface NavQueryBuilder<
     ...preds: W & { readonly [K in keyof W]: WhereArg<W[K], P> }
   ): NavQueryBuilder<N, R, P>;
   /**
-   * `again(n)` is not a top-level shape — it re-applies an enclosing select.
-   * Write it on a self-ref: `ref.select(Ramose.again(n))`.
-   */
-  select(
-    shape: Again<RecurDepth> & TopLevelAgain,
-  ): NavQueryBuilder<N, R, P>;
-  /**
    * `select(Ramose.all(N))` — every attribute the matched entity has, as the
    * peer's wildcard pull. The row is ident-keyed ({@link AllRow}), not the
    * named shape a field map gives. The namespace must be the one the query is
@@ -1888,10 +1879,16 @@ export interface NavQueryBuilder<
    * `{ ownerName: Todo.owner.name }` — is rejected: see {@link ValidShape}.
    * No field is a param, and no `when` gates one: a query's shape never
    * depends on a binding.
+   *
+   * `again(n)` is folded into this overload (not a third one) so a bad
+   * field map still reports on the field. Top-level `again` is
+   * {@link TopLevelAgain}.
    */
-  select<const S extends Shape>(
-    shape: S & ValidShape<S>,
-  ): NavQueryBuilder<N, CardOf<R, readonly SelectResult<S>[]>, P>;
+  select<const S extends Shape | Again>(
+    shape: [S] extends [Again] ? S & TopLevelAgain : S & ValidShape<S>,
+  ): [S] extends [Again]
+    ? NavQueryBuilder<N, never, P>
+    : NavQueryBuilder<N, CardOf<R, readonly SelectResult<S>[]>, P>;
   /**
    * A sort key is a card-one path from the row. An element cursor is not one:
    * `.each` names a value inside a collection, and the collection is the thing
@@ -2180,7 +2177,7 @@ const builder = <N extends AnyNamespace, R, P = never>(
         );
       }
       return builder(ns, { ...spec, shape });
-    }) as NavQueryBuilder<N, R, P>["select"],
+    }) as unknown as NavQueryBuilder<N, R, P>["select"],
     orderBy: (attr, dir = "asc", opts) => {
       const path = pathOf(attr);
       if (attr.__each !== undefined) {

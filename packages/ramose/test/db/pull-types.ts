@@ -9,12 +9,14 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import {
   Attr,
+  Catalog,
   type Db,
   type Eid,
   type Equal,
   type Expect,
   type AllRow,
   Namespace,
+  Ref,
   again,
   all,
   pick,

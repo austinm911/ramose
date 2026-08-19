@@ -1207,22 +1207,22 @@ again("...");
 // @ts-expect-error again is not a top-level shape
 query(ThreadComment).select(again(4));
 
+// @ts-expect-error again is a shape, not a field
 query(ThreadComment).select({
   id: ThreadComment.id,
-  // @ts-expect-error again is a shape, not a field
   replies: again(4),
 });
 
+// @ts-expect-error author is a person — again re-applies this comment shape
 query(ThreadComment).select({
   id: ThreadComment.id,
   body: ThreadComment.body,
-  // @ts-expect-error author is a person — again re-applies this comment shape
   author: ThreadComment.author.select(again(3)),
 });
 
+// @ts-expect-error a shape that contains again must select N.id
 query(ThreadComment).select({
   body: ThreadComment.body,
-  // @ts-expect-error a shape that contains again must select N.id
   replies: ThreadComment.replies.limit(50).select(again(2)),
 });
 
