@@ -24,11 +24,14 @@ import { compact, record } from "./http.ts";
 import type { LookupRef } from "./idents.ts";
 import {
   asNavQuery,
+  finalizeAggResult,
+  finalizeNavPage,
   finalizeNavResult,
   lowerNavQuery,
   takeNavResult,
   type NavQuery,
   type NavQueryBuilder,
+  type Page,
 } from "./NavQuery.ts";
 import type { AnyNamespace } from "./Namespace.ts";
 import type { SessionPrincipal } from "./session.ts";
@@ -68,14 +71,19 @@ type QueryRows<C extends AnyCatalog, R> = Equal<
 
 /**
  * What `db.q` / `db.live` can fail with. `.oneOrFail()` adds {@link NotOne}
- * when the peer answers zero or two rows; every other query is {@link DbError}
- * only.
+ * when the peer answers zero or two rows; every other query — a rows array,
+ * `.one()`'s `row | null`, a cursor {@link Page}, a scalar aggregate — is
+ * {@link DbError} only.
  */
 export type QueryError<R = unknown> = [R] extends [readonly unknown[]]
   ? DbError
   : [null] extends [R]
     ? DbError
-    : DbError | NotOne;
+    : [R] extends [number]
+      ? DbError
+      : [R] extends [Page<unknown>]
+        ? DbError
+        : DbError | NotOne;
 
 // ── the transport seam ─────────────────────────────────────────────────────
 
@@ -410,10 +418,18 @@ const makeRead = <C extends AnyCatalog>(
         ),
       );
       const t = typeof body.t === "number" ? body.t : 0;
-      const taken = takeNavResult(
-        finalizeNavResult(body.result, lowered.pullMap),
-        nav.spec.take,
-      );
+      if (nav.spec.aggregate !== undefined) {
+        return { rows: finalizeAggResult(body.result, nav.spec), t, raw: body.result };
+      }
+      const finalized = finalizeNavResult(body.result, lowered.pullMap);
+      if (nav.spec.after !== undefined) {
+        return {
+          rows: finalizeNavPage(body.result, finalized, nav.spec.limit),
+          t,
+          raw: body.result,
+        };
+      }
+      const taken = takeNavResult(finalized, nav.spec.take);
       if (taken instanceof NotOne) return yield* Effect.fail(taken);
       return { rows: taken, t, raw: body.result };
     });

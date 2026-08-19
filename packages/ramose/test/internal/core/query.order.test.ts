@@ -222,3 +222,59 @@ describe("order / limit / offset parsing", () => {
     expect(parseQuery({ ":find": ["?n"], ":where": [], ":limit": 3 }).limit).toBe(3);
   });
 });
+
+describe(":after keyset cursor", () => {
+  const byAgeName = (extra: object) =>
+    query(db, {
+      find: ["?n"],
+      where: [["?e", ":person/name", "?n"], ["?e", ":person/age", "?a"]],
+      order: [["?a", "asc"], ["?n", "asc"]],
+      ...extra,
+    });
+
+  test("keeps only the rows strictly after the cursor position", async () => {
+    // sorted: Bob(25) Dave(25) Alice(30) Carol(35)
+    expect(await byAgeName({ after: [25, "Bob"] })).toEqual([["Dave"], ["Alice"], ["Carol"]]);
+    expect(await byAgeName({ after: [25, "Dave"] })).toEqual([["Alice"], ["Carol"]]);
+    expect(await byAgeName({ after: [35, "Carol"] })).toEqual([]);
+    // a cursor before every row keeps them all
+    expect((await byAgeName({ after: [0, ""] })).length).toBe(4);
+  });
+
+  test(":limit counts rows past the cursor", async () => {
+    expect(await byAgeName({ after: [25, "Bob"], limit: 2 })).toEqual([["Dave"], ["Alice"]]);
+  });
+
+  test("a null cursor value sits where :empty put the missing rows", async () => {
+    // Dave has no :person/score; get-else-style or-join binding grounds null.
+    const q = (after: unknown[]) =>
+      query(db, {
+        find: ["?n"],
+        where: [
+          ["?e", ":person/name", "?n"],
+          ["or-join", ["?e", "?s"],
+            ["and", ["?e", ":person/score", "?s"]],
+            ["and", ["not", ["?e", ":person/score", "_"]], [["ground", [null]], ["?s", "..."]]]],
+        ],
+        order: [{ var: "?s", dir: "asc", empty: "last" }, { var: "?n", dir: "asc" }],
+        after,
+      });
+    // sorted: Carol(0.5) Alice(1.5) Bob(2.5) Dave(null last)
+    expect(await q([2.5, "Bob"])).toEqual([["Dave"]]);
+    expect(await q([null, "Dave"])).toEqual([]);
+  });
+
+  test(":after needs :order, matching arity, and no aggregates", () => {
+    const bad = (q: object) => expect(() => parseQuery(q)).toThrow(QueryParseError);
+    bad({ find: ["?n"], where: [], after: [1] });
+    bad({ find: ["?n"], where: [], order: [["?n"]], after: [1, 2] });
+    bad({ find: ["?n"], where: [], order: [["?n"]], after: "x" });
+    bad({ find: [["count", "?e"], "?c"], where: [], order: [["?c"]], after: [1] });
+    expect(parseQuery({ find: ["?n"], where: [], order: [["?n"]], after: ["Bob"] })).toMatchObject({
+      after: ["Bob"],
+    });
+    expect(parseQuery(`[:find ?n :where [?e :a/b ?n] :order ?n :after ["Bob"]]`)).toMatchObject({
+      after: ["Bob"],
+    });
+  });
+});

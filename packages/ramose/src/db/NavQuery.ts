@@ -300,6 +300,191 @@ export interface OrderBy {
   readonly empty: OrderEmpty;
 }
 
+// ── keyset paging ───────────────────────────────────────────────────────────
+
+/**
+ * Where a page ended — feed it to `.after` to get the next one. Opaque: the
+ * `keys` are the last row's sort-key values (the entity-id tie-breaker
+ * included), and they mean something only to the query that minted them —
+ * `.after` rejects a cursor whose shape does not fit. Keep it in memory
+ * between pages; it is not designed to survive serialization (a `Date` key
+ * that round-trips as a string would sort as one).
+ */
+export interface Cursor {
+  readonly _tag: "Cursor";
+  /** @internal One value per lowered `:order` key, the tie-breaker last. */
+  readonly keys: readonly unknown[];
+}
+
+export const isCursor = (x: unknown): x is Cursor =>
+  typeof x === "object" &&
+  x !== null &&
+  (x as { _tag?: unknown })._tag === "Cursor" &&
+  Array.isArray((x as { keys?: unknown }).keys);
+
+/**
+ * What a cursor-paged query resolves to: the page's rows, and the cursor of
+ * its last row — `null` when there is no next page (the page came back empty,
+ * or shorter than its `.limit`). Without a `.limit`, a full sweep always ends
+ * on one empty page: the peer cannot know the last row is the last.
+ */
+export interface Page<Row = unknown> {
+  readonly rows: readonly Row[];
+  readonly cursor: Cursor | null;
+}
+
+// ── aggregates ──────────────────────────────────────────────────────────────
+
+/** The engine aggregate names the nav surface lowers to. */
+export type AggName = "count" | "count-distinct" | "sum" | "avg" | "min" | "max";
+
+/**
+ * One field of an `.aggregate` shape: which function, over which card-one
+ * path — `count()` takes none, it counts the rows themselves. Phantom `Out`
+ * is the cell's type: `number` for the counts and `sum`, `| null` for
+ * `avg` / `min` / `max`, whose value over no rows is no value.
+ */
+export interface Agg<Out = unknown> {
+  readonly _tag: "Agg";
+  readonly fn: AggName;
+  /** The aggregated path; absent for `count()`. */
+  readonly attr?: PathCarrier;
+  /** Phantom — never present at runtime. */
+  readonly _out?: Out;
+}
+
+/** An `.aggregate` shape: each field an {@link Agg}, keyed by its alias. */
+export type AggShape = { readonly [key: string]: Agg<unknown> };
+
+/** The row an `.aggregate` shape answers with: one cell per aggregate. */
+export type AggRow<S> = {
+  readonly [K in keyof S]: S[K] extends Agg<infer O> ? O : never;
+};
+
+/** A `.groupBy` shape: each key a card-one path, keyed by its alias. */
+export type GroupShape = { readonly [key: string]: PathCarrier };
+
+/**
+ * The error an element cursor resolves to as a group key or an aggregate
+ * argument: `.each` names one value inside a collection, and a row has the
+ * collection — see {@link EachOf}.
+ */
+type ElementAggKey =
+  `an element cursor is not an aggregate key: \`.each\` names one value of a card-many attribute — aggregate or group by a cardinality-one path instead`;
+
+/** Rejects `attr.each` where a card-one path is needed; `unknown` otherwise. */
+export type ValidAggKey<K> = K extends { readonly __each: string }
+  ? ElementAggKey
+  : unknown;
+
+/** `S`, with every element-cursor key replaced by the error naming it. */
+export type ValidGroupShape<S> = {
+  readonly [K in keyof S]: S[K] extends { readonly __each: string }
+    ? ElementAggKey
+    : S[K];
+};
+
+/**
+ * The error a non-numeric `sum` / `avg` argument resolves to: adding strings
+ * or dates means nothing, so the attribute has to be a number-valued one.
+ */
+type NumericAggKey<A, F extends string> = [AttrValue<A>] extends [number]
+  ? unknown
+  : `${F} takes a number-valued attribute`;
+
+/**
+ * A group-key cell, as the row carries it: `:db/id` is the branded raw id
+ * (the same cell `select({ id: N.id })` yields), a ref key is the target
+ * entity as an {@link Eid} — catalog-unbranded, the way a bare query's rows
+ * are, since a query is scoped to a namespace and not a catalog — and a
+ * scalar key is its value.
+ */
+type GroupKeyCell<F> = F extends { readonly ident: ":db/id" }
+  ? IdCell<F>
+  : F extends { readonly valueType: ":db.type/ref" }
+    ? Eid
+    : AttrValue<F>;
+
+/** The row a grouped query answers with: the group keys, then the aggregates. */
+export type GroupedRow<G, S> = {
+  readonly [K in keyof G | keyof S]: K extends keyof S
+    ? S[K] extends Agg<infer O>
+      ? O
+      : never
+    : K extends keyof G
+      ? GroupKeyCell<G[K]>
+      : never;
+};
+
+/** @internal A group key, lowered: alias, path, and how its cell reads. */
+export interface GroupKeySpec {
+  readonly alias: string;
+  readonly path: readonly string[];
+  readonly revs: readonly boolean[];
+  /** `ref` wraps the raw id in an `Eid`; `id` and `value` pass through. */
+  readonly cell: "ref" | "id" | "value";
+}
+
+/** @internal One aggregate field, lowered: alias, engine fn, path if any. */
+export interface AggFieldSpec {
+  readonly alias: string;
+  readonly fn: AggName;
+  readonly path?: readonly string[];
+  readonly revs?: readonly boolean[];
+}
+
+/**
+ * The path an aggregate summarizes or a group is keyed by: card-one from the
+ * row — a many hop is a set per row, and a set is not one value. (This is
+ * `.orderBy`'s rule, for the same reason.)
+ */
+const aggPath = (what: string, attr: PathCarrier): PathCarrier => {
+  const path = pathOf(attr);
+  if (attr.__each !== undefined) {
+    throw new Error(`ramose/query: ${eachScopeHint(attr.__each)}`);
+  }
+  if (cardsOf(attr).includes("many")) {
+    throw new Error(
+      `ramose/query: ${what}(${path.join(" → ")}) crosses a cardinality-many attribute — an aggregate summarizes one value per row, and a many hop is a set of them`,
+    );
+  }
+  return attr;
+};
+
+const agg = <Out>(fn: AggName, what: string, attr: PathCarrier): Agg<Out> => ({
+  _tag: "Agg",
+  fn,
+  attr: aggPath(what, attr),
+});
+
+/** `Ramose.count()` — how many rows the query matches. */
+export const count = (): Agg<number> => ({ _tag: "Agg", fn: "count" });
+
+/** `Ramose.countDistinct(attr)` — how many distinct values the path has. */
+export const countDistinct = <K extends PathCarrier>(
+  attr: K & ValidAggKey<K>,
+): Agg<number> => agg("count-distinct", "countDistinct", attr as PathCarrier);
+
+/** `Ramose.sum(attr)` — the sum of a number attribute, `0` over no rows. */
+export const sum = <K extends PathCarrier>(
+  attr: K & ValidAggKey<K> & NumericAggKey<K, "sum">,
+): Agg<number> => agg("sum", "sum", attr as PathCarrier);
+
+/** `Ramose.avg(attr)` — the mean of a number attribute, `null` over no rows. */
+export const avg = <K extends PathCarrier>(
+  attr: K & ValidAggKey<K> & NumericAggKey<K, "avg">,
+): Agg<number | null> => agg("avg", "avg", attr as PathCarrier);
+
+/** `Ramose.min(attr)` — the least value the path has, `null` over no rows. */
+export const min = <K extends PathCarrier>(
+  attr: K & ValidAggKey<K>,
+): Agg<AttrValue<K> | null> => agg("min", "min", attr as PathCarrier);
+
+/** `Ramose.max(attr)` — the greatest value the path has, `null` over no rows. */
+export const max = <K extends PathCarrier>(
+  attr: K & ValidAggKey<K>,
+): Agg<AttrValue<K> | null> => agg("max", "max", attr as PathCarrier);
+
 export interface NavQuerySpec {
   readonly ns: string;
   /** Attribute idents that define membership in `ns` (for bare scope). */
@@ -316,6 +501,14 @@ export interface NavQuerySpec {
    * for the client to discard.
    */
   readonly take: "one" | "oneOrFail" | undefined;
+  /** Group keys, set by `.groupBy` — only ever together with `aggregate`. */
+  readonly groupBy: readonly GroupKeySpec[] | undefined;
+  /** Aggregate fields, set by `.aggregate` and the scalar sugars. */
+  readonly aggregate: readonly AggFieldSpec[] | undefined;
+  /** `.count()` & friends: unwrap the one aggregate row to its one cell. */
+  readonly aggScalar: boolean;
+  /** Keyset paging: `null` is the first page, `undefined` — not paged. */
+  readonly after: Cursor | null | undefined;
 }
 
 /**
@@ -1398,18 +1591,26 @@ type SelectFieldResult<F> = F extends {
           : never;
 
 /**
- * Re-apply `.one()` / `.oneOrFail()` after a later `.select` so
- * `query(N).one().select({…})` keeps the single-row type.
+ * Re-apply `.one()` / `.oneOrFail()` / `.after` after a later `.select` so
+ * `query(N).one().select({…})` keeps the single-row type and
+ * `query(N).after(c).select({…})` keeps the page.
  */
-type CardOf<R, NewRows extends readonly unknown[]> = R extends readonly unknown[]
-  ? NewRows
-  : null extends R
-    ? NewRows extends readonly (infer E)[]
-      ? E | null
-      : never
-    : NewRows extends readonly (infer E)[]
-      ? E
-      : never;
+type CardOf<R, NewRows extends readonly unknown[]> = R extends Page<unknown>
+  ? Page<ElemOf<NewRows>>
+  : R extends readonly unknown[]
+    ? NewRows
+    : null extends R
+      ? ElemOf<NewRows> | null
+      : ElemOf<NewRows>;
+
+type ElemOf<A> = A extends readonly (infer E)[] ? E : never;
+
+/** The rows-array `R` (or the page's), as the page `.after` answers with. */
+type PagedOf<R> = R extends Page<infer E>
+  ? Page<E>
+  : R extends readonly (infer E)[]
+    ? Page<E>
+    : never;
 
 /** At most one row — the array element, or `null` when the page is empty. */
 type OneOf<R> = R extends readonly (infer E)[] ? E | null : Exclude<R, null> | null;
@@ -1466,8 +1667,72 @@ export interface NavQueryBuilder<
    */
   oneOrFail(): NavQueryBuilder<N, OneOrFailOf<R>>;
 
+  /**
+   * Keyset-page a sorted query: the result becomes a {@link Page}, whose
+   * `cursor` is where it ended — pass `null` for the first page and the
+   * previous page's cursor after that. Needs an `.orderBy` (the cursor is a
+   * position in the sort); the entity id rides as a final tie-breaker, so
+   * rows that tie on every key still land on exactly one page. The seek is
+   * the peer's: `.limit(n)` is n rows *past* the cursor, and unlike
+   * `.offset` the walk does not shift when rows are inserted before it.
+   */
+  after(cursor: Cursor | null): NavQueryBuilder<N, PagedOf<R>>;
+
+  /** How many rows the query matches. `0` when none do. */
+  count(): NavQuery<number>;
+  /** How many distinct values a card-one path has over the matched rows. */
+  countDistinct<K extends PathCarrier>(attr: K & ValidAggKey<K>): NavQuery<number>;
+  /** The sum of a number attribute over the matched rows; `0` over none. */
+  sum<K extends PathCarrier>(
+    attr: K & ValidAggKey<K> & NumericAggKey<K, "sum">,
+  ): NavQuery<number>;
+  /** The mean of a number attribute over the matched rows; `null` over none. */
+  avg<K extends PathCarrier>(
+    attr: K & ValidAggKey<K> & NumericAggKey<K, "avg">,
+  ): NavQuery<number | null>;
+  /** The least value a card-one path has over the matched rows. */
+  min<K extends PathCarrier>(
+    attr: K & ValidAggKey<K>,
+  ): NavQuery<AttrValue<K> | null>;
+  /** The greatest value a card-one path has over the matched rows. */
+  max<K extends PathCarrier>(
+    attr: K & ValidAggKey<K>,
+  ): NavQuery<AttrValue<K> | null>;
+  /**
+   * Several aggregates in one round trip: `{ n: count(), total: sum(…) }`.
+   * The whole match set is the one group, so the result is exactly one row —
+   * a one-element tuple, so `const [totals] = yield* db.q(…)` reads it.
+   * A row missing an aggregated attribute contributes nothing to that
+   * aggregate but still counts everywhere else, so `count()` next to
+   * `sum(Todo.hours)` counts todos without hours too.
+   */
+  aggregate<const S extends AggShape>(shape: S): NavQuery<readonly [AggRow<S>]>;
+  /**
+   * Group the matched rows by one or more card-one paths, then `.aggregate`
+   * per group: `groupBy({ owner: Todo.owner }).aggregate({ n: count() })` is
+   * one row per owner. A row without a group-key value belongs to no group
+   * and is left out — the same join the key's clause is.
+   */
+  groupBy<const G extends GroupShape>(
+    keys: G & ValidGroupShape<G>,
+  ): GroupedNavQueryBuilder<N, G>;
+
   /** Freeze into a runnable query value. */
   build(): NavQuery<R>;
+}
+
+/**
+ * What `.groupBy` returns: a query whose rows are groups, waiting for the
+ * `.aggregate` that says what to compute per group. Filters, like everything
+ * that names the *rows*, come before the `.groupBy`.
+ */
+export interface GroupedNavQueryBuilder<N extends AnyNamespace, G> {
+  readonly ns: N;
+  readonly spec: NavQuerySpec;
+  /** One row per group: the group keys, then the aggregates, by alias. */
+  aggregate<const S extends AggShape>(
+    shape: S,
+  ): NavQuery<readonly GroupedRow<G, S>[]>;
 }
 
 /**
@@ -1499,20 +1764,153 @@ export type Row<Q> = Q extends NavQuery<infer R>
 export type Rows<Q> = readonly Row<Q>[];
 
 /**
- * The phantom result is the rows array, or a single row after `.one` /
- * `.oneOrFail`; the row is the element either way (`null` is absence, not a row).
+ * The phantom result is the rows array, a {@link Page} of them, or a single
+ * row after `.one` / `.oneOrFail`; the row is the element either way (`null`
+ * is absence, not a row).
  */
-type RowOf<R> = R extends readonly (infer E)[] ? E : Exclude<R, null>;
+type RowOf<R> = R extends Page<infer E>
+  ? E
+  : R extends readonly (infer E)[]
+    ? E
+    : Exclude<R, null>;
 
 const freeze = <R>(spec: NavQuerySpec): NavQuery<R> => ({
   _tag: "NavQuery",
   spec,
 });
 
+/**
+ * What an aggregating call must not find on the spec already: an aggregate
+ * answers with its own rows (the groups), so the row-shaping and row-paging
+ * pieces have nothing to apply to.
+ */
+const assertAggregable = (spec: NavQuerySpec, what: string): void => {
+  if (spec.shape !== undefined) {
+    throw new Error(
+      `ramose/query: ${what} answers with its own row — there is no .select shape for it to fill`,
+    );
+  }
+  if (spec.orderBy.length > 0) {
+    throw new Error(
+      `ramose/query: .orderBy sorts the matched rows, and ${what} replaces them with groups — sorting groups is not supported yet (issue #18)`,
+    );
+  }
+  if (spec.take !== undefined) {
+    throw new Error(
+      `ramose/query: .one() / .oneOrFail() unwrap a page of rows, and ${what} answers with groups — an ungrouped aggregate is already one row`,
+    );
+  }
+  if (spec.limit !== undefined || spec.offset !== undefined) {
+    throw new Error(
+      `ramose/query: .limit / .offset page the matched rows, and ${what} replaces them with groups — paging groups is not supported yet (issue #18)`,
+    );
+  }
+  if (spec.after !== undefined) {
+    throw new Error(
+      `ramose/query: .after pages the matched rows, and ${what} replaces them with groups — paging groups is not supported yet (issue #18)`,
+    );
+  }
+};
+
+/** An `.aggregate` shape's fields, checked and lowered in alias order. */
+const aggFields = (shape: AggShape): AggFieldSpec[] => {
+  const out: AggFieldSpec[] = [];
+  for (const [alias, field] of Object.entries(shape)) {
+    if (
+      typeof field !== "object" ||
+      field === null ||
+      (field as { _tag?: unknown })._tag !== "Agg"
+    ) {
+      throw new Error(
+        `ramose/query: aggregate field "${alias}" is not an aggregate — use count() / countDistinct(attr) / sum(attr) / avg(attr) / min(attr) / max(attr)`,
+      );
+    }
+    out.push({
+      alias,
+      fn: field.fn,
+      ...(field.attr !== undefined
+        ? { path: pathOf(field.attr), revs: revsOf(field.attr) }
+        : {}),
+    });
+  }
+  if (out.length === 0) {
+    throw new Error("ramose/query: aggregate({}) computes nothing — name at least one aggregate");
+  }
+  return out;
+};
+
+/** A `.groupBy` shape's keys, checked and lowered in alias order. */
+const groupKeys = (keys: GroupShape): GroupKeySpec[] => {
+  const out: GroupKeySpec[] = [];
+  for (const [alias, key] of Object.entries(keys)) {
+    const attr = aggPath("groupBy", key);
+    const path = pathOf(attr);
+    out.push({
+      alias,
+      path,
+      revs: revsOf(attr),
+      cell:
+        path[path.length - 1] === ID ? "id" : isRefNav(attr) ? "ref" : "value",
+    });
+  }
+  if (out.length === 0) {
+    throw new Error(
+      "ramose/query: groupBy({}) groups by nothing — for one row over the whole match set, call .aggregate directly",
+    );
+  }
+  return out;
+};
+
+const aggregated = <R>(
+  spec: NavQuerySpec,
+  what: string,
+  fields: readonly AggFieldSpec[],
+  scalar: boolean,
+): NavQuery<R> => {
+  assertAggregable(spec, what);
+  for (const f of fields) {
+    if (spec.groupBy?.some((k) => k.alias === f.alias) === true) {
+      throw new Error(
+        `ramose/query: "${f.alias}" is both a group key and an aggregate — every cell of the grouped row needs its own name`,
+      );
+    }
+  }
+  return freeze<R>({ ...spec, aggregate: fields, aggScalar: scalar });
+};
+
+const groupedBuilder = <N extends AnyNamespace, G>(
+  ns: N,
+  spec: NavQuerySpec,
+): GroupedNavQueryBuilder<N, G> => ({
+  ns,
+  spec,
+  aggregate: (shape) => aggregated(spec, ".aggregate", aggFields(shape), false),
+});
+
+/** The one aggregate the scalar sugars (`.count()`, `.sum(…)`) unwrap to. */
+const scalarAgg = <Out>(
+  spec: NavQuerySpec,
+  what: string,
+  field: Agg<Out>,
+): NavQuery<Out> =>
+  aggregated<Out>(
+    spec,
+    what,
+    aggFields({ value: field } as AggShape),
+    true,
+  );
+
 const builder = <N extends AnyNamespace, R>(
   ns: N,
   spec: NavQuerySpec,
 ): NavQueryBuilder<N, R> => {
+  const noPageTake = (what: string): void => {
+    if (spec.after !== undefined) {
+      throw new Error(
+        `ramose/query: ${what} unwraps a single row, and .after pages many — a paged query keeps its rows`,
+      );
+    }
+  };
   const self: NavQueryBuilder<N, R> = {
     ns,
     spec,
@@ -1543,9 +1941,60 @@ const builder = <N extends AnyNamespace, R>(
       });
     },
     limit: (n) => builder(ns, { ...spec, limit: n }),
-    offset: (n) => builder(ns, { ...spec, offset: n }),
-    one: () => builder(ns, { ...spec, take: "one", limit: 1 }),
-    oneOrFail: () => builder(ns, { ...spec, take: "oneOrFail", limit: 2 }),
+    offset: (n) => {
+      if (spec.after !== undefined) {
+        throw new Error(
+          "ramose/query: .after and .offset both say where the page starts — a cursor already is the offset",
+        );
+      }
+      return builder(ns, { ...spec, offset: n });
+    },
+    one: () => {
+      noPageTake(".one()");
+      return builder(ns, { ...spec, take: "one", limit: 1 });
+    },
+    oneOrFail: () => {
+      noPageTake(".oneOrFail()");
+      return builder(ns, { ...spec, take: "oneOrFail", limit: 2 });
+    },
+    after: (cursor) => {
+      if (spec.take !== undefined) {
+        throw new Error(
+          "ramose/query: .one() / .oneOrFail() answer a single row — there is no next page to cursor to",
+        );
+      }
+      if (spec.offset !== undefined) {
+        throw new Error(
+          "ramose/query: .after and .offset both say where the page starts — a cursor already is the offset",
+        );
+      }
+      if (cursor !== null && !isCursor(cursor)) {
+        throw new Error(
+          "ramose/query: .after takes the previous page's cursor, or null for the first page",
+        );
+      }
+      return builder(ns, { ...spec, after: cursor });
+    },
+    count: () => scalarAgg<number>(spec, ".count()", count()),
+    countDistinct: (attr) =>
+      scalarAgg<number>(
+        spec,
+        ".countDistinct(…)",
+        countDistinct(attr as PathCarrier),
+      ),
+    sum: (attr) => scalarAgg<number>(spec, ".sum(…)", sum(attr as never)),
+    avg: (attr) =>
+      scalarAgg<number | null>(spec, ".avg(…)", avg(attr as never)),
+    min: ((attr: PathCarrier) =>
+      scalarAgg(spec, ".min(…)", min(attr))) as NavQueryBuilder<N, R>["min"],
+    max: ((attr: PathCarrier) =>
+      scalarAgg(spec, ".max(…)", max(attr))) as NavQueryBuilder<N, R>["max"],
+    aggregate: (shape) =>
+      aggregated(spec, ".aggregate", aggFields(shape), false),
+    groupBy: (keys) => {
+      assertAggregable(spec, ".groupBy");
+      return groupedBuilder(ns, { ...spec, groupBy: groupKeys(keys) });
+    },
     build: () => freeze<R>(spec),
   };
   return self;
@@ -1572,6 +2021,10 @@ export const query = <N extends AnyNamespace>(ns: N): NavQueryBuilder<N> => {
     limit: undefined,
     offset: undefined,
     take: undefined,
+    groupBy: undefined,
+    aggregate: undefined,
+    aggScalar: false,
+    after: undefined,
   });
 };
 
@@ -1603,7 +2056,11 @@ interface OrderClause {
 export interface LoweredQuery {
   readonly find: unknown[];
   readonly where: unknown[];
+  /** Aggregating queries carry the root in `:with` — see the lowerer. */
+  readonly with?: readonly string[];
   readonly order?: readonly OrderClause[];
+  /** Keyset cursor values, one per `order` key — the engine's `:after`. */
+  readonly after?: readonly unknown[];
   readonly limit?: number;
   readonly offset?: number;
 }
@@ -1664,6 +2121,36 @@ export const lowerNavQuery = (
     where.push(...lowerWhere(root, p));
   }
 
+  // Aggregates: `:find` is the group-key variables, then the aggregate
+  // calls. The root entity rides in `:with`, so two rows that agree on every
+  // aggregated value are still two rows (Datomic aggregates over the set of
+  // distinct find+:with tuples). A group key joins — a row without it has no
+  // group — while an aggregated path binds through the orderBy or-join, so a
+  // row missing *that* attribute still counts everywhere else: the engine
+  // reads its `null` as no value.
+  if (q.spec.aggregate !== undefined) {
+    const find: unknown[] = [];
+    for (const k of q.spec.groupBy ?? []) {
+      if (k.path.length === 1 && k.path[0] === ID) {
+        find.push(root);
+        continue;
+      }
+      const g = gensym("g");
+      where.push(...hopClauses(root, k.path, k.revs, g));
+      find.push(g);
+    }
+    for (const f of q.spec.aggregate) {
+      if (f.path === undefined) {
+        find.push(["count", root]);
+        continue;
+      }
+      const bound = lowerOrderPath(root, f.path, f.revs ?? f.path.map(() => false));
+      where.push(...bound.clauses);
+      find.push([f.fn, bound.var]);
+    }
+    return { query: { find, where, with: [root] }, pullMap: undefined };
+  }
+
   // the wildcard is the peer's own pattern, so it is already lowered: there is
   // nothing to expand, and nothing in it can drop a row (every key is optional)
   const pullMap =
@@ -1681,16 +2168,41 @@ export const lowerNavQuery = (
     order.push({ var: bound.var, dir: o.dir, empty: o.empty });
   }
 
+  // Keyset paging: a cursor is a position in a *total* order, so the entity
+  // id rides as the final tie-breaker (unless a sort key already is it), and
+  // every sort-key variable rides in `:find` after the row cell — that is
+  // what the client mints the next cursor from.
+  const pagedVars: string[] = [];
+  if (q.spec.after !== undefined) {
+    if (order.length === 0) {
+      throw new Error(
+        "ramose/query: .after pages a sorted query — add an .orderBy for the cursor to be a position in",
+      );
+    }
+    if (!order.some((o) => o.var === root)) {
+      order.push({ var: root, dir: "asc", empty: "last" });
+    }
+    pagedVars.push(...order.map((o) => o.var));
+    if (q.spec.after !== null && q.spec.after.keys.length !== order.length) {
+      throw new Error(
+        `ramose/query: this cursor does not fit — it carries ${q.spec.after.keys.length} sort-key values and the query orders by ${order.length}; a cursor only continues the query that minted it`,
+      );
+    }
+  }
+
   const find =
     pullMap !== undefined
-      ? [["pull", root, lowerPullPattern(pullMap)]]
-      : [root];
+      ? [["pull", root, lowerPullPattern(pullMap)], ...pagedVars]
+      : [root, ...pagedVars];
 
   return {
     query: {
       find,
       where,
       ...(order.length > 0 ? { order } : {}),
+      ...(q.spec.after !== undefined && q.spec.after !== null
+        ? { after: [...q.spec.after.keys] }
+        : {}),
       ...(limitOf(q.spec) !== undefined ? { limit: limitOf(q.spec) } : {}),
       ...(q.spec.offset !== undefined ? { offset: q.spec.offset } : {}),
     },
@@ -2064,6 +2576,8 @@ export const finalizeNavResult = (
 ): unknown => {
   const rows: unknown[] = Array.isArray(raw) ? raw : [];
   // find-pull → [[map], ...]; bare find → [[eid], ...]. Unwrap the one cell.
+  // A paged query's rows carry the sort-key cells after the first one; only
+  // the first is the row.
   const cellOf = (row: unknown): unknown => (Array.isArray(row) ? row[0] : row);
   if (pullMap !== undefined) {
     return rows.map((row) => reshapePullResult(pullMap, cellOf(row)));
@@ -2072,4 +2586,71 @@ export const finalizeNavResult = (
     const cell = cellOf(row);
     return typeof cell === "number" ? makeEid(cell) : cell;
   });
+};
+
+/**
+ * Wrap a paged query's finalized rows into the {@link Page}: the cursor is
+ * the last raw row's sort-key cells (everything after the row cell). `null`
+ * when the page is over — it came back empty, or shorter than its `limit`,
+ * so there is nothing past it to ask for.
+ */
+export const finalizeNavPage = (
+  raw: unknown,
+  rows: unknown,
+  limit: number | undefined,
+): Page => {
+  const tuples: unknown[] = Array.isArray(raw) ? raw : [];
+  const list = Array.isArray(rows) ? rows : [];
+  const last = tuples[tuples.length - 1];
+  return {
+    rows: list,
+    cursor:
+      !Array.isArray(last) || (limit !== undefined && tuples.length < limit)
+        ? null
+        : { _tag: "Cursor", keys: last.slice(1) },
+  };
+};
+
+/** Each aggregate's answer over no rows at all: the fn over the empty set. */
+const EMPTY_AGG: Record<AggName, unknown> = {
+  count: 0,
+  "count-distinct": 0,
+  sum: 0,
+  avg: null,
+  min: null,
+  max: null,
+};
+
+/**
+ * Reshape an aggregating query's tuples: group-key cells then aggregate
+ * cells, each under its alias. Grouped, the rows are the groups (no rows, no
+ * groups); ungrouped, the whole match set is the one group, so the result is
+ * exactly one row — over no rows each aggregate answers for the empty set
+ * (`count` 0, `sum` 0, `avg` / `min` / `max` `null`) — and the scalar sugars
+ * (`.count()` & friends) unwrap it to its one cell.
+ */
+export const finalizeAggResult = (raw: unknown, spec: NavQuerySpec): unknown => {
+  const fields = spec.aggregate ?? [];
+  const keys = spec.groupBy ?? [];
+  const rows: unknown[] = Array.isArray(raw) ? raw : [];
+  const toRow = (tuple: unknown): Record<string, unknown> => {
+    const cells: unknown[] = Array.isArray(tuple) ? tuple : [];
+    const out: Record<string, unknown> = {};
+    keys.forEach((k, i) => {
+      const cell = cells[i];
+      out[k.alias] =
+        k.cell === "ref" && typeof cell === "number" ? makeEid(cell) : cell;
+    });
+    fields.forEach((f, j) => {
+      out[f.alias] = cells[keys.length + j];
+    });
+    return out;
+  };
+  if (keys.length > 0) return rows.map(toRow);
+  const row =
+    rows.length > 0
+      ? toRow(rows[0])
+      : Object.fromEntries(fields.map((f) => [f.alias, EMPTY_AGG[f.fn]]));
+  if (spec.aggScalar) return row[fields[0]!.alias];
+  return [row];
 };

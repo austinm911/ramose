@@ -99,6 +99,15 @@ export interface Query {
   where: Clause[];
   /** sort keys, applied before :offset/:limit and before pulls are resolved */
   order?: OrderSpec[];
+  /**
+   * Keyset cursor: one value per `:order` key. Keeps only the rows *strictly
+   * after* this position in the sort order — applied before :offset/:limit,
+   * so `:limit` counts rows past the cursor. Exact only when the order is
+   * total (make the last key a tie-breaker no two rows share, e.g. the
+   * entity id); rows that compare equal to the cursor are dropped.
+   * Requires `:order`; not supported with aggregates.
+   */
+  after?: unknown[];
   /** rows to drop from the front of the (ordered) result */
   offset?: number;
   /** maximum rows to return, after :offset */
