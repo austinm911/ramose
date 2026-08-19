@@ -25,7 +25,7 @@ import {
   type Query,
   type Term,
 } from "./ast.ts";
-import { AGGREGATES, FUNCTIONS, PREDICATES, type QueryFn, sortKeys, sortRows, vkey } from "./builtins.ts";
+import { AGGREGATES, FUNCTIONS, PREDICATES, type QueryFn, type SortKey, compareCells, sortKeys, sortRows, vkey } from "./builtins.ts";
 import { parseQuery } from "./parse.ts";
 import { pullMany } from "./pull.ts";
 
@@ -1132,6 +1132,22 @@ function isQueryAst(q: unknown): boolean {
 }
 
 /**
+ * Is this row strictly after the `:after` cursor in the sort order? `keys`
+ * are the resolved sort keys (`after[i]` pairs with `keys[i]`), and the
+ * per-cell comparison is the one the sort used, so the boundary sits exactly
+ * where the sort put the row. A row that ties on every key *is* the cursor
+ * position, and is dropped — which is exact when the last key is a
+ * tie-breaker no two rows share.
+ */
+function afterCursor(row: unknown[], after: unknown[], keys: readonly SortKey[]): boolean {
+  for (let i = 0; i < keys.length; i++) {
+    const c = compareCells(row[keys[i].col], after[i], keys[i]);
+    if (c !== 0) return c > 0;
+  }
+  return false;
+}
+
+/**
  * Project / aggregate the result relation, then order → offset → limit, then
  * resolve pulls — so a `:limit` only pulls the rows that survive it.
  */
@@ -1150,6 +1166,10 @@ async function shapeResult(db: Db, ast: Query, rel: Rel): Promise<any> {
     if (!ix.has(varOf(e))) throw new QueryError(`find variable ${varOf(e)} is not bound in :where`);
   }
   const hasAgg = elems.some((e) => e.kind === "agg");
+  if (ast.after !== undefined && (hasAgg || !ast.order)) {
+    // parseQuery already rejects both; this guards direct-AST callers
+    throw new QueryError(hasAgg ? ":after is not supported with aggregates" : ":after needs :order — a cursor is a position in the sort");
+  }
   let tuples: unknown[][];
   if (!hasAgg) {
     // set semantics over the find vars (+ :with)
@@ -1159,14 +1179,19 @@ async function shapeResult(db: Db, ast: Query, rel: Rel): Promise<any> {
       // Sort the joined relation, not the projection: :order may name any
       // bound variable. `project` keeps each distinct tuple's first row, so a
       // tuple lands at its best-ranked binding.
-      sortRows(
-        rel.rows,
-        sortKeys(ast.order, (o) => {
-          const i = ix.get(o.var);
-          if (i === undefined) throw new QueryError(`order variable ${o.var} is not bound in :where`);
-          return i;
-        }),
-      );
+      const keys = sortKeys(ast.order, (o) => {
+        const i = ix.get(o.var);
+        if (i === undefined) throw new QueryError(`order variable ${o.var} is not bound in :where`);
+        return i;
+      });
+      sortRows(rel.rows, keys);
+      if (ast.after !== undefined) {
+        // keyset seek: keep the rows strictly after the cursor position, by
+        // the same comparison the sort just used — before :offset/:limit, so
+        // a :limit counts rows past the cursor
+        const after = ast.after;
+        rel = { vars: rel.vars, rows: rel.rows.filter((r) => afterCursor(r, after, keys)) };
+      }
     }
     const proj = project(rel, vars.concat(withVars), true);
     tuples = withVars.length ? proj.rows.map((r) => r.slice(0, vars.length)) : proj.rows;
@@ -1193,7 +1218,12 @@ async function shapeResult(db: Db, ast: Query, rel: Rel): Promise<any> {
           if (!f) throw new QueryError(`unknown aggregate ${e.fn}`);
           const col = bix.get(varOf(e))!;
           const consts = e.args.slice(0, -1).map((a) => (a.kind === "const" ? a.value : undefined));
-          out.push(f(rowsIn.map((r) => r[col]), ...consts));
+          // null is no value: a variable bound to null (only a `ground`
+          // binding can) contributes nothing to an aggregate — so a row may
+          // carry "this attribute is absent" past the join without skewing
+          // the sum it is absent from
+          const values = rowsIn.map((r) => r[col]).filter((v) => v !== null && v !== undefined);
+          out.push(f(values, ...consts));
         } else {
           out.push(rowsIn[0][bix.get(varOf(e))!]);
         }

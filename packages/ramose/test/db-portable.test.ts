@@ -151,6 +151,13 @@ describe("the `/db` barrel's public names", () => {
         "params",
         "optional",
         "when",
+        // aggregates (issue #18)
+        "count",
+        "countDistinct",
+        "sum",
+        "avg",
+        "min",
+        "max",
         // connecting
         "connect",
         "layer",

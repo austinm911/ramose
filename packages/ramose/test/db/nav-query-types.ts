@@ -10,6 +10,7 @@ import * as Schema from "effect/Schema";
 import {
   Attr,
   Catalog,
+  type Cursor,
   type Db,
   type DbError,
   type Eid,
@@ -20,8 +21,14 @@ import {
   Namespace,
   type AllRow,
   type NotOne,
+  type Page,
   type QueryError,
   all,
+  avg,
+  count,
+  countDistinct,
+  max,
+  min,
   not,
   optional,
   or,
@@ -34,6 +41,7 @@ import {
   Ref,
   type Row,
   type Rows,
+  sum,
 } from "../../src/db/internal.ts";
 
 import { Movie, Movies, User } from "./fixture.ts";
@@ -838,6 +846,166 @@ query(User).select({
   everything: all(User),
 });
 
+// ── aggregates: a count is a number, a grouped query is a grouped row ──────
+
+const howMany = db.q(query(User).where(User.age.gte(18)).count());
+type _howMany = Expect<Equal<Effect.Success<typeof howMany>, number>>;
+/** an aggregate never fails NotOne — the empty set is an answer, not a miss */
+type _howManyErr = Expect<Equal<Effect.Error<typeof howMany>, DbError>>;
+
+const totalAge = db.q(query(User).sum(User.age));
+type _totalAge = Expect<Equal<Effect.Success<typeof totalAge>, number>>;
+
+/** `avg` / `min` / `max` over no rows is no value, and the type says so */
+const meanAge = db.q(query(User).avg(User.age));
+type _meanAge = Expect<Equal<Effect.Success<typeof meanAge>, number | null>>;
+
+const firstName = db.q(query(User).min(User.name));
+type _firstName = Expect<Equal<Effect.Success<typeof firstName>, string | null>>;
+
+const latestRelease = db.q(query(Movie).max(Movie.released));
+type _latestRelease = Expect<
+  Equal<Effect.Success<typeof latestRelease>, Date | null>
+>;
+
+const distinctAges = db.q(query(User).countDistinct(User.age));
+type _distinctAges = Expect<Equal<Effect.Success<typeof distinctAges>, number>>;
+
+/** a multi-hop card-one path aggregates like any other */
+library.q(query(Book).min(Book.author.name));
+
+// @ts-expect-error `sum` takes a number-valued attribute
+query(User).sum(User.name);
+
+// @ts-expect-error `avg` too — the mean of strings means nothing
+query(User).avg(User.name);
+
+// @ts-expect-error an element cursor is not an aggregate key
+query(Post).min(Post.tags.each);
+
+/** `.aggregate` is exactly one row: a one-element tuple to destructure */
+const totals = db.q(
+  query(User).aggregate({
+    n: count(),
+    total: sum(User.age),
+    mean: avg(User.age),
+    eldest: max(User.age),
+  }),
+);
+type _totals = Expect<
+  Equal<
+    Effect.Success<typeof totals>,
+    readonly [
+      {
+        readonly n: number;
+        readonly total: number;
+        readonly mean: number | null;
+        readonly eldest: number | null;
+      },
+    ]
+  >
+>;
+type _totalsErr = Expect<Equal<Effect.Error<typeof totals>, DbError>>;
+
+// @ts-expect-error an aggregate shape's fields are aggregates, not attributes
+query(User).aggregate({ n: User.age });
+
+/** grouped: the row is the group keys, then the aggregates, by alias */
+const groupedByName = db.q(
+  query(User).groupBy({ name: User.name }).aggregate({ n: count() }),
+);
+type _groupedByName = Expect<
+  Equal<
+    Effect.Success<typeof groupedByName>,
+    readonly { readonly name: string; readonly n: number }[]
+  >
+>;
+type _groupedByNameErr = Expect<Equal<Effect.Error<typeof groupedByName>, DbError>>;
+
+/** a ref group key is the target entity — an `Eid`, like a bare query's rows */
+const byBest = db.q(
+  query(User).groupBy({ best: User.bestFriend }).aggregate({ n: count() }),
+);
+type _byBest = Expect<
+  Equal<Effect.Success<typeof byBest>[number]["best"], Eid>
+>;
+
+/** a `:db/id` group key is the branded raw id, like `select({ id: N.id })` */
+const byId = db.q(
+  query(Movie).groupBy({ id: Movie.id }).aggregate({ n: count() }),
+);
+type _byId = Expect<
+  Equal<Effect.Success<typeof byId>[number]["id"], Eid<typeof Movie>>
+>;
+
+/** a group key may hop, like a sort key */
+const byAuthor = library.q(
+  query(Book)
+    .groupBy({ author: Book.author.name })
+    .aggregate({ n: count(), latest: max(Book.published) }),
+);
+type _byAuthor = Expect<
+  Equal<
+    Effect.Success<typeof byAuthor>,
+    readonly {
+      readonly author: string;
+      readonly n: number;
+      readonly latest: Date | null;
+    }[]
+  >
+>;
+
+// @ts-expect-error an element cursor is not a group key
+query(Post).groupBy({ tag: Post.tags.each });
+
+// ── keyset paging: `.after` answers a Page ──────────────────────────────────
+
+const pagedNames = db.q(
+  query(User)
+    .where(User.age.gte(18))
+    .orderBy(User.age, "desc")
+    .limit(20)
+    .after(null)
+    .select({ name: User.name }),
+);
+type _pagedNames = Expect<
+  Equal<Effect.Success<typeof pagedNames>, Page<{ readonly name: string }>>
+>;
+type _pagedNamesErr = Expect<Equal<Effect.Error<typeof pagedNames>, DbError>>;
+
+/** `.after` after the `.select` pages the same rows */
+const selectThenAfter = db.q(
+  query(User).select({ name: User.name }).orderBy(User.name).limit(20).after(null),
+);
+type _selectThenAfter = Expect<
+  Equal<
+    Effect.Success<typeof selectThenAfter>,
+    Page<{ readonly name: string }>
+  >
+>;
+
+/** a bare paged query pages the matched entity ids */
+const pagedEids = db.q(query(User).orderBy(User.name).limit(20).after(null));
+type _pagedEids = Expect<Equal<Effect.Success<typeof pagedEids>, Page<Eid>>>;
+
+/** the page's cursor feeds the next `.after` with no cast */
+declare const somePage: Effect.Success<typeof pagedNames>;
+query(User).orderBy(User.age, "desc").after(somePage.cursor);
+declare const someCursor: Cursor;
+query(User).orderBy(User.age).after(someCursor);
+
+/** `Row` names the page's row, not the page */
+const pagedQuery = query(User)
+  .orderBy(User.name)
+  .after(null)
+  .select({ name: User.name });
+type _pagedRow = Expect<
+  Equal<Row<typeof pagedQuery>, { readonly name: string }>
+>;
+
+// @ts-expect-error a cursor is opaque — a string is not one
+query(User).orderBy(User.name).after("page-2");
+
 // ── nested `all(N)` under a ref `.select` ──────────────────────────────────
 
 const nestedAll = library.q(
@@ -930,8 +1098,8 @@ type _idParam = Expect<
 >;
 
 declare const userIdCell: Eid<typeof User>;
-const byId = query(User, UserP).where(User.id.is(UserP.userId));
-const byIdRun = db.q(byId, { userId: userIdCell, term: "", show: false });
+const byUserId = query(User, UserP).where(User.id.is(UserP.userId));
+const byIdRun = db.q(byUserId, { userId: userIdCell, term: "", show: false });
 type _byIdBind = Expect<Equal<Effect.Success<typeof byIdRun>, readonly Eid<typeof Movies>[]>>;
 type _byIdErr = Expect<
   Equal<Effect.Error<typeof byIdRun>, DbError | ParamError>

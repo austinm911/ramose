@@ -1,6 +1,6 @@
 ---
 title: Read data
-description: Build a query as a value, run it, filter it, choose the fields (through references), order and page, read one record, read the past.
+description: Build a query as a value, run it, filter it, choose the fields (through references), order and page, count and group, read one record, read the past.
 ---
 import Shot from "../../../components/Shot.astro";
 import Learn from "../../../components/Learn.astro";
@@ -8,7 +8,7 @@ import Next from "../../../components/Next.astro";
 
 A **query** is a typed description of a read — record type, filters, order, fields — built as a value you can run once, live, or in the past ([glossary](/concepts/glossary/#query)). This page is for anyone who has written some records and wants them back, shaped for a screen.
 
-<Learn learn={["Build a query and run it", "Filter, choose fields through references, order and page", "Read one record, and read the past"]} before={[{ href: "/guides/catalog/", label: "Define your data" }, { href: "/guides/transactions/", label: "Write data" }]} minutes={10} />
+<Learn learn={["Build a query and run it", "Filter, choose fields through references, order, page, count and group", "Read one record, and read the past"]} before={[{ href: "/guides/catalog/", label: "Define your data" }, { href: "/guides/transactions/", label: "Write data" }]} minutes={10} />
 
 ## A query is a value
 
@@ -108,6 +108,21 @@ const theAda = Ramose.query(User)
 ```
 
 `.one()` is at most one: two matches are not an error, and the rest are never fetched. `.oneOrFail()` is exactly one, and `NotOne` is not a `DbError` — the query succeeded, the count did not. When you already know the id, pull (next) is the other door.
+
+`.after(cursor)` pages by **position**: the result is `{ rows, cursor }`, and the next call (pass `null` first) returns the rows strictly after that last row. A row inserted before the cursor never shifts later pages — `offset` cannot promise that. The cursor is opaque (the last row's sort keys, record id as tie-breaker) and meant to be held in memory, not serialized.
+
+## Count and group
+
+When the answer is a number, not rows, end with `.count()`, `.countDistinct(field)`, `.sum(field)`, `.avg(field)`, `.min(field)`, `.max(field)` — several at once with `.aggregate({ … })`, one row per group with `.groupBy({ … }).aggregate({ … })`. The work runs on the server.
+
+```ts
+const open = yield* db.q(Ramose.query(Todo).where(Todo.done.eq(false)).count()); // number
+const perOwner = yield* db.q(
+  Ramose.query(Todo).groupBy({ owner: Todo.owner }).aggregate({ n: Ramose.count() }),
+);
+```
+
+A count is a `number`; `avg` / `min` / `max` are `| null` over no rows (`count` / `sum` answer `0`); a grouped row is your keys plus your aggregates. Aggregates replace the rows, so they do not combine with `.select` or paging. Rules: [Client API](/reference/client-api/#query-builder).
 
 ## Read one record
 

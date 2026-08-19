@@ -259,13 +259,26 @@ function toCount(x: unknown, key: string): number | undefined {
   return x as number;
 }
 
+/** `:after [v0 v1 …]` — one value per `:order` key (`nil`/`null` allowed). */
+function toAfter(form: unknown, order: OrderSpec[] | undefined, find: FindSpec): unknown[] | undefined {
+  if (form === undefined || form === null) return undefined;
+  if (!Array.isArray(form)) fail(":after must be a vector of values, one per :order key", form);
+  if (order === undefined) fail(":after needs :order — a cursor is a position in the sort", form);
+  if (form.length !== order.length) {
+    fail(`:after has ${form.length} values for ${order.length} :order keys`, form);
+  }
+  const elems = find.kind === "rel" || find.kind === "tuple" ? find.elems : [find.elem];
+  if (elems.some((e) => e.kind === "agg")) fail(":after is not supported with aggregates", form);
+  return (form as unknown[]).map((x) => (isEdnConstWrapper(x) ? unwrapEdnConst(x) : x));
+}
+
 // ---------------------------------------------------------------------------
 // query
 // ---------------------------------------------------------------------------
 
-const SECTIONS = [":find", ":in", ":where", ":with", ":keys", ":strs", ":syms", ":order", ":limit", ":offset"];
+const SECTIONS = [":find", ":in", ":where", ":with", ":keys", ":strs", ":syms", ":order", ":after", ":limit", ":offset"];
 /** Sections that take a single value rather than a sequence of forms. */
-const SCALAR_SECTIONS = ["limit", "offset"];
+const SCALAR_SECTIONS = ["after", "limit", "offset"];
 const QUERY_KEYS = new Set(SECTIONS.map((s) => s.slice(1)));
 
 function normalizeMap(form: unknown): Record<string, unknown> {
@@ -312,9 +325,10 @@ export function parseQuery(form: unknown): Query {
   if (keys && find.kind !== "rel") fail(":keys requires a relation find spec");
   if (keys && find.kind === "rel" && keys.length !== find.elems.length) fail(":keys length must match :find");
   const order = toOrder(m.order);
+  const after = toAfter(m.after, order, find);
   const limit = toCount(m.limit, "limit");
   const offset = toCount(m.offset, "offset");
-  return { find, keys, with: withVars, in: inputs, where, order, limit, offset };
+  return { find, keys, with: withVars, in: inputs, where, order, after, limit, offset };
 }
 
 // ---------------------------------------------------------------------------
