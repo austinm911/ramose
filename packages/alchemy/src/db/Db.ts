@@ -109,7 +109,7 @@ export interface TxReport<C extends AnyCatalog = AnyCatalog> {
 }
 
 /**
- * The pull pattern a subject accepts: a literate map, `Ripple.all(N)` (the
+ * The pull pattern a subject accepts: a literate map, `Ramose.all(N)` (the
  * peer's wildcard row), or the ident-array escape.
  */
 type PullPattern<C extends AnyCatalog, P> = [P] extends [readonly unknown[]]

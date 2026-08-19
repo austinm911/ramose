@@ -1272,8 +1272,8 @@ const assertNotAll = (shape: unknown, key?: string): void => {
   if (!isAllShape(shape)) return;
   throw new Error(
     key === undefined
-      ? "ripple/query: all(N) is the whole shape of a query — write `.select(Ripple.all(N))` on the query itself, not inside a shape"
-      : `ripple/query: select field "${key}": all(N) is the whole shape of a query, not a nested one — select the fields you want through the ref, or run a second query`,
+      ? "ramose/query: all(N) is the whole shape of a query — write `.select(Ramose.all(N))` on the query itself, not inside a shape"
+      : `ramose/query: select field "${key}": all(N) is the whole shape of a query, not a nested one — select the fields you want through the ref, or run a second query`,
   );
 };
 
@@ -1374,7 +1374,7 @@ export interface NavQueryBuilder<
 
   where(...preds: WhereNode[]): NavQueryBuilder<N, R>;
   /**
-   * `select(Ripple.all(N))` — every attribute the matched entity has, as the
+   * `select(Ramose.all(N))` — every attribute the matched entity has, as the
    * peer's wildcard pull. The row is ident-keyed ({@link AllRow}), not the
    * named shape a field map gives. The namespace must be the one the query is
    * scoped to: `query(Todo).select(all(User))` is a type error.

@@ -34,7 +34,7 @@ export { Catalog } from "./Catalog.ts";
 export { Namespace } from "./Namespace.ts";
 export { Bytes, Instant, Long, Ref, Uuid, UuidString } from "./valueTypes.ts";
 export { not, or, query } from "./NavQuery.ts";
-// `Ripple.all(Todo)` — the wildcard pull, as a select shape or a pull pattern
+// `Ramose.all(Todo)` — the wildcard pull, as a select shape or a pull pattern
 export { all } from "./Pull.ts";
 export type {
   EidLike,

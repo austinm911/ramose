@@ -660,7 +660,7 @@ describe("`.orDefault`: a missing card-one scalar reads as a value", () => {
 
   const seeded = async () => {
     const peer = await inProcessPeer();
-    const db = peer.ripple.db("todos", Todos);
+    const db = peer.ramose.db("todos", Todos);
     await run(db.install());
     await run(
       db.transact(function* (tx) {
@@ -1632,7 +1632,7 @@ describe("component backlinks end to end", () => {
    * Oslo — nobody's address (the orphan component)
    */
   const seedPeople = async (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
-    const db = peer.ripple.db("people", People);
+    const db = peer.ramose.db("people", People);
     await run(
       Effect.gen(function* () {
         yield* db.install();
@@ -2755,7 +2755,7 @@ describe("lowering: `all(N)` is the peer's wildcard, not a client-side map", () 
 
 describe("`all(N)` end to end: the peer's wildcard row", () => {
   const seed = async (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
-    const db = peer.ripple.db("todos", Todos);
+    const db = peer.ramose.db("todos", Todos);
     await run(db.install());
     await run(
       db.transact(function* (tx) {

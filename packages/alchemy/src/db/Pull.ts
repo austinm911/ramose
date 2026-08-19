@@ -94,7 +94,7 @@ export const optional = <const F>(field: F): PullOptional<F> => ({
 export const pullDefault = <const F>(field: F, value: unknown): PullDefault<F> => {
   if (value === undefined) {
     throw new Error(
-      "ripple/query: .orDefault(undefined) is not a default — the peer would read the field as missing anyway. Use `.optional` for a field that may be absent.",
+      "ramose/query: .orDefault(undefined) is not a default — the peer would read the field as missing anyway. Use `.optional` for a field that may be absent.",
     );
   }
   return {
@@ -148,7 +148,7 @@ export const pick = <
 // ── the wildcard ───────────────────────────────────────────────────────────
 
 /**
- * `Ripple.all(Todo)` — the peer's wildcard pull (`[*]`), as a client term.
+ * `Ramose.all(Todo)` — the peer's wildcard pull (`[*]`), as a client term.
  *
  * It is **not** a shape the client expands into a map of every attribute:
  * lowering emits the literal `["*"]` and the peer answers it, so what comes
