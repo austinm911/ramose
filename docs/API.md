@@ -49,8 +49,8 @@ Static token: `Effect.succeed(Redacted.make(t))`. The layer is scoped, the socke
 |---|---|
 | `Db<C>` | `ReadDb<C> & { transact; install }` |
 | `ReadDb<C>` | `{ name; catalog; q; pull; live; basis; asOf; history }` |
-| `db.q` | `<R>(query: NavQuery\<R\> \| NavQueryBuilder\<_, R\>) => Effect<R, DbError>` — a `Ramose.query(N)` value (see `docs/QUERY.md`); with no `.select`, `R` is `readonly Eid<C>[]` |
-| `db.live` | same input as `db.q` → `Stream<R, DbError>` |
+| `db.q` | `<R>(query: NavQuery\<R\> \| NavQueryBuilder\<_, R\>) => Effect<R, QueryError\<R\>>` — a `Ramose.query(N)` value (see `docs/QUERY.md`); with no `.select`, `R` is `readonly Eid<C>[]`; `.one()` is one row or `null`; `.oneOrFail()` is one row or `NotOne` |
+| `db.live` | same input as `db.q` → `Stream<R, QueryError\<R\>>` |
 | `db.pull` | `<const P>(subject: Eid<C> \| LookupRef<C>, shape: P) => Effect<Pull<C, P> \| null, DbError>` |
 | `db.transact` | `<A, E, R>(body: (tx: Tx<C>) => Generator<Effect<unknown, E, R>, A>) => Effect<TxReport<C>, DbError \| E, R>` |
 | `db.install` | `() => Effect<TxReport<C>, DbError>` — idempotent catalog upsert |
@@ -58,7 +58,7 @@ Static token: `Effect.succeed(Redacted.make(t))`. The layer is scoped, the socke
 | `db.principal` | `() => Effect<DbPrincipal<C>, DbError>` — who this session is, resolved by the peer (`/info`'s `principal`, also on the session `auth` ack): `{ eid: Eid<C> \| null, class }`, `eid: null` until the policy's principal attribute has a row; a `null` is never cached, a resolved eid is cached per session generation and re-read on reconnect |
 | `db.asOf` | `(t: number) => ReadDb<C>` |
 | `db.history` | `ReadDb<C>` |
-| `query` | `Ramose.query(N)` — navigational query builder (`.where` `.select` `.orderBy` `.limit` `.offset`); order and paging run on the peer |
+| `query` | `Ramose.query(N)` — navigational query builder (`.where` `.select` `.orderBy` `.limit` `.offset` `.one` `.oneOrFail`); order, paging and the single-row take run on the peer |
 | `Pull<C, P>` | result of shape `P`. Nest with `attr.select({…})`, maybe with `.optional` |
 | `Eid<C>` | `{ readonly id: number }`, catalog-branded. Data — no methods, no I/O |
 | `LookupRef<C>` | `[AttrRef, value]` on a unique attribute |
@@ -70,6 +70,8 @@ Static token: `Effect.succeed(Redacted.make(t))`. The layer is scoped, the socke
 
 `TxRejected` `Unavailable` `InvalidRequest` `DatabaseNotFound` `Unauthorized`
 `QueryBudgetExceeded` `InternalError` `NetworkError`, and the union `DbError`.
+`.oneOrFail()` can also fail with `NotOne` (not a `DbError`: the query
+succeeded, the cardinality did not).
 
 ### `ramose` (adds)
 

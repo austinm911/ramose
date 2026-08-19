@@ -78,6 +78,20 @@ export class NetworkError extends Data.TaggedError("NetworkError")<{
   readonly cause?: unknown;
 }> {}
 
+/**
+ * `.oneOrFail()` promised exactly one row and the peer answered zero or two
+ * (it is asked for `:limit 2`, so "two" means at least two). Client-side —
+ * the query succeeded; the cardinality did not. Not a {@link DbError}: a
+ * plain `.where` / `.limit` query cannot produce it.
+ *
+ * `found` is `0` or `2`. There is no "3": the wire never sees past the
+ * second row.
+ */
+export class NotOne extends Data.TaggedError("NotOne")<{
+  readonly message: string;
+  readonly found: 0 | 2;
+}> {}
+
 export type DbError =
   | TxRejected
   | Unavailable

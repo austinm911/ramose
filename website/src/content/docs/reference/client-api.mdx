@@ -30,7 +30,7 @@ import * as Ramose from "ramose";    // the same, plus Server, Database, Policy,
 
 | entry | runtime names |
 | --- | --- |
-| `ramose/db` | `Attr` · `Namespace` · `Catalog` · `Instant` · `Uuid` · `UuidString` · `Ref` · `Long` · `Bytes` · `query` · `or` · `not` · `all` · `connect` · `layer` · `Databases` · `token` · `DATABASE_NAME_RE` · `isDatabaseName`, and the eight errors below |
+| `ramose/db` | `Attr` · `Namespace` · `Catalog` · `Instant` · `Uuid` · `UuidString` · `Ref` · `Long` · `Bytes` · `query` · `or` · `not` · `all` · `connect` · `layer` · `Databases` · `token` · `DATABASE_NAME_RE` · `isDatabaseName`, the eight `DbError`s below, and `NotOne` |
 | `ramose` (adds) | `Server` · `Database` · `ReadWriteDatabases` · `ReadDatabases` · `ServerBinding` · `ServerHttp` · `providers` · `Providers` · `Policy` · `authEnv` · `internalSecret` · `AUTH_ENV_KEYS` · `DEFAULT_JWT_MAX_TTL` · `claims` — see [Deploy](/guides/deploy/#reference-the-ramose-resources) and [Policy](/reference/policy/) |
 
 Two more entries carry the server Worker and the React hooks: `ramose/worker` is what `main` points at ([Deploy](/guides/deploy/)), and `ramose/react` is the hooks ([React](/reference/react/)). Sign-in adds `ramose/better-auth` and `ramose/better-auth/client` ([Sign in](/guides/sign-in/)).
@@ -159,7 +159,7 @@ if (!Ramose.isDatabaseName(slug)) throw new Error("letters, digits, . _ - only")
 
 `ramose.db(name, catalog)` returns a `Db`. `db.asOf(t)` and `db.history` return a `ReadDb` — everything below except `principal`, `transact` and `install`.
 
-**`db.q(query): Effect<Rows, DbError>`** — run a query once.
+**`db.q(query): Effect<Rows, QueryError>`** — run a query once. `.one()` is one row or `null`; `.oneOrFail()` is one row, or fails with `NotOne`.
 
 ```ts title="examples/reef/src/app/mutations.ts:61-64"
     const mineQuery = Ramose.query(User)
@@ -168,7 +168,7 @@ if (!Ramose.isDatabaseName(slug)) throw new Error("letters, digits, . _ - only")
     const existing = yield* db.q(mineQuery);
 ```
 
-**`db.live(query): Stream<Rows, DbError>`** — a **live query**: it re-runs whenever the database changes and emits new rows ([glossary](/concepts/glossary/#live-query)). Identical results are not re-emitted. Network trouble is retried in place; the stream fails only on `InvalidRequest`, `DatabaseNotFound`, `Unauthorized` or `QueryBudgetExceeded`. On `asOf(t)` or `history` it emits once and completes. In React use [`useLive(db, query)`](/reference/react/#uselive).
+**`db.live(query): Stream<Rows, QueryError>`** — a **live query**: it re-runs whenever the database changes and emits new rows ([glossary](/concepts/glossary/#live-query)). Identical results are not re-emitted. Network trouble is retried in place; the stream fails only on `InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded` or `NotOne`. On `asOf(t)` or `history` it emits once and completes. In React use [`useLive(db, query)`](/reference/react/#uselive).
 
 ```ts
 const stream = db.live(boardQuery);   // Stream<BoardRow[], DbError>
@@ -308,7 +308,9 @@ Ramose.query(Todo)
   .select({ key: Todo.field, … })       // or Ramose.all(Todo); without it rows are { id }
   .orderBy(Todo.createdAt, "asc", { empty: "last" })   // "asc" | "desc"; "first" | "last"
   .limit(20)
-  .offset(0);
+  .offset(0)
+  .one()                                // at most one row — T | null; :limit 1
+  .oneOrFail();                         // exactly one row — T, or NotOne; :limit 2
 ```
 
 ```ts title="examples/reef/src/domain/queries.ts:78-82"
@@ -362,7 +364,7 @@ Rules the builder enforces:
 
 - A select field must be a direct field of the queried record type, or a nested `ref.select({ … })`. `{ ownerName: Todo.owner.name }` is rejected.
 - `orderBy` across a many-valued hop throws; so does `orderBy(attr.each)`.
-- Everything — filter, order, limit, offset — runs on the server; `limit(20)` really is 20 rows.
+- Everything — filter, order, limit, offset, `.one()` / `.oneOrFail()` — runs on the server; `limit(20)` really is 20 rows, and `.one()` asks for one.
 
 Not shipped: aggregates (`count`, `sum`, …), `groupBy`, cursors, full-text search, cross-database joins.
 
@@ -406,7 +408,9 @@ export const issueExtraShape = {
 | `Ramose.LookupRef<C>` | `[UniqueAttr, value]` |
 | `Ramose.TxReport<C>` | `{ t, txEid, datomCount, dbAfter }` |
 | `Ramose.TokenSource` / `Ramose.Claims` | a token source; the decoded, unverified payload |
-| `Ramose.DbError` | the union of the eight errors |
+| `Ramose.DbError` | the union of the eight request errors |
+| `Ramose.NotOne` | `.oneOrFail()` saw zero or two rows — not a `DbError` |
+| `Ramose.QueryError<R>` | `DbError`, plus `NotOne` when `R` is a `.oneOrFail()` row |
 
 ```ts title="examples/reef/src/domain/queries.ts:91"
 export type BoardRow = Ramose.Row<typeof boardQuery>;
@@ -414,7 +418,7 @@ export type BoardRow = Ramose.Row<typeof boardQuery>;
 
 ## Errors
 
-Eight tagged errors, one union: `TxRejected` `Unavailable` `InvalidRequest` `DatabaseNotFound` `Unauthorized` `QueryBudgetExceeded` `InternalError` `NetworkError`, and `DbError`. Match by name with `Effect.catchTags`; each is described on [Errors](/reference/errors/).
+Eight tagged request errors, one union: `TxRejected` `Unavailable` `InvalidRequest` `DatabaseNotFound` `Unauthorized` `QueryBudgetExceeded` `InternalError` `NetworkError`, and `DbError`. `.oneOrFail()` can also fail with `NotOne` (the query succeeded; the count did not). Match by name with `Effect.catchTags`; each is described on [Errors](/reference/errors/).
 
 ```ts
 db.q(query).pipe(

@@ -73,6 +73,8 @@ Ramose.query(Todo)           // scope: entities that carry at least one :todo/* 
   .limit(n)
   .offset(n)
   .select(shape)             // result shape; omit for a list of Eid
+  .one()                     // at most one row — T | null
+  .oneOrFail()               // exactly one row — T, or NotOne
   .build()                   // optional — db.q / db.live accept the builder too
 ```
 
@@ -487,6 +489,51 @@ twenty entities and the client never sees the rows a page dropped.
   except the backlink of a `:db/isComponent` ref, which reaches one entity and
   is a legal key like any card-one path.
 
+### One row (`.one` / `.oneOrFail`)
+
+A query is a page. `.one()` and `.oneOrFail()` unwrap it to a single row,
+and they do it by asking the peer for a tiny page — not by pulling twenty
+rows and throwing the rest away.
+
+```ts
+const ada = Ramose.query(User).where(User.email.eq("ada@example")).one().select({
+  name: User.name,
+});
+yield* db.q(ada);
+// Effect<{ name: string } | null, DbError>
+
+const theAda = Ramose.query(User)
+  .where(User.email.eq("ada@example"))
+  .oneOrFail()
+  .select({ name: User.name });
+yield* db.q(theAda);
+// Effect<{ name: string }, DbError | NotOne>
+```
+
+- **`.one()`** is at most one row. The type is the row or `null` — the same
+  absence `db.pull` uses, so `useLive` / `useQuery` can still tell "not yet"
+  (`undefined`) from "no such row" (`null`). It lowers to `:limit 1`. Two
+  matches are not an error: the first after `orderBy` (or the engine's
+  default order) is the row, and the rest are never fetched.
+- **`.oneOrFail()`** is exactly one row. Zero or two matches fail with
+  `NotOne` (`found: 0 | 2`). It lowers to `:limit 2` so a second match is
+  witnessed without pulling a page. There is no `found: 3` — the wire never
+  sees past the second row.
+- `NotOne` is a tagged error, matched with `Effect.catchTag("NotOne", …)`.
+  It is **not** a `DbError`: the query succeeded, the cardinality did not.
+  A standing `db.live` treats it as terminal — re-running a broken promise
+  does not help.
+- They compose with `.where` / `.select` / `.orderBy` / `.offset` in either
+  order. `.one().select({…})` keeps the single-row type. A later `.limit(n)`
+  does not widen the take: `.one()` stays `:limit 1`, `.oneOrFail()` stays
+  `:limit 2`.
+- They are the query's own page, not a nested collection. A card-many
+  field in a shape is still an array; constrain it with the nested
+  `.limit` already on the collection.
+
+When you already have the id (or a unique lookup), `db.pull` is the
+entity-by-id door. `.one()` is for "this filter matches at most one."
+
 ---
 
 ## Running
@@ -501,7 +548,8 @@ db.asOf(t).live(openTodos) // emits once and completes
 Both `db.q` and `db.live` take a navigational query value or its builder.
 Scalars decode through Effect Schema (`Instant` → `Date`, etc.). A query with
 no `.select` yields `readonly Eid<C>[]`, typed against the catalog of the `db`
-that ran it.
+that ran it. `.one()` yields one of those (or `null`); `.oneOrFail()` yields
+one, or fails with `NotOne`.
 
 `db.live` re-runs the query at every basis tick and after a local `transact`.
 A pass whose rows are identical to the last emission is **not** emitted again —
@@ -540,7 +588,9 @@ A navigational query compiles to a find-pull query:
 4. **Order** → each sort key binds a fresh variable through an `or-join`: one
    branch walks the path, the other proves it absent (`not`) and grounds `null`,
    which the engine places per `empty`. The `:order` vector names those
-   variables; `:limit` / `:offset` pass through.
+   variables; `:limit` / `:offset` pass through. `.one()` forces `:limit 1`;
+   `.oneOrFail()` forces `:limit 2`. The client unwraps the page after
+   `finalizeNavResult` — it does not change how many rows the peer sent.
 5. **Select** → pull pattern embedded in `:find` as `(pull ?e pattern)`.
 6. **Nested collection constraints** → the `:where` / `:order` / `:offset` /
    `:limit` fields of *that* pull spec, never the query's own. Each predicate
@@ -585,14 +635,14 @@ Status of the navigational surface relative to the intended design.
 | Area | Shipped | Not yet |
 |---|---|---|
 | Schema | `Ref(() => N)`, `Ref.self`, navigable attrs, componenthood in the attribute's type (`isComponent`) | namespace-branded `Eid<N>` cleanup (blocked — see Later) |
-| Build | `Ramose.query(N)`, `.where`, `.select`, `.orderBy`, `.limit`, `.offset`, `.build` | `Ramose.params`, `.one` / `.oneOrFail`, `.groupBy`, `.after(cursor)` |
+| Build | `Ramose.query(N)`, `.where`, `.select`, `.orderBy`, `.limit`, `.offset`, `.one` / `.oneOrFail`, `.build` | `Ramose.params`, `.groupBy`, `.after(cursor)` |
 | Predicates | `eq` `ne` `lt` `lte` `gt` `gte` `in` `startsWith` `endsWith` `includes` `matches` `exists` `missing`, ref `is`, card-many `some` / `every` / `none` on refs **and scalars** (`attr.each` names the element) | — |
 | Combinators | `Ramose.or` `Ramose.not`, nestable | `Ramose.when` (waits on `Ramose.params`) |
 | Shape | nested `ref.select`, `.optional`, `.orDefault(v)` on a card-one scalar, `Ramose.all(N)` (the peer's wildcard row), backlink `.reverse.select` — many, or **one** for a `:db/isComponent` ref (same grammar for `db.pull`), nested `where` / `orderBy` / `limit` / `offset` on every card-many collection — refs, backlinks and *scalars* (via `attr.each`) — including `every` and `not` under `some` inside one | `.expand`. Rejected by design: a **flattened path** as a select field (`{ ownerName: Todo.owner.name }` — write the nested select), a nested `all(N)` (it is the whole shape of a query), constraints on a card-one ref select (one entity, not a collection), and an element cursor outside its collection |
 | Aggregates | — | `count` `sum` `avg` `min` `max` `countDistinct`, `having` |
 | Graph | — | `.traverse` `.paths` `attr.reaches` `Ramose.either` |
 | Runners | `db.q` / `db.live` on query values; find-pull lowering; identical-result suppression on `live` | `db.changes`; `Ramose.explain` / `withBasis` |
-| Order/limit | AST + engine `order` / `limit` / `offset`; required-field filtering on the peer, before `limit`; card-many `orderBy` rejected, many backlinks with it (a component backlink is card-one, so it is a legal key) | — |
+| Order/limit | AST + engine `order` / `limit` / `offset`; required-field filtering on the peer, before `limit`; card-many `orderBy` rejected, many backlinks with it (a component backlink is card-one, so it is a legal key); `.one()` / `.oneOrFail()` force `:limit 1` / `:limit 2` and unwrap the page | — |
 | IR hatch | — (the string-var callback builder is retired) | `ramose/db/datalog` typed IR, rules |
 
 ---
@@ -619,7 +669,7 @@ Nothing queued; see Later.
 - **`Ramose.params` + `Ramose.when`** for stable, serializable parameterized
   queries. `when` is deliberately not a build-time boolean today: the doc files
   it under parameterization, and that design comes first.
-- **Aggregates / `groupBy`**, `.one()` / `.oneOrFail()`, cursors (`.after`).
+- **Aggregates / `groupBy`**, cursors (`.after`).
 - **`.expand`** for bounded recursive trees in shapes; then **`.traverse` /
   `.paths` / `reaches`** for graph walks.
 - Typed **`ramose/db/datalog`** escape hatch (logic vars as values,

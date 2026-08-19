@@ -129,7 +129,7 @@ describe("ramose/db is portable", () => {
 });
 
 describe("the `/db` barrel's public names", () => {
-  test("schema, connecting, and the eight errors — and nothing else", async () => {
+  test("schema, connecting, and the tagged errors — and nothing else", async () => {
     const db = await import("../src/db/index.ts");
     expect(Object.keys(db).sort()).toEqual(
       [
@@ -165,6 +165,8 @@ describe("the `/db` barrel's public names", () => {
         "QueryBudgetExceeded",
         "InternalError",
         "NetworkError",
+        // `.oneOrFail()` cardinality — not a DbError (the peer succeeded)
+        "NotOne",
       ].sort(),
     );
   });

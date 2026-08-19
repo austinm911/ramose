@@ -17,6 +17,7 @@
 import type {
   Catalog,
   DbError,
+  QueryError,
   QueryInput,
   ReadDb,
 } from "../db/index.ts";
@@ -51,7 +52,7 @@ const INITIAL: Live<never, never> = {
 export function useLive<C extends Catalog.Any, R>(
   db: ReadDb<C>,
   query: QueryInput<R>,
-): Live<R>;
+): Live<R, QueryError<R>>;
 /** Stream form: a stream built elsewhere; re-subscribes when its identity changes. */
 export function useLive<A, E>(stream: Stream.Stream<A, E>): Live<A, E>;
 export function useLive(

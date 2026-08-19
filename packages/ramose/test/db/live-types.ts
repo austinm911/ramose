@@ -14,6 +14,7 @@ import type {
   Eid,
   Equal,
   Expect,
+  NotOne,
 } from "../../src/db/internal.ts";
 import { query } from "../../src/db/internal.ts";
 
@@ -50,6 +51,26 @@ type _friends = Expect<
 const eids = db.live(query(User).where(User.name.exists()));
 type _eids = Expect<
   Equal<Stream.Success<typeof eids>, readonly Eid<typeof Movies>[]>
+>;
+
+const oneLive = db.live(
+  query(User).where(User.name.eq("Ada")).one().select({ name: User.name }),
+);
+type _oneLive = Expect<
+  Equal<
+    typeof oneLive,
+    Stream.Stream<{ readonly name: string } | null, DbError>
+  >
+>;
+
+const failLive = db.live(
+  query(User).where(User.name.eq("Ada")).oneOrFail().select({ name: User.name }),
+);
+type _failLive = Expect<
+  Equal<
+    typeof failLive,
+    Stream.Stream<{ readonly name: string }, DbError | NotOne>
+  >
 >;
 
 // ── a pinned view still gives a Stream ─────────────────────────────────────

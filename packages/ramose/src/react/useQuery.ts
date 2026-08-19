@@ -10,7 +10,7 @@
  *   by issue order, not by resolution order.
  */
 
-import type { Catalog, DbError, QueryInput, ReadDb } from "../db/index.ts";
+import type { Catalog, DbError, QueryError, QueryInput, ReadDb } from "../db/index.ts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -30,8 +30,8 @@ export interface Async<A, E = DbError> {
 export const useQuery = <C extends Catalog.Any, R>(
   db: ReadDb<C>,
   query: QueryInput<R>,
-): Async<R> => {
-  const [state, set] = useState<Async<R>>({
+): Async<R, QueryError<R>> => {
+  const [state, set] = useState<Async<R, QueryError<R>>>({
     data: undefined,
     error: undefined,
     loading: true,
@@ -43,7 +43,9 @@ export const useQuery = <C extends Catalog.Any, R>(
     const seq = ++runs.current.issued;
     let disposed = false;
     /** Land this run's outcome unless a later-issued run already landed. */
-    const land = (next: (prev: Async<R>) => Async<R>): void => {
+    const land = (
+      next: (prev: Async<R, QueryError<R>>) => Async<R, QueryError<R>>,
+    ): void => {
       if (disposed || seq < runs.current.applied) return;
       runs.current.applied = seq;
       set(next);

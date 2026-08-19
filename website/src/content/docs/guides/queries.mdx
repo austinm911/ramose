@@ -92,6 +92,23 @@ The row type is inferred: `Ramose.Row<typeof boardQuery>` is one row, `Ramose.Ro
 
 `empty: "first" | "last"` places rows that have no value for the sort field; a missing fact is not a null.
 
+`.one()` and `.oneOrFail()` unwrap that page to a single row, and they ask the server for one (or two) rows rather than pulling a page and discarding it.
+
+```ts
+const ada = Ramose.query(User).where(User.email.eq("ada@example")).one().select({
+  name: User.name,
+});
+// { name: string } | null — null when nobody matches
+
+const theAda = Ramose.query(User)
+  .where(User.email.eq("ada@example"))
+  .oneOrFail()
+  .select({ name: User.name });
+// { name: string } — fails with NotOne if there are zero or two matches
+```
+
+`.one()` is at most one: two matches are not an error, and the rest are never fetched. `.oneOrFail()` is exactly one, and `NotOne` is not a `DbError` — the query succeeded, the count did not. When you already know the id, pull (next) is the other door.
+
 ## Read one record
 
 When you know which record you want, **pull** it — one record by id or unique key, with a shape ([glossary](/concepts/glossary/#pull)). Reef's issue panel does this for the selected issue:

@@ -64,7 +64,14 @@ export { type Claims, token, type TokenSource } from "./token.ts";
 export { DATABASE_NAME_RE, isDatabaseName } from "./DatabaseName.ts";
 
 // ── the database ───────────────────────────────────────────────────────────
-export type { Db, DbPrincipal, QueryInput, ReadDb, TxReport } from "./Db.ts";
+export type {
+  Db,
+  DbPrincipal,
+  QueryError,
+  QueryInput,
+  ReadDb,
+  TxReport,
+} from "./Db.ts";
 export type { Eid } from "./Eid.ts";
 export type { LookupRef } from "./idents.ts";
 // the pattern-side types too, so `ramose/react`'s `usePull` can accept
@@ -85,6 +92,7 @@ export {
   InternalError,
   InvalidRequest,
   NetworkError,
+  NotOne,
   QueryBudgetExceeded,
   TxRejected,
   Unauthorized,

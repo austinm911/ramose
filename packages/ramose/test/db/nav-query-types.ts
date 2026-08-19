@@ -17,6 +17,8 @@ import {
   type Expect,
   Instant,
   Namespace,
+  type NotOne,
+  type QueryError,
   all,
   not,
   or,
@@ -63,6 +65,80 @@ type _someEids = Expect<
 >;
 type _eidIsWrapper = Expect<
   Equal<Effect.Success<typeof eids>[number] extends number ? true : false, false>
+>;
+
+// ── `.one()` / `.oneOrFail()` unwrap the page ───────────────────────────────
+
+const oneEid = db.q(query(User).where(User.name.eq("Ada")).one());
+type _oneEid = Expect<
+  Equal<Effect.Success<typeof oneEid>, Eid<typeof Movies> | null>
+>;
+type _oneEidErr = Expect<Equal<Effect.Error<typeof oneEid>, DbError>>;
+
+const oneOrFailEid = db.q(query(User).where(User.name.eq("Ada")).oneOrFail());
+type _oneOrFailEid = Expect<
+  Equal<Effect.Success<typeof oneOrFailEid>, Eid<typeof Movies>>
+>;
+type _oneOrFailEidErr = Expect<
+  Equal<Effect.Error<typeof oneOrFailEid>, DbError | NotOne>
+>;
+
+const oneNamed = db.q(
+  query(User).where(User.name.eq("Ada")).one().select({ name: User.name }),
+);
+type _oneNamed = Expect<
+  Equal<Effect.Success<typeof oneNamed>, { readonly name: string } | null>
+>;
+type _oneNamedErr = Expect<Equal<Effect.Error<typeof oneNamed>, DbError>>;
+
+const failNamed = db.q(
+  query(User)
+    .where(User.name.eq("Ada"))
+    .oneOrFail()
+    .select({ name: User.name, age: User.age.optional }),
+);
+type _failNamed = Expect<
+  Equal<
+    Effect.Success<typeof failNamed>,
+    { readonly name: string; readonly age: number | undefined }
+  >
+>;
+type _failNamedErr = Expect<
+  Equal<Effect.Error<typeof failNamed>, DbError | NotOne>
+>;
+
+/** `select` after `.one()` keeps the single-row type. */
+const oneThenSelect = db.q(
+  query(User).one().select({ name: User.name }),
+);
+type _oneThenSelect = Expect<
+  Equal<Effect.Success<typeof oneThenSelect>, { readonly name: string } | null>
+>;
+
+/** `QueryError<R>` is `DbError` for a page, `DbError | NotOne` for `.oneOrFail`. */
+type _queryErrorMany = Expect<
+  Equal<QueryError<readonly { readonly name: string }[]>, DbError>
+>;
+type _queryErrorOne = Expect<
+  Equal<QueryError<{ readonly name: string } | null>, DbError>
+>;
+type _queryErrorFail = Expect<
+  Equal<QueryError<{ readonly name: string }>, DbError | NotOne>
+>;
+
+const oneQuery = query(User).where(User.name.eq("Ada")).one().select({
+  name: User.name,
+});
+type _oneRow = Expect<
+  Equal<Row<typeof oneQuery>, { readonly name: string }>
+>;
+type _oneRows = Expect<
+  Equal<Rows<typeof oneQuery>, readonly { readonly name: string }[]>
+>;
+
+const failQuery = query(User).oneOrFail().select({ name: User.name });
+type _failRow = Expect<
+  Equal<Row<typeof failQuery>, { readonly name: string }>
 >;
 
 // ── `.select` infers the row from the shape ────────────────────────────────
