@@ -13,6 +13,7 @@ import {
   type Eid,
   type Equal,
   type Expect,
+  type AllRow,
   Namespace,
   all,
   pick,
@@ -228,4 +229,32 @@ db.pull(eid, { label: Other.label });
 
 // @ts-expect-error the wildcard of a namespace that is not in this catalog
 db.pull(eid, all(Other));
+
+// ── nested `all(N)` under a ref `.select` ──────────────────────────────────
+
+const nestedAll = db.pull(eid, {
+  name: User.name,
+  bestFriend: User.bestFriend.select(all(User)),
+  maybeBest: User.bestFriend.select(all(User)).optional,
+  friends: User.friends.select(all(User)),
+});
+type NestedAllPull = NonNullable<Effect.Success<typeof nestedAll>>;
+type _nestedAllName = Expect<Equal<NestedAllPull["name"], string>>;
+type _nestedAllBest = Expect<
+  Equal<NestedAllPull["bestFriend"], AllRow<typeof User>>
+>;
+type _nestedAllMaybe = Expect<
+  Equal<NestedAllPull["maybeBest"], AllRow<typeof User> | undefined>
+>;
+type _nestedAllFriends = Expect<
+  Equal<NestedAllPull["friends"], readonly AllRow<typeof User>[]>
+>;
+type _nestedAllBestName = Expect<
+  Equal<NestedAllPull["bestFriend"][":user/name"], string | undefined>
+>;
+
+db.pull(eid, {
+  // @ts-expect-error `all(N)` is a shape, not a field
+  everything: all(User),
+});
 

@@ -2768,24 +2768,91 @@ describe("lowering: `all(N)` is the peer's wildcard, not a client-side map", () 
   });
 
   /**
-   * The engine does answer a nested `{:todo/owner [*]}`, but the row it makes
-   * is keyed by the *target's* idents inside a row keyed by the caller's
-   * names. Rejected at the type level (see nav-query-types.ts) and here, where
-   * the cast defeats the type.
+   * `all(N)` is a shape, not a field: there is no attribute to hang a
+   * wildcard on. `ref.select(all(N))` is the nested form.
    */
-  test("`all(N)` as a field of a shape is rejected, top-level and nested", () => {
+  test("`all(N)` as a field of a shape is rejected", () => {
     expect(() =>
       lowerNavQuery(
         query(Todo).select({ everything: all(Todo) as never }).build(),
       ),
-    ).toThrow(/all\(N\) is the whole shape of a query/);
-    expect(() =>
-      lowerNavQuery(
-        query(Todo)
-          .select({ owner: Todo.owner.select(all(User) as never) })
+    ).toThrow(/all\(N\) is a shape, not a field/);
+  });
+
+  test("nested `all(N)` under a ref lowers to `sub: [\"*\"]`", () => {
+    const { query: q, pullMap } = lowerNavQuery(
+      query(Todo)
+        .select({
+          title: Todo.title,
+          owner: Todo.owner.select(all(User)),
+        })
+        .build(),
+    );
+    expect(q.find).toEqual([
+      [
+        "pull",
+        "?e",
+        [
+          { kind: "attr", attr: ":todo/title", reverse: false, as: "title" },
+          {
+            kind: "attr",
+            attr: ":todo/owner",
+            reverse: false,
+            as: "owner",
+            sub: ["*"],
+          },
+        ],
+      ],
+    ]);
+    // the wildcard has no required nested field; the ref itself is required
+    expect(q.where).toEqual([
+      todoScope,
+      ["?e", ":todo/title", "_"],
+      ["?e", ":todo/owner", "_"],
+    ]);
+    expect(pullMap).toBeDefined();
+  });
+
+  test("optional nested `all(N)` does not require the ref", () => {
+    const { query: q } = lowerNavQuery(
+      query(Todo)
+        .select({ owner: Todo.owner.select(all(User)).optional })
+        .build(),
+    );
+    expect(q.where).toEqual([todoScope]);
+    expect((q.find[0] as unknown[])[2]).toEqual([
+      {
+        kind: "attr",
+        attr: ":todo/owner",
+        reverse: false,
+        as: "owner",
+        sub: ["*"],
+      },
+    ]);
+  });
+
+  test("a constrained collection of `all(N)` keeps where / limit on the hop", () => {
+    const spec = (
+      (lowerNavQuery(
+        query(User)
+          .select({
+            todos: Todo.owner.reverse
+              .where(Todo.done.eq(false))
+              .limit(2)
+              .select(all(Todo)),
+          })
           .build(),
-      ),
-    ).toThrow(/all\(N\) is the whole shape of a query/);
+      ).query.find[0] as unknown[])[2] as any[]
+    )[0];
+    expect(spec).toEqual({
+      kind: "attr",
+      attr: ":todo/owner",
+      reverse: true,
+      as: "todos",
+      where: [{ path: [":todo/done"], op: "=", value: false }],
+      limit: 2,
+      sub: ["*"],
+    });
   });
 });
 
@@ -3033,6 +3100,149 @@ describe("`.one` / `.oneOrFail` end to end: the peer pages, the client unwraps",
     expect((err as NotOne).found).toBe(2);
     expect(peer.seen[0]?.body.query.limit).toBe(2);
     expect(peer.seen[0]?.rows).toBe(2);
+    await peer.dispose();
+  });
+});
+
+describe("nested `all(N)` under a ref `.select`", () => {
+  const seed = async (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
+    const db = peer.ramose.db("todos", Todos);
+    await run(db.install());
+    await run(
+      db.transact(function* (tx) {
+        const bob = yield* tx.entity();
+        yield* bob.add(User.name, "Bob");
+        const alice = yield* tx.entity();
+        yield* alice.add(User.name, "Alice");
+        yield* alice.add(User.tags, "admin");
+        yield* alice.add(User.tags, "eng");
+        yield* alice.add(User.friends, bob.eid as never);
+        const ship = yield* tx.entity();
+        yield* ship.add(Todo.title, "ship");
+        yield* ship.add(Todo.done, false);
+        yield* ship.add(Todo.owner, alice.eid as never);
+        const bare = yield* tx.entity();
+        yield* bare.add(Todo.title, "bare");
+      }),
+    );
+    return db;
+  };
+
+  test("card-one `ref.select(all(N))` is AllRow, required through the ref", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+
+    const rows = await run(
+      db.q(
+        query(Todo)
+          .orderBy(Todo.title)
+          .select({
+            title: Todo.title,
+            owner: Todo.owner.select(all(User)),
+          }),
+      ),
+    );
+    // the bare todo has no owner — required nested select drops it
+    expect(rows.map((r) => r.title)).toEqual(["ship"]);
+    const owner = rows[0]!.owner;
+    expect(typeof owner[":db/id"]).toBe("number");
+    expect(owner[":user/name"]).toBe("Alice");
+    expect(owner[":user/tags"]).toEqual(["admin", "eng"]);
+    expect(owner[":user/friends"]).toEqual([{ ":db/id": expect.any(Number) }]);
+
+    await peer.dispose();
+  });
+
+  test("`.optional` keeps the parent when the ref is missing", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+
+    const rows = await run(
+      db.q(
+        query(Todo)
+          .orderBy(Todo.title)
+          .select({
+            title: Todo.title,
+            owner: Todo.owner.select(all(User)).optional,
+          }),
+      ),
+    );
+    expect(rows.map((r) => r.title)).toEqual(["bare", "ship"]);
+    expect(rows[0]!.owner).toBeUndefined();
+    expect(rows[1]!.owner?.[":user/name"]).toBe("Alice");
+
+    await peer.dispose();
+  });
+
+  test("card-many `ref.select(all(N))` is an array of AllRow", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+
+    const rows = await run(
+      db.q(
+        query(User)
+          .orderBy(User.name)
+          .select({
+            id: User.id,
+            name: User.name,
+            friends: User.friends.select(all(User)),
+          }),
+      ),
+    );
+    const [alice, bob] = rows;
+    expect(alice?.name).toBe("Alice");
+    expect(alice?.friends).toHaveLength(1);
+    expect(alice?.friends[0]?.[":user/name"]).toBe("Bob");
+    expect(alice?.friends[0]?.[":db/id"]).toBe(bob?.id);
+    // Bob has no friends: empty array, not a dropped row
+    expect(bob?.name).toBe("Bob");
+    expect(bob?.friends).toEqual([]);
+
+    await peer.dispose();
+  });
+
+  test("a backlink collection of `all(N)` filters on the peer", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+
+    const rows = await run(
+      db.q(
+        query(User)
+          .orderBy(User.name)
+          .select({
+            name: User.name,
+            todos: Todo.owner.reverse
+              .where(Todo.done.eq(false))
+              .select(all(Todo)),
+          }),
+      ),
+    );
+    expect(rows.map((r) => r.name)).toEqual(["Alice", "Bob"]);
+    expect(rows[0]!.todos.map((t) => t[":todo/title"])).toEqual(["ship"]);
+    expect(rows[0]!.todos[0]?.[":todo/done"]).toBe(false);
+    expect(rows[1]!.todos).toEqual([]);
+
+    await peer.dispose();
+  });
+
+  test("db.pull shares the nested grammar", async () => {
+    const peer = await inProcessPeer();
+    const db = await seed(peer);
+
+    const rows = await run(
+      db.q(
+        query(Todo)
+          .where(Todo.title.eq("ship"))
+          .select({ id: Todo.id, owner: Todo.owner.select(all(User)) }),
+      ),
+    );
+    const ship = rows[0]!;
+    const pulled = await run(
+      db.pull({ id: ship.id }, { owner: Todo.owner.select(all(User)) }),
+    );
+    expect(pulled).not.toBeNull();
+    expect(pulled!.owner).toEqual(ship.owner);
+
     await peer.dispose();
   });
 });
