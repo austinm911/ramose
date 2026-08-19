@@ -1,6 +1,7 @@
 # Todos
 
-The consumer proof for navigational query (`docs/QUERY.md`) on
+The consumer proof for navigational query (website
+[Read data](https://ramose.ai/guides/queries/)) on
 `Ramose.connect` + `ramose/react` — every name in it is shipped.
 
 ## Run it
