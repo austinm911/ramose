@@ -4059,6 +4059,7 @@ describe("`again(n)`: recursive trees in a shape", () => {
     expect(() =>
       lowerNavQuery(
         query(Comment)
+          // @ts-expect-error a shape that contains again must select N.id
           .select({
             body: Comment.body,
             replies: Comment.replies.limit(50).select(again(2)),
@@ -4069,6 +4070,7 @@ describe("`again(n)`: recursive trees in a shape", () => {
     expect(() =>
       lowerNavQuery(
         query(Comment)
+          // @ts-expect-error author is a poster — again re-applies this comment shape
           .select({
             id: Comment.id,
             body: Comment.body,
@@ -4195,7 +4197,7 @@ describe("`again(n)`: recursive trees in a shape", () => {
     expect(rows).toHaveLength(1);
     const b = rows[0]!.replies[0]!;
     expect(b.body).toBe("B");
-    expect(b.replies).toEqual([{ id: rows[0]!.id }]);
+    expect(b.replies as unknown).toEqual([{ id: rows[0]!.id }]);
     expect(b.replies[0]).not.toHaveProperty(":db/id");
     await peer.dispose();
   });

@@ -648,15 +648,23 @@ type HasAgainTermIn<S> = true extends {
   : false;
 
 type ValidatePullShape<C extends AnyCatalog, P> = HasAgainTermIn<P> extends true
-  ? "again is a shape, not a field — write `ref.select(Ramose.again(n))`"
+  ? {
+      readonly [K in keyof P]: IsAgainTerm<P[K]> extends true
+        ? "again is a shape, not a field — write `ref.select(Ramose.again(n))`"
+        : P[K];
+    }
   : HasAgainSelect<P> extends true
     ? HasIdField<P> extends true
       ? ValidatePullIdents<C, P>
-      : AgainMissingId
+      : {
+          readonly [K in keyof P]: IsAgainSelectField<P[K]> extends true
+            ? AgainMissingId
+            : P[K];
+        }
     : ValidatePullIdents<C, P>;
 
 type ValidatePullIdents<C extends AnyCatalog, P> = [IdentsIn<P>] extends [
-  CatalogIdent<C> | "*",
+  CatalogIdent<C> | "*" | ":db/id",
 ]
   ? P
   : "unknown attribute in pull pattern";
