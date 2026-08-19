@@ -315,7 +315,6 @@ Ramose.query(Todo)
 
 Ramose.query(Todo).where(…).count();                          // number
 Ramose.query(Todo).aggregate({ n: Ramose.count(), … });       // one summary row
-Ramose.query(Todo).groupBy({ … }).aggregate({ … });           // one row per group
 Ramose.query(Todo).groupBy({ … }).aggregate({ … }).having((g) => g.n.gt(5));
 Ramose.query(Todo).orderBy(…).limit(20).after(cursor);        // keyset page
 ```
@@ -384,24 +383,21 @@ const thread = Ramose.query(Comment, P)
   });
 ```
 
-**Aggregates.** After the filters, ask for a summary instead of rows: `.count()` / `.countDistinct(attr)` / `.sum(attr)` / `.avg(attr)` / `.min(attr)` / `.max(attr)` answer one value; `.aggregate({ … })` computes several in one round trip (exactly one row, a one-element tuple); `.groupBy({ … }).aggregate({ … })` answers one row per group. `.having((g) => …)` after a grouped `.aggregate` keeps groups whose cells match — `g` is those aliases (`n`, `status`, …), with the same comparisons `.where` uses. The constructors are `Ramose.count()`, `Ramose.sum(attr)`, and so on.
+**Aggregates.** After the filters, ask for a summary instead of rows: `.count()` / `.countDistinct(attr)` / `.sum(attr)` / `.avg(attr)` / `.min(attr)` / `.max(attr)` answer one value; `.aggregate({ … })` computes several in one round trip (exactly one row, a one-element tuple); `.groupBy({ … }).aggregate({ … })` answers one row per group. `.having((g) => …)` after a grouped `.aggregate` keeps groups whose cells match — `g` is those aliases, with the same comparisons `.where` uses. The constructors are `Ramose.count()`, `Ramose.sum(attr)`, and so on.
 
 ```ts
 const [totals] = yield* db.q(
   Ramose.query(Issue).aggregate({ n: Ramose.count(), top: Ramose.max(Issue.priority) }),
 ); // { n: number; top: number | null }
 yield* db.q(
-  Ramose.query(Issue)
-    .groupBy({ status: Issue.status })
-    .aggregate({ n: Ramose.count() })
-    .having((g) => g.n.gt(5)),
+  Ramose.query(Issue).groupBy({ status: Issue.status }).aggregate({ n: Ramose.count() }).having((g) => g.n.gt(5)),
 ); // readonly { status: string; n: number }[] — groups with n ≤ 5 are absent
 ```
 
 - Over no rows: the counts and `sum` are `0`, `avg` / `min` / `max` are `null`, a grouped query is `[]`.
 - An aggregated or grouping path is single-valued, like a sort key; `sum` / `avg` take number fields. A ref group key is an id you can query on.
 - A row missing an aggregated field contributes nothing to that aggregate but still counts everywhere else; a row missing a *group key* belongs to no group.
-- `.having` is a clause over group cells, not a JS `if`. Params bind as they do in `.where`. It does not change the row type; groups that fail never become rows (`db.q` and `db.live`).
+- `.having` is a clause over group cells, not a JS `if`. Params bind as they do in `.where`. Groups that fail never become rows (`db.q` and `db.live`); the row type does not change.
 - Aggregates replace the rows, so `.select` / `.orderBy` / `.limit` / `.one()` do not combine with them.
 
 **Keyset paging.** `.after(cursor)` pages a sorted query by position: the result becomes `{ rows, cursor }`, and the cursor — opaque; the last row's sort keys, record id as tie-breaker — is where the next page starts. Pass `null` for the first page; `cursor` is `null` when there is no next page. Unlike `.offset`, rows inserted before the cursor never shift the walk. Hold it in memory between pages; it is not designed to be serialized.
@@ -418,7 +414,7 @@ Rules the builder enforces:
 - A select field must be a direct field of the queried record type, or a nested `ref.select({ … })`. `{ ownerName: Todo.owner.name }` is rejected.
 - `Ramose.again(n)` is only legal as `ref.select(Ramose.again(n))`. `n` is a literal `1`–`16`. A many-valued again edge needs `.limit(n)`. A shape that contains `again` must select `N.id`. The recur edge must land in the same record type as the enclosing shape.
 - `orderBy` across a many-valued hop throws; so does `orderBy(attr.each)`.
-- Everything — filter, order, limit, offset, `.one()` / `.oneOrFail()`, aggregates, having, the cursor seek — runs on the server; `limit(20)` really is 20 rows, and `.one()` asks for one.
+- Everything — filter, order, limit, offset, `.one()` / `.oneOrFail()`, aggregates, `.having`, the cursor seek — runs on the server; `limit(20)` really is 20 rows, and `.one()` asks for one.
 - `.after` needs an `.orderBy`, and does not combine with `.offset` (a cursor already is the offset) or `.one()`.
 
 Not shipped: ordering or paging groups, full-text search, cross-database joins.
