@@ -122,7 +122,15 @@ Without `again`, the inner `.select` is a thinner card and then it stops. Nested
 `again(n)` re-applies the enclosing map, including `replies`, `n` full hops, then `{ id }` stubs. Same roots, deeper tree. `again(1)` is one full-shape hop then stubs; `again(4)` is four full hops then stubs.
 
 ```ts
-.select(Ramose.again(1))
+.select({
+  id: Comment.id,
+  body: Comment.body,
+  replies: Comment.replies
+    .where(Comment.deleted.eq(false))
+    .orderBy(Comment.createdAt, "asc")
+    .limit(20)
+    .select(Ramose.again(1)),
+})
 ```
 
 ```json title="same roots after again(1)"
