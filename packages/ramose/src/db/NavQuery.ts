@@ -3051,11 +3051,10 @@ const lowerHaving = (
   }
   if (isOr(node)) {
     if (node.preds.length === 0) return [[["=", 1, 0]]];
-    const join = [...new Set(Object.values(cells))];
+    // boolean or of already-bound cells — not or-join: there is nothing to join
     return [
       [
-        "or-join",
-        join,
+        "or",
         ...node.preds.map((p) => ["and", ...lowerHaving(p, cells)]),
       ],
     ];

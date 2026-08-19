@@ -3819,7 +3819,17 @@ describe("having: lowering", () => {
         .aggregate({ n: count() })
         .having((g) => or(g.n.gt(1), g.city.eq("Oslo"))),
     );
-    expect(either.having?.[0]).toMatchObject(["or-join", expect.any(Array), expect.any(Array), expect.any(Array)]);
+    expect(either.having).toEqual([
+      ["or", ["and", [[">", "?h1", 1]]], ["and", [["=", "?g0", "Oslo"]]]],
+    ]);
+
+    const { query: except } = lowerNavQuery(
+      query(Job)
+        .groupBy({ city: Job.city })
+        .aggregate({ n: count() })
+        .having((g) => not(g.city.eq("Berlin"))),
+    );
+    expect(except.having).toEqual([["not", [["=", "?g0", "Berlin"]]]]);
   });
 
   test("a row predicate is not a having clause", () => {
@@ -3882,6 +3892,40 @@ describe("having: db.q / db.live end to end", () => {
       ),
     );
     expect(rows).toEqual([]);
+
+    await peer.dispose();
+  });
+
+  test("or keeps either matching group; not drops the named group", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedJobs(peer);
+
+    const either = await run(
+      db.q(
+        query(Job)
+          .groupBy({ city: Job.city })
+          .aggregate({ n: count() })
+          .having((g) => or(g.n.gt(1), g.city.eq("Oslo"))),
+      ),
+    );
+    expect([...either].sort((a, b) => a.city.localeCompare(b.city))).toEqual([
+      { city: "Berlin", n: 2 },
+      { city: "Oslo", n: 1 },
+    ]);
+    const lastOr = peer.seen.filter((s) => s.op === "q").at(-1);
+    expect(lastOr?.rows).toBe(2);
+
+    const except = await run(
+      db.q(
+        query(Job)
+          .groupBy({ city: Job.city })
+          .aggregate({ n: count() })
+          .having((g) => not(g.city.eq("Berlin"))),
+      ),
+    );
+    expect(except).toEqual([{ city: "Oslo", n: 1 }]);
+    const lastNot = peer.seen.filter((s) => s.op === "q").at(-1);
+    expect(lastNot?.rows).toBe(1);
 
     await peer.dispose();
   });
