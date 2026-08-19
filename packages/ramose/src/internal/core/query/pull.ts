@@ -42,9 +42,29 @@ export async function pullMany(
 
 function normalizePattern(p: PullPattern | string | unknown[]): PullPattern {
   if (typeof p === "string") return parsePullPattern(p);
-  if (Array.isArray(p) && p.length > 0 && typeof p[0] === "object" && p[0] !== null && "kind" in (p[0] as any)) return p as PullPattern;
+  if (Array.isArray(p) && p.length > 0 && typeof p[0] === "object" && p[0] !== null && "kind" in (p[0] as any)) {
+    // already-lowered AST: still parse a `sub` that is not itself a pattern
+    // (`["*"]` from `ref.select(all(N))`). Re-parsing a parsed wildcard
+    // (`{kind: "wildcard"}`) would fail, so leave those alone.
+    return (p as PullPattern).map((spec) => {
+      if (spec.kind !== "attr" || spec.sub === undefined || !subNeedsParse(spec.sub)) {
+        return spec;
+      }
+      return { ...spec, sub: parsePullPattern(spec.sub) };
+    });
+  }
   return parsePullPattern(p);
 }
+
+/** `["*"]` / ident strings / maps still need `parsePullPattern`; a kinded spec does not. */
+const subNeedsParse = (sub: unknown): boolean =>
+  !Array.isArray(sub) ||
+  sub.some(
+    (s) =>
+      typeof s !== "object" ||
+      s === null ||
+      !("kind" in (s as object)),
+  );
 
 async function pullOne(
   db: Db,

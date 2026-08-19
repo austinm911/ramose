@@ -38,6 +38,20 @@ describe("pull", () => {
     expect(r![":user/address"]).toEqual({ ":db/id": ids.addr });
   });
 
+  test("nested wildcard through a ref, including the already-lowered AST", async () => {
+    const edn = await pull(db, ids.a, `[{:user/friends [*]}]`);
+    const friends = (edn![":user/friends"] as Record<string, unknown>[]).sort(
+      (x, y) => (x[":db/id"] as number) - (y[":db/id"] as number),
+    );
+    expect(friends.map((f) => f[":user/name"])).toEqual(["B", "C"]);
+    expect(friends[0]![":db/id"]).toBe(ids.b);
+    // what `ref.select(all(N))` sends: an attr spec whose `sub` is still `["*"]`
+    const ast = await pull(db, ids.a, [
+      { kind: "attr", attr: ":user/friends", reverse: false, as: "friends", sub: ["*"] },
+    ]);
+    expect(ast).toEqual({ friends: edn![":user/friends"] });
+  });
+
   test("attribute list, nested, reverse, options", async () => {
     const r = await pull(db, ids.a, `[:user/name {:user/friends [:user/name]} {:user/address [:address/city]}]`);
     expect(r).toEqual({ ":user/name": "A", ":user/friends": [{ ":user/name": "B" }, { ":user/name": "C" }], ":user/address": { ":address/city": "Rome" } });
