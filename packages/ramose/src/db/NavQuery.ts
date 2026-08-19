@@ -1,5 +1,6 @@
 /**
- * Navigational query values — the read surface from docs/QUERY.md.
+ * Navigational query values — the read surface. Shipped language is on the
+ * website query pages; remaining work lives on GitHub issue #18.
  *
  * `Ramose.query(Todo).where(...).select(...).orderBy(...).limit(n)` builds a
  * {@link NavQuery} value. `db.q` / `db.live` run it. Datalog is the IR: we
