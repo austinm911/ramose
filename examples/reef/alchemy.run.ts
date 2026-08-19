@@ -70,9 +70,7 @@ export const Ui = Command.Dev(
 );
 
 export default Alchemy.Stack(
-  // physical name pinned; product is Ramose — the app id keys deployed state
-  // (and the Worker names derived from it), so renaming it would orphan it.
-  "ripple-reef",
+  "ramose-reef",
   {
     providers: Layer.mergeAll(
       Cloudflare.providers(),

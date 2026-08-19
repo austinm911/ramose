@@ -33,9 +33,7 @@ import { Movies } from "./schema.ts";
 export const MoviesDb = Ramose.Database("movies", { server: Server, catalog: Movies });
 
 export default Alchemy.Stack(
-  // physical name pinned; product is Ramose — the app id keys deployed state
-  // (and the Worker names derived from it), so renaming it would orphan it.
-  "ripple-example",
+  "ramose-example",
   {
     providers: Layer.mergeAll(Cloudflare.providers(), Ramose.providers()),
     state: Alchemy.localState(),
