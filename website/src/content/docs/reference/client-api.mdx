@@ -311,6 +311,11 @@ Ramose.query(Todo)
   .offset(0)
   .one()                                // at most one row — T | null; :limit 1
   .oneOrFail();                         // exactly one row — T, or NotOne; :limit 2
+
+Ramose.query(Todo).where(…).count();                          // number
+Ramose.query(Todo).aggregate({ n: Ramose.count(), … });       // one summary row
+Ramose.query(Todo).groupBy({ … }).aggregate({ … });           // one row per group
+Ramose.query(Todo).orderBy(…).limit(20).after(cursor);        // keyset page
 ```
 
 ```ts title="examples/reef/src/domain/queries.ts:78-82"
@@ -360,13 +365,39 @@ export const boardShape = {
 } as const;
 ```
 
+**Aggregates.** After the filters, ask for a summary instead of rows: `.count()` / `.countDistinct(attr)` / `.sum(attr)` / `.avg(attr)` / `.min(attr)` / `.max(attr)` answer one value; `.aggregate({ … })` computes several in one round trip (exactly one row, a one-element tuple); `.groupBy({ … }).aggregate({ … })` answers one row per group. The constructors are `Ramose.count()`, `Ramose.sum(attr)`, and so on.
+
+```ts
+const [totals] = yield* db.q(
+  Ramose.query(Issue).aggregate({ n: Ramose.count(), top: Ramose.max(Issue.priority) }),
+); // { n: number; top: number | null }
+yield* db.q(
+  Ramose.query(Issue).groupBy({ status: Issue.status }).aggregate({ n: Ramose.count() }),
+); // readonly { status: string; n: number }[]
+```
+
+- Over no rows: the counts and `sum` are `0`, `avg` / `min` / `max` are `null`, a grouped query is `[]`.
+- An aggregated or grouping path is single-valued, like a sort key; `sum` / `avg` take number fields. A ref group key is an id you can query on.
+- A row missing an aggregated field contributes nothing to that aggregate but still counts everywhere else; a row missing a *group key* belongs to no group.
+- Aggregates replace the rows, so `.select` / `.orderBy` / `.limit` / `.one()` do not combine with them.
+
+**Keyset paging.** `.after(cursor)` pages a sorted query by position: the result becomes `{ rows, cursor }`, and the cursor — opaque; the last row's sort keys, record id as tie-breaker — is where the next page starts. Pass `null` for the first page; `cursor` is `null` when there is no next page. Unlike `.offset`, rows inserted before the cursor never shift the walk. Hold it in memory between pages; it is not designed to be serialized.
+
+```ts
+const pageQ = (after: Ramose.Cursor | null) =>
+  Ramose.query(Issue).orderBy(Issue.createdAt, "desc").limit(20).after(after).select(boardShape);
+const p1 = yield* db.q(pageQ(null));
+const p2 = yield* db.q(pageQ(p1.cursor));   // rows strictly after page one
+```
+
 Rules the builder enforces:
 
 - A select field must be a direct field of the queried record type, or a nested `ref.select({ … })`. `{ ownerName: Todo.owner.name }` is rejected.
 - `orderBy` across a many-valued hop throws; so does `orderBy(attr.each)`.
-- Everything — filter, order, limit, offset, `.one()` / `.oneOrFail()` — runs on the server; `limit(20)` really is 20 rows, and `.one()` asks for one.
+- Everything — filter, order, limit, offset, `.one()` / `.oneOrFail()`, aggregates, the cursor seek — runs on the server; `limit(20)` really is 20 rows, and `.one()` asks for one.
+- `.after` needs an `.orderBy`, and does not combine with `.offset` (a cursor already is the offset) or `.one()`.
 
-Not shipped: aggregates (`count`, `sum`, …), `groupBy`, cursors, full-text search, cross-database joins.
+Not shipped: `having`, ordering or paging groups, full-text search, cross-database joins.
 
 ## Pull
 

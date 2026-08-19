@@ -22,20 +22,28 @@ import {
   Catalog,
   Databases,
   Instant,
+  Long,
   Namespace,
   Ref,
   all,
+  avg,
   cardsOf,
+  count,
+  countDistinct,
   finalizeNavResult,
   pathOf,
   layer,
   lowerNavQuery,
+  max,
+  min,
   NotOne,
   not,
   or,
   query,
   revsOf,
+  sum,
   takeNavResult,
+  type Cursor,
   type WhereNode,
 } from "../../src/db/internal.ts";
 
@@ -3290,6 +3298,492 @@ describe("nested `all(N)` under a ref `.select`", () => {
     );
     expect(pulled).not.toBeNull();
     expect(pulled!.owner).toEqual(ship.owner);
+
+    await peer.dispose();
+  });
+});
+
+// ── aggregates: count / countDistinct / sum / avg / min / max, groupBy ──────
+
+/** A namespace with a number attribute, for the arithmetic aggregates. */
+const Job = Namespace("job", {
+  title: Attr(Schema.String),
+  hours: Attr(Long),
+  city: Attr(Schema.String),
+  owner: Attr(Ref(() => User)),
+});
+
+const Jobs = Catalog({ job: Job, user: User });
+
+const jobScope = [
+  "or",
+  ["?e", ":job/title", "_"],
+  ["?e", ":job/hours", "_"],
+  ["?e", ":job/city", "_"],
+  ["?e", ":job/owner", "_"],
+];
+
+/**
+ * Alice owns "ship" (3h, Berlin) and "review" (5h, Berlin); Bob owns "file"
+ * (Oslo, no hours). One job has no owner and no city, so the group-key and
+ * missing-value edges are on the board.
+ */
+const seedJobs = async (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
+  const db = peer.ramose.db("jobs", Jobs);
+  await run(db.install());
+  await run(
+    db.transact(function* (tx) {
+      const alice = yield* tx.entity();
+      yield* alice.add(User.name, "Alice");
+      const bob = yield* tx.entity();
+      yield* bob.add(User.name, "Bob");
+      const ship = yield* tx.entity();
+      yield* ship.add(Job.title, "ship");
+      yield* ship.add(Job.hours, 3);
+      yield* ship.add(Job.city, "Berlin");
+      yield* ship.add(Job.owner, alice.eid as never);
+      const review = yield* tx.entity();
+      yield* review.add(Job.title, "review");
+      yield* review.add(Job.hours, 5);
+      yield* review.add(Job.city, "Berlin");
+      yield* review.add(Job.owner, alice.eid as never);
+      const file = yield* tx.entity();
+      yield* file.add(Job.title, "file");
+      yield* file.add(Job.city, "Oslo");
+      yield* file.add(Job.owner, bob.eid as never);
+      const stray = yield* tx.entity();
+      yield* stray.add(Job.title, "stray");
+    }),
+  );
+  return db;
+};
+
+describe("aggregates: lowering", () => {
+  test("`.count()` is `(count ?e)` with the root in :with", () => {
+    const { query: q, pullMap } = lowerNavQuery(
+      query(Todo).where(Todo.done.eq(false)).count(),
+    );
+    expect(pullMap).toBeUndefined();
+    expect(q).toEqual({
+      find: [["count", "?e"]],
+      where: [todoScope, ["?e", ":todo/done", false]],
+      with: ["?e"],
+    });
+  });
+
+  test("group keys join; aggregated paths bind through the null or-join", () => {
+    const { query: q } = lowerNavQuery(
+      query(Job)
+        .groupBy({ city: Job.city })
+        .aggregate({ n: count(), total: sum(Job.hours) }),
+    );
+    // keys first, then the aggregates, in alias order
+    expect(q.find).toEqual([
+      "?g0",
+      ["count", "?e"],
+      ["sum", "?o1"],
+    ]);
+    expect(q.with).toEqual(["?e"]);
+    expect(q.where).toEqual([
+      jobScope,
+      // the key is a join: a job without a city has no group
+      ["?e", ":job/city", "?g0"],
+      // the aggregated path is not: a job without hours still counts
+      [
+        "or-join",
+        ["?e", "?o1"],
+        ["and", ["?e", ":job/hours", "?o1"]],
+        ["and", ["not", ["?e", ":job/hours", "_"]], [["ground", [null]], ["?o1", "..."]]],
+      ],
+    ]);
+  });
+
+  test("countDistinct spells the engine's count-distinct", () => {
+    const { query: q } = lowerNavQuery(query(Job).countDistinct(Job.city));
+    expect(q.find).toEqual([["count-distinct", "?o0"]]);
+  });
+
+  test("a `:db/id` group key is the root variable itself", () => {
+    const { query: q } = lowerNavQuery(
+      query(Job).groupBy({ id: Job.id }).aggregate({ n: count() }),
+    );
+    expect(q.find).toEqual(["?e", ["count", "?e"]]);
+  });
+
+  test("an aggregate does not combine with the row-shaping pieces", () => {
+    expect(() => query(Todo).select({ title: Todo.title }).count()).toThrow(
+      /answers with its own row/,
+    );
+    expect(() => query(Todo).orderBy(Todo.due).count()).toThrow(
+      /sorting groups is not supported yet/,
+    );
+    expect(() => query(Todo).limit(5).count()).toThrow(
+      /paging groups is not supported yet/,
+    );
+    expect(() => query(Todo).one().count()).toThrow(/already one row/);
+    expect(() => query(Todo).after(null).count()).toThrow(
+      /paging groups is not supported yet/,
+    );
+    expect(() => query(Todo).aggregate({})).toThrow(/computes nothing/);
+    expect(() => query(Todo).groupBy({})).toThrow(/groups by nothing/);
+    expect(() =>
+      query(Todo).groupBy({ n: Todo.done }).aggregate({ n: count() }),
+    ).toThrow(/both a group key and an aggregate/);
+    expect(() =>
+      query(Todo).aggregate({ n: "nope" as never }),
+    ).toThrow(/is not an aggregate/);
+  });
+
+  test("an aggregate key is card-one, like a sort key", () => {
+    expect(() => query(User).min(User.tags as never)).toThrow(
+      /crosses a cardinality-many attribute/,
+    );
+    expect(() =>
+      query(User).groupBy({ friend: User.friends as never }),
+    ).toThrow(/crosses a cardinality-many attribute/);
+  });
+});
+
+describe("aggregates: db.q end to end", () => {
+  test("`.count()` answers a number — and 0 over no rows", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedJobs(peer);
+
+    expect(await run(db.q(query(Job).count()))).toBe(4);
+    expect(
+      await run(db.q(query(Job).where(Job.city.eq("Berlin")).count())),
+    ).toBe(2);
+    expect(
+      await run(db.q(query(Job).where(Job.title.eq("nope")).count())),
+    ).toBe(0);
+
+    await peer.dispose();
+  });
+
+  test("the scalar sugars: sum / avg / min / max / countDistinct", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedJobs(peer);
+
+    expect(await run(db.q(query(Job).sum(Job.hours)))).toBe(8);
+    expect(await run(db.q(query(Job).avg(Job.hours)))).toBe(4);
+    expect(await run(db.q(query(Job).min(Job.title)))).toBe("file");
+    expect(await run(db.q(query(Job).max(Job.hours)))).toBe(5);
+    expect(await run(db.q(query(Job).countDistinct(Job.city)))).toBe(2);
+
+    // over no rows: the fn over the empty set, not a missing answer
+    const none = query(Job).where(Job.title.eq("nope"));
+    expect(await run(db.q(none.sum(Job.hours)))).toBe(0);
+    expect(await run(db.q(none.avg(Job.hours)))).toBeNull();
+    expect(await run(db.q(none.min(Job.title)))).toBeNull();
+    expect(await run(db.q(none.countDistinct(Job.city)))).toBe(0);
+
+    await peer.dispose();
+  });
+
+  test("a row missing the aggregated attribute still counts elsewhere", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedJobs(peer);
+
+    // "file" and "stray" have no hours: sum/avg see 3 and 5, count sees 4
+    const [totals] = await run(
+      db.q(
+        query(Job).aggregate({
+          n: count(),
+          total: sum(Job.hours),
+          mean: avg(Job.hours),
+          longest: max(Job.hours),
+        }),
+      ),
+    );
+    expect(totals).toEqual({ n: 4, total: 8, mean: 4, longest: 5 });
+
+    await peer.dispose();
+  });
+
+  test("two rows with the same value are still two rows", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedJobs(peer);
+
+    // give Bob's job the same hours one of Alice's has: sum must not dedupe
+    const file = await run(
+      db.q(query(Job).where(Job.title.eq("file")).select({ id: Job.id }).oneOrFail()),
+    );
+    await run(
+      db.transact(function* (tx) {
+        const e = yield* tx.entity(file.id);
+        yield* e.add(Job.hours, 3);
+      }),
+    );
+    expect(await run(db.q(query(Job).sum(Job.hours)))).toBe(11);
+    expect(await run(db.q(query(Job).countDistinct(Job.hours)))).toBe(2);
+
+    await peer.dispose();
+  });
+
+  test("groupBy: one row per group, keys then aggregates by alias", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedJobs(peer);
+
+    const rows = await run(
+      db.q(
+        query(Job)
+          .groupBy({ city: Job.city })
+          .aggregate({ n: count(), total: sum(Job.hours) }),
+      ),
+    );
+    const sorted = [...rows].sort((a, b) => a.city.localeCompare(b.city));
+    expect(sorted).toEqual([
+      { city: "Berlin", n: 2, total: 8 },
+      // Oslo's job has no hours: it counts, and sums to the empty 0
+      { city: "Oslo", n: 1, total: 0 },
+    ]);
+
+    // "stray" has no city: no group carries it
+    expect(sorted.reduce((n, r) => n + r.n, 0)).toBe(3);
+
+    await peer.dispose();
+  });
+
+  test("a ref group key is an Eid the next read can use", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedJobs(peer);
+
+    const rows = await run(
+      db.q(query(Job).groupBy({ owner: Job.owner }).aggregate({ n: count() })),
+    );
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(typeof (row.owner as { id: number }).id).toBe("number");
+    }
+    const names = await Promise.all(
+      rows.map(async (r) => {
+        const users = await run(
+          db.q(query(User).where(User.id.is(r.owner)).select({ name: User.name })),
+        );
+        return [users[0]!.name, r.n] as const;
+      }),
+    );
+    expect(new Map(names)).toEqual(new Map([["Alice", 2], ["Bob", 1]]));
+
+    await peer.dispose();
+  });
+
+  test("a grouped query over no rows is no groups", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedJobs(peer);
+
+    const rows = await run(
+      db.q(
+        query(Job)
+          .where(Job.title.eq("nope"))
+          .groupBy({ city: Job.city })
+          .aggregate({ n: count() }),
+      ),
+    );
+    expect(rows).toEqual([]);
+
+    await peer.dispose();
+  });
+});
+
+// ── keyset paging: `.after` ─────────────────────────────────────────────────
+
+describe("keyset paging: lowering", () => {
+  test("the sort keys ride in :find, the entity id as the tie-breaker", () => {
+    const { query: q } = lowerNavQuery(
+      query(Todo)
+        .orderBy(Todo.due, "asc")
+        .limit(2)
+        .after(null)
+        .select({ title: Todo.title })
+        .build(),
+    );
+    expect(q.order).toEqual([
+      { var: "?o0", dir: "asc", empty: "last" },
+      { var: "?e", dir: "asc", empty: "last" },
+    ]);
+    expect(q.find).toEqual([
+      ["pull", "?e", [{ kind: "attr", attr: ":todo/title", reverse: false, as: "title" }]],
+      "?o0",
+      "?e",
+    ]);
+    // the first page has no cursor to seek past
+    expect("after" in q).toBe(false);
+    expect(q.limit).toBe(2);
+  });
+
+  test("a cursor's keys travel as the engine's :after", () => {
+    const cursor: Cursor = { _tag: "Cursor", keys: [new Date("2026-01-02"), 17] };
+    const { query: q } = lowerNavQuery(
+      query(Todo).orderBy(Todo.due).after(cursor).build(),
+    );
+    expect(q.after).toEqual([new Date("2026-01-02"), 17]);
+  });
+
+  test("a sort key that already is the entity id is not doubled", () => {
+    const { query: q } = lowerNavQuery(
+      query(Todo).orderBy(Todo.id).after(null).build(),
+    );
+    expect(q.order).toEqual([{ var: "?e", dir: "asc", empty: "last" }]);
+    expect(q.find).toEqual(["?e", "?e"]);
+  });
+
+  test("the misuses are named", () => {
+    expect(() => lowerNavQuery(query(Todo).after(null).build())).toThrow(
+      /pages a sorted query/,
+    );
+    expect(() =>
+      lowerNavQuery(
+        query(Todo)
+          .orderBy(Todo.due)
+          .after({ _tag: "Cursor", keys: [1] })
+          .build(),
+      ),
+    ).toThrow(/does not fit/);
+    expect(() => query(Todo).after("page2" as never)).toThrow(
+      /takes the previous page's cursor/,
+    );
+    expect(() => query(Todo).offset(5).after(null)).toThrow(
+      /already is the offset/,
+    );
+    expect(() => query(Todo).after(null).offset(5)).toThrow(
+      /already is the offset/,
+    );
+    expect(() => query(Todo).one().after(null)).toThrow(
+      /no next page to cursor to/,
+    );
+    expect(() => query(Todo).after(null).one()).toThrow(
+      /a paged query keeps its rows/,
+    );
+    expect(() => query(Todo).after(null).oneOrFail()).toThrow(
+      /a paged query keeps its rows/,
+    );
+  });
+});
+
+describe("keyset paging: db.q end to end", () => {
+  /** Five todos: two share a due date, one has none (sorted last). */
+  const seedPages = async (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
+    const db = peer.ramose.db("pages", Todos);
+    await run(db.install());
+    await run(
+      db.transact(function* (tx) {
+        const dues: (string | undefined)[] = [
+          "2026-01-03",
+          "2026-01-01",
+          "2026-01-02",
+          "2026-01-02",
+          undefined,
+        ];
+        for (const [i, due] of dues.entries()) {
+          const t = yield* tx.entity();
+          yield* t.add(Todo.title, `t${i}`);
+          yield* t.add(Todo.done, false);
+          if (due !== undefined) yield* t.add(Todo.due, new Date(due));
+        }
+      }),
+    );
+    return db;
+  };
+
+  const pageQuery = (after: Cursor | null) =>
+    query(Todo)
+      .orderBy(Todo.due, "asc", { empty: "last" })
+      .limit(2)
+      .after(after)
+      .select({ title: Todo.title });
+
+  test("pages tile the sorted set: no gaps, no repeats, then null", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedPages(peer);
+
+    const p1 = await run(db.q(pageQuery(null)));
+    expect(p1.rows.map((r) => r.title)).toEqual(["t1", "t2"]);
+    expect(p1.cursor).not.toBeNull();
+
+    const p2 = await run(db.q(pageQuery(p1.cursor)));
+    expect(p2.rows.map((r) => r.title)).toEqual(["t3", "t0"]);
+    expect(p2.cursor).not.toBeNull();
+
+    // the last page is short, so it already knows it is the last
+    const p3 = await run(db.q(pageQuery(p2.cursor)));
+    expect(p3.rows.map((r) => r.title)).toEqual(["t4"]);
+    expect(p3.cursor).toBeNull();
+
+    await peer.dispose();
+  });
+
+  test("a full last page is witnessed by one empty page", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedPages(peer);
+
+    // limit 5 = the whole set in one full page: the peer cannot know the
+    // last row is the last, so the sweep ends on the empty page after it
+    const p1 = await run(
+      db.q(
+        query(Todo)
+          .orderBy(Todo.due, "asc", { empty: "last" })
+          .limit(5)
+          .after(null)
+          .select({ title: Todo.title }),
+      ),
+    );
+    expect(p1.rows).toHaveLength(5);
+    expect(p1.cursor).not.toBeNull();
+    const p2 = await run(
+      db.q(
+        query(Todo)
+          .orderBy(Todo.due, "asc", { empty: "last" })
+          .limit(5)
+          .after(p1.cursor)
+          .select({ title: Todo.title }),
+      ),
+    );
+    expect(p2.rows).toEqual([]);
+    expect(p2.cursor).toBeNull();
+
+    await peer.dispose();
+  });
+
+  test("a row inserted before the cursor does not shift the walk", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedPages(peer);
+
+    const p1 = await run(db.q(pageQuery(null)));
+    expect(p1.rows.map((r) => r.title)).toEqual(["t1", "t2"]);
+
+    // lands before the cursor: an offset would now show t2 again — the
+    // cursor's page starts strictly after where page one ended
+    await run(
+      db.transact(function* (tx) {
+        const t = yield* tx.entity();
+        yield* t.add(Todo.title, "t-early");
+        yield* t.add(Todo.done, false);
+        yield* t.add(Todo.due, new Date("2025-12-25"));
+      }),
+    );
+
+    const p2 = await run(db.q(pageQuery(p1.cursor)));
+    expect(p2.rows.map((r) => r.title)).toEqual(["t3", "t0"]);
+
+    await peer.dispose();
+  });
+
+  test("a bare paged query pages entity ids", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedPages(peer);
+
+    const p1 = await run(
+      db.q(query(Todo).orderBy(Todo.due).limit(3).after(null)),
+    );
+    expect(p1.rows).toHaveLength(3);
+    for (const eid of p1.rows) expect(typeof eid.id).toBe("number");
+    const p2 = await run(
+      db.q(query(Todo).orderBy(Todo.due).limit(3).after(p1.cursor)),
+    );
+    expect(p2.rows).toHaveLength(2);
+    const seen = new Set([...p1.rows, ...p2.rows].map((e) => e.id));
+    expect(seen.size).toBe(5);
 
     await peer.dispose();
   });

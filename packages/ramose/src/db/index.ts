@@ -34,16 +34,34 @@ export { Attr, type Attribute } from "./Attribute.ts";
 export { Catalog } from "./Catalog.ts";
 export { Namespace } from "./Namespace.ts";
 export { Bytes, Instant, Long, Ref, Uuid, UuidString } from "./valueTypes.ts";
-export { not, or, query } from "./NavQuery.ts";
+export {
+  avg,
+  count,
+  countDistinct,
+  max,
+  min,
+  not,
+  or,
+  query,
+  sum,
+} from "./NavQuery.ts";
 // `Ramose.all(Todo)` — the wildcard pull, as a select shape, a nested
 // `ref.select(all(N))`, or a pull pattern
 export { all } from "./Pull.ts";
 export type {
+  Agg,
+  AggRow,
+  AggShape,
+  Cursor,
   EidLike,
+  GroupedNavQueryBuilder,
+  GroupedRow,
+  GroupShape,
   NavQuery,
   NavQueryBuilder,
   Not,
   Or,
+  Page,
   Predicate,
   Row,
   Rows,

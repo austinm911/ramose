@@ -96,6 +96,18 @@ export function sortKeys<T extends { dir: "asc" | "desc"; empty?: "first" | "las
 }
 
 /**
+ * One sort key's verdict on two cells: direction applied, null/undefined
+ * placed by `empty` in *both* directions. This is the comparison
+ * {@link sortRows} sorts by, and the one `:after` seeks with — the cursor
+ * boundary has to sit exactly where the sort put the row.
+ */
+export function compareCells(x: unknown, y: unknown, k: SortKey): number {
+  const ex = x === null || x === undefined;
+  const ey = y === null || y === undefined;
+  return ex || ey ? (ex && ey ? 0 : (ex ? 1 : -1) * (k.emptyLast ? 1 : -1)) : compareJs(x, y) * k.dir;
+}
+
+/**
  * Stable in-place sort. Mixed types get a deterministic total order (numbers
  * before strings before booleans before instants before the rest — see
  * {@link compareJs}); null/undefined are placed by `empty` in *both*
@@ -105,10 +117,7 @@ export function sortKeys<T extends { dir: "asc" | "desc"; empty?: "first" | "las
 export function sortRows(rows: unknown[][], keys: readonly SortKey[]): void {
   rows.sort((a, b) => {
     for (const k of keys) {
-      const x = a[k.col], y = b[k.col];
-      const ex = x === null || x === undefined;
-      const ey = y === null || y === undefined;
-      const c = ex || ey ? (ex && ey ? 0 : (ex ? 1 : -1) * (k.emptyLast ? 1 : -1)) : compareJs(x, y) * k.dir;
+      const c = compareCells(a[k.col], b[k.col], k);
       if (c !== 0) return c;
     }
     return 0;
