@@ -30,8 +30,13 @@ import {
   max,
   min,
   not,
+  optional,
   or,
+  params,
+  type Param,
+  type ParamError,
   query,
+  when,
   type ReadDb,
   Ref,
   type Row,
@@ -1075,3 +1080,51 @@ type _filteredAll = Expect<
     readonly AllRow<typeof Book>[]
   >
 >;
+
+// ── params + when ──────────────────────────────────────────────────────────
+
+const UserP = params({
+  userId: User.id,
+  term: Schema.String,
+  show: Schema.Boolean,
+  owner: optional(User.id),
+});
+/** `N.id` yields a branded `Eid<N>` — no cast at the binding site. */
+type _idParam = Expect<
+  Equal<
+    typeof UserP.userId extends Param<infer T, any, infer O> ? [T, O] : never,
+    [Eid<typeof User>, false]
+  >
+>;
+
+declare const userIdCell: Eid<typeof User>;
+const byUserId = query(User, UserP).where(User.id.is(UserP.userId));
+const byIdRun = db.q(byUserId, { userId: userIdCell, term: "", show: false });
+type _byIdBind = Expect<Equal<Effect.Success<typeof byIdRun>, readonly Eid<typeof Movies>[]>>;
+type _byIdErr = Expect<
+  Equal<Effect.Error<typeof byIdRun>, DbError | ParamError>
+>;
+
+const OtherP = params({ userId: User.id });
+// @ts-expect-error a param from another set is not in this query's scope
+query(User, UserP).where(User.id.is(OtherP.userId));
+
+// @ts-expect-error a param used in a query not scoped to its set
+query(User).where(User.name.eq(UserP.term));
+
+// @ts-expect-error `when` inside `or` is a type-level reject
+or(when(UserP.show, User.name.eq("Ada")));
+
+// @ts-expect-error `when` inside `not` is a type-level reject
+not(when(UserP.show, User.name.eq("Ada")));
+
+const gated = query(User, UserP).where(
+  when(UserP.show, User.name.eq(UserP.term)),
+  when(UserP.owner, User.id.is(UserP.owner)),
+);
+type _gatedSameRow = Expect<
+  Equal<Row<typeof gated>, Eid>
+>;
+// a gate does not change the result type
+const ungated = query(User);
+type _gateBlind = Expect<Equal<Row<typeof gated>, Row<typeof ungated>>>;

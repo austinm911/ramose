@@ -38,11 +38,16 @@ import {
   min,
   NotOne,
   not,
+  optional,
   or,
+  params,
+  ParamError,
   query,
+  when,
   revsOf,
   sum,
   takeNavResult,
+  type AnyWhereNode,
   type Cursor,
   type WhereNode,
 } from "../../src/db/internal.ts";
@@ -878,8 +883,9 @@ describe("`.orDefault`: a missing card-one scalar reads as a value", () => {
 });
 
 describe("lowering: in / endsWith / matches / is", () => {
-  const whereOf = (...preds: WhereNode[]) =>
-    lowerNavQuery(query(Todo).where(...preds).build()).query.where;
+  const whereOf = (...preds: AnyWhereNode[]) =>
+    lowerNavQuery(query(Todo).where(...(preds as WhereNode[])).build()).query
+      .where;
 
   test("`in` binds the value, then filters it with a collection binding", () => {
     expect(whereOf(Todo.title.in(["ship", "also open"]))).toEqual([
@@ -957,8 +963,9 @@ describe("lowering: in / endsWith / matches / is", () => {
 });
 
 describe("lowering: or / not scope to the root entity variable", () => {
-  const whereOf = (...preds: WhereNode[]) =>
-    lowerNavQuery(query(Todo).where(...preds).build()).query.where;
+  const whereOf = (...preds: AnyWhereNode[]) =>
+    lowerNavQuery(query(Todo).where(...(preds as WhereNode[])).build()).query
+      .where;
 
   test("`or` is an or-join on `?e`, so branches need not bind alike", () => {
     expect(
@@ -1212,8 +1219,9 @@ const userScope = [
 ];
 
 describe("lowering: some / every / none quantify over a many hop", () => {
-  const whereOf = (...preds: WhereNode[]) =>
-    lowerNavQuery(query(User).where(...preds).build()).query.where;
+  const whereOf = (...preds: AnyWhereNode[]) =>
+    lowerNavQuery(query(User).where(...(preds as WhereNode[])).build()).query
+      .where;
 
   test("`some` is the existential join the hop already was", () => {
     expect(whereOf(User.friends.some(User.name.eq("Ada")))).toEqual([
@@ -1293,8 +1301,9 @@ describe("lowering: some / every / none quantify over a many hop", () => {
 });
 
 describe("lowering: `.each` is the element of a cardinality-many attribute", () => {
-  const whereOf = (...preds: WhereNode[]) =>
-    lowerNavQuery(query(User).where(...preds).build()).query.where;
+  const whereOf = (...preds: AnyWhereNode[]) =>
+    lowerNavQuery(query(User).where(...(preds as WhereNode[])).build()).query
+      .where;
   /** the types reject these; the casts are how the runtime guards are reached */
   const loose = (p: unknown) => p as WhereNode;
 
@@ -1421,8 +1430,9 @@ describe("lowering: `.each` is the element of a cardinality-many attribute", () 
 });
 
 describe("lowering: reverse refs walk a ref hop backwards", () => {
-  const whereOf = (...preds: WhereNode[]) =>
-    lowerNavQuery(query(User).where(...preds).build()).query.where;
+  const whereOf = (...preds: AnyWhereNode[]) =>
+    lowerNavQuery(query(User).where(...(preds as WhereNode[])).build()).query
+      .where;
 
   test("the path keeps the ref's ident; the hop is reversed and many", () => {
     const back = Todo.owner.reverse;
@@ -3300,6 +3310,163 @@ describe("nested `all(N)` under a ref `.select`", () => {
     expect(pulled!.owner).toEqual(ship.owner);
 
     await peer.dispose();
+  });
+});
+
+describe("params + when", () => {
+  test("one module-scope query, N bindings, N results, the object never changes", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("todos", Todos);
+    await run(db.install());
+    await run(
+      db.transact(function* (tx) {
+        const t1 = yield* tx.entity();
+        yield* t1.add(Todo.title, "open");
+        yield* t1.add(Todo.done, false);
+        const t2 = yield* tx.entity();
+        yield* t2.add(Todo.title, "closed");
+        yield* t2.add(Todo.done, true);
+      }),
+    );
+
+    const P = params({ done: Schema.Boolean });
+    const q = query(Todo, P)
+      .where(Todo.done.eq(P.done))
+      .select({ title: Todo.title });
+    const object = q;
+
+    const open = await run(db.q(q, { done: false }));
+    const closed = await run(db.q(q, { done: true }));
+    expect(open).toEqual([{ title: "open" }]);
+    expect(closed).toEqual([{ title: "closed" }]);
+    expect(q).toBe(object);
+
+    await peer.dispose();
+  });
+
+  test("when on splices the clauses; when off is [] — byte-identical to inline", () => {
+    const P = params({ showDone: Schema.Boolean });
+    const gated = query(Todo, P).where(
+      Todo.title.exists(),
+      when(P.showDone, Todo.done.eq(true)),
+    );
+    const inlineOn = query(Todo).where(Todo.title.exists(), Todo.done.eq(true));
+    const inlineOff = query(Todo).where(Todo.title.exists());
+
+    expect(lowerNavQuery(gated.build(), { showDone: true }).query).toEqual(
+      lowerNavQuery(inlineOn.build()).query,
+    );
+    expect(lowerNavQuery(gated.build(), { showDone: false }).query).toEqual(
+      lowerNavQuery(inlineOff.build()).query,
+    );
+  });
+
+  test("an optional param as a gate is on when bound, and narrows inside the body", () => {
+    const P = params({ title: optional(Schema.String) });
+    const gated = query(Todo, P).where(when(P.title, Todo.title.eq(P.title)));
+    const inlineOn = query(Todo).where(Todo.title.eq("ship"));
+    const inlineOff = query(Todo);
+
+    expect(lowerNavQuery(gated.build(), { title: "ship" }).query).toEqual(
+      lowerNavQuery(inlineOn.build()).query,
+    );
+    expect(lowerNavQuery(gated.build(), {}).query).toEqual(
+      lowerNavQuery(inlineOff.build()).query,
+    );
+    expect(lowerNavQuery(gated.build(), { title: undefined }).query).toEqual(
+      lowerNavQuery(inlineOff.build()).query,
+    );
+  });
+
+  test("a Param<boolean> gate is distinct from an optional-as-gate", () => {
+    const Bool = params({ on: Schema.Boolean });
+    const Opt = params({ title: optional(Schema.String) });
+    expect(Bool.on.optional).toBe(false);
+    expect(Opt.title.optional).toBe(true);
+
+    const boolQ = query(Todo, Bool).where(when(Bool.on, Todo.done.eq(true)));
+    expect(lowerNavQuery(boolQ.build(), { on: false }).query).toEqual(
+      lowerNavQuery(query(Todo).build()).query,
+    );
+    expect(() => lowerNavQuery(boolQ.build(), {})).toThrow(ParamError);
+  });
+
+  test("ParamError: missing required, unknown key, deferred normalization", () => {
+    const P = params({
+      title: Schema.String,
+      re: Schema.String,
+      ids: Schema.Array(Schema.String),
+    });
+    const q = query(Todo, P).where(Todo.title.eq(P.title));
+
+    expect(() => lowerNavQuery(q.build(), {})).toThrow(ParamError);
+    try {
+      lowerNavQuery(q.build(), {});
+    } catch (e) {
+      expect(e).toBeInstanceOf(ParamError);
+      expect((e as ParamError).key).toBe("title");
+    }
+
+    expect(() =>
+      lowerNavQuery(q.build(), { title: "x", nope: 1 }),
+    ).toThrow(/unknown param "nope"/);
+
+    const reQ = query(Todo, P).where(Todo.title.matches(P.re));
+    expect(() =>
+      lowerNavQuery(reQ.build(), { title: "x", re: /x/i, ids: [] }),
+    ).toThrow(ParamError);
+
+    const inQ = query(Todo, P).where(Todo.title.in(P.ids));
+    expect(
+      lowerNavQuery(inQ.build(), { title: "x", re: "", ids: [] }).query.where,
+    ).toEqual([
+      [
+        "or",
+        ["?e", ":todo/title", "_"],
+        ["?e", ":todo/done", "_"],
+        ["?e", ":todo/due", "_"],
+        ["?e", ":todo/owner", "_"],
+      ],
+      [["ground", []], ["?n0", "..."]],
+    ]);
+  });
+
+  test("params work inside a nested collection constraint", () => {
+    const P = params({ term: Schema.String, n: Schema.Number });
+    const q = query(User, P).select({
+      tags: User.tags
+        .where(User.tags.each.startsWith(P.term))
+        .limit(P.n),
+    });
+    const pull = (lowerNavQuery(q.build(), { term: "a", n: 3 }).query
+      .find[0] as unknown[])[2] as any[];
+    expect(pull[0]).toEqual({
+      kind: "attr",
+      attr: ":user/tags",
+      reverse: false,
+      as: "tags",
+      where: [{ path: [], op: "starts-with?", value: "a" }],
+      limit: 3,
+    });
+  });
+
+  test("`when` inside `or` / `not` is rejected at runtime", () => {
+    const P = params({ on: Schema.Boolean });
+    expect(() =>
+      or(when(P.on, Todo.done.eq(true)) as never),
+    ).toThrow(/cannot appear inside or/);
+    expect(() =>
+      not(when(P.on, Todo.done.eq(true)) as never),
+    ).toThrow(/cannot appear inside not/);
+  });
+
+  test("limit / offset holes substitute at lowering", () => {
+    const P = params({ n: Schema.Number, skip: Schema.Number });
+    const q = query(Todo, P).limit(P.n).offset(P.skip);
+    expect(lowerNavQuery(q.build(), { n: 10, skip: 2 }).query).toMatchObject({
+      limit: 10,
+      offset: 2,
+    });
   });
 });
 

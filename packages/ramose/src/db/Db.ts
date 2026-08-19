@@ -19,7 +19,7 @@ import { type CatalogEid, type Eid, makeEid } from "./Eid.ts";
 import { schemaTx } from "./ensure.ts";
 import type { Equal } from "./equal.ts";
 import type { DbError, InvalidRequest } from "./Errors.ts";
-import { NotOne } from "./Errors.ts";
+import { NotOne, ParamError } from "./Errors.ts";
 import { compact, record } from "./http.ts";
 import type { LookupRef } from "./idents.ts";
 import {
@@ -34,6 +34,7 @@ import {
   type Page,
 } from "./NavQuery.ts";
 import type { AnyNamespace } from "./Namespace.ts";
+import type { ParamArgs } from "./Params.ts";
 import type { SessionPrincipal } from "./session.ts";
 import {
   type IdentPullPattern,
@@ -51,7 +52,9 @@ import {
 } from "./Tx.ts";
 
 /** A navigational query value, or the builder that makes one. */
-export type QueryInput<R> = NavQuery<R> | NavQueryBuilder<AnyNamespace, R>;
+export type QueryInput<R, P = never> =
+  | NavQuery<R, P>
+  | NavQueryBuilder<AnyNamespace, R, P>;
 
 /**
  * The rows a query yields here. A query is scoped to a namespace, not to a
@@ -71,19 +74,22 @@ type QueryRows<C extends AnyCatalog, R> = Equal<
 
 /**
  * What `db.q` / `db.live` can fail with. `.oneOrFail()` adds {@link NotOne}
- * when the peer answers zero or two rows; every other query — a rows array,
- * `.one()`'s `row | null`, a cursor {@link Page}, a scalar aggregate — is
- * {@link DbError} only.
+ * when the peer answers zero or two rows; a parameterized query adds
+ * {@link ParamError} for a missing / unknown / ill-typed binding. Every
+ * other query — a rows array, `.one()`'s `row | null`, a cursor
+ * {@link Page}, a scalar aggregate — is {@link DbError} only.
  */
-export type QueryError<R = unknown> = [R] extends [readonly unknown[]]
-  ? DbError
-  : [null] extends [R]
-    ? DbError
-    : [R] extends [number]
+export type QueryError<R = unknown, P = never> =
+  | ([P] extends [never] ? never : ParamError)
+  | ([R] extends [readonly unknown[]]
       ? DbError
-      : [R] extends [Page<unknown>]
+      : [null] extends [R]
         ? DbError
-        : DbError | NotOne;
+        : [R] extends [number]
+          ? DbError
+          : [R] extends [Page<unknown>]
+            ? DbError
+            : DbError | NotOne);
 
 // ── the transport seam ─────────────────────────────────────────────────────
 
@@ -149,8 +155,11 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
   readonly name: string;
   readonly catalog: C;
 
-  /** Run a {@link NavQuery} once. */
-  q<R>(input: QueryInput<R>): Effect.Effect<QueryRows<C, R>, QueryError<R>>;
+  /** Run a {@link NavQuery} once. Bind params as the second argument. */
+  q<R, P = never>(
+    input: QueryInput<R, P>,
+    ...params: ParamArgs<P>
+  ): Effect.Effect<QueryRows<C, R>, QueryError<R, P>>;
 
   /**
    * Stand a query up: re-run on every basis tick this session sees,
@@ -158,8 +167,12 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
    * interruption — and a pinned view (`asOf` / `history`) emits once and
    * completes. A pass that returns the rows already emitted is not emitted
    * again: a write this query does not see is not a re-render.
+   * Bind params as the second argument.
    */
-  live<R>(input: QueryInput<R>): Stream.Stream<QueryRows<C, R>, QueryError<R>>;
+  live<R, P = never>(
+    input: QueryInput<R, P>,
+    ...params: ParamArgs<P>
+  ): Stream.Stream<QueryRows<C, R>, QueryError<R, P>>;
 
   /**
    * Project one entity. `null` when a required field is missing. The subject
@@ -319,7 +332,8 @@ const terminal = (e: { readonly _tag: string }): boolean =>
   e._tag === "DatabaseNotFound" ||
   e._tag === "Unauthorized" ||
   e._tag === "QueryBudgetExceeded" ||
-  e._tag === "NotOne";
+  e._tag === "NotOne" ||
+  e._tag === "ParamError";
 
 const isGenerator = (
   value: unknown,
@@ -393,16 +407,23 @@ const makeRead = <C extends AnyCatalog>(
         }),
       );
 
-  const runQuery = <R>(
-    input: QueryInput<R>,
+  const runQuery = <R, P = never>(
+    input: QueryInput<R, P>,
     minT: number | undefined,
+    bindings: Readonly<Record<string, unknown>> | undefined,
   ): Effect.Effect<
     { readonly rows: unknown; readonly t: number; readonly raw: unknown },
-    DbError | NotOne
+    DbError | NotOne | ParamError
   > =>
     Effect.gen(function* () {
       const nav = asNavQuery(input);
-      const lowered = lowerNavQuery(nav);
+      let lowered: ReturnType<typeof lowerNavQuery>;
+      try {
+        lowered = lowerNavQuery(nav as NavQuery<any, any>, bindings);
+      } catch (e) {
+        if (e instanceof ParamError) return yield* Effect.fail(e);
+        throw e;
+      }
       const fence = minT ?? view.minT;
       const body = record(
         yield* wire.read(
@@ -424,7 +445,7 @@ const makeRead = <C extends AnyCatalog>(
       const finalized = finalizeNavResult(body.result, lowered.pullMap);
       if (nav.spec.after !== undefined) {
         return {
-          rows: finalizeNavPage(body.result, finalized, nav.spec.limit),
+          rows: finalizeNavPage(body.result, finalized, lowered.query.limit),
           t,
           raw: body.result,
         };
@@ -510,18 +531,26 @@ const makeRead = <C extends AnyCatalog>(
     name,
     catalog,
 
-    q: (<R>(input: QueryInput<R>) =>
+    q: ((
+      input: QueryInput<unknown, unknown>,
+      bindings?: Readonly<Record<string, unknown>>,
+    ) =>
       fenced(
         Effect.suspend(() =>
-          runQuery(input, undefined).pipe(Effect.map((r) => r.rows as R)),
+          runQuery(input, undefined, bindings).pipe(
+            Effect.map((r) => r.rows),
+          ),
         ),
       )) as ReadDb<C>["q"],
 
-    live: (<R>(input: QueryInput<R>) =>
-      standing<R, DbError | NotOne>((minT) =>
-        runQuery(input, minT).pipe(
+    live: ((
+      input: QueryInput<unknown, unknown>,
+      bindings?: Readonly<Record<string, unknown>>,
+    ) =>
+      standing<unknown, DbError | NotOne | ParamError>((minT) =>
+        runQuery(input, minT, bindings).pipe(
           Effect.map((pass) => ({
-            value: pass.rows as R,
+            value: pass.rows,
             raw: pass.raw,
             t: pass.t,
           })),

@@ -159,7 +159,7 @@ if (!Ramose.isDatabaseName(slug)) throw new Error("letters, digits, . _ - only")
 
 `ramose.db(name, catalog)` returns a `Db`. `db.asOf(t)` and `db.history` return a `ReadDb` — everything below except `principal`, `transact` and `install`.
 
-**`db.q(query): Effect<Rows, QueryError>`** — run a query once. `.one()` is one row or `null`; `.oneOrFail()` is one row, or fails with `NotOne`.
+**`db.q(query, params?): Effect<Rows, QueryError>`** — run a query once. Bind `Ramose.params` as the second argument. `.one()` is one row or `null`; `.oneOrFail()` is one row, or fails with `NotOne`.
 
 ```ts title="examples/reef/src/app/mutations.ts:61-64"
     const mineQuery = Ramose.query(User)
@@ -168,7 +168,7 @@ if (!Ramose.isDatabaseName(slug)) throw new Error("letters, digits, . _ - only")
     const existing = yield* db.q(mineQuery);
 ```
 
-**`db.live(query): Stream<Rows, QueryError>`** — a **live query**: it re-runs whenever the database changes and emits new rows ([glossary](/concepts/glossary/#live-query)). Identical results are not re-emitted. Network trouble is retried in place; the stream fails only on `InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded` or `NotOne`. On `asOf(t)` or `history` it emits once and completes. In React use [`useLive(db, query)`](/reference/react/#uselive).
+**`db.live(query, params?): Stream<Rows, QueryError>`** — a **live query**: it re-runs whenever the database changes and emits new rows ([glossary](/concepts/glossary/#live-query)). Identical results are not re-emitted. Network trouble is retried in place; the stream fails only on `InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded`, `NotOne` or `ParamError`. On `asOf(t)` or `history` it emits once and completes. In React use [`useLive(db, query, params?)`](/reference/react/#uselive).
 
 ```ts
 const stream = db.live(boardQuery);   // Stream<BoardRow[], DbError>
@@ -300,7 +300,7 @@ Rules:
 
 ## Query builder
 
-**`Ramose.query(Namespace)`** starts a **query** — a typed description of a read, built as a value ([glossary](/concepts/glossary/#query)). Pass the builder to `db.q` / `db.live` directly.
+**`Ramose.query(Namespace, params?)`** starts a **query** — a typed description of a read, built as a value ([glossary](/concepts/glossary/#query)). Pass the builder to `db.q` / `db.live` directly. `Ramose.params({ … })` declares value holes; `Ramose.optional(decl)` marks one that may be unbound; `Ramose.when(gate, …clauses)` includes those clauses only while the gate is on.
 
 ```ts
 Ramose.query(Todo)
@@ -319,11 +319,11 @@ Ramose.query(Todo).orderBy(…).limit(20).after(cursor);        // keyset page
 ```
 
 ```ts title="examples/reef/src/domain/queries.ts:78-82"
-export const commentsQuery = (issueId: number) =>
-  Ramose.query(Comment)
-    .where(Comment.issue.eq(issueId))
-    .orderBy(Comment.at, "asc")
-    .select(commentShape);
+const CommentP = Ramose.params({ issueId: Issue.id });
+export const commentsQuery = Ramose.query(Comment, CommentP)
+  .where(Comment.issue.is(CommentP.issueId))
+  .orderBy(Comment.at, "asc")
+  .select(commentShape);
 ```
 
 **Predicates** — on every field handle:
@@ -340,7 +340,7 @@ export const commentsQuery = (issueId: number) =>
 | `.each` — the element of a many-valued scalar, inside `some/every/none` | `Todo.tags.some(Todo.tags.each.startsWith("a"))` |
 | `.where/.orderBy/.limit/.offset` on a many-valued field, before its `.select` | `Issue.labels.orderBy(Label.name).select(labelShape)` |
 
-**`Ramose.or(...preds)`** and **`Ramose.not(pred)`** combine predicates; `or()` with no arguments matches nothing.
+**`Ramose.or(...preds)`** and **`Ramose.not(pred)`** combine predicates; `or()` with no arguments matches nothing. `Ramose.when` is a top-level `.where` clause only — not inside `or` / `not`.
 
 ```ts
 Ramose.query(Todo).where(
@@ -441,7 +441,8 @@ export const issueExtraShape = {
 | `Ramose.TokenSource` / `Ramose.Claims` | a token source; the decoded, unverified payload |
 | `Ramose.DbError` | the union of the eight request errors |
 | `Ramose.NotOne` | `.oneOrFail()` saw zero or two rows — not a `DbError` |
-| `Ramose.QueryError<R>` | `DbError`, plus `NotOne` when `R` is a `.oneOrFail()` row |
+| `Ramose.ParamError` | a required param is missing, a key is unknown, or a hole failed to normalize |
+| `Ramose.QueryError<R>` | `DbError`, plus `NotOne` when `R` is a `.oneOrFail()` row, plus `ParamError` when the query declares params |
 
 ```ts title="examples/reef/src/domain/queries.ts:91"
 export type BoardRow = Ramose.Row<typeof boardQuery>;

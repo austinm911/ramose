@@ -1,6 +1,6 @@
 ---
 title: Errors
-description: The eight request errors, plus NotOne — what each means, what to show the user, which are retried for you, and how they map to HTTP status codes.
+description: The eight request errors, plus NotOne and ParamError — what each means, what to show the user, which are retried for you, and how they map to HTTP status codes.
 ---
 import Next from "../../../components/Next.astro";
 
@@ -8,7 +8,7 @@ Every error a call can fail with, what it means, and what to do about it. This p
 
 *New here? Start with [Getting started](/getting-started/quickstart/).*
 
-Every error is a tagged value and `DbError` is the union of the eight request errors. Most come from the Ramose server — the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer*. `.oneOrFail()` can also fail with `NotOne`, which is not a `DbError`. Match by name with `Effect.catchTags`.
+Every error is a tagged value and `DbError` is the union of the eight request errors. Most come from the Ramose server — the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer*. `.oneOrFail()` can also fail with `NotOne`, and a parameterized query can fail with `ParamError` — neither is a `DbError`. Match by name with `Effect.catchTags`.
 
 ```ts
 const rows = yield* db.q(query).pipe(
@@ -32,6 +32,7 @@ const rows = yield* db.q(query).pipe(
 | `InternalError` | the server failed (5xx) | a bug or storage fault; logged on the server |
 | `NetworkError` | the request never completed | fetch failure, dropped connection, a `mint` that threw |
 | `NotOne` | `.oneOrFail()` did not see exactly one row | zero matches, or two (the server is asked for two so a second row is seen); `found` is `0` or `2` |
+| `ParamError` | the query's params were bound wrong | a required param missing or `undefined`, an unknown key, or a deferred check (flagged `RegExp`, a non-entity for `is`) |
 
 ## What the user sees
 
@@ -55,11 +56,12 @@ Every error carries a `message`; `errorMessage(e)` from `ramose/react` is `e.mes
 | `QueryBudgetExceeded` | a generic error | narrow the query; not retried |
 | `InternalError` | "something went wrong" | try later |
 | `NotOne` | a generic error | the filter matched zero or several records; tighten it |
+| `ParamError` | a generic error | fix the binding: every required hole, no extra keys |
 
 ## Retries
 
 - **`Unavailable` and `NetworkError` are retried for you** — 6 attempts on a jittered ladder from about 150 ms doubling to 2 s — on HTTPS and on the WebSocket alike. Nothing else is retried.
-- **A live query keeps going.** Beyond that ladder, dropped sockets and 5xx are retried with backoff (250 ms to 5 s). It stops only on `InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded` or `NotOne`.
+- **A live query keeps going.** Beyond that ladder, dropped sockets and 5xx are retried with backoff (250 ms to 5 s). It stops only on `InvalidRequest`, `DatabaseNotFound`, `Unauthorized`, `QueryBudgetExceeded`, `NotOne` or `ParamError`.
 - **A write is not retried past the ladder.** An `Unavailable` after a writer restart means nothing from that write is stored — retry the whole write.
 - **`TxRejected` never retries.** Retrying the same write against the same data rejects again.
 - **Setup mistakes are not errors.** A missing service binding or malformed URL throws at start-up instead of failing requests.

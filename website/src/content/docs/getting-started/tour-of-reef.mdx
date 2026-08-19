@@ -155,11 +155,11 @@ Then the write reaches **the Ramose server**, which checks the caller's role aga
 
 ## The issue panel
 
-<Shot src="/reef/issue-detail.png" alt="The issue side panel: title, status, priority, assignee, label chips, description, admin note and a comment thread" caption="Status, assignee and labels come from the live board row; title, description and note ride one live pull." code="examples/reef/src/app/components/IssueDetail.tsx:258-270" />
+<Shot src="/reef/issue-detail.png" alt="The issue side panel: title, status, priority, assignee, label chips, description, admin note and a comment thread" caption="Status, assignee and labels come from the live board row; title, description and note ride one live pull." code="examples/reef/src/app/components/IssueDetail.tsx:258-266" />
 
 The panel **reads one record** with `usePull` — by id, with the fields you choose ([glossary](/concepts/glossary/#pull)). A per-issue live query loads the comments:
 
-```ts title="examples/reef/src/app/components/IssueDetail.tsx:258-270"
+```ts title="examples/reef/src/app/components/IssueDetail.tsx:258-266"
   const extra = usePull(db, { id: issueId }, issueExtraShape).rows ?? null;
   useEffect(() => {
     if (extra === null) return;
@@ -168,11 +168,7 @@ The panel **reads one record** with `usePull` — by id, with the fields you cho
     setNoteDraft(extra.privateNote ?? "");
   }, [extra]);
 
-  // built per id, so memoise the query on `issueId` — its one dependency
-  const comments = useLive(
-    db,
-    useMemo(() => commentsQuery(issueId), [issueId]),
-  );
+  const comments = useLive(db, commentsQuery, { issueId });
 ```
 
 The board's **shape** is the fields you ask for ([glossary](/concepts/glossary/#shape)). It follows references, so a card gets creator, assignee and labels inline:

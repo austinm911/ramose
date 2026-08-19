@@ -3,6 +3,7 @@
 import type { PullElemOrder, PullElemPred } from "../internal/core/query/ast.ts";
 import type * as Schema from "effect/Schema";
 import type { AnyAttribute } from "./Attribute.ts";
+import type { AnyParam } from "./Params.ts";
 import { isAttrRef } from "./attrRef.ts";
 import type { AnyCatalog } from "./Catalog.ts";
 import type { Eid } from "./Eid.ts";
@@ -24,8 +25,9 @@ import type { AnyNamespace, AttributeMap } from "./Namespace.ts";
 export interface PullNestedConstraints {
   readonly where?: readonly PullElemPred[];
   readonly order?: readonly PullElemOrder[];
-  readonly limit?: number;
-  readonly offset?: number;
+  /** A number, or a {@link AnyParam} hole substituted at query lowering. */
+  readonly limit?: number | AnyParam;
+  readonly offset?: number | AnyParam;
 }
 
 export interface PullOptional<F = unknown> {

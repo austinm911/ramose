@@ -44,10 +44,14 @@ export {
   or,
   query,
   sum,
+  when,
 } from "./NavQuery.ts";
 // `Ramose.all(Todo)` — the wildcard pull, as a select shape, a nested
 // `ref.select(all(N))`, or a pull pattern
 export { all } from "./Pull.ts";
+// value holes: declare with `params`, mark unbound-ok with `optional`,
+// gate clauses with `when`
+export { optional, params } from "./Params.ts";
 export type {
   Agg,
   AggRow,
@@ -66,8 +70,10 @@ export type {
   Row,
   Rows,
   Shape,
+  When,
   WhereNode,
 } from "./NavQuery.ts";
+export type { Param, ParamBindings, ParamsOf } from "./Params.ts";
 
 // ── connecting ─────────────────────────────────────────────────────────────
 export {
@@ -112,6 +118,7 @@ export {
   InvalidRequest,
   NetworkError,
   NotOne,
+  ParamError,
   QueryBudgetExceeded,
   TxRejected,
   Unauthorized,

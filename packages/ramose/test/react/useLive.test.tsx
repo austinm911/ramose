@@ -288,6 +288,50 @@ describe("useLive (query form)", () => {
       await close();
     }
   });
+
+  test("a params-only change re-runs without a new query object and does not blank rows", async () => {
+    const P = Ramose.params({ n: Schema.Number });
+    const limited = Ramose.query(Todo, P).limit(P.n);
+    const object = limited;
+
+    const { db, peer, answer, qFrames, close } = setup();
+    try {
+      answer((frame) => {
+        const limit = (frame.query as { limit?: number } | undefined)?.limit;
+        return {
+          body: {
+            t: 1,
+            result: limit === 1 ? [[1]] : [[1], [2]],
+          },
+        };
+      });
+      const { result, rerender } = renderHook(
+        ({ n }: { n: number }) => useLive(db, limited, { n }),
+        { initialProps: { n: 1 } },
+      );
+      await waitFor(() => expect(result.current.rows).toEqual(ids(1)));
+
+      // hold the next answer so the in-flight state is observable
+      answer(() => undefined);
+      rerender({ n: 2 });
+      await waitFor(() => {
+        const held = qFrames().at(-1)!;
+        expect((held.query as { limit?: number }).limit).toBe(2);
+      });
+      // last rows stay while the new pass runs — no flash to undefined
+      expect(result.current.rows).toEqual(ids(1));
+      expect(result.current.error).toBeUndefined();
+      expect(limited).toBe(object);
+
+      peer.push({
+        id: qFrames().at(-1)!.id,
+        body: { t: 1, result: [[1], [2]] },
+      });
+      await waitFor(() => expect(result.current.rows).toEqual(ids(1, 2)));
+    } finally {
+      await close();
+    }
+  });
 });
 
 describe("useLive (stream form)", () => {

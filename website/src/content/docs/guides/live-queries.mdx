@@ -84,14 +84,10 @@ There is no per-query subscription state on the server. A live query is a re-run
 
 ## Hoist your queries
 
-`useLive` re-subscribes when the `query` value changes, so build queries at module scope, as `queries.ts` does. When a query takes an argument, memoise it on that argument:
+`useLive` re-subscribes when the `query` value changes, so build queries at module scope, as `queries.ts` does. Changing **values** are `Ramose.params` — bind them as the third argument; an inline `{ issueId }` is fine, and a params-only change does not blank `rows`:
 
-```ts title="examples/reef/src/app/components/IssueDetail.tsx:266-270"
-  // built per id, so memoise the query on `issueId` — its one dependency
-  const comments = useLive(
-    db,
-    useMemo(() => commentsQuery(issueId), [issueId]),
-  );
+```ts title="examples/reef/src/app/components/IssueDetail.tsx:266"
+  const comments = useLive(db, commentsQuery, { issueId });
 ```
 
 `db.asOf(t)` inline is fine — views compare by value. Effect users who build a stream themselves can pass it directly (`useLive(stream)`) — see [React hooks](/reference/react/).

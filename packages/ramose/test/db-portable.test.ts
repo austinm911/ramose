@@ -148,6 +148,9 @@ describe("the `/db` barrel's public names", () => {
         "or",
         "not",
         "all",
+        "params",
+        "optional",
+        "when",
         // aggregates (issue #18)
         "count",
         "countDistinct",
@@ -174,6 +177,7 @@ describe("the `/db` barrel's public names", () => {
         "NetworkError",
         // `.oneOrFail()` cardinality — not a DbError (the peer succeeded)
         "NotOne",
+        "ParamError",
       ].sort(),
     );
   });
