@@ -77,7 +77,8 @@ export type ScopeOf<V> = V extends Param<any, infer B, boolean> ? B : never;
  */
 export type ParamDecl =
   | { readonly schema: { readonly Type: unknown } }
-  | { readonly Type: unknown };
+  | { readonly Type: unknown }
+  | { readonly ast: unknown };
 
 /** A declaration marked "may be unbound" — see {@link optional}. */
 export interface OptionalDecl<D extends ParamDecl = ParamDecl> {
@@ -104,13 +105,21 @@ const isOptionalDecl = (d: unknown): d is OptionalDecl =>
   d !== null &&
   (d as { _tag?: unknown })._tag === "OptionalParamDecl";
 
+/**
+ * An attribute ref is a plain object with `schema`. An Effect Schema (Effect
+ * 4) is a function carrying `ast` — `typeof === "function"`, so a
+ * `typeof === "object"` check would reject `Schema.String`.
+ */
+const isDeclShape = (x: unknown): boolean => {
+  if (x === null || (typeof x !== "object" && typeof x !== "function")) {
+    return false;
+  }
+  return "schema" in x || "Type" in x || "ast" in x;
+};
+
 const assertDecl = (decl: unknown, where: string): void => {
   const inner = isOptionalDecl(decl) ? decl.decl : decl;
-  const ok =
-    typeof inner === "object" &&
-    inner !== null &&
-    ("schema" in inner || "Type" in inner);
-  if (!ok) {
+  if (!isDeclShape(inner)) {
     throw new Error(
       `ramose/params: ${where} takes an attribute reference (Issue.id, Todo.title) or an Effect Schema, got ${String(decl)}`,
     );
