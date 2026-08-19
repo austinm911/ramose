@@ -24,6 +24,18 @@ import { Meta, Movie, Movies, User } from "./fixture.ts";
 declare const db: Db<typeof Movies>;
 declare const eid: Eid<typeof Movies>;
 
+// ── a `:db/id` row cell is a pull subject, no cast (issue #77) ──────────────
+
+declare const cell: Eid<typeof User>;
+const byCell = db.pull(cell, { name: User.name, age: User.age.optional });
+type ByCell = NonNullable<Effect.Success<typeof byCell>>;
+type _byCellName = Expect<Equal<ByCell["name"], string>>;
+
+const Elsewhere = Namespace("elsewhere", { label: Attr(Schema.String) });
+declare const foreignCell: Eid<typeof Elsewhere>;
+// @ts-expect-error a cell from a namespace outside this catalog is no subject here
+db.pull(foreignCell, { name: User.name });
+
 
 // ── renamed keys, required vs optional ─────────────────────────────────────
 

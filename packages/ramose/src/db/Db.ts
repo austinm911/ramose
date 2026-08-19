@@ -15,7 +15,7 @@ import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import { DATABASE_NAME_RE, invalidDatabaseName } from "./DatabaseName.ts";
 import type { AnyCatalog } from "./Catalog.ts";
-import { type Eid, makeEid } from "./Eid.ts";
+import { type CatalogEid, type Eid, makeEid } from "./Eid.ts";
 import { schemaTx } from "./ensure.ts";
 import type { Equal } from "./equal.ts";
 import type { DbError, InvalidRequest } from "./Errors.ts";
@@ -153,9 +153,13 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
    */
   live<R>(input: QueryInput<R>): Stream.Stream<QueryRows<C, R>, QueryError<R>>;
 
-  /** Project one entity. `null` when a required field is missing. */
+  /**
+   * Project one entity. `null` when a required field is missing. The subject
+   * is an `Eid<C>`, a namespace-branded row cell (`select({ id: N.id })`),
+   * or a lookup ref.
+   */
   pull<const P>(
-    subject: Eid<C> | LookupRef<C>,
+    subject: Eid<C> | CatalogEid<C> | LookupRef<C>,
     pattern: PullPattern<C, P>,
   ): Effect.Effect<Pull<C, P> | null, DbError>;
 
@@ -167,7 +171,7 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
    * standing. A pinned view (`asOf` / `history`) emits once and completes.
    */
   livePull<const P>(
-    subject: Eid<C> | LookupRef<C>,
+    subject: Eid<C> | CatalogEid<C> | LookupRef<C>,
     pattern: PullPattern<C, P>,
   ): Stream.Stream<Pull<C, P> | null, DbError>;
 

@@ -189,6 +189,8 @@ export type Namespace<
    * Pseudo-attribute `:db/id`, usable in `where` / `select` / `orderBy`.
    * Typed as a stamped attr so it is a valid {@link ShapeField}, and as a
    * number so `Todo.id.eq(42)` / `.lt(n)` take the id they compare against.
+   * The `_ns` phantom is the namespace itself: it is what brands the
+   * `select({ id: N.id })` row cell as `Eid<N>` (see `IdCell` in Pull.ts).
    */
   readonly id: AttrNav<
     AnyAttribute & {
@@ -197,6 +199,8 @@ export type Namespace<
       readonly ident: ":db/id";
       readonly valueType: ":db.type/ref";
       readonly cardinality: "one";
+      /** Phantom: the namespace whose `:db/id` this is. Never at runtime. */
+      readonly _ns?: Namespace<Name, Attrs>;
     } & PathCarrier
   >;
 } & StampedMap<Name, Attrs>;
