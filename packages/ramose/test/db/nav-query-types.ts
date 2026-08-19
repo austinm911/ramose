@@ -15,6 +15,7 @@ import {
   type Eid,
   type Equal,
   type Expect,
+  type Extends,
   Instant,
   Namespace,
   type AllRow,
@@ -158,14 +159,61 @@ type _maybeAge = Expect<
   >
 >;
 
-/** `:db/id` is a number in the row, not an `Eid`. */
+/** `:db/id` is the raw id number in the row, branded with its namespace. */
 const withId = db.q(query(Movie).select({ id: Movie.id, title: Movie.title }));
 type _withId = Expect<
   Equal<
     Effect.Success<typeof withId>,
-    readonly { readonly id: number; readonly title: string }[]
+    readonly { readonly id: Eid<typeof Movie>; readonly title: string }[]
   >
 >;
+
+// ── the `:db/id` cell carries the namespace it came from (issue #77) ────────
+
+type MovieCell = Effect.Success<typeof withId>[number]["id"];
+/** the cell is the raw number, so it flows anywhere a number does */
+type _cellIsNumber = Expect<Extends<MovieCell, number>>;
+/** …but a plain number is not a cell: the brand comes from a row */
+type _numberIsNoCell = Expect<Equal<Extends<number, MovieCell>, false>>;
+/** a Movie id is not a User id */
+type _cellsDoNotMix = Expect<Equal<Extends<MovieCell, Eid<typeof User>>, false>>;
+/** …and the cell is not the wrapped `{ id }` form a bare query yields */
+type _cellIsNotWrapped = Expect<
+  Equal<Extends<MovieCell, Eid<typeof Movies>>, false>
+>;
+
+/** a nested `.select` cell is branded by the namespace whose `id` it named */
+const nestedIds = db.q(
+  query(User).select({ best: User.bestFriend.select({ id: User.id }) }),
+);
+type _nestedCell = Expect<
+  Equal<Effect.Success<typeof nestedIds>[number]["best"]["id"], Eid<typeof User>>
+>;
+
+/** `.optional` wraps the same cell */
+const maybeIds = db.q(query(Movie).select({ id: Movie.id.optional }));
+type _maybeCell = Expect<
+  Equal<
+    Effect.Success<typeof maybeIds>[number]["id"],
+    Eid<typeof Movie> | undefined
+  >
+>;
+
+// round-trip: the cell feeds the next query and the next pull with no cast
+declare const movieCell: Eid<typeof Movie>;
+declare const userCell: Eid<typeof User>;
+query(Movie).where(Movie.id.is(movieCell), Movie.id.in([movieCell, 1001]));
+query(User).where(User.bestFriend.is(userCell), User.friends.in([userCell]));
+db.pull(movieCell, { title: Movie.title });
+db.pull(userCell, { name: User.name });
+
+/** plain numbers still work everywhere they did — the brand is one-way */
+query(Movie).where(Movie.id.is(1001), Movie.id.eq(1001), Movie.id.lt(9000));
+
+declare const bookCell: Eid<typeof Book>;
+library.pull(bookCell, { title: Book.title });
+// @ts-expect-error a cell from a namespace outside this catalog is no subject here
+db.pull(bookCell, { title: Movie.title });
 
 // ── nested `.select` follows cardinality ───────────────────────────────────
 

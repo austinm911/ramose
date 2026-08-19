@@ -279,6 +279,54 @@ describe("nav query", () => {
 
     await peer.dispose();
   });
+
+  /**
+   * Issue #77: the `select({ id: N.id })` cell is the raw id number, branded
+   * with its namespace — so it feeds the next query and `db.pull` with no
+   * cast. The brand is type-only; this test is the runtime half of the
+   * round-trip (the compile half lives in `nav-query-types.ts`).
+   */
+  test("a `:db/id` row cell round-trips into the next query and pull", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("todos", Todos);
+
+    await run(db.install());
+    await run(
+      db.transact(function* (tx) {
+        const ada = yield* tx.entity();
+        yield* ada.add(User.name, "Ada");
+        const t = yield* tx.entity();
+        yield* t.add(Todo.title, "ship");
+        yield* t.add(Todo.done, false);
+        yield* t.add(Todo.owner, ada.eid as never);
+      }),
+    );
+
+    const users = await run(
+      db.q(query(User).where(User.name.eq("Ada")).select({ id: User.id })),
+    );
+    const ada = users[0]!.id;
+    // the cell is the raw number the peer answered, not a wrapper
+    expect(typeof ada).toBe("number");
+
+    // …and it is a pull subject and a predicate value, uncast
+    const pulled = await run(db.pull(ada, { name: User.name }));
+    expect(pulled).toEqual({ name: "Ada" });
+
+    const owned = await run(
+      db.q(
+        query(Todo).where(Todo.owner.is(ada)).select({ title: Todo.title }),
+      ),
+    );
+    expect(owned).toEqual([{ title: "ship" }]);
+
+    const byId = await run(
+      db.q(query(User).where(User.id.is(ada)).select({ name: User.name })),
+    );
+    expect(byId).toEqual([{ name: "Ada" }]);
+
+    await peer.dispose();
+  });
 });
 
 describe("a select field is a direct attribute, never a flattened path", () => {

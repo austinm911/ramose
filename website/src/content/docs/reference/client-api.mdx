@@ -404,7 +404,7 @@ export const issueExtraShape = {
 | `Ramose.Pull<C, P>` | the result of shape `P` |
 | `Ramose.AllRow<N>` / `Ramose.AllShape<N>` | one wildcard row from `Ramose.all(N)`; the shape term itself |
 | `Ramose.Db<C>` / `Ramose.ReadDb<C>` | the handle; `ReadDb` has no `transact`, `install`, `principal` |
-| `Ramose.Eid<C>` | `{ readonly id: number }` — a record id as data |
+| `Ramose.Eid<C>` | `{ readonly id: number }` — a record id as data. `Eid<N>` over a namespace is the branded id `number` a `select({ id: N.id })` cell carries; `db.pull` takes it uncast |
 | `Ramose.LookupRef<C>` | `[UniqueAttr, value]` |
 | `Ramose.TxReport<C>` | `{ t, txEid, datomCount, dbAfter }` |
 | `Ramose.TokenSource` / `Ramose.Claims` | a token source; the decoded, unverified payload |

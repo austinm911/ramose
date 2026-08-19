@@ -10,6 +10,7 @@
 
 import type {
   Catalog,
+  CatalogEid,
   DbError,
   Eid,
   IdentPullPattern,
@@ -47,7 +48,7 @@ const subjectKey = (subject: unknown): string => {
 
 export const usePull = <C extends Catalog.Any, const P>(
   db: ReadDb<C>,
-  subject: Eid<C> | LookupRef<C>,
+  subject: Eid<C> | CatalogEid<C> | LookupRef<C>,
   pattern: PullPattern<C, P>,
 ): Live<Pull<C, P> | null> => {
   const view = viewDep(db);

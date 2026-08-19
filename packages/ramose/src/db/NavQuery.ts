@@ -39,6 +39,7 @@ import {
   reshapePullResult,
   type AllRow,
   type AllShape,
+  type IdCell,
   type PullDefault,
   type PullNestedConstraints,
 } from "./Pull.ts";
@@ -1387,12 +1388,13 @@ type SelectFieldResult<F> = F extends {
             readonly cardinality: infer Card;
           }
         ? F extends { readonly ident: ":db/id" }
-          ? number
+          ? // the cell is the raw id number, branded with `N.id`'s namespace
+            IdCell<F>
           : Card extends "many"
             ? readonly SchemaType<F>[]
             : SchemaType<F>
         : F extends { readonly ident: ":db/id" }
-          ? number
+          ? IdCell<F>
           : never;
 
 /**

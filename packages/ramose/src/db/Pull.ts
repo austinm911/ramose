@@ -5,6 +5,7 @@ import type * as Schema from "effect/Schema";
 import type { AnyAttribute } from "./Attribute.ts";
 import { isAttrRef } from "./attrRef.ts";
 import type { AnyCatalog } from "./Catalog.ts";
+import type { Eid } from "./Eid.ts";
 import type { AttrAtIdent, CatalogIdent, Ident } from "./idents.ts";
 import type { AnyNamespace, AttributeMap } from "./Namespace.ts";
 
@@ -225,6 +226,18 @@ type FieldsResult<F> = {
 };
 
 /**
+ * The `:db/id` select cell. `N.id` carries its namespace as a phantom, so the
+ * cell is the branded number `Eid<N>` — the raw id the peer answered, typed
+ * as belonging to `N`, and a `db.pull` subject or `N.id.is(cell)` value with
+ * no cast. An id attr without the phantom stays a plain `number`.
+ */
+export type IdCell<F> = F extends { readonly _ns?: infer N }
+  ? [NonNullable<N>] extends [AnyNamespace]
+    ? Eid<NonNullable<N>>
+    : number
+  : number;
+
+/**
  * A nested `.select`: a named shape, or `all(N)` — the target's wildcard
  * row ({@link AllRow}), an array when the hop is cardinality-many.
  */
@@ -258,7 +271,7 @@ type FieldResult<F> = F extends {
         }
       ? NestedResult<A, P>
       : F extends { readonly ident: ":db/id" }
-        ? number
+        ? IdCell<F>
         : ScalarResult<F>;
 
 /** Result shape of a fields object. */
