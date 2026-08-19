@@ -32,8 +32,11 @@ const onlyCheck = args.includes("--only") ? args[args.indexOf("--only") + 1] : n
 const BUDGETS = {
   "index": 900,
   "getting-started/introduction": 350,
-  "getting-started/quickstart": 1200,
-  "getting-started/first-app": 1100,
+  // Quickstart + "Build your first app" consolidated into one build-it-from-
+  // scratch guide; it carries both former budgets (2300 combined), and it is
+  // mostly code. Raised to 2100 after a from-scratch reader test showed the
+  // last two sections needed full context, not fragments.
+  "getting-started/quickstart": 2100,
   "getting-started/tour-of-reef": 1400,
   "getting-started/compare": 900,
   "guides/catalog": 1100,
@@ -46,7 +49,10 @@ const BUDGETS = {
   "guides/deploy": 1100,
   "guides/workers": 800,
   "guides/before-production": 1000,
-  "guides/troubleshooting": 1000,
+  // Raised for the entries covering the bare-specifier `main` hang, schema-change
+  // watching, and the corrected port-collision advice (which used to tell readers
+  // to kill an unrelated process). All cost real debugging time to rediscover.
+  "guides/troubleshooting": 1250,
   "concepts/data-model": 1000,
   "concepts/architecture": 900,
   "concepts/time-travel": 700,
@@ -346,6 +352,19 @@ for (const page of pages) {
 
   // CODE provenance
   if (run("code")) {
+    // `Cloudflare.Worker`'s `main` is a filesystem path, not a module
+    // specifier: a bare "@ramose/worker" resolves to nothing, and the failure
+    // is silent — the server reports ready and every request hangs forever.
+    // This spelling shipped in the docs for months. A block may still show it
+    // as a counter-example, but only alongside the spelling that works.
+    for (const b of blocks) {
+      if (/main:\s*["'`]@ramose\/worker["'`]/.test(b.code) &&
+          !b.code.includes("import.meta.resolve")) {
+        add("ERROR", "code", page.slug,
+          'main: "@ramose/worker" resolves to nothing and hangs silently',
+          'use import.meta.resolve("@ramose/worker"), or show both to contrast them');
+      }
+    }
     for (const b of blocks) {
       const title = b.info.match(/title="([^"]+)"/)?.[1];
       if (!title) continue;
