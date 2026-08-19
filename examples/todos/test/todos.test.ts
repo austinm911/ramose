@@ -1,15 +1,19 @@
 /**
- * The consumer proof: the app's own query and writes against a real
- * `@ramose/core` `Connection`, over the two wires the client actually uses —
- * writes as `POST /db/todos/transact`, reads and `t` ticks as session frames.
+ * The consumer proof: the app's own query and writes against a real engine
+ * `Connection`, over the two wires the client actually uses — writes as
+ * `POST /db/todos/transact`, reads and `t` ticks as session frames.
  *
  * What it pins is the loop the UI depends on: a write moves the live stream
  * with no refetch and no invalidation call of its own.
+ *
+ * `ramose/internal/*` is the engine, reachable but unsupported: it is how this
+ * test stands an in-process server up without a Worker. An app never imports
+ * it — `ramose/db` and `ramose` are the surface.
  */
 
 import { describe, expect, test } from "bun:test";
-import * as Ramose from "@ramose/alchemy/db";
-import { Connection, fromJson, pull, query, toJson } from "@ramose/core";
+import * as Ramose from "ramose/db";
+import { Connection, fromJson, pull, query, toJson } from "ramose/internal/core";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -113,7 +117,7 @@ const inProcessPeer = async () => {
   };
 };
 
-/** What `@ramose/react`'s `useLive` does, minus React: drain on a fiber, interrupt to stop. */
+/** What `ramose/react`'s `useLive` does, minus React: drain on a fiber, interrupt to stop. */
 const live = (stream: Stream.Stream<readonly TodoRow[], Ramose.DbError>) => {
   let rows: readonly TodoRow[] | undefined;
   let error: unknown;

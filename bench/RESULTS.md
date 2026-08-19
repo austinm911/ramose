@@ -54,7 +54,7 @@ SQLite storage, miniflare emulation; `RAMOSE_URL=… bun run bench/write-do.benc
 |---|---|---|---|---|---|---|
 | 64 | 1,744 | 27 ms | 117 ms | 570 | 15.4 | 35 |
 
-Correctness (`bun test packages/transactor`): contiguous `t` under 500
+Correctness (`bun test packages/ramose/test/internal/transactor`): contiguous `t` under 500
 concurrent clients; storage-fault injection → batch all-or-nothing, instance
 aborted, restart continues with no gaps/dupes; novelty frames + resume /
 gap catch-up; alarm-driven indexing.
@@ -356,7 +356,7 @@ between variants). Worker host
 `ripple-worker-dev-box-uax23drlds3vbl4b.tvanhens.workers.dev`; client and Worker
 in **IAD** (`cf-ray …-IAD`, `x-ramose-colo: IAD`).
 
-Knobs (`packages/worker/src/peer.ts`; header per request, env for the default):
+Knobs (`packages/ramose/src/worker/peer.ts`; header per request, env for the default):
 
 - `x-ramose-cache-basis: 0|1` (env `RAMOSE_CACHE_BASIS`) — isolate basis cache keyed `db|hint`.
 - `x-ramose-cache-mode: ttl|peer` (env `RAMOSE_CACHE_MODE`) — `ttl` = today's 5 s

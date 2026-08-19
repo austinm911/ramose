@@ -2,12 +2,17 @@
  * The deploy-time artifacts, checked at test time: the policy compiles
  * against the catalog, carries exactly the rules the demo narrates, and the
  * app's pull shapes survive the masked-read check.
+ *
+ * `parsePolicy` comes from `ramose/internal/*` — the engine, reachable but
+ * unsupported — because "core accepts this JSON" is the assertion, and the
+ * public surface only offers the compiler that produces it. An app never
+ * imports it.
  */
 
 import { describe, expect, test } from "bun:test";
-import { parsePolicy } from "@ramose/core/policy/ast.ts";
-import * as Ramose from "@ramose/alchemy";
-import { classOfRole } from "@ramose/better-auth";
+import { parsePolicy } from "ramose/internal/core/policy/ast.ts";
+import * as Ramose from "ramose";
+import { classOfRole } from "ramose/better-auth";
 import { compiledPolicy, policy } from "../src/domain/policy.ts";
 import { allShapes, boardShape } from "../src/domain/queries.ts";
 import { Issue, Reef } from "../src/domain/schema.ts";
@@ -76,7 +81,7 @@ describe("reef policy", () => {
   });
 });
 
-// The mapping lives in `@ramose/better-auth` now (the mint plugin's
+// The mapping lives in `ramose/better-auth` now (the mint plugin's
 // default); pinned here so it stays in step with what the policy declares.
 describe("role → class mapping", () => {
   test("owner and admin mint the admin class", () => {
