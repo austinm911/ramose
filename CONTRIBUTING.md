@@ -2,8 +2,13 @@
 
 Development notes for people changing Ramose itself. Consumer docs live at
 [ramose.ai](https://ramose.ai) (source in `website/`). In-repo design notes stay
-in `docs/` (`API.md`, `AUTH_LAYER.md`, `QUERY.md`, `RUNBOOK.md`,
-`TX_WRITE_PERF.md`); recorded benches in [`bench/RESULTS.md`](bench/RESULTS.md);
+in `docs/` (`API.md`, `AUTH_LAYER.md`, `RUNBOOK.md`,
+`TX_WRITE_PERF.md`). Remaining query work lives on
+[issue #18](https://github.com/tvanhens/ramose/issues/18); the shipped query
+language is on the website
+([Read data](https://ramose.ai/guides/queries/),
+[Client API](https://ramose.ai/reference/client-api/)).
+Recorded benches in [`bench/RESULTS.md`](bench/RESULTS.md);
 brand assets (mark, on-dark mark, horizontal and stacked lockups, app icon) in
 [`website/public/brand/`](website/public/brand/).
 

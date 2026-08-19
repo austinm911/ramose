@@ -49,7 +49,7 @@ Static token: `Effect.succeed(Redacted.make(t))`. The layer is scoped, the socke
 |---|---|
 | `Db<C>` | `ReadDb<C> & { transact; install }` |
 | `ReadDb<C>` | `{ name; catalog; q; pull; live; basis; asOf; history }` |
-| `db.q` | `<R>(query: NavQuery\<R\> \| NavQueryBuilder\<_, R\>) => Effect<R, DbError>` — a `Ramose.query(N)` value (see `docs/QUERY.md`); with no `.select`, `R` is `readonly Eid<C>[]` |
+| `db.q` | `<R>(query: NavQuery\<R\> \| NavQueryBuilder\<_, R\>) => Effect<R, DbError>` — a `Ramose.query(N)` value (shipped language: website [Read data](https://ramose.ai/guides/queries/) / [Client API](https://ramose.ai/reference/client-api/); remaining work: [issue #18](https://github.com/tvanhens/ramose/issues/18)); with no `.select`, `R` is `readonly Eid<C>[]` |
 | `db.live` | same input as `db.q` → `Stream<R, DbError>` |
 | `db.pull` | `<const P>(subject: Eid<C> \| LookupRef<C>, shape: P) => Effect<Pull<C, P> \| null, DbError>` |
 | `db.transact` | `<A, E, R>(body: (tx: Tx<C>) => Generator<Effect<unknown, E, R>, A>) => Effect<TxReport<C>, DbError \| E, R>` |
