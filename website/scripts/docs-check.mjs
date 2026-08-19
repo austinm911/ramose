@@ -41,8 +41,9 @@ const BUDGETS = {
   "getting-started/compare": 900,
   "guides/catalog": 1100,
   "guides/transactions": 1000,
-  // Raised for count / groupBy / keyset `.after` on the everyday nav surface.
-  "guides/queries": 1300,
+  // Raised for count / groupBy / keyset `.after` on the everyday nav surface,
+  // and the recursive-tree window that `again` is for.
+  "guides/queries": 1700,
   "guides/live-queries": 800,
   "guides/permissions": 1200,
   "guides/sign-in": 1000,
@@ -59,8 +60,9 @@ const BUDGETS = {
   "concepts/time-travel": 700,
   "concepts/effect": 800,
   "concepts/glossary": 2200,
-  // Raised for the aggregate / groupBy / `.after` entries on the query builder.
-  "reference/client-api": 2750,
+  // Raised for the aggregate / groupBy / `.after` entries on the query builder,
+  // and the thread-window sketch on `again`.
+  "reference/client-api": 2950,
   "reference/react": 1200,
   "reference/policy": 2000,
   "reference/errors": 900,
