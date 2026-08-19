@@ -1208,10 +1208,9 @@ const filterPull = (pattern: unknown, result: unknown): unknown => {
     const info = inspectPullField(field);
     const raw = rec[key];
     const missing = !isPresent(raw);
+    const recur = isAgain(info.nestedPattern);
     // `again` re-applies this enclosing shape — the engine's parent pattern
-    const childPattern = isAgain(info.nestedPattern)
-      ? pattern
-      : info.nestedPattern;
+    const childPattern = recur ? pattern : info.nestedPattern;
 
     if (childPattern !== undefined) {
       if (info.many) {
@@ -1229,7 +1228,9 @@ const filterPull = (pattern: unknown, result: unknown): unknown => {
         continue;
       }
       if (missing) {
-        if (info.optional) {
+        // a tree can end before the hop bound; missing card-one again
+        // must not delete the parent the way a required nested select would
+        if (info.optional || recur) {
           out[key] = undefined;
           continue;
         }
@@ -1237,7 +1238,7 @@ const filterPull = (pattern: unknown, result: unknown): unknown => {
       }
       const child = filterPull(childPattern, raw);
       if (child === undefined) {
-        if (info.optional) {
+        if (info.optional || recur) {
           out[key] = undefined;
           continue;
         }

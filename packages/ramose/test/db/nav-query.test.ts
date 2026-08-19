@@ -4078,7 +4078,7 @@ describe("`again(n)`: recursive trees in a shape", () => {
           })
           .build(),
       ),
-    ).toThrow(/different namespace/);
+    ).toThrow(/re-applies this shape/);
   });
 
   test("again(n) above the hop bound names the cap", () => {
@@ -4113,6 +4113,12 @@ describe("`again(n)`: recursive trees in a shape", () => {
         yield* hidden.add(Comment.createdAt, new Date("2026-01-04"));
         yield* hidden.add(Comment.parent, root.eid as never);
         yield* root.add(Comment.replies, hidden.eid as never);
+        const great = yield* tx.entity();
+        yield* great.add(Comment.body, "great");
+        yield* great.add(Comment.deleted, false);
+        yield* great.add(Comment.createdAt, new Date("2026-01-05"));
+        yield* great.add(Comment.parent, grand.eid as never);
+        yield* grand.add(Comment.replies, great.eid as never);
       }),
     );
     return db;
@@ -4128,7 +4134,10 @@ describe("`again(n)`: recursive trees in a shape", () => {
           .select({
             id: Comment.id,
             body: Comment.body,
-            replies: Comment.replies.limit(50).select(again(1)),
+            replies: Comment.replies
+              .where(Comment.deleted.eq(false))
+              .limit(50)
+              .select(again(1)),
           }),
       ),
     );
@@ -4212,11 +4221,14 @@ describe("`again(n)`: recursive trees in a shape", () => {
           .select({
             id: Comment.id,
             body: Comment.body,
-            thread: Comment.replies.limit(50).select({
-              id: Comment.id,
-              body: Comment.body,
-              replies: Comment.replies.limit(50).select(again(1)),
-            }),
+            thread: Comment.replies
+              .where(Comment.deleted.eq(false))
+              .limit(50)
+              .select({
+                id: Comment.id,
+                body: Comment.body,
+                replies: Comment.replies.limit(50).select(again(1)),
+              }),
           }),
       ),
     );
@@ -4235,8 +4247,11 @@ describe("`again(n)`: recursive trees in a shape", () => {
     await run(db.install());
     await run(
       db.transact(function* (tx) {
+        const board = yield* tx.entity();
+        yield* board.add(Poster.name, "Board");
         const ceo = yield* tx.entity();
         yield* ceo.add(Poster.name, "Ceo");
+        yield* ceo.add(Poster.manager, board.eid as never);
         const mid = yield* tx.entity();
         yield* mid.add(Poster.name, "Mid");
         yield* mid.add(Poster.manager, ceo.eid as never);
@@ -4292,7 +4307,10 @@ describe("`again(n)`: recursive trees in a shape", () => {
       db.pull(roots[0]!.id, {
         id: Comment.id,
         body: Comment.body,
-        replies: Comment.replies.limit(50).select(again(1)),
+        replies: Comment.replies
+          .where(Comment.deleted.eq(false))
+          .limit(50)
+          .select(again(1)),
       }),
     );
     expect(pulled).not.toBeNull();
