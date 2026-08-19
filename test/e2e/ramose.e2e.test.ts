@@ -299,6 +299,75 @@ d("ramose session socket e2e", () => {
     120_000,
   );
 
+  /** Aggregates and keyset paging lower to the same `/query` the peer runs. */
+  test(
+    "aggregates, groupBy and `.after` paging over the wire",
+    async () => {
+      const rt = ManagedRuntime.make(
+        Ramose.layer({
+          url,
+          token: token === undefined ? undefined : Effect.succeed(Redacted.make(token)),
+        }),
+      );
+      try {
+        const db = rt
+          .runSync(Ramose.Databases)
+          .db(`${dbName}-agg`, SessionCatalog);
+        await rt.runPromise(absorb(db.install()));
+        const report = await rt.runPromise(
+          absorb(
+            db.transact(function* (tx) {
+              for (const [name, n] of [
+                ["a", 1],
+                ["b", 2],
+                ["c", 2],
+                ["d", undefined],
+              ] as const) {
+                const e = yield* tx.entity();
+                yield* e.add(Session.name, name);
+                if (n !== undefined) yield* e.add(Session.n, n);
+              }
+            }),
+          ),
+        );
+        const view = report.dbAfter;
+
+        expect(await rt.runPromise(absorb(view.q(Ramose.query(Session).count())))).toBe(4);
+        expect(await rt.runPromise(absorb(view.q(Ramose.query(Session).sum(Session.n))))).toBe(5);
+
+        const groups = await rt.runPromise(
+          absorb(
+            view.q(
+              Ramose.query(Session)
+                .groupBy({ n: Session.n })
+                .aggregate({ rows: Ramose.count() }),
+            ),
+          ),
+        );
+        expect([...groups].sort((a, b) => a.n - b.n)).toEqual([
+          { n: 1, rows: 1 },
+          { n: 2, rows: 2 },
+        ]);
+
+        const pageQ = (after: Ramose.Cursor | null) =>
+          Ramose.query(Session)
+            .orderBy(Session.name)
+            .limit(3)
+            .after(after)
+            .select({ name: Session.name });
+        const p1 = await rt.runPromise(absorb(view.q(pageQ(null))));
+        expect(p1.rows.map((r) => r.name)).toEqual(["a", "b", "c"]);
+        expect(p1.cursor).not.toBeNull();
+        const p2 = await rt.runPromise(absorb(view.q(pageQ(p1.cursor))));
+        expect(p2.rows.map((r) => r.name)).toEqual(["d"]);
+        expect(p2.cursor).toBeNull();
+      } finally {
+        await rt.dispose();
+      }
+    },
+    120_000,
+  );
+
   /**
    * Regression for #28: two session sockets on one db. The shared basis
    * watcher used to run in the first session's request context; the fan-out to

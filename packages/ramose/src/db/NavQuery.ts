@@ -8,6 +8,8 @@
  * so the peer does pull-in-query (no client N+1) and sorts and pages the row
  * set itself — the client never sees the rows a page dropped. `.one()` /
  * `.oneOrFail()` are the same page, asked for one (or two) rows and unwrapped.
+ * `.count()` / `.aggregate` / `.groupBy` lower to the engine's existing
+ * aggregate find elems; `.after(cursor)` is a keyset seek on the sort keys.
  *
  * Everything that changes the row count is lowered: `.orderBy` binds a sort
  * variable, and a required (non-`.optional`) selected field becomes a `where`
