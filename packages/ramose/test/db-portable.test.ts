@@ -148,6 +148,7 @@ describe("the `/db` barrel's public names", () => {
         "or",
         "not",
         "all",
+        "again",
         "params",
         "optional",
         "when",

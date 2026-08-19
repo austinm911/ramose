@@ -23,8 +23,12 @@ export * from "./NavQuery.ts";
 export * from "./Params.ts";
 export * from "./Eid.ts";
 export {
+  type Again,
   type AllRow,
   type AllShape,
+  type RecurDepth,
+  type RecurStub,
+  type Unroll,
   type AttrPull,
   type IdentPullAttr,
   type IdentPullIdents,
@@ -36,7 +40,9 @@ export {
   type PullOptional,
   type StructPullResult,
   type ValidatePull,
+  again,
   all,
+  isAgain,
   isAllShape,
   isPullDefault,
   isPullNested,

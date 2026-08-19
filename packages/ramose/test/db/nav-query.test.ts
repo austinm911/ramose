@@ -25,6 +25,7 @@ import {
   Long,
   Namespace,
   Ref,
+  again,
   all,
   avg,
   cardsOf,
@@ -3952,6 +3953,351 @@ describe("keyset paging: db.q end to end", () => {
     const seen = new Set([...p1.rows, ...p2.rows].map((e) => e.id));
     expect(seen.size).toBe(5);
 
+    await peer.dispose();
+  });
+});
+
+// ── `again(n)`: recursive trees in a shape ─────────────────────────────────
+
+const Comment = Namespace("comment", {
+  body: Attr(Schema.String),
+  deleted: Attr(Schema.Boolean),
+  createdAt: Attr(Instant),
+  parent: Attr(Ref.self),
+  replies: Attr(Ref.self, { cardinality: "many" }),
+  author: Attr(Ref(() => Poster)),
+});
+const Poster = Namespace("poster", {
+  name: Attr(Schema.String),
+  manager: Attr(Ref.self),
+});
+const Board = Catalog({ comment: Comment, poster: Poster });
+
+const commentScope = [
+  "or",
+  ["?e", ":comment/body", "_"],
+  ["?e", ":comment/deleted", "_"],
+  ["?e", ":comment/createdAt", "_"],
+  ["?e", ":comment/parent", "_"],
+  ["?e", ":comment/replies", "_"],
+  ["?e", ":comment/author", "_"],
+];
+
+describe("`again(n)`: recursive trees in a shape", () => {
+  const pullOf = (q: Parameters<typeof lowerNavQuery>[0]) =>
+    (lowerNavQuery(q).query.find[0] as unknown[])[2] as any[];
+
+  test("lowering sets recursion and keeps constraints — no nested sub", () => {
+    const spec = pullOf(
+      query(Comment)
+        .select({
+          id: Comment.id,
+          body: Comment.body,
+          replies: Comment.replies
+            .where(Comment.deleted.eq(false))
+            .orderBy(Comment.createdAt, "asc")
+            .offset(0)
+            .limit(50)
+            .select(again(4)),
+        })
+        .build(),
+    );
+    expect(spec).toEqual([
+      { kind: "attr", attr: ":db/id", reverse: false, as: "id" },
+      { kind: "attr", attr: ":comment/body", reverse: false, as: "body" },
+      {
+        kind: "attr",
+        attr: ":comment/replies",
+        reverse: false,
+        as: "replies",
+        where: [{ path: [":comment/deleted"], op: "=", value: false }],
+        order: [{ path: [":comment/createdAt"], dir: "asc" }],
+        offset: 0,
+        limit: 50,
+        recursion: 4,
+      },
+    ]);
+    expect(spec[2]!.sub).toBeUndefined();
+  });
+
+  test("the outer query is untouched: collection constraints stay on the spec", () => {
+    const { query: q } = lowerNavQuery(
+      query(Comment)
+        .select({
+          id: Comment.id,
+          replies: Comment.replies.limit(50).select(again(2)),
+        })
+        .build(),
+    );
+    expect(q.where).toEqual([commentScope]);
+  });
+
+  test("card-many again without .limit throws at builder-call time", () => {
+    expect(() => Comment.replies.select(again(2))).toThrow(
+      /card-many again edge — write \.limit\(n\)/,
+    );
+    expect(() =>
+      Comment.replies.where(Comment.deleted.eq(false)).select(again(2)),
+    ).toThrow(/card-many again edge/);
+  });
+
+  test("card-one again does not require .limit", () => {
+    expect(() => Poster.manager.select(again(3))).not.toThrow();
+  });
+
+  test("top-level again, again as a field, missing N.id, wrong ns", () => {
+    expect(() =>
+      lowerNavQuery(query(Comment).select(again(2) as never).build()),
+    ).toThrow(/again is not a top-level shape/);
+    expect(() =>
+      lowerNavQuery(
+        query(Comment)
+          .select({ id: Comment.id, replies: again(2) as never })
+          .build(),
+      ),
+    ).toThrow(/again is a shape, not a field/);
+    expect(() =>
+      lowerNavQuery(
+        query(Comment)
+          .select({
+            body: Comment.body,
+            replies: Comment.replies.limit(50).select(again(2)),
+          })
+          .build(),
+      ),
+    ).toThrow(/must select N\.id/);
+    expect(() =>
+      lowerNavQuery(
+        query(Comment)
+          .select({
+            id: Comment.id,
+            body: Comment.body,
+            author: Comment.author.select(again(3)),
+          })
+          .build(),
+      ),
+    ).toThrow(/different namespace/);
+  });
+
+  test("again(n) above the hop bound names the cap", () => {
+    expect(() => again(17 as never)).toThrow(/hop bound of 16/);
+    expect(() => again(0 as never)).toThrow(/positive integer hop bound/);
+  });
+
+  const seedThread = async (peer: Awaited<ReturnType<typeof inProcessPeer>>) => {
+    const db = peer.ramose.db("board", Board);
+    await run(db.install());
+    const ids = await run(
+      db.transact(function* (tx) {
+        const root = yield* tx.entity();
+        yield* root.add(Comment.body, "root");
+        yield* root.add(Comment.deleted, false);
+        yield* root.add(Comment.createdAt, new Date("2026-01-01"));
+        const child = yield* tx.entity();
+        yield* child.add(Comment.body, "child");
+        yield* child.add(Comment.deleted, false);
+        yield* child.add(Comment.createdAt, new Date("2026-01-02"));
+        yield* child.add(Comment.parent, root.eid as never);
+        yield* root.add(Comment.replies, child.eid as never);
+        const grand = yield* tx.entity();
+        yield* grand.add(Comment.body, "grand");
+        yield* grand.add(Comment.deleted, false);
+        yield* grand.add(Comment.createdAt, new Date("2026-01-03"));
+        yield* grand.add(Comment.parent, child.eid as never);
+        yield* child.add(Comment.replies, grand.eid as never);
+        const hidden = yield* tx.entity();
+        yield* hidden.add(Comment.body, "hidden");
+        yield* hidden.add(Comment.deleted, true);
+        yield* hidden.add(Comment.createdAt, new Date("2026-01-04"));
+        yield* hidden.add(Comment.parent, root.eid as never);
+        yield* root.add(Comment.replies, hidden.eid as never);
+      }),
+    );
+    return db;
+  };
+
+  test("again(1) budget stub: grandchild is { id }, not a full row", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedThread(peer);
+    const rows = await run(
+      db.q(
+        query(Comment)
+          .where(Comment.parent.missing())
+          .select({
+            id: Comment.id,
+            body: Comment.body,
+            replies: Comment.replies.limit(50).select(again(1)),
+          }),
+      ),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.body).toBe("root");
+    expect(rows[0]!.replies.map((r) => r.body)).toEqual(["child"]);
+    const grandchild = rows[0]!.replies[0]!.replies[0]!;
+    expect(grandchild).toEqual({ id: expect.any(Number) });
+    expect("body" in grandchild).toBe(false);
+    await peer.dispose();
+  });
+
+  test("collection where / orderBy / limit compose with recursion", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedThread(peer);
+    const rows = await run(
+      db.q(
+        query(Comment)
+          .where(Comment.parent.missing())
+          .select({
+            id: Comment.id,
+            body: Comment.body,
+            replies: Comment.replies
+              .where(Comment.deleted.eq(false))
+              .orderBy(Comment.createdAt, "asc")
+              .limit(50)
+              .select(again(2)),
+          }),
+      ),
+    );
+    expect(rows[0]!.replies.map((r) => r.body)).toEqual(["child"]);
+    expect(rows[0]!.replies[0]!.replies.map((r) => r.body)).toEqual(["grand"]);
+    expect(rows[0]!.replies.some((r) => r.body === "hidden")).toBe(false);
+    await peer.dispose();
+  });
+
+  test("cycle stub: already-seen node is { id } (shape key), not dropped", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("board", Board);
+    await run(db.install());
+    await run(
+      db.transact(function* (tx) {
+        const a = yield* tx.entity();
+        yield* a.add(Comment.body, "A");
+        yield* a.add(Comment.deleted, false);
+        yield* a.add(Comment.createdAt, new Date("2026-01-01"));
+        const b = yield* tx.entity();
+        yield* b.add(Comment.body, "B");
+        yield* b.add(Comment.deleted, false);
+        yield* b.add(Comment.createdAt, new Date("2026-01-02"));
+        yield* a.add(Comment.replies, b.eid as never);
+        yield* b.add(Comment.replies, a.eid as never);
+      }),
+    );
+    const rows = await run(
+      db.q(
+        query(Comment)
+          .where(Comment.body.eq("A"))
+          .select({
+            id: Comment.id,
+            body: Comment.body,
+            replies: Comment.replies.limit(50).select(again(4)),
+          }),
+      ),
+    );
+    expect(rows).toHaveLength(1);
+    const b = rows[0]!.replies[0]!;
+    expect(b.body).toBe("B");
+    expect(b.replies).toEqual([{ id: rows[0]!.id }]);
+    expect(b.replies[0]).not.toHaveProperty(":db/id");
+    await peer.dispose();
+  });
+
+  test("nested again under a different parent select re-applies the inner shape", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedThread(peer);
+    const rows = await run(
+      db.q(
+        query(Comment)
+          .where(Comment.parent.missing())
+          .select({
+            id: Comment.id,
+            body: Comment.body,
+            thread: Comment.replies.limit(50).select({
+              id: Comment.id,
+              body: Comment.body,
+              replies: Comment.replies.limit(50).select(again(1)),
+            }),
+          }),
+      ),
+    );
+    expect(rows[0]!.thread[0]!.body).toBe("child");
+    expect(rows[0]!.thread[0]!.replies[0]!.body).toBe("grand");
+    expect(rows[0]!.thread[0]!.replies[0]!.replies[0]!).toEqual({
+      id: expect.any(Number),
+    });
+    expect(rows[0]!.thread[0]!.replies[0]!).not.toHaveProperty("thread");
+    await peer.dispose();
+  });
+
+  test("two again edges, two depths", async () => {
+    const peer = await inProcessPeer();
+    const db = peer.ramose.db("board", Board);
+    await run(db.install());
+    await run(
+      db.transact(function* (tx) {
+        const ceo = yield* tx.entity();
+        yield* ceo.add(Poster.name, "Ceo");
+        const mid = yield* tx.entity();
+        yield* mid.add(Poster.name, "Mid");
+        yield* mid.add(Poster.manager, ceo.eid as never);
+        const leaf = yield* tx.entity();
+        yield* leaf.add(Poster.name, "Leaf");
+        yield* leaf.add(Poster.manager, mid.eid as never);
+      }),
+    );
+    const rows = await run(
+      db.q(
+        query(Poster)
+          .where(Poster.name.eq("Leaf"))
+          .select({
+            id: Poster.id,
+            name: Poster.name,
+            manager: Poster.manager.select(again(2)),
+            reports: Poster.manager.reverse.limit(10).select(again(1)),
+          }),
+      ),
+    );
+    expect(rows[0]!.name).toBe("Leaf");
+    expect(rows[0]!.manager.name).toBe("Mid");
+    expect(rows[0]!.manager.manager.name).toBe("Ceo");
+    expect(rows[0]!.manager.manager.manager).toEqual({ id: expect.any(Number) });
+    expect(rows[0]!.reports).toEqual([]);
+    const mid = await run(
+      db.q(
+        query(Poster)
+          .where(Poster.name.eq("Mid"))
+          .select({
+            id: Poster.id,
+            name: Poster.name,
+            reports: Poster.manager.reverse.limit(10).select(again(1)),
+          }),
+      ),
+    );
+    expect(mid[0]!.reports.map((r) => r.name)).toEqual(["Leaf"]);
+    expect(mid[0]!.reports[0]!.reports).toEqual([]);
+    await peer.dispose();
+  });
+
+  test("db.pull accepts the same term and remaps stubs the same way", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedThread(peer);
+    const roots = await run(
+      db.q(
+        query(Comment)
+          .where(Comment.parent.missing())
+          .select({ id: Comment.id }),
+      ),
+    );
+    const pulled = await run(
+      db.pull(roots[0]!.id, {
+        id: Comment.id,
+        body: Comment.body,
+        replies: Comment.replies.limit(50).select(again(1)),
+      }),
+    );
+    expect(pulled).not.toBeNull();
+    expect(pulled!.body).toBe("root");
+    expect(pulled!.replies[0]!.body).toBe("child");
+    expect(pulled!.replies[0]!.replies[0]!).toEqual({ id: expect.any(Number) });
+    expect(pulled!.replies[0]!.replies[0]!).not.toHaveProperty(":db/id");
     await peer.dispose();
   });
 });

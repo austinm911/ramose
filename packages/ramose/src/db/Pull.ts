@@ -9,6 +9,7 @@ import type { AnyCatalog } from "./Catalog.ts";
 import type { Eid } from "./Eid.ts";
 import type { AttrAtIdent, CatalogIdent, Ident } from "./idents.ts";
 import type { AnyNamespace, AttributeMap } from "./Namespace.ts";
+import { isSelfRefSchema, refTargetOf, type SelfMarker } from "./valueTypes.ts";
 
 // ── markers ────────────────────────────────────────────────────────────────
 
@@ -190,6 +191,56 @@ export const isAllShape = (value: unknown): value is AllShape =>
   (value as { _tag?: unknown })._tag === "all" &&
   "ns" in value;
 
+// ── recursive trees: `Ramose.again(n)` ─────────────────────────────────────
+
+/** Hop bound `again` accepts: a positive integer literal, 1 through 16. */
+export type RecurDepth = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16;
+
+/** Named so a runtime assert that somehow sees 17 can say what the cap is. */
+export const AGAIN_MAX_DEPTH = 16 as const;
+
+/**
+ * `n` must be a positive integer literal `1..16`. A `number`, a param,
+ * `"..."`, `0`, a negative, a non-integer, or `17+` is a type error.
+ */
+export type ValidAgainDepth<D> = number extends D
+  ? "Ramose.again(n) takes a positive integer literal 1..16 — not a number, a param, or \"...\""
+  : D extends RecurDepth
+    ? unknown
+    : "Ramose.again(n) takes a positive integer literal 1..16";
+
+/**
+ * `Ramose.again(n)` — re-apply the enclosing select on this edge, `n`
+ * full-shape hops, then identity stubs. A shape term in the `.select` slot,
+ * parallel to {@link all}: not a field, not a top-level builder method.
+ */
+export interface Again<D extends RecurDepth = RecurDepth> {
+  readonly _tag: "again";
+  readonly depth: D;
+}
+
+export const again = <const D extends number>(
+  depth: D & ValidAgainDepth<D>,
+): Again<D & RecurDepth> => {
+  if (typeof depth !== "number" || !Number.isInteger(depth) || depth < 1) {
+    throw new Error(
+      `ramose/query: Ramose.again(n) takes a positive integer hop bound, got ${String(depth)}`,
+    );
+  }
+  if (depth > AGAIN_MAX_DEPTH) {
+    throw new Error(
+      `ramose/query: Ramose.again(${depth}) exceeds the hop bound of ${AGAIN_MAX_DEPTH}`,
+    );
+  }
+  return { _tag: "again", depth: depth as D & RecurDepth };
+};
+
+export const isAgain = (value: unknown): value is Again =>
+  typeof value === "object" &&
+  value !== null &&
+  (value as { _tag?: unknown })._tag === "again" &&
+  typeof (value as { depth?: unknown }).depth === "number";
+
 export const isPullOptional = (value: unknown): value is PullOptional =>
   typeof value === "object" &&
   value !== null &&
@@ -224,7 +275,7 @@ type ScalarResult<F> = F extends {
   : never;
 
 type FieldsResult<F> = {
-  readonly [K in keyof F]: FieldResult<F[K]>;
+  readonly [K in keyof F]: FieldResult<F[K], F>;
 };
 
 /**
@@ -239,45 +290,203 @@ export type IdCell<F> = F extends { readonly _ns?: infer N }
     : number
   : number;
 
-/**
- * A nested `.select`: a named shape, or `all(N)` — the target's wildcard
- * row ({@link AllRow}), an array when the hop is cardinality-many.
- */
-type NestedResult<A, P> = [P] extends [
-  { readonly _tag: "all"; readonly ns: infer N extends AnyNamespace },
-]
-  ? A extends { readonly cardinality: "many" }
-    ? readonly AllRow<N>[]
-    : AllRow<N>
-  : A extends { readonly cardinality: "many" }
-    ? readonly FieldsResult<P>[]
-    : FieldsResult<P>;
+/** Decrement a literal hop bound. `Prev[1]` is unused: `again(1)` stubs the next hop. */
+type Prev = [never, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
-type FieldResult<F> = F extends {
+type UnwrapField<F> = F extends {
+  readonly _tag: "optional" | "default";
+  readonly field: infer I;
+}
+  ? UnwrapField<I>
+  : F;
+
+/** The key in `S` that selected `N.id` — the stub's only cell. */
+export type IdKey<S> = {
+  [K in keyof S]-?: UnwrapField<S[K]> extends { readonly ident: ":db/id" }
+    ? K
+    : never;
+}[keyof S];
+
+/**
+ * Identity only — what the engine emits when the hop budget or a cycle
+ * stops us. The key is the shape's `:db/id` alias; the cell is branded.
+ */
+export type RecurStub<S> = {
+  readonly [K in IdKey<S>]: IdCell<UnwrapField<S[K]>>;
+};
+
+type CardOf<A, T> = A extends { readonly cardinality: "many" }
+  ? readonly T[]
+  : T;
+
+type IsAgainSelect<F> = UnwrapField<F> extends {
+  readonly _tag: "select";
+  readonly shape: { readonly _tag: "again" };
+}
+  ? true
+  : UnwrapField<F> extends {
+        readonly _tag: "nested";
+        readonly pattern: { readonly _tag: "again" };
+      }
+    ? true
+    : false;
+
+type AgainUnrollField<F, S, D extends number> = F extends {
+  readonly _tag: "optional";
+  readonly field: infer I;
+}
+  ? AgainUnrollField<I, S, D> | undefined
+  : F extends { readonly _tag: "select" | "nested"; readonly attr: infer A }
+    ? CardOf<
+        A,
+        D extends 1 ? RecurStub<S> : Unroll<S, Prev[D & keyof Prev]>
+      >
+    : never;
+
+/**
+ * The enclosing shape with `again` edges unrolled `D` hops: `Unroll<S, 1>`
+ * is {@link FieldsResult} with those edges as {@link RecurStub} — one
+ * full-shape hop, then stubs. Matches the engine (`recursion: N` applies
+ * the parent pattern once, then `{":db/id"}`).
+ */
+export type Unroll<S, D extends number> = {
+  readonly [K in keyof S]: [IsAgainSelect<S[K]>] extends [true]
+    ? AgainUnrollField<S[K], S, D>
+    : FieldResult<S[K], S>;
+};
+
+/**
+ * A nested `.select`: a named shape, `all(N)`, or `again(n)` — the
+ * enclosing shape unrolled `n` hops. An array when the hop is
+ * cardinality-many.
+ */
+type NestedResult<A, P, Enclosing = unknown> = [P] extends [
+  { readonly _tag: "again"; readonly depth: infer D extends number },
+]
+  ? CardOf<A, Unroll<Enclosing, D>>
+  : [P] extends [
+        { readonly _tag: "all"; readonly ns: infer N extends AnyNamespace },
+      ]
+    ? A extends { readonly cardinality: "many" }
+      ? readonly AllRow<N>[]
+      : AllRow<N>
+    : A extends { readonly cardinality: "many" }
+      ? readonly FieldsResult<P>[]
+      : FieldsResult<P>;
+
+type FieldResult<F, Enclosing = unknown> = F extends {
   readonly _tag: "default";
   readonly field: infer Inner;
 }
   ? // a default stands in for the missing datom, so the field always reads
-    FieldResult<Inner>
+    FieldResult<Inner, Enclosing>
   : F extends {
         readonly _tag: "optional";
         readonly field: infer Inner;
       }
-  ? FieldResult<Inner> | undefined
-  : F extends PullNested<infer A, infer P>
-    ? NestedResult<A, P>
-    : F extends {
-          readonly _tag: "select";
-          readonly attr: infer A;
-          readonly shape: infer P;
-        }
-      ? NestedResult<A, P>
-      : F extends { readonly ident: ":db/id" }
-        ? IdCell<F>
-        : ScalarResult<F>;
+    ? FieldResult<Inner, Enclosing> | undefined
+    : F extends PullNested<infer A, infer P>
+      ? NestedResult<A, P, Enclosing>
+      : F extends {
+            readonly _tag: "select";
+            readonly attr: infer A;
+            readonly shape: infer P;
+          }
+        ? NestedResult<A, P, Enclosing>
+        : F extends { readonly ident: ":db/id" }
+          ? IdCell<F>
+          : ScalarResult<F>;
 
 /** Result shape of a fields object. */
 export type StructPullResult<P> = FieldsResult<P>;
+
+/** Is this field the `again` term itself (not `ref.select(again)`)? */
+export type IsAgainTerm<F> = F extends { readonly _tag: "again" }
+  ? true
+  : F extends { readonly _tag: "optional" | "default"; readonly field: infer I }
+    ? IsAgainTerm<I>
+    : false;
+
+export type IsAgainSelectField<F> = IsAgainSelect<F>;
+
+export type HasIdField<S> = true extends {
+  [K in keyof S]: UnwrapField<S[K]> extends { readonly ident: ":db/id" }
+    ? true
+    : false;
+}[keyof S]
+  ? true
+  : false;
+
+export type HasAgainSelect<S> = true extends {
+  [K in keyof S]: IsAgainSelect<S[K]>;
+}[keyof S]
+  ? true
+  : false;
+
+type FieldIdentNs<F> = UnwrapField<F> extends {
+  readonly ident: `:${infer Ns}/${string}`;
+}
+  ? Ns
+  : UnwrapField<F> extends {
+        readonly ident: ":db/id";
+        readonly _ns?: infer N;
+      }
+    ? N extends { readonly ns: infer Ns extends string }
+      ? Ns
+      : never
+    : UnwrapField<F> extends {
+          readonly _tag: "select" | "nested";
+          readonly attr: infer A;
+        }
+      ? FieldIdentNs<A>
+      : never;
+
+export type ShapeNs<S> = { [K in keyof S]: FieldIdentNs<S[K]> }[keyof S];
+
+type AgainAttr<F> = F extends {
+  readonly _tag: "optional" | "default";
+  readonly field: infer I;
+}
+  ? AgainAttr<I>
+  : F extends { readonly _tag: "select" | "nested"; readonly attr: infer A }
+    ? A
+    : never;
+
+/**
+ * The namespace the recur edge lands on: self-ref / reverse → the attr's
+ * own prefix; `Ref(() => N)` → `N.ns`.
+ */
+export type AgainTargetNs<F> = AgainAttr<F> extends {
+  readonly ident: `:${infer Own}/${string}`;
+}
+  ? AgainAttr<F> extends {
+      readonly schema: { readonly _resolve?: () => { readonly attributes: infer T } };
+    }
+    ? unknown extends T
+      ? Own
+      : [T] extends [SelfMarker]
+        ? Own
+        : AgainAttr<F> extends {
+              readonly schema: { readonly _resolve?: () => { readonly ns: infer Ns } };
+            }
+          ? Ns extends string
+            ? Ns
+            : Own
+          : Own
+    : Own
+  : never;
+
+export type AgainAsField<K extends string> =
+  `select field "${K}" is again: again is a shape, not a field — write \`ref.select(Ramose.again(n))\``;
+
+export type AgainNsMismatch<K extends string, Ns extends string> =
+  `select field "${K}" is again on a different namespace — again re-applies this shape, which is a :${Ns}/… row`;
+
+export type AgainMissingId =
+  "a shape that contains again must select N.id — the stub is that branded id cell";
+
+export type TopLevelAgain =
+  "again is not a top-level shape — write it on a self-ref: ref.select(Ramose.again(n))";
 
 // ── ident-keyed escape ─────────────────────────────────────────────────────
 
@@ -378,27 +587,29 @@ type IdentsIn<P> = [P] extends [PullOptional<infer I>]
   ? IdentsIn<I>
   : [P] extends [PullDefault<infer I>]
   ? IdentsIn<I>
-  : [P] extends [
-        { readonly _tag: "all"; readonly ns: { readonly attributes: infer A } },
-      ]
-    ? IdentsIn<A>
-    : [P] extends [PullNested<infer A, infer Inner>]
-      ? IdentsIn<A> | IdentsIn<Inner>
-      : [P] extends [
-            {
-              readonly _tag: "select";
-              readonly attr: infer A;
-              readonly shape: infer Inner;
-            },
-          ]
+  : [P] extends [{ readonly _tag: "again" }]
+    ? never
+    : [P] extends [
+          { readonly _tag: "all"; readonly ns: { readonly attributes: infer A } },
+        ]
+      ? IdentsIn<A>
+      : [P] extends [PullNested<infer A, infer Inner>]
         ? IdentsIn<A> | IdentsIn<Inner>
-        : [P] extends [{ readonly ident: infer I extends string }]
-          ? I
-          : [P] extends [readonly unknown[]]
-            ? IdentsInArray<P[number]>
-            : [P] extends [object]
-              ? IdentsInFields<P>
-              : never;
+        : [P] extends [
+              {
+                readonly _tag: "select";
+                readonly attr: infer A;
+                readonly shape: infer Inner;
+              },
+            ]
+          ? IdentsIn<A> | IdentsIn<Inner>
+          : [P] extends [{ readonly ident: infer I extends string }]
+            ? I
+            : [P] extends [readonly unknown[]]
+              ? IdentsInArray<P[number]>
+              : [P] extends [object]
+                ? IdentsInFields<P>
+                : never;
 
 /** Ident strings are only idents in the array escape, not on attr objects. */
 type IdentsInArray<E> = [E] extends [string] ? E : IdentsIn<E>;
@@ -415,14 +626,40 @@ type IdentsInFields<F> = F extends object
  * checked the same way, against the idents that namespace stamps.
  */
 export type ValidatePull<C extends AnyCatalog, P> = [P] extends [
-  { readonly _tag: "all"; readonly ns: { readonly attributes: infer A } },
+  { readonly _tag: "again" },
 ]
-  ? [IdentsIn<A>] extends [CatalogIdent<C>]
-    ? P
-    : "namespace is not in this database's catalog"
-  : [IdentsIn<P>] extends [CatalogIdent<C> | "*"]
-    ? P
-    : "unknown attribute in pull pattern";
+  ? TopLevelAgain
+  : [P] extends [
+        { readonly _tag: "all"; readonly ns: { readonly attributes: infer A } },
+      ]
+    ? [IdentsIn<A>] extends [CatalogIdent<C>]
+      ? P
+      : "namespace is not in this database's catalog"
+    : [P] extends [readonly unknown[]]
+      ? ValidatePullIdents<C, P>
+      : [P] extends [object]
+        ? ValidatePullShape<C, P>
+        : ValidatePullIdents<C, P>;
+
+type HasAgainTermIn<S> = true extends {
+  [K in keyof S]: IsAgainTerm<S[K]>;
+}[keyof S]
+  ? true
+  : false;
+
+type ValidatePullShape<C extends AnyCatalog, P> = HasAgainTermIn<P> extends true
+  ? "again is a shape, not a field — write `ref.select(Ramose.again(n))`"
+  : HasAgainSelect<P> extends true
+    ? HasIdField<P> extends true
+      ? ValidatePullIdents<C, P>
+      : AgainMissingId
+    : ValidatePullIdents<C, P>;
+
+type ValidatePullIdents<C extends AnyCatalog, P> = [IdentsIn<P>] extends [
+  CatalogIdent<C> | "*",
+]
+  ? P
+  : "unknown attribute in pull pattern";
 
 /**
  * Inferred result of `eid.pull(pattern)`. Fields object → caller
@@ -445,6 +682,116 @@ const identOf = (field: unknown): string => {
   if (typeof field === "string") return field;
   if (isAttrRef(field)) return field.ident;
   throw new Error(`ramose/schema: pull field is not an attr ref: ${String(field)}`);
+};
+
+const nsOfIdent = (ident: string): string | undefined =>
+  /^:([^/]+)\//.exec(ident)?.[1];
+
+const unwrapAgainField = (field: unknown): unknown => {
+  let current = field;
+  if (isPullOptional(current)) current = current.field;
+  else if (isPullDefault(current)) current = current.field;
+  return current;
+};
+
+/** The hop-target namespace of a ref attr (self / reverse / `Ref(() => N)`). */
+export const refTargetNs = (attr: unknown): string | undefined => {
+  if (isReverseCarrier(attr)) return nsOfIdent(identOf(attr));
+  const schema = (attr as { schema?: unknown } | null)?.schema;
+  if (isSelfRefSchema(schema)) return nsOfIdent(identOf(attr));
+  const ns = (refTargetOf(schema)?.() as { ns?: unknown } | undefined)?.ns;
+  return typeof ns === "string" ? ns : undefined;
+};
+
+const tryIdentOf = (field: unknown): string | undefined => {
+  try {
+    return identOf(inspectPullField(field).attr);
+  } catch {
+    return undefined;
+  }
+};
+
+/** The result key that selected `:db/id`, if the shape has one. */
+export const idKeyOf = (pattern: unknown): string | undefined => {
+  if (isAgain(pattern) || isAllShape(pattern) || Array.isArray(pattern)) {
+    return undefined;
+  }
+  for (const [key, field] of Object.entries(fieldsOf(pattern))) {
+    if (tryIdentOf(field) === ":db/id") return key;
+  }
+  return undefined;
+};
+
+const shapeNsOf = (shape: Record<string, unknown>): string | undefined => {
+  for (const field of Object.values(shape)) {
+    const ident = tryIdentOf(field);
+    if (ident !== undefined && ident !== ":db/id") {
+      const ns = nsOfIdent(ident);
+      if (ns !== undefined) return ns;
+    }
+  }
+  return undefined;
+};
+
+export const assertAgainDepth = (depth: unknown): number => {
+  if (typeof depth !== "number" || !Number.isInteger(depth) || depth < 1) {
+    throw new Error(
+      `ramose/query: Ramose.again(n) takes a positive integer hop bound, got ${String(depth)}`,
+    );
+  }
+  if (depth > AGAIN_MAX_DEPTH) {
+    throw new Error(
+      `ramose/query: Ramose.again(${depth}) exceeds the hop bound of ${AGAIN_MAX_DEPTH}`,
+    );
+  }
+  return depth;
+};
+
+/**
+ * `again` is a shape, not a field: there is no attribute to hang a recur
+ * edge on. `ref.select(again(n))` is the nested form.
+ */
+export const assertNotAgain = (shape: unknown, key?: string): void => {
+  if (!isAgain(unwrapAgainField(shape))) return;
+  throw new Error(
+    key === undefined
+      ? "ramose/query: again is not a top-level shape — write it on a self-ref: ref.select(Ramose.again(n))"
+      : `ramose/query: select field "${key}": again is a shape, not a field — write \`ref.select(Ramose.again(n))\``,
+  );
+};
+
+/**
+ * A field map that contains `ref.select(again(n))` must select `N.id` and
+ * the recur edge must land in the same namespace.
+ */
+export const assertAgainInShape = (shape: Record<string, unknown>): void => {
+  let hasAgain = false;
+  let hasId = false;
+  const enclosingNs = shapeNsOf(shape);
+  for (const [key, field] of Object.entries(shape)) {
+    assertNotAgain(field, key);
+    const ident = tryIdentOf(field);
+    if (ident === ":db/id") hasId = true;
+    const info = inspectPullField(field);
+    if (!isAgain(info.nestedPattern)) continue;
+    hasAgain = true;
+    const depth = assertAgainDepth((info.nestedPattern as Again).depth);
+    const target = refTargetNs(info.attr);
+    if (
+      target !== undefined &&
+      enclosingNs !== undefined &&
+      target !== enclosingNs
+    ) {
+      throw new Error(
+        `ramose/query: select field "${key}": ${spellAttr(identOf(info.attr))}.select(Ramose.again(${depth})) is a :${target}/… edge — again re-applies this shape, which is a :${enclosingNs}/… row`,
+      );
+    }
+  }
+  if (hasAgain && !hasId) {
+    throw new Error(
+      "ramose/query: a shape that contains again must select N.id — the stub is that branded id cell",
+    );
+  }
 };
 
 const fieldsOf = (pattern: unknown): Record<string, unknown> => {
@@ -703,6 +1050,18 @@ const defaultField = (info: {
 const lowerField = (as: string, field: unknown): unknown => {
   const info = inspectPullField(field);
   assertDirectField(as, info.attr, info.nestedPattern !== undefined);
+  if (isAgain(info.nestedPattern)) {
+    const recursion = assertAgainDepth(info.nestedPattern.depth);
+    return {
+      kind: "attr",
+      attr: identOf(info.attr),
+      reverse: info.reverse,
+      as,
+      ...defaultField(info),
+      ...constraintFields(info.constraints),
+      recursion,
+    };
+  }
   if (info.nestedPattern !== undefined) {
     return {
       kind: "attr",
@@ -737,6 +1096,7 @@ const lowerField = (as: string, field: unknown): unknown => {
 
 const lowerLiterateMap = (pattern: unknown): unknown[] => {
   const fields = fieldsOf(pattern);
+  assertAgainInShape(fields);
   return Object.entries(fields).map(([key, field]) => lowerField(key, field));
 };
 
@@ -755,6 +1115,11 @@ const lowerIdentPull = (pattern: readonly unknown[]): unknown[] =>
  * client never expands it into a map of the namespace's attributes.
  */
 export const lowerPullPattern = (pattern: unknown): unknown[] => {
+  if (isAgain(pattern)) {
+    throw new Error(
+      "ramose/query: again is not a top-level shape — write it on a self-ref: ref.select(Ramose.again(n))",
+    );
+  }
   if (isAllShape(pattern)) return ["*"];
   if (Array.isArray(pattern)) return lowerIdentPull(pattern);
   return lowerLiterateMap(pattern);
@@ -783,6 +1148,32 @@ const isPresent = (value: unknown): boolean =>
   value !== undefined && value !== null;
 
 /**
+ * The engine's cycle / budget stub: a one-key `{":db/id": n}` map. Nav
+ * remaps it to the shape's id alias so the stub survives required-field
+ * filtering and the row key is the one the author wrote.
+ */
+const isIrStub = (value: unknown): value is { readonly ":db/id": number } => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const keys = Object.keys(value);
+  return (
+    keys.length === 1 &&
+    keys[0] === ":db/id" &&
+    typeof (value as { ":db/id": unknown })[":db/id"] === "number"
+  );
+};
+
+const remapStub = (
+  pattern: unknown,
+  stub: { readonly ":db/id": number },
+): Record<string, number> | undefined => {
+  const key = idKeyOf(pattern);
+  if (key === undefined) return undefined;
+  return { [key]: stub[":db/id"] };
+};
+
+/**
  * `undefined` means this entity failed a required field and should be dropped.
  *
  * For a query, `lowerNavQuery` lowers every top-level required field into a
@@ -793,8 +1184,13 @@ const isPresent = (value: unknown): boolean =>
 const filterPull = (pattern: unknown, result: unknown): unknown => {
   if (!isPresent(result)) return undefined;
   // a wildcard row has no required field to fail: every key is optional
-  if (isAllShape(pattern) || Array.isArray(pattern)) return result;
+  if (isAllShape(pattern) || Array.isArray(pattern) || isAgain(pattern)) {
+    return result;
+  }
   if (typeof result !== "object") return undefined;
+  if (isIrStub(result)) {
+    return remapStub(pattern, result);
+  }
 
   const fields = fieldsOf(pattern);
   const rec = result as Record<string, unknown>;
@@ -804,8 +1200,12 @@ const filterPull = (pattern: unknown, result: unknown): unknown => {
     const info = inspectPullField(field);
     const raw = rec[key];
     const missing = !isPresent(raw);
+    // `again` re-applies this enclosing shape — the engine's parent pattern
+    const childPattern = isAgain(info.nestedPattern)
+      ? pattern
+      : info.nestedPattern;
 
-    if (info.nestedPattern !== undefined) {
+    if (childPattern !== undefined) {
       if (info.many) {
         if (missing) {
           out[key] = info.optional ? undefined : [];
@@ -814,7 +1214,7 @@ const filterPull = (pattern: unknown, result: unknown): unknown => {
         const arr = Array.isArray(raw) ? raw : [raw];
         const kept: unknown[] = [];
         for (const item of arr) {
-          const child = filterPull(info.nestedPattern, item);
+          const child = filterPull(childPattern, item);
           if (child !== undefined) kept.push(child);
         }
         out[key] = kept;
@@ -827,7 +1227,7 @@ const filterPull = (pattern: unknown, result: unknown): unknown => {
         }
         return undefined;
       }
-      const child = filterPull(info.nestedPattern, raw);
+      const child = filterPull(childPattern, raw);
       if (child === undefined) {
         if (info.optional) {
           out[key] = undefined;

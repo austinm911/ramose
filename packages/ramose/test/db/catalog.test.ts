@@ -11,6 +11,7 @@ import {
   Namespace,
   schemaTx,
   txBuilder,
+  again,
   lowerPullPattern,
   reshapePullResult,
   Long,
@@ -196,6 +197,52 @@ describe("reshapePullResult", () => {
         { friends: [{ ":db/id": 2 }] },
       ),
     ).toEqual({ friends: [] });
+  });
+
+  const Node = Namespace("node", {
+    label: Attr(Schema.String),
+    next: Attr(Ref.self),
+    kids: Attr(Ref.self, { cardinality: "many" }),
+  });
+
+  test("IR stub remaps to the shape's id key and is not dropped", () => {
+    const shape = {
+      id: Node.id,
+      label: Node.label,
+      kids: Node.kids.limit(10).select(again(2)),
+    };
+    expect(
+      reshapePullResult(shape, {
+        id: 1,
+        label: "root",
+        kids: [
+          { id: 2, label: "child", kids: [{ ":db/id": 1 }] },
+        ],
+      }),
+    ).toEqual({
+      id: 1,
+      label: "root",
+      kids: [{ id: 2, label: "child", kids: [{ id: 1 }] }],
+    });
+  });
+
+  test("card-one cycle stub keeps the parent", () => {
+    const shape = {
+      id: Node.id,
+      label: Node.label,
+      next: Node.next.select(again(2)),
+    };
+    expect(
+      reshapePullResult(shape, {
+        id: 1,
+        label: "a",
+        next: { id: 2, label: "b", next: { ":db/id": 1 } },
+      }),
+    ).toEqual({
+      id: 1,
+      label: "a",
+      next: { id: 2, label: "b", next: { id: 1 } },
+    });
   });
 });
 

@@ -40,8 +40,30 @@ import {
   type ScopeOf,
 } from "./Params.ts";
 import {
-  assertDirectField,
+  type Again,
+  type AgainAsField,
+  type AgainMissingId,
+  type AgainNsMismatch,
+  type AgainTargetNs,
+  type AllRow,
+  type AllShape,
+  type HasAgainSelect,
+  type HasIdField,
+  type IdCell,
+  type IsAgainSelectField,
+  type IsAgainTerm,
+  type PullDefault,
+  type PullNestedConstraints,
+  type RecurDepth,
+  type ShapeNs,
+  type TopLevelAgain,
+  type Unroll,
+  assertAgainDepth,
+  assertAgainInShape,
+  assertNotAgain,
   inspectPullField,
+  assertDirectField,
+  isAgain,
   isAllShape,
   isPullDefault,
   isPullNested,
@@ -51,11 +73,6 @@ import {
   optional,
   pullDefault,
   reshapePullResult,
-  type AllRow,
-  type AllShape,
-  type IdCell,
-  type PullDefault,
-  type PullNestedConstraints,
 } from "./Pull.ts";
 import { isSelfRefSchema, refTargetOf } from "./valueTypes.ts";
 
@@ -294,13 +311,14 @@ export type ShapeField =
   | AnyAttribute
   | PathCarrier
   | ScalarCollectionField
+  | Again
   | { readonly _tag: "optional"; readonly field: unknown }
   | { readonly _tag: "default"; readonly field: unknown; readonly value: unknown }
   | { readonly _tag: "nested"; readonly attr: unknown; readonly pattern: unknown }
   | {
       readonly _tag: "select";
       readonly attr: unknown;
-      readonly shape: Shape | AllShape;
+      readonly shape: Shape | AllShape | Again;
     };
 
 export type Shape = { readonly [key: string]: ShapeField };
@@ -356,20 +374,34 @@ type ElementField<K extends string> =
  * the intersection still infers `S` from the argument, and a rejected field
  * has nowhere to go.
  */
-export type ValidShape<S> = {
-  readonly [K in keyof S]: IsHopped<S[K]> extends true
-    ? MultiHopField<K & string>
-    : IsElement<S[K]> extends true
-      ? ElementField<K & string>
-      : S[K];
+export type ValidShape<S> = HasAgainSelect<S> extends true
+  ? HasIdField<S> extends true
+    ? ValidShapeFields<S>
+    : AgainMissingId
+  : ValidShapeFields<S>;
+
+type ValidShapeFields<S> = {
+  readonly [K in keyof S]: IsAgainTerm<S[K]> extends true
+    ? AgainAsField<K & string>
+    : IsHopped<S[K]> extends true
+      ? MultiHopField<K & string>
+      : IsElement<S[K]> extends true
+        ? ElementField<K & string>
+        : IsAgainSelectField<S[K]> extends true
+          ? AgainNsField<S[K], S, K & string>
+          : S[K];
 };
 
+type AgainNsField<F, S, K extends string> = AgainTargetNs<F> extends ShapeNs<S>
+  ? F
+  : AgainNsMismatch<K, ShapeNs<S> & string>;
+
 /**
- * `.select` on a ref: a named shape, or `all(N)` — the target's wildcard
- * row. The namespace is the one the type is read against ({@link AllRow});
- * both lower to the same nested `[*]`.
+ * `.select` on a ref: a named shape, `all(N)` — the target's wildcard
+ * row — or `again(n)`, which re-applies the enclosing shape.
  */
 type RefSelect<A> = {
+  <const D extends RecurDepth>(shape: Again<D>): SelectNested<A, Again<D>>;
   <const N extends AnyNamespace>(shape: AllShape<N>): SelectNested<A, AllShape<N>>;
   <const S extends Shape>(shape: S & ValidShape<S>): SelectNested<A, S>;
 };
@@ -1386,7 +1418,7 @@ const collectionNav = <A extends PathCarrier>(
       }),
     limit: (n) => collectionNav(attr, { ...constraints, limit: n }),
     offset: (n) => collectionNav(attr, { ...constraints, offset: n }),
-    select: ((shape: Shape | AllShape) => {
+    select: ((shape: Shape | AllShape | Again) => {
       if (!isRefNav(attr)) {
         throw new Error(
           `ramose/query: ${collection.join(" → ")} is a cardinality-many scalar — its elements are values, which have no shape. The constrained collection is the field itself: \`.select({ ${spellIdent(scope.ident).split(".")[1] ?? "values"}: ${spellIdent(scope.ident)}.where(…) })\``,
@@ -1438,10 +1470,24 @@ export interface SelectNested<A = unknown, S = unknown> {
 
 const makeSelectNested = (
   attr: PathCarrier,
-  shape: Shape | AllShape,
+  shape: Shape | AllShape | Again,
   constraints?: PullNestedConstraints,
-): SelectNested<PathCarrier, Shape | AllShape> => {
-  const nestedSelect: SelectNested<PathCarrier, Shape | AllShape> = {
+): SelectNested<PathCarrier, Shape | AllShape | Again> => {
+  if (isAgain(shape)) {
+    assertAgainDepth(shape.depth);
+    if (!isRefNav(attr)) {
+      throw new Error(
+        "ramose/query: again is only legal on a reference — write ref.select(Ramose.again(n))",
+      );
+    }
+    const cards = cardsOf(attr);
+    if (cards[cards.length - 1] === "many" && constraints?.limit === undefined) {
+      throw new Error(
+        `ramose/query: ${pathOf(attr).join(" → ")} is a card-many again edge — write .limit(n) before .select(Ramose.again(${shape.depth})); the engine default of 1000 is not a tree budget`,
+      );
+    }
+  }
+  const nestedSelect: SelectNested<PathCarrier, Shape | AllShape | Again> = {
     _tag: "select",
     attr,
     shape,
@@ -1566,7 +1612,7 @@ export const attachAttrNav = <A extends PathCarrier>(attr: A): AttrNav<A> => {
     offset(this: PathCarrier, n: number) {
       return collectionOf(this, "offset").offset(n);
     },
-    select(this: PathCarrier, shape: Shape | AllShape) {
+    select(this: PathCarrier, shape: Shape | AllShape | Again) {
       return makeSelectNested(this, shape);
     },
     // like `.optional`, it wraps the *receiver*, so a path keeps walking
@@ -1643,9 +1689,13 @@ const assertNotAll = (shape: unknown, key?: string): void => {
 /** Convert a navigational shape into the literate pull map `lowerPullPattern` knows. */
 export const shapeToPullMap = (shape: Shape): Record<string, unknown> => {
   assertNotAll(shape);
+  assertNotAgain(shape);
+  const fields = shape as Record<string, unknown>;
+  assertAgainInShape(fields);
   const out: Record<string, unknown> = {};
-  for (const [key, field] of Object.entries(shape)) {
+  for (const [key, field] of Object.entries(fields)) {
     assertNotAll(field, key);
+    assertNotAgain(field, key);
     out[key] = shapeFieldToPull(field);
   }
   return out;
@@ -1659,7 +1709,7 @@ const shapeFieldToPull = (field: unknown): unknown => {
     return pullDefault(shapeFieldToPull(field.field), field.value);
   }
   if (isSelectNested(field)) {
-    if (isAllShape(field.shape)) return field;
+    if (isAllShape(field.shape) || isAgain(field.shape)) return field;
     return nested(
       field.attr as { readonly valueType: ":db.type/ref" },
       shapeToPullMap(field.shape as Shape),
@@ -1675,22 +1725,28 @@ const shapeFieldToPull = (field: unknown): unknown => {
 // ── builder ────────────────────────────────────────────────────────────────
 
 export type SelectResult<S> = {
-  readonly [K in keyof S]: SelectFieldResult<S[K]>;
+  readonly [K in keyof S]: SelectFieldResult<S[K], S>;
 };
 
 /**
- * A nested `.select`: a named shape, or `all(N)` — {@link AllRow} of that
- * namespace, an array when the hop is cardinality-many.
+ * A nested `.select`: a named shape, `all(N)`, or `again(n)` — {@link Unroll}
+ * of the enclosing shape, an array when the hop is cardinality-many.
  */
-type NestedSelectResult<A, S> = [S] extends [
-  { readonly _tag: "all"; readonly ns: infer N extends AnyNamespace },
+type NestedSelectResult<A, S, Enclosing = unknown> = [S] extends [
+  { readonly _tag: "again"; readonly depth: infer D extends number },
 ]
   ? A extends { readonly cardinality: "many" }
-    ? readonly AllRow<N>[]
-    : AllRow<N>
-  : A extends { readonly cardinality: "many" }
-    ? readonly SelectResult<S & object>[]
-    : SelectResult<S & object>;
+    ? readonly Unroll<Enclosing, D>[]
+    : Unroll<Enclosing, D>
+  : [S] extends [
+        { readonly _tag: "all"; readonly ns: infer N extends AnyNamespace },
+      ]
+    ? A extends { readonly cardinality: "many" }
+      ? readonly AllRow<N>[]
+      : AllRow<N>
+    : A extends { readonly cardinality: "many" }
+      ? readonly SelectResult<S & object>[]
+      : SelectResult<S & object>;
 
 type SchemaType<S> = S extends { readonly Type: infer T }
   ? T
@@ -1698,18 +1754,18 @@ type SchemaType<S> = S extends { readonly Type: infer T }
     ? T
     : never;
 
-type SelectFieldResult<F> = F extends {
+type SelectFieldResult<F, Enclosing = unknown> = F extends {
   readonly _tag: "default";
   readonly field: infer Inner;
 }
   ? // the default stands in for the missing datom: the field always reads,
     // so it is the attribute's own type — never `| undefined`
-    SelectFieldResult<Inner>
+    SelectFieldResult<Inner, Enclosing>
   : F extends {
         readonly _tag: "optional";
         readonly field: infer Inner;
       }
-  ? SelectFieldResult<Inner> | undefined
+  ? SelectFieldResult<Inner, Enclosing> | undefined
   : F extends { readonly _tag: "collection"; readonly attr: infer A }
     ? // a constrained card-many scalar: the same array, with fewer values in it
       readonly SchemaType<A>[]
@@ -1718,13 +1774,13 @@ type SelectFieldResult<F> = F extends {
         readonly attr: infer A;
         readonly shape: infer S;
       }
-    ? NestedSelectResult<A, S>
+    ? NestedSelectResult<A, S, Enclosing>
     : F extends {
           readonly _tag: "nested";
           readonly attr: infer A;
           readonly pattern: infer P;
         }
-      ? NestedSelectResult<A, P>
+      ? NestedSelectResult<A, P, Enclosing>
       : F extends {
             readonly schema: infer S;
             readonly cardinality: infer Card;
@@ -1808,6 +1864,13 @@ export interface NavQueryBuilder<
 
   where<const W extends readonly unknown[]>(
     ...preds: W & { readonly [K in keyof W]: WhereArg<W[K], P> }
+  ): NavQueryBuilder<N, R, P>;
+  /**
+   * `again(n)` is not a top-level shape — it re-applies an enclosing select.
+   * Write it on a self-ref: `ref.select(Ramose.again(n))`.
+   */
+  select(
+    shape: Again<RecurDepth> & TopLevelAgain,
   ): NavQueryBuilder<N, R, P>;
   /**
    * `select(Ramose.all(N))` — every attribute the matched entity has, as the
@@ -2110,8 +2173,14 @@ const builder = <N extends AnyNamespace, R, P = never>(
     },
     // both overloads carry the same value: the shape (or the wildcard marker)
     // travels on the spec, and lowering reads which one it is
-    select: ((shape: Shape | AllShape) =>
-      builder(ns, { ...spec, shape })) as NavQueryBuilder<N, R, P>["select"],
+    select: ((shape: Shape | AllShape | Again) => {
+      if (isAgain(shape)) {
+        throw new Error(
+          "ramose/query: again is not a top-level shape — write it on a self-ref: ref.select(Ramose.again(n))",
+        );
+      }
+      return builder(ns, { ...spec, shape });
+    }) as NavQueryBuilder<N, R, P>["select"],
     orderBy: (attr, dir = "asc", opts) => {
       const path = pathOf(attr);
       if (attr.__each !== undefined) {
@@ -2480,7 +2549,9 @@ export const lowerNavQuery = (
  * that tree (and the literate wrappers it hangs off) and substitute.
  */
 const substituteLiterate = (field: unknown): unknown => {
-  if (field === undefined || field === null || isAllShape(field)) return field;
+  if (field === undefined || field === null || isAllShape(field) || isAgain(field)) {
+    return field;
+  }
   if (Array.isArray(field)) return field;
   if (isPullOptional(field)) {
     return optional(substituteLiterate(field.field));
@@ -2491,7 +2562,7 @@ const substituteLiterate = (field: unknown): unknown => {
   if (isSelectNested(field)) {
     return makeSelectNested(
       field.attr as PathCarrier,
-      substituteLiterate(field.shape) as Shape | AllShape,
+      substituteLiterate(field.shape) as Shape | AllShape | Again,
       substituteConstraints(field.constraints),
     );
   }
@@ -2665,7 +2736,7 @@ const lowerOrderPath = (
  */
 const requiredClauses = (e: string, pattern: unknown): unknown[] => {
   // a wildcard has no required field: every key is optional
-  if (Array.isArray(pattern) || isAllShape(pattern)) return [];
+  if (Array.isArray(pattern) || isAllShape(pattern) || isAgain(pattern)) return [];
   const out: unknown[] = [];
   for (const [key, field] of Object.entries(fieldsOf(pattern))) {
     const info = inspectPullField(field);
@@ -2678,7 +2749,7 @@ const requiredClauses = (e: string, pattern: unknown): unknown[] => {
     if (ident === ID) continue;
     // a backlink reads the datom the other way: the required entity is the one
     // *pointing at* `?e` (a component backlink is card-one, so it gets here)
-    if (info.nestedPattern === undefined) {
+    if (info.nestedPattern === undefined || isAgain(info.nestedPattern)) {
       out.push(info.reverse ? [gensym("r"), ident, e] : [e, ident, "_"]);
       continue;
     }
