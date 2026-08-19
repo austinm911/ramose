@@ -366,6 +366,23 @@ export const boardShape = {
 } as const;
 ```
 
+**Recursive trees.** A thread is a window, not one fetch. `again(4)` and `.limit(20)` is the first paint; the `{ id }` stub is the next root — same query, `useLive(db, thread, { root: clicked.id })`. Sibling "load more" pages that parent's replies. The JSON: [Read data](/guides/queries/#a-tree-is-a-window).
+
+```ts
+const P = Ramose.params({ root: Comment.id });
+const thread = Ramose.query(Comment, P)
+  .where(Comment.id.is(P.root))
+  .select({
+    id: Comment.id,
+    body: Comment.body,
+    replies: Comment.replies
+      .where(Comment.deleted.eq(false))
+      .orderBy(Comment.createdAt, "asc")
+      .limit(20)
+      .select(Ramose.again(4)),
+  });
+```
+
 **Aggregates.** After the filters, ask for a summary instead of rows: `.count()` / `.countDistinct(attr)` / `.sum(attr)` / `.avg(attr)` / `.min(attr)` / `.max(attr)` answer one value; `.aggregate({ … })` computes several in one round trip (exactly one row, a one-element tuple); `.groupBy({ … }).aggregate({ … })` answers one row per group. The constructors are `Ramose.count()`, `Ramose.sum(attr)`, and so on.
 
 ```ts

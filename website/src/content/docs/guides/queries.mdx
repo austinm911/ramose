@@ -8,7 +8,7 @@ import Next from "../../../components/Next.astro";
 
 A **query** is a typed description of a read — record type, filters, order, fields — built as a value you can run once, live, or in the past ([glossary](/concepts/glossary/#query)). This page is for anyone who has written some records and wants them back, shaped for a screen.
 
-<Learn learn={["Build a query and run it", "Filter, choose fields through references, order, page, count and group", "Read one record, and read the past"]} before={[{ href: "/guides/catalog/", label: "Define your data" }, { href: "/guides/transactions/", label: "Write data" }]} minutes={10} />
+<Learn learn={["Build a query and run it", "Filter, choose fields through references, order, page, count and group", "Paint a recursive tree as a window", "Read one record, and read the past"]} before={[{ href: "/guides/catalog/", label: "Define your data" }, { href: "/guides/transactions/", label: "Write data" }]} minutes={12} />
 
 ## A query is a value
 
@@ -94,6 +94,75 @@ When the same card repeats under itself — a comment thread, an org chart — w
     .select(Ramose.again(4)),
 })
 ```
+
+## A tree is a window
+
+Without `again`, the inner `.select` is a thinner card and then it stops. Nested replies are not included unless you listed them:
+
+```ts
+.select({
+  id: Comment.id,
+  body: Comment.body,
+  replies: Comment.replies
+    .where(Comment.deleted.eq(false))
+    .orderBy(Comment.createdAt, "asc")
+    .limit(20)
+    .select({ id: Comment.id, body: Comment.body }),
+})
+```
+
+```json title="one hop — no replies on the children"
+{
+  "id": 1,
+  "body": "What should we ship?",
+  "replies": [{ "id": 2, "body": "The window first." }]
+}
+```
+
+`again(n)` re-applies the enclosing map, including `replies`, `n` full hops, then `{ id }` stubs. Same roots, deeper tree. `again(1)` is one full-shape hop then stubs; `again(4)` is four full hops then stubs.
+
+```ts
+.select(Ramose.again(1))
+```
+
+```json title="same roots after again(1)"
+{
+  "id": 1,
+  "body": "What should we ship?",
+  "replies": [
+    {
+      "id": 2,
+      "body": "The window first.",
+      "replies": [{ "id": 3 }]
+    }
+  ]
+}
+```
+
+A Reddit thread is a window, not one fetch. `again(4)` plus `.limit(20)` on replies is the first paint. The stub `{ id }` is the "continue this thread" handle: the same module-scope query, rebound at the stub.
+
+```ts
+const P = Ramose.params({ root: Comment.id });
+const thread = Ramose.query(Comment, P)
+  .where(Comment.id.is(P.root))
+  .select({
+    id: Comment.id,
+    body: Comment.body,
+    replies: Comment.replies
+      .where(Comment.deleted.eq(false))
+      .orderBy(Comment.createdAt, "asc")
+      .limit(20)
+      .select(Ramose.again(4)),
+  });
+// useLive(db, thread, { root: postId })        first paint
+// useLive(db, thread, { root: clicked.id })    continue this thread
+```
+
+Sibling "load more" pages that parent's replies. It is not a deeper `again`.
+
+A recursive `T` with `replies: T[]` would type-check `.body` on a stub — after a cycle, or after the budget. That is the lie. A literal bound makes `replies[0].replies[0].body` a type error on purpose (`again(1)`: one full card, then `{ id }`). An unbounded form would be `T | { id }` and a narrow. That is parked: a thousand-wide collection and no hop cap is how a shape melts — not because TypeScript cannot recurse.
+
+Which records can reach which is a *set* of ids. `again` paints a *tree*. Graph walks are later.
 
 ## Order, limit, page
 
