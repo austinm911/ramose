@@ -226,6 +226,24 @@ describe("reshapePullResult", () => {
     });
   });
 
+  test("missing card-one again does not drop the parent", () => {
+    const shape = {
+      id: Node.id,
+      label: Node.label,
+      next: Node.next.select(again(2)),
+    };
+    expect(
+      reshapePullResult(shape, {
+        id: 1,
+        label: "leaf",
+      }),
+    ).toEqual({
+      id: 1,
+      label: "leaf",
+      next: undefined,
+    });
+  });
+
   test("card-one cycle stub keeps the parent", () => {
     const shape = {
       id: Node.id,
