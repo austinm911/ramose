@@ -1148,6 +1148,79 @@ function afterCursor(row: unknown[], after: unknown[], keys: readonly SortKey[])
 }
 
 /**
+ * The variable `:having` uses for one `:find` element. A variable element
+ * keeps its name; an aggregate uses `as`, or the summarized variable when
+ * that name is unique among the cells.
+ */
+function havingVars(elems: FindElem[], varOf: (e: FindElem) => string): string[] {
+  const used = new Set<string>();
+  return elems.map((e) => {
+    if (e.kind === "pull") throw new QueryError(":having cannot name a pull");
+    const name = e.kind === "var" ? e.name : (e.as ?? varOf(e));
+    if (e.kind === "agg" && e.as === undefined && used.has(name)) {
+      throw new QueryError(
+        `having needs a name for (${e.fn} ${name}) — write (as (${e.fn} ${name}) ?alias)`,
+      );
+    }
+    used.add(name);
+    return name;
+  });
+}
+
+function havingClauseVars(clauses: Clause[], into = new Set<string>()): Set<string> {
+  for (const c of clauses) {
+    switch (c.kind) {
+      case "pred":
+        for (const a of c.args) if (a.kind === "var") into.add(a.name);
+        break;
+      case "not":
+        havingClauseVars(c.clauses, into);
+        break;
+      case "or":
+        for (const b of c.branches) havingClauseVars(b, into);
+        break;
+      default:
+        throw new QueryError(":having filters grouped cells, not datoms — put row filters in :where");
+    }
+  }
+  return into;
+}
+
+/**
+ * Boolean filter over one aggregated tuple. `not` / `or` are the boolean
+ * combinators (AND of a `not` body, OR of `or` branches), not joins —
+ * every variable is already a cell of this group.
+ */
+function evalHaving(c: Clause, row: unknown[], ix: Map<string, number>): boolean {
+  switch (c.kind) {
+    case "pred": {
+      const args = c.args.map((a) => {
+        if (a.kind === "var") {
+          const i = ix.get(a.name);
+          if (i === undefined) throw new QueryError(`having variable ${a.name} is not a :find cell`);
+          return row[i];
+        }
+        if (a.kind === "const") return a.value;
+        return undefined;
+      });
+      if (c.fn === "in") {
+        const [v, list] = args;
+        return Array.isArray(list) && list.some((x) => vkey(x) === vkey(v));
+      }
+      const f = PREDICATES[c.fn];
+      if (!f) throw new QueryError(`unknown having predicate ${c.fn}`);
+      return !!f(...args);
+    }
+    case "not":
+      return !c.clauses.every((inner) => evalHaving(inner, row, ix));
+    case "or":
+      return c.branches.some((b) => b.every((inner) => evalHaving(inner, row, ix)));
+    default:
+      throw new QueryError(":having filters grouped cells, not datoms — put row filters in :where");
+  }
+}
+
+/**
  * Project / aggregate the result relation, then order → offset → limit, then
  * resolve pulls — so a `:limit` only pulls the rows that survive it.
  */
@@ -1229,6 +1302,17 @@ async function shapeResult(db: Db, ast: Query, rel: Rel): Promise<any> {
         }
       }
       tuples.push(out);
+    }
+    if (ast.having && ast.having.length > 0) {
+      // post-group filter: each tuple is a group, named by :find cells.
+      // This is not :where — the aggregates do not exist until now — and
+      // it is not a client reshape: groups that fail never become rows.
+      const hvars = havingVars(elems, varOf);
+      const hix = new Map(hvars.map((v, i) => [v, i]));
+      for (const v of havingClauseVars(ast.having)) {
+        if (!hix.has(v)) throw new QueryError(`having variable ${v} is not a :find cell`);
+      }
+      tuples = tuples.filter((t) => ast.having!.every((c) => evalHaving(c, t, hix)));
     }
     if (ast.order) {
       // Aggregated rows only carry the :find elements, so that is all :order

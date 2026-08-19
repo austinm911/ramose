@@ -204,16 +204,19 @@ const theAda = Ramose.query(User)
 
 ## Count and group
 
-When the answer is a number, not rows, end with `.count()`, `.countDistinct(field)`, `.sum(field)`, `.avg(field)`, `.min(field)`, `.max(field)` — several at once with `.aggregate({ … })`, one row per group with `.groupBy({ … }).aggregate({ … })`. The work runs on the server.
+When the answer is a number, not rows, end with `.count()`, `.countDistinct(field)`, `.sum(field)`, `.avg(field)`, `.min(field)`, `.max(field)` — several at once with `.aggregate({ … })`, one row per group with `.groupBy({ … }).aggregate({ … })`. After a grouped aggregate, `.having((g) => g.n.gt(5))` keeps the groups whose cells match — a clause over those cells, not `if (n > 5)` in JS. The work runs on the server.
 
 ```ts
 const open = yield* db.q(Ramose.query(Todo).where(Todo.done.eq(false)).count()); // number
-const perOwner = yield* db.q(
-  Ramose.query(Todo).groupBy({ owner: Todo.owner }).aggregate({ n: Ramose.count() }),
+const busy = yield* db.q(
+  Ramose.query(Todo)
+    .groupBy({ owner: Todo.owner })
+    .aggregate({ n: Ramose.count() })
+    .having((g) => g.n.gt(5)),
 );
 ```
 
-A count is a `number`; `avg` / `min` / `max` are `| null` over no rows (`count` / `sum` answer `0`); a grouped row is your keys plus your aggregates. Aggregates replace the rows, so they do not combine with `.select` or paging. Rules: [Client API](/reference/client-api/#query-builder).
+A count is a `number`; `avg` / `min` / `max` are `| null` over no rows (`count` / `sum` answer `0`); a grouped row is your keys plus your aggregates. Having drops groups; it does not change that row. Aggregates replace the rows, so they do not combine with `.select` or paging. Rules: [Client API](/reference/client-api/#query-builder).
 
 ## Read one record
 

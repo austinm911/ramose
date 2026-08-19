@@ -92,6 +92,75 @@ describe("datalog basics", () => {
     expect(await query(db, `[:find [(min 2 ?a) ...] :with ?e :where [?e :person/age ?a]]`)).toEqual([[25, 30]]);
   });
 
+  test(":having keeps groups whose cells match", async () => {
+    // Berlin 2, Oslo 1; Dave has no city — no group. n > 1 keeps Berlin.
+    const byCity = await query(
+      db,
+      `[:find ?c (as (count ?e) ?n) :with ?e :where [?e :person/city ?c] :having [(> ?n 1)]]`,
+    );
+    expect(sortRows(byCity)).toEqual(sortRows([["Berlin", 2]]));
+    const js = await query(db, {
+      find: ["?c", ["as", ["count", "?e"], "?n"]],
+      with: ["?e"],
+      where: [["?e", ":person/city", "?c"]],
+      having: [[[">", "?n", 1]]],
+    });
+    expect(sortRows(js)).toEqual(sortRows([["Berlin", 2]]));
+    // a group key is a cell too
+    const berlin = await query(
+      db,
+      `[:find ?c (as (count ?e) ?n) :with ?e :where [?e :person/city ?c] :having [(= ?c "Oslo")]]`,
+    );
+    expect(berlin).toEqual([["Oslo", 1]]);
+    const either = await query(
+      db,
+      `[:find ?c (as (count ?e) ?n) :with ?e :where [?e :person/city ?c] :having [(or [(> ?n 1)] [(= ?c "Oslo")])]]`,
+    );
+    expect(sortRows(either)).toEqual(sortRows([["Berlin", 2], ["Oslo", 1]]));
+    const notBerlin = await query(
+      db,
+      `[:find ?c (as (count ?e) ?n) :with ?e :where [?e :person/city ?c] :having [(not [(= ?c "Berlin")])]]`,
+    );
+    expect(notBerlin).toEqual([["Oslo", 1]]);
+  });
+
+  test(":having is post-group: a failing group is absent", async () => {
+    const none = await query(
+      db,
+      `[:find ?c (as (count ?e) ?n) :with ?e :where [?e :person/city ?c] :having [(> ?n 5)]]`,
+    );
+    expect(none).toEqual([]);
+  });
+
+  test(":having rejects row filters and needs aggregates", () => {
+    expect(() =>
+      parseQuery(`[:find ?n :where [?e :person/name ?n] :having [(= ?n "Alice")]]`),
+    ).toThrow(/needs aggregates/);
+    expect(() =>
+      parseQuery({
+        find: ["?c", ["as", ["count", "?e"], "?n"]],
+        where: [],
+        having: [["?e", ":person/city", "?c"]],
+      }),
+    ).toThrow(/grouped cells/);
+  });
+
+  test(":having names an aggregate with (as …) when the summarized var is also a cell", async () => {
+    // group by entity id: ?e is the key; count also summarizes ?e
+    const named = parseQuery({
+      find: ["?e", ["as", ["count", "?e"], "?n"]],
+      with: ["?e"],
+      where: [["?e", ":person/name", "_"]],
+      having: [[[">", "?n", 0]]],
+    });
+    expect(named.find.kind).toBe("rel");
+    if (named.find.kind === "rel") {
+      expect(named.find.elems[1]).toMatchObject({ kind: "agg", fn: "count", as: "?n" });
+    }
+    const rows = await query(db, named);
+    expect(rows).toHaveLength(4);
+  });
+
   test("functions and bindings", async () => {
     const res = await query(db, `[:find ?n ?next :where [?e :person/name ?n] [?e :person/age ?a] [(inc ?a) ?next] [(> ?next 30)]]`);
     expect(sortRows(res)).toEqual(sortRows([["Alice", 31], ["Carol", 36]]));

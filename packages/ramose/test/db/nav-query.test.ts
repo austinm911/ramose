@@ -15,8 +15,10 @@ import {
   toJson,
 } from "../../src/internal/core/index.ts";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import {
   Attr,
   Catalog,
@@ -3749,6 +3751,181 @@ describe("aggregates: db.q end to end", () => {
       ),
     );
     expect(rows).toEqual([]);
+
+    await peer.dispose();
+  });
+});
+
+// ── having: post-group filter over group cells ─────────────────────────────
+
+describe("having: lowering", () => {
+  test("having lowers to :having over named group cells", () => {
+    const { query: q } = lowerNavQuery(
+      query(Job)
+        .groupBy({ city: Job.city })
+        .aggregate({ n: count(), total: sum(Job.hours) })
+        .having((g) => [g.n.gt(1), g.total.gte(5)]),
+    );
+    // keys first (?g0), then aggregates as ?hN, in alias order
+    expect(q.find).toEqual([
+      "?g0",
+      ["as", ["count", "?e"], "?h1"],
+      ["as", ["sum", "?o2"], "?h3"],
+    ]);
+    expect(q.having).toEqual([
+      [[">", "?h1", 1]],
+      [[">=", "?h3", 5]],
+    ]);
+    expect(q.with).toEqual(["?e"]);
+  });
+
+  test("having names a group key the same way it names an aggregate", () => {
+    const { query: q } = lowerNavQuery(
+      query(Job)
+        .groupBy({ city: Job.city })
+        .aggregate({ n: count() })
+        .having((g) => g.city.eq("Berlin")),
+    );
+    expect(q.having).toEqual([[["=", "?g0", "Berlin"]]]);
+  });
+
+  test("or / not / when on having cells are clauses, not JS", () => {
+    const P = params({ min: Schema.Number, city: optional(Schema.String) });
+    const { query: gated } = lowerNavQuery(
+      query(Job, P)
+        .groupBy({ city: Job.city })
+        .aggregate({ n: count() })
+        .having((g) => when(P.city, g.city.eq(P.city))),
+      { min: 1 },
+    );
+    // optional city unbound → when off → no having section
+    expect(gated.having).toBeUndefined();
+
+    const { query: on } = lowerNavQuery(
+      query(Job, P)
+        .groupBy({ city: Job.city })
+        .aggregate({ n: count() })
+        .having((g) => [g.n.gte(P.min), when(P.city, g.city.eq(P.city))]),
+      { min: 2, city: "Berlin" },
+    );
+    expect(on.having).toEqual([
+      [[">=", "?h1", 2]],
+      [["=", "?g0", "Berlin"]],
+    ]);
+
+    const { query: either } = lowerNavQuery(
+      query(Job)
+        .groupBy({ city: Job.city })
+        .aggregate({ n: count() })
+        .having((g) => or(g.n.gt(1), g.city.eq("Oslo"))),
+    );
+    expect(either.having?.[0]).toMatchObject(["or-join", expect.any(Array), expect.any(Array), expect.any(Array)]);
+  });
+
+  test("a row predicate is not a having clause", () => {
+    const grouped = query(Job).groupBy({ city: Job.city }).aggregate({ n: count() });
+    expect(() => grouped.having(Job.title.eq("ship") as never)).toThrow(
+      /names group cells/,
+    );
+    expect(() => grouped.having(() => true as never)).toThrow(/JS boolean/);
+  });
+});
+
+describe("having: db.q / db.live end to end", () => {
+  test("a group that fails having is absent — on the server", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedJobs(peer);
+
+    const q = query(Job)
+      .groupBy({ city: Job.city })
+      .aggregate({ n: count(), total: sum(Job.hours) })
+      .having((g) => g.n.gt(1));
+    const rows = await run(db.q(q));
+    expect(rows).toEqual([{ city: "Berlin", n: 2, total: 8 }]);
+    // Oslo (n=1) never left the peer — not an Array.filter of two groups
+    const lastQ = peer.seen.filter((s) => s.op === "q").at(-1);
+    expect(lastQ?.rows).toBe(1);
+
+    await peer.dispose();
+  });
+
+  test("having can name a group key; a missing key is still no group", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedJobs(peer);
+
+    const rows = await run(
+      db.q(
+        query(Job)
+          .groupBy({ city: Job.city })
+          .aggregate({ n: count() })
+          .having((g) => g.city.eq("Oslo")),
+      ),
+    );
+    expect(rows).toEqual([{ city: "Oslo", n: 1 }]);
+    // "stray" has no city: the groupBy join left it out, having did not invent it
+    expect(rows.some((r) => r.city === undefined)).toBe(false);
+
+    await peer.dispose();
+  });
+
+  test("empty groups stay empty under having", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedJobs(peer);
+
+    const rows = await run(
+      db.q(
+        query(Job)
+          .where(Job.title.eq("nope"))
+          .groupBy({ city: Job.city })
+          .aggregate({ n: count() })
+          .having((g) => g.n.gte(0)),
+      ),
+    );
+    expect(rows).toEqual([]);
+
+    await peer.dispose();
+  });
+
+  test("params bind in having the same way they do in where", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedJobs(peer);
+    const P = params({ min: Schema.Number });
+
+    const rows = await run(
+      db.q(
+        query(Job, P)
+          .groupBy({ city: Job.city })
+          .aggregate({ n: count() })
+          .having((g) => g.n.gte(P.min)),
+        { min: 2 },
+      ),
+    );
+    expect(rows).toEqual([{ city: "Berlin", n: 2 }]);
+
+    await peer.dispose();
+  });
+
+  test("db.live drops groups that fail having", async () => {
+    const peer = await inProcessPeer();
+    const db = await seedJobs(peer);
+    const q = query(Job)
+      .groupBy({ city: Job.city })
+      .aggregate({ n: count() })
+      .having((g) => g.n.gt(1));
+
+    const fromQ = await run(db.q(q));
+    const seen: typeof fromQ[] = [];
+    const fiber = Effect.runFork(
+      Stream.runForEach(db.live(q), (rows) =>
+        Effect.sync(() => {
+          seen.push(rows);
+        }),
+      ),
+    );
+    for (let i = 0; i < 80 && seen.length === 0; i++) await Bun.sleep(10);
+    await run(Fiber.interrupt(fiber));
+    expect(seen[0]).toEqual(fromQ);
+    expect(seen[0]).toEqual([{ city: "Berlin", n: 2 }]);
 
     await peer.dispose();
   });

@@ -349,6 +349,18 @@ d("ramose session socket e2e", () => {
           { n: 2, rows: 2 },
         ]);
 
+        const kept = await rt.runPromise(
+          absorb(
+            view.q(
+              Ramose.query(Session)
+                .groupBy({ n: Session.n })
+                .aggregate({ rows: Ramose.count() })
+                .having((g) => g.rows.gt(1)),
+            ),
+          ),
+        );
+        expect(kept).toEqual([{ n: 2, rows: 2 }]);
+
         const pageQ = (after: Ramose.Cursor | null) =>
           Ramose.query(Session)
             .orderBy(Session.name)

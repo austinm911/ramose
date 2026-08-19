@@ -959,6 +959,63 @@ type _byAuthor = Expect<
 // @ts-expect-error an element cursor is not a group key
 query(Post).groupBy({ tag: Post.tags.each });
 
+/** having drops rows; the grouped row type does not change */
+const groupedHavingQ = query(User)
+  .groupBy({ name: User.name })
+  .aggregate({ n: count() })
+  .having((g) => g.n.gt(1));
+type _groupedHavingRow = Expect<
+  Equal<Row<typeof groupedHavingQ>, { readonly name: string; readonly n: number }>
+>;
+const groupedHaving = db.q(groupedHavingQ);
+type _groupedHaving = Expect<
+  Extends<
+    Effect.Success<typeof groupedHaving>,
+    readonly { readonly name: string; readonly n: number }[]
+  >
+>;
+
+/** a having cell is this query's alias, with the cell's type */
+query(User)
+  .groupBy({ name: User.name })
+  .aggregate({ n: count() })
+  .having((g) => {
+    const _n: number = 0;
+    void _n;
+    return g.n.gt(1);
+  });
+
+const byBestHaving = query(User)
+  .groupBy({ best: User.bestFriend })
+  .aggregate({ n: count() })
+  .having((g) => g.best.is({ id: 1 }));
+type _byBestHaving = Expect<
+  Equal<Row<typeof byBestHaving>["best"], Eid>
+>;
+
+query(User)
+  .groupBy({ name: User.name })
+  .aggregate({ n: count() })
+  // @ts-expect-error having names this query's cells — there is no `nope`
+  .having((g) => g.nope.gt(1));
+
+query(User)
+  .groupBy({ name: User.name })
+  .aggregate({ n: count() })
+  // @ts-expect-error having is a clause over cells, not a JS boolean
+  .having(() => true);
+
+query(User)
+  .aggregate({ n: count() })
+  // @ts-expect-error ungrouped aggregate has no having — it is already one row
+  .having((g) => g.n.gt(1));
+
+query(User)
+  .groupBy({ name: User.name })
+  .aggregate({ n: count() })
+  // @ts-expect-error a count cell is not a string
+  .having((g) => g.n.startsWith("x"));
+
 // ── keyset paging: `.after` answers a Page ──────────────────────────────────
 
 const pagedNames = db.q(
