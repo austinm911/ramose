@@ -410,6 +410,8 @@ describe("apply-then-push", () => {
     return { socket, s };
   };
 
+  // Protocol walk on Session.applyEntry. The replica pin that would fail if
+  // notifySessions were a no-op lives in test/internal/replica/session-follow.test.ts.
   test("two sessions on one replica receive both non-conflicting txs without a poll timer; later writer included", async () => {
     const a = attached((t) => ({ kind: "tx", datoms: [wire(t)] }));
     const b = attached((t) => ({ kind: "tx", datoms: [wire(t)] }));
