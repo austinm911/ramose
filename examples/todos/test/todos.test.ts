@@ -13,7 +13,7 @@
 
 import { describe, expect, test } from "bun:test";
 import * as Ramose from "ramose/db";
-import { Connection, fromJson, pull, query, toJson } from "ramose/internal/core";
+import { Connection, fromJson, pull, query, toJson, toWireDatom } from "ramose/internal/core";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -45,9 +45,20 @@ const inProcessPeer = async () => {
   const pushes: ((frame: unknown) => void)[] = [];
 
   const answer = async (op: string, body: any) => {
+    if (op === "sync") {
+      return { status: 200, body: { t: conn.t, from: body.from ?? 0 } };
+    }
     if (op === "transact") {
       const rep = await conn.transact(body.tx);
-      return { status: 200, body: { t: rep.t, txEid: rep.txEid, tempids: rep.tempids, datoms: rep.txData.length } };
+      return {
+        status: 200,
+        body: {
+          t: rep.t,
+          txEid: rep.txEid,
+          tempids: rep.tempids,
+          datoms: rep.txData.map(toWireDatom),
+        },
+      };
     }
     const db = conn.db();
     if (op === "q") {
@@ -65,8 +76,11 @@ const inProcessPeer = async () => {
   const fetchImpl = (async (url: string, init: RequestInit) => {
     const body = fromJson(JSON.parse(String(init.body))) as any;
     const reply = await answer("transact", body);
-    // a write is basis movement every socket must hear about
-    for (const push of pushes) push({ op: "t", t: conn.t });
+    // a write is a filtered tx frame every socket must hear about
+    const datoms = (reply.body as { datoms?: unknown }).datoms;
+    for (const push of pushes) {
+      push({ op: "tx", t: conn.t, datoms: Array.isArray(datoms) ? datoms : [] });
+    }
     return new Response(JSON.stringify(toJson(reply.body)), {
       status: reply.status,
       headers: { "content-type": "application/json" },
@@ -112,6 +126,10 @@ const inProcessPeer = async () => {
     db,
     tick: () => {
       for (const push of pushes) push({ op: "t", t: conn.t });
+    },
+    pushTx: (datoms: readonly { e: number; a: number; vt: number; v: unknown; t: number; op: boolean }[]) => {
+      const wire = datoms.map((d) => toWireDatom(d as never));
+      for (const push of pushes) push({ op: "tx", t: conn.t, datoms: wire });
     },
     dispose: () => ramose.close(),
   };
@@ -200,12 +218,12 @@ describe("the app's writes move the app's live stream", () => {
     expect(todos.rows).toEqual([]);
 
     // straight at the peer, then the tick the Worker's basis poller would send
-    await peer.conn.transact([
+    const other = await peer.conn.transact([
       [":db/add", "tmp", ":todo/title", "from another tab"],
       [":db/add", "tmp", ":todo/done", false],
       [":db/add", "tmp", ":todo/createdAt", new Date()],
     ]);
-    peer.tick();
+    peer.pushTx(other.txData);
     await awaitLive(todos, () => (todos.rows?.length ?? 0) === 1);
 
     expect(titles(todos.rows)).toEqual(["from another tab"]);

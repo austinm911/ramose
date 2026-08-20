@@ -1,14 +1,10 @@
 /**
  * `db.live` — a standing `db.q` as a `Stream`.
  *
- * The two terminals share one builder callback, so everything `q` can express
- * `live` can too. What is specific to `live` is time: it re-runs when the
- * session's basis moves (a `{ op: "t" }` tick, or a local `transact`), it
- * reconnects in place rather than failing, it fails only on the terminal
- * refusals, and over a pinned view it emits once and completes.
- *
- * Its requirements channel is `never`: teardown is fiber interruption, and
- * there is no `Scope` in the type.
+ * Session clients run the engine against the overlay. The stream wakes on
+ * a pending apply, ack, `{ op: "tx" }`, or `{ op: "resync" }` — not a
+ * `/query` refetch because `t` moved. Pinned `asOf` / `history` still emit
+ * once from the peer.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -19,6 +15,7 @@ import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import { query } from "../src/db/internal.ts";
 import { client, fakePeer, settle, type Frame, type Reply } from "./peer.ts";
+import { catalogWorld, snapshotOf, txSnap } from "./overlay-seed.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
@@ -61,31 +58,19 @@ const collect = <A, E>(stream: Stream.Stream<A, E>) => {
 
 const names = query(User).select({ name: User.name });
 
-/** The wire query `names` lowers to: one find-pull, the namespace scope. */
-const namesWire = {
-  find: [
-    ["pull", "?e", [{ kind: "attr", attr: ":user/name", reverse: false, as: "name" }]],
-  ],
-  where: [
-    [
-      "or",
-      ["?e", ":user/name", "_"],
-      ["?e", ":user/age", "_"],
-      ["?e", ":user/friends", "_"],
-      ["?e", ":user/bestFriend", "_"],
-    ],
-    // `name` is not `.optional`: the required field is the peer's to enforce
-    ["?e", ":user/name", "_"],
-  ],
+const users = async (...who: string[]) => {
+  const conn = await catalogWorld(Movies);
+  const snaps = [];
+  for (const name of who) {
+    snaps.push(txSnap(await conn.transact([{ ":user/name": name }])));
+  }
+  return { conn, snaps, ...(await snapshotOf(conn)) };
 };
 
-/** One find-pull row, as the peer sends it. */
-const row = (name: string) => [{ name }];
-
-/** A peer whose relation and basis the test moves under it. */
+/** A peer that dumps `state.datoms` on first sync (the #112 resync-then-ack). */
 const peerAt = (state: {
   t: number;
-  rows: unknown[][];
+  datoms: unknown[];
   ackT?: number;
   answer?: (frame: Frame) => Reply | undefined;
 }) =>
@@ -96,13 +81,17 @@ const peerAt = (state: {
     answer: (frame) => {
       const custom = state.answer?.(frame);
       if (custom !== undefined) return custom;
-      return { body: { t: state.t, root: state.t, result: state.rows } };
+      if (frame.op === "sync") {
+        return { body: { t: state.t, from: frame.from ?? 0, datoms: state.datoms } };
+      }
+      return { body: { t: state.t, root: state.t, result: [] } };
     },
   });
 
 describe("q and live are two terminals over one query", () => {
   test("the same query value runs once, or stands up", async () => {
-    const state = { t: 5, rows: [row("Ada")] };
+    const world = await users("Ada");
+    const state = { t: world.t, datoms: world.datoms };
     const peer = peerAt(state);
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
@@ -111,27 +100,23 @@ describe("q and live are two terminals over one query", () => {
     const live = collect(db.live(names));
     await settle();
     expect(live.seen).toEqual([[{ name: "Ada" }]]);
-    expect(peer.frameOps("q").map((f) => f.query)).toEqual([
-      namesWire,
-      namesWire,
-    ]);
+    expect(peer.frameOps("q")).toEqual([]);
+    expect(peer.frames.some((f) => f.op === "sync")).toBe(true);
 
     await live.stop();
     await c.dispose();
   });
 
-  test("the pull rides in the query: one op, and the rows are the peer's", async () => {
-    const state = { t: 5, rows: [row("Ada"), row("Cy")] };
-    const peer = peerAt(state);
+  test("the pull rides in the query: one local pass, no N+1", async () => {
+    const world = await users("Ada", "Cy");
+    const peer = peerAt({ t: world.t, datoms: world.datoms });
     const c = client(peer);
     const live = collect(c.ramose.db("movies", Movies).live(names));
     await settle();
 
-    // exactly what the peer sent, reshaped — the client drops nothing
     expect(live.seen[0]).toEqual([{ name: "Ada" }, { name: "Cy" }]);
-    // one op for the whole pass — no client-side N+1
     expect(peer.frameOps("pull")).toHaveLength(0);
-    expect(peer.frameOps("q")).toHaveLength(1);
+    expect(peer.frameOps("q")).toHaveLength(0);
 
     await live.stop();
     await c.dispose();
@@ -139,47 +124,44 @@ describe("q and live are two terminals over one query", () => {
 });
 
 describe("the basis is the wake", () => {
-  test("a t frame re-runs the query at that fence", async () => {
-    const state = { t: 5, rows: [row("Ada")] };
+  test("a tx frame re-runs the query locally", async () => {
+    const world = await users("Ada");
+    const state = { t: world.t, datoms: world.datoms };
     const peer = peerAt(state);
     const c = client(peer);
     const live = collect(c.ramose.db("movies", Movies).live(names));
     await settle();
     expect(live.seen).toHaveLength(1);
 
-    state.t = 9;
-    state.rows = [row("Ada"), row("Bob")];
-    peer.push({ op: "t", t: 9 });
+    const bob = txSnap(await world.conn.transact([{ ":user/name": "Bob" }]));
+    state.t = bob.t;
+    peer.push({ op: "tx", t: bob.t, datoms: bob.datoms });
     await settle();
 
     expect(live.seen).toHaveLength(2);
     expect(live.seen[1]).toEqual([{ name: "Ada" }, { name: "Bob" }]);
-    expect(peer.frameOps("q").map((f) => f.minT)).toEqual([undefined, 9]);
+    expect(peer.frameOps("q")).toEqual([]);
 
     await live.stop();
     await c.dispose();
   });
 
   test("a tick the rows did not notice is not an emission", async () => {
-    const state = { t: 5, rows: [row("Ada")] };
-    const peer = peerAt(state);
+    const world = await users("Ada");
+    const peer = peerAt({ t: world.t, datoms: world.datoms });
     const c = client(peer);
     const live = collect(c.ramose.db("movies", Movies).live(names));
     await settle();
     expect(live.seen).toHaveLength(1);
 
-    // the basis moves (some other write), the relation does not
-    state.t = 9;
-    peer.push({ op: "t", t: 9 });
+    // a t-only tick does not change the overlay — digest-dedup
+    peer.push({ op: "t", t: world.t + 4 });
     await settle();
-    // ...so the query re-ran at the new fence but nothing was re-emitted
-    expect(peer.frameOps("q").map((f) => f.minT)).toEqual([undefined, 9]);
+    expect(peer.frameOps("q")).toEqual([]);
     expect(live.seen).toHaveLength(1);
 
-    // the next tick that changes the rows is news again
-    state.t = 12;
-    state.rows = [row("Ada"), row("Bob")];
-    peer.push({ op: "t", t: 12 });
+    const bob = txSnap(await world.conn.transact([{ ":user/name": "Bob" }]));
+    peer.push({ op: "tx", t: bob.t, datoms: bob.datoms });
     await settle();
     expect(live.seen).toHaveLength(2);
     expect(live.seen[1]).toEqual([{ name: "Ada" }, { name: "Bob" }]);
@@ -188,8 +170,9 @@ describe("the basis is the wake", () => {
     await c.dispose();
   });
 
-  test("a local transact bumps the basis, so a standing live re-runs", async () => {
-    const state = { t: 5, rows: [row("Ada")], ackT: 30 };
+  test("a local transact is visible to live before POST returns", async () => {
+    const world = await users("Ada");
+    const state = { t: world.t, datoms: world.datoms, ackT: 30 };
     const peer = peerAt(state);
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
@@ -197,8 +180,6 @@ describe("the basis is the wake", () => {
     await settle();
     expect(live.seen).toHaveLength(1);
 
-    state.t = 30;
-    state.rows = [row("Ada"), row("Bob")];
     await run(
       db.transact(function* (tx) {
         const bob = yield* tx.entity();
@@ -207,25 +188,24 @@ describe("the basis is the wake", () => {
     );
     await settle();
 
-    // no invalidation call: the write's own ack carried the new basis
     expect(live.seen).toHaveLength(2);
     expect(live.seen[1]).toEqual([{ name: "Ada" }, { name: "Bob" }]);
-    expect(peer.frameOps("q").at(-1)?.minT).toBe(30);
+    expect(peer.frameOps("q")).toEqual([]);
 
     await live.stop();
     await c.dispose();
   });
 
   test("interrupting the fiber is the whole teardown", async () => {
-    const state = { t: 5, rows: [row("Ada")] };
-    const peer = peerAt(state);
+    const world = await users("Ada");
+    const peer = peerAt({ t: world.t, datoms: world.datoms });
     const c = client(peer);
     const live = collect(c.ramose.db("movies", Movies).live(names));
     await settle();
     const frames = peer.frames.length;
 
     await live.stop();
-    peer.push({ op: "t", t: 9 });
+    peer.push({ op: "tx", t: world.t + 1, datoms: [] });
     await settle();
 
     expect(peer.frames).toHaveLength(frames);
@@ -236,7 +216,8 @@ describe("the basis is the wake", () => {
 
 describe("live survives the network", () => {
   test("a dropped socket reconnects in place and the stream keeps emitting", async () => {
-    const state = { t: 5, rows: [row("Ada")] };
+    const world = await users("Ada");
+    const state = { t: world.t, datoms: world.datoms };
     const peer = peerAt(state);
     const c = client(peer);
     const live = collect(c.ramose.db("movies", Movies).live(names));
@@ -244,7 +225,9 @@ describe("live survives the network", () => {
     expect(live.seen).toHaveLength(1);
     expect(peer.sockets).toHaveLength(1);
 
-    state.rows = [row("Ada"), row("Bob")];
+    const bob = txSnap(await world.conn.transact([{ ":user/name": "Bob" }]));
+    state.t = bob.t;
+    state.datoms = (await snapshotOf(world.conn)).datoms;
     peer.drop();
     await settle(60);
 
@@ -257,12 +240,13 @@ describe("live survives the network", () => {
   });
 
   test("a 5xx is retried with backoff, not surfaced", async () => {
+    const world = await users("Ada");
     let failures = 1;
     const state = {
-      t: 5,
-      rows: [row("Ada")],
+      t: world.t,
+      datoms: world.datoms,
       answer: (frame: Frame) => {
-        if (frame.op !== "q" || failures === 0) return undefined;
+        if (frame.op !== "sync" || failures === 0) return undefined;
         failures -= 1;
         return { status: 500, body: { error: "the replica is having a moment" } };
       },
@@ -284,14 +268,15 @@ describe("live survives the network", () => {
   });
 
   test("Unauthorized re-reads the token and reconnects; a second refusal is terminal", async () => {
+    const world = await users("Ada");
     let issued = 0;
     let refusals = 1;
     const state = {
-      t: 5,
-      rows: [row("Ada")],
+      t: world.t,
+      datoms: world.datoms,
       answer: (frame: Frame) => {
         if (frame.op === "auth") return { ok: true };
-        if (frame.op === "q" && refusals > 0) {
+        if (frame.op === "sync" && refusals > 0) {
           refusals -= 1;
           return { status: 401, body: { error: "token expired" } };
         }
@@ -305,9 +290,8 @@ describe("live survives the network", () => {
     const live = collect(c.ramose.db("movies", Movies).live(names));
     await settle();
 
-    // the swap happened on the same socket, and the stream never saw it
     expect(peer.sockets).toHaveLength(1);
-    expect(peer.frames.map((f) => f.op)).toEqual(["q", "auth", "q"]);
+    expect(peer.frames.map((f) => f.op)).toEqual(["sync", "auth", "sync"]);
     expect(live.seen).toEqual([[{ name: "Ada" }]]);
     expect(live.error).toBeUndefined();
 
@@ -318,7 +302,7 @@ describe("live survives the network", () => {
   test("a refusal that survives the fresh token fails the stream", async () => {
     const peer = peerAt({
       t: 5,
-      rows: [],
+      datoms: [],
       answer: () => ({ status: 401, body: { error: "no" } }),
     });
     const c = client(peer, { token: Effect.succeed(Redacted.make("stale")) });
@@ -333,11 +317,11 @@ describe("live survives the network", () => {
   test("a terminal InvalidRequest fails the stream rather than retrying", async () => {
     const peer = peerAt({
       t: 5,
-      rows: [],
+      datoms: [],
       answer: () => ({ status: 400, body: { error: "unknown attribute" } }),
     });
     const c = client(peer);
-    const live = collect(c.ramose.db("movies", Movies).live(names));
+    const live = collect(c.ramose.db("movies", Movies).asOf(5).live(names));
     await settle();
 
     expect(live.done).toBe(true);
@@ -349,8 +333,9 @@ describe("live survives the network", () => {
 
 describe("a pinned view has no news", () => {
   test("live over asOf emits once and completes", async () => {
-    const state = { t: 5, rows: [row("Ada")] };
-    const peer = peerAt(state);
+    const peer = fakePeer({
+      answer: () => ({ body: { t: 5, root: 5, result: [[{ name: "Ada" }]] } }),
+    });
     const c = client(peer);
     const live = collect(c.ramose.db("movies", Movies).asOf(3).live(names));
     await settle();
@@ -366,8 +351,9 @@ describe("a pinned view has no news", () => {
   });
 
   test("live over history emits once and completes", async () => {
-    const state = { t: 5, rows: [row("Ada")] };
-    const peer = peerAt(state);
+    const peer = fakePeer({
+      answer: () => ({ body: { t: 5, root: 5, result: [[{ name: "Ada" }]] } }),
+    });
     const c = client(peer);
     const live = collect(c.ramose.db("movies", Movies).history.live(names));
     await settle();

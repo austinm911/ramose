@@ -376,8 +376,15 @@ describe("failure typing on the wire", () => {
       }
       return jwtOf({ exp: Math.floor((Date.now() + 3_600_000) / 1000) });
     });
+    const { catalogWorld, snapshotOf } = await import("./overlay-seed.ts");
+    const world = await catalogWorld(Movies);
+    await world.transact([{ ":user/name": "Ada" }]);
+    const snap = await snapshotOf(world);
     const peer = fakePeer({
-      answer: () => ({ body: { t: 5, result: [[{ name: "Ada" }]] } }),
+      answer: (frame) =>
+        frame.op === "sync"
+          ? { body: { t: snap.t, datoms: snap.datoms } }
+          : { body: { t: 5, result: [[{ name: "Ada" }]] } },
     });
     const c = client(peer, { token: source });
     const live = collect(c.ramose.db("movies", Movies).live(names));

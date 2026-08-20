@@ -36,7 +36,7 @@ import {
   QueryBudgetExceeded,
   TxRejected,
 } from "./Errors.ts";
-import { record } from "./http.ts";
+import { record, retryTransient } from "./http.ts";
 import type { Session } from "./session.ts";
 
 export interface OverlayAck {
@@ -53,7 +53,7 @@ export interface Overlay {
   readonly confirmedT: number;
   /** Bumped on overlay apply / ack / inbound tx / resync — live wakes on it. */
   readonly epoch: number;
-  ready(): Effect.Effect<void, DbError>;
+  ready(retry?: boolean): Effect.Effect<void, DbError>;
   read(
     op: "q" | "pull",
     body: Record<string, unknown>,
@@ -283,7 +283,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     const serverE = new Map<string, number>();
     for (const d of incoming) {
       if (d.e < TX_EID_CAP) {
-        serverE.set(`${d.a}\0${JSON.stringify(d.v)}\0${d.added}`, d.e);
+        serverE.set(`${d.a}\0${JSON.stringify(d.v)}\0${d.op}`, d.e);
       }
     }
     for (let i = pending.length - 1; i >= 0; i--) {
@@ -293,7 +293,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       const eids = new Map<number, number>();
       let covered = true;
       for (const d of facts) {
-        const e = serverE.get(`${d.a}\0${JSON.stringify(d.v)}\0${d.added}`);
+        const e = serverE.get(`${d.a}\0${JSON.stringify(d.v)}\0${d.op}`);
         if (e === undefined) {
           covered = false;
           break;
@@ -318,17 +318,39 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     }
   };
 
-  const sync = async (): Promise<void> => {
+  const requestSync = () =>
+    Effect.tryPromise({
+      try: () =>
+        options.session.request({
+          op: "sync",
+          from: confirmedT,
+        }),
+      catch: (cause) =>
+        isDatabaseError(cause)
+          ? cause
+          : new NetworkError({
+              message: cause instanceof Error ? cause.message : String(cause),
+              cause,
+            }),
+    }).pipe(
+      Effect.flatMap((got) =>
+        got.status >= 400
+          ? Effect.fail(
+              fromResponse(got.status, got.body, {
+                get: (h) => got.headers?.[h.toLowerCase()] ?? null,
+              }),
+            )
+          : Effect.succeed(got),
+      ),
+    );
+
+  const sync = async (retry = true): Promise<void> => {
     await ensureConn();
-    const reply = await options.session.request({
-      op: "sync",
-      from: confirmedT,
-    });
-    if (reply.status >= 400) {
-      throw fromResponse(reply.status, reply.body, {
-        get: (h) => reply.headers?.[h.toLowerCase()] ?? null,
-      });
-    }
+    const reply = await Effect.runPromise(
+      retry
+        ? retryTransient(requestSync, { while: () => !options.session.closed })
+        : requestSync(),
+    );
     const t = record(reply.body).t;
     if (typeof t === "number" && t > confirmedT) {
       // a sync reply may be the only news when the gap was empty
@@ -339,13 +361,13 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     await applied;
   };
 
-  const ready: Overlay["ready"] = () =>
+  const ready: Overlay["ready"] = (retry = true) =>
     Effect.tryPromise({
       try: async () => {
         if (readyGen !== options.session.generation || conn === undefined) {
           if (opening !== undefined) await opening;
           else {
-            const started = sync().finally(() => {
+            const started = sync(retry).finally(() => {
               if (opening === started) opening = undefined;
             });
             opening = started;
@@ -399,7 +421,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     );
 
   const transact: Overlay["transact"] = (tx) =>
-    ready().pipe(
+    ready(false).pipe(
       Effect.flatMap(() =>
         Effect.gen(function* () {
           const expansion = yield* Effect.tryPromise({

@@ -162,6 +162,17 @@ export const fakePeer = (options: PeerOptions = {}): FakePeer => {
       const { delay, ...rest } = reply;
       const deliver = () => {
         if (this.dead) return;
+        // #112: a sync dump is an unsolicited resync, then the correlated ack
+        const body = rest.body as { t?: unknown; datoms?: unknown } | undefined;
+        if (frame.op === "sync" && Array.isArray(body?.datoms)) {
+          this.emit("message", {
+            data: JSON.stringify({
+              op: "resync",
+              t: body.t,
+              datoms: body.datoms,
+            }),
+          });
+        }
         this.emit("message", {
           data: JSON.stringify({ id: frame.id, ...rest }),
         });

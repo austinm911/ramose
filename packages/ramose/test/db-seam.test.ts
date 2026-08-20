@@ -43,11 +43,20 @@ describe("the view key is structural", () => {
       seamOf(db.asOf(3)).key,
       seamOf(db.asOf(4)).key,
       seamOf(db.history).key,
-      seamOf(report.dbAfter).key, // the minT floor is a coordinate too
+      // overlay dbAfter is the same live view (no minT fence)
       seamOf(a.ramose.db("other", Movies)).key,
       seamOf(b.ramose.db("movies", Movies)).key,
     ];
     expect(new Set(keys).size).toBe(keys.length);
+    expect(seamOf(report.dbAfter).key).toBe(seamOf(db).key);
+
+    const https = httpsClient(fakePeer());
+    const httpsDb = https.databases.db("movies", Movies);
+    const httpsReport = await Effect.runPromise(
+      httpsDb.transact(function* () {}),
+    );
+    expect(seamOf(httpsReport.dbAfter).key).not.toBe(seamOf(httpsDb).key);
+    https.close();
     await a.dispose();
     await b.dispose();
   });

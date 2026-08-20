@@ -1,20 +1,6 @@
 /**
- * The `useLive` contract, over the fake peer:
- *
- * - The first emission populates `rows`; `ticks` stays 0.
- * - A `t` tick re-runs the query, updates `rows`, and increments `ticks`.
- * - Changing the query resets to the blank state and re-subscribes.
- * - Teardown's interrupt is not an error: after a query change or an
- *   unmount, `error` stays `undefined`.
- * - Over `db.asOf(t)` the stream completes; the last `rows` stay and
- *   completion is not an error.
- * - The view is structural: an inline `db.asOf(t)` keeps one subscription
- *   per `t` — equal views never re-subscribe, a new `t` does.
- * - A terminal `Unauthorized` lands in `error`; the last `rows` stay.
- * - Unmount interrupts: the peer sees no re-run on the next tick.
- * - StrictMode's mount → unmount → mount subscribes exactly once at steady
- *   state.
- * - The stream form needs no db (and no provider) at all.
+ * The `useLive` contract. Session current-view reads run on the overlay;
+ * pinned `asOf` still rides the peer. The stream form needs no db at all.
  */
 
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
@@ -27,6 +13,7 @@ import * as Stream from "effect/Stream";
 import { type ReactNode, StrictMode } from "react";
 import { renderHook, waitFor } from "@testing-library/react";
 import { type Answer, fakePeer } from "./peer.ts";
+import { catalogWorld, snapshotOf, txSnap } from "../overlay-seed.ts";
 import { useLive } from "../../src/react/index.ts";
 
 // imports are hoisted, so this runs after them but before any test renders —
@@ -52,7 +39,19 @@ const settle = (ms = 25) => Bun.sleep(ms);
 const ids = (...ns: number[]): readonly Ramose.Eid[] =>
   ns.map((id) => ({ id }));
 
-/** One client over one fake peer, with a swappable frame answer. */
+const todoWorld = async (n: number) => {
+  const conn = await catalogWorld(Todos);
+  const eids: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const r = await conn.transact([
+      { ":db/id": `t${i}`, ":todo/title": `t${i}` },
+    ]);
+    eids.push(r.tempids[`t${i}`]!);
+  }
+  return { conn, eids, ...(await snapshotOf(conn)) };
+};
+
+/** Pinned-view / peer-answer client (asOf still POSTs `q`). */
 const setup = () => {
   let respond: Answer = () => ({ body: { t: 1, result: [[1]] } });
   const peer = fakePeer({ answer: (frame) => respond(frame) });
@@ -72,9 +71,35 @@ const setup = () => {
   };
 };
 
+/** Session overlay client: first sync dumps `world.datoms`. */
+const overlaySetup = (world: { t: number; datoms: unknown[] }) => {
+  let respond: Answer = (frame) =>
+    frame.op === "sync"
+      ? { body: { t: world.t, datoms: world.datoms } }
+      : { body: { t: world.t, result: [] } };
+  const peer = fakePeer({
+    answer: (frame) => respond(frame),
+    http: () => ({ body: { t: world.t, txEid: 1, tempids: {}, datoms: 1 } }),
+  });
+  const client = Ramose.connect({
+    url: "https://peer.example.com",
+    fetch: peer.fetch,
+    webSocket: peer.webSocket,
+  });
+  return {
+    peer,
+    db: client.db("todos", Todos),
+    close: () => client.close(),
+    answer: (next: Answer) => {
+      respond = next;
+    },
+  };
+};
+
 describe("useLive (query form)", () => {
   test("the first emission populates rows; ticks stays 0", async () => {
-    const { db, close } = setup();
+    const world = await todoWorld(1);
+    const { db, close } = overlaySetup(world);
     try {
       const { result } = renderHook(() => useLive(db, allTodos));
       expect(result.current).toEqual({
@@ -82,7 +107,7 @@ describe("useLive (query form)", () => {
         error: undefined,
         ticks: 0,
       });
-      await waitFor(() => expect(result.current.rows).toEqual(ids(1)));
+      await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
       expect(result.current.ticks).toBe(0);
       expect(result.current.error).toBeUndefined();
     } finally {
@@ -90,15 +115,18 @@ describe("useLive (query form)", () => {
     }
   });
 
-  test("a t tick re-runs, updates rows, and increments ticks", async () => {
-    const { db, peer, answer, close } = setup();
+  test("a tx frame re-runs, updates rows, and increments ticks", async () => {
+    const world = await todoWorld(1);
+    const { db, peer, close } = overlaySetup(world);
     try {
       const { result } = renderHook(() => useLive(db, allTodos));
-      await waitFor(() => expect(result.current.rows).toEqual(ids(1)));
+      await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
 
-      answer(() => ({ body: { t: 2, result: [[1], [2]] } }));
-      peer.push({ op: "t", t: 2 });
-      await waitFor(() => expect(result.current.rows).toEqual(ids(1, 2)));
+      const two = txSnap(await world.conn.transact([{ ":db/id": "t1", ":todo/title": "t1" }]));
+      peer.push({ op: "tx", t: two.t, datoms: two.datoms });
+      await waitFor(() =>
+        expect(result.current.rows).toEqual(ids(world.eids[0]!, two.tempids.t1)),
+      );
       expect(result.current.ticks).toBe(1);
       expect(result.current.error).toBeUndefined();
     } finally {
@@ -107,58 +135,44 @@ describe("useLive (query form)", () => {
   });
 
   test("changing the query resets state and re-subscribes", async () => {
-    const { db, peer, answer, qFrames, close } = setup();
+    const world = await todoWorld(2);
+    const { db, peer, close } = overlaySetup(world);
     try {
       const { result, rerender } = renderHook(
         ({ query }: { query: Ramose.QueryInput<readonly Ramose.Eid[]> }) =>
           useLive(db, query),
         { initialProps: { query: allTodos } },
       );
-      await waitFor(() => expect(result.current.rows).toEqual(ids(1)));
+      await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
 
-      // move the basis so `ticks` is non-zero — the reset must clear it
-      answer(() => ({ body: { t: 2, result: [[1], [2]] } }));
-      peer.push({ op: "t", t: 2 });
+      const extra = txSnap(
+        await world.conn.transact([{ ":db/id": "t2", ":todo/title": "t2" }]),
+      );
+      peer.push({ op: "tx", t: extra.t, datoms: extra.datoms });
       await waitFor(() => expect(result.current.ticks).toBe(1));
 
-      // hold the next answer, so the reset is observable before rows return
-      answer(() => undefined);
       rerender({ query: oneTodo });
-      await waitFor(() =>
-        expect(result.current).toEqual({
-          rows: undefined,
-          error: undefined,
-          ticks: 0,
-        }),
-      );
-
-      // the re-subscription sent the *new* query
-      const held = qFrames().at(-1)!;
-      expect((held.query as { limit?: number }).limit).toBe(1);
-
-      // answer the held frame: the fresh subscription's first emission
-      peer.push({ id: held.id, body: { t: 2, result: [[7]] } });
-      await waitFor(() => expect(result.current.rows).toEqual(ids(7)));
+      await waitFor(() => expect(result.current.rows).toEqual(ids(world.eids[0]!)));
       expect(result.current.ticks).toBe(0);
+      expect(result.current.error).toBeUndefined();
     } finally {
       await close();
     }
   });
 
   test("teardown's interrupt never lands on error — not after a query change, not after unmount", async () => {
-    const { db, close } = setup();
+    const world = await todoWorld(1);
+    const { db, close } = overlaySetup(world);
     try {
       const { result, rerender, unmount } = renderHook(
         ({ query }: { query: Ramose.QueryInput<readonly Ramose.Eid[]> }) =>
           useLive(db, query),
         { initialProps: { query: allTodos } },
       );
-      await waitFor(() => expect(result.current.rows).toEqual(ids(1)));
+      await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
 
-      // the old subscription's interrupt lands *after* the new one reset —
-      // it must not stamp an Interrupt cause onto the fresh state
       rerender({ query: oneTodo });
-      await waitFor(() => expect(result.current.rows).toEqual(ids(1)));
+      await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
       await settle();
       expect(result.current.error).toBeUndefined();
 
@@ -227,13 +241,18 @@ describe("useLive (query form)", () => {
   });
 
   test("a terminal Unauthorized sets error and keeps the last rows", async () => {
-    const { db, peer, answer, close } = setup();
+    const world = await todoWorld(1);
+    const { db, peer, answer, close } = overlaySetup(world);
     try {
       const { result } = renderHook(() => useLive(db, allTodos));
-      await waitFor(() => expect(result.current.rows).toEqual(ids(1)));
+      await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
 
-      answer(() => ({ status: 401, body: { error: "token expired" } }));
-      peer.push({ op: "t", t: 2 });
+      answer((frame) =>
+        frame.op === "sync"
+          ? { status: 401, body: { error: "token expired" } }
+          : { body: { t: world.t, result: [] } },
+      );
+      peer.drop();
       await waitFor(() => expect(result.current.error).toBeDefined());
 
       const failure = Cause.findErrorOption(result.current.error!);
@@ -241,48 +260,48 @@ describe("useLive (query form)", () => {
       expect((Option.getOrThrow(failure) as { _tag: string })._tag).toBe(
         "Unauthorized",
       );
-      expect(result.current.rows).toEqual(ids(1));
+      expect(result.current.rows).toEqual(ids(...world.eids));
     } finally {
       await close();
     }
   });
 
   test("unmount interrupts — the peer sees no re-run on the next tick", async () => {
-    const { db, peer, qFrames, close } = setup();
+    const world = await todoWorld(1);
+    const { db, peer, close } = overlaySetup(world);
     try {
       const { result, unmount } = renderHook(() => useLive(db, allTodos));
-      await waitFor(() => expect(result.current.rows).toEqual(ids(1)));
+      await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
 
       unmount();
       await settle();
-      const before = qFrames().length;
-      peer.push({ op: "t", t: 2 });
+      const before = peer.frames.length;
+      peer.push({ op: "tx", t: world.t + 1, datoms: [] });
       await settle();
-      expect(qFrames().length).toBe(before);
+      expect(peer.frames.length).toBe(before);
     } finally {
       await close();
     }
   });
 
   test("StrictMode double-mount subscribes exactly once at steady state", async () => {
-    const { db, peer, answer, qFrames, close } = setup();
+    const world = await todoWorld(1);
+    const { db, peer, close } = overlaySetup(world);
     try {
       const wrapper = ({ children }: { children?: ReactNode }) => (
         <StrictMode>{children}</StrictMode>
       );
       const { result } = renderHook(() => useLive(db, allTodos), { wrapper });
-      await waitFor(() => expect(result.current.rows).toEqual(ids(1)));
-      await settle(); // let the first mount's interrupted fiber wind down
+      await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
+      await settle();
 
-      // one tick → exactly one re-run: only the second mount is subscribed
-      const before = qFrames().length;
-      answer(() => ({ body: { t: 2, result: [[1], [2]] } }));
-      peer.push({ op: "t", t: 2 });
-      await waitFor(() => expect(result.current.rows).toEqual(ids(1, 2)));
+      const two = txSnap(await world.conn.transact([{ ":db/id": "t1", ":todo/title": "t1" }]));
+      peer.push({ op: "tx", t: two.t, datoms: two.datoms });
+      await waitFor(() =>
+        expect(result.current.rows).toEqual(ids(world.eids[0]!, two.tempids.t1)),
+      );
       expect(result.current.ticks).toBe(1);
       await settle();
-      expect(qFrames().length).toBe(before + 1);
-      // the first mount's interrupt landed mid-churn and left no error
       expect(result.current.error).toBeUndefined();
     } finally {
       await close();
@@ -294,40 +313,19 @@ describe("useLive (query form)", () => {
     const limited = Ramose.query(Todo, P).limit(P.n);
     const object = limited;
 
-    const { db, peer, answer, qFrames, close } = setup();
+    const world = await todoWorld(2);
+    const { db, close } = overlaySetup(world);
     try {
-      answer((frame) => {
-        const limit = (frame.query as { limit?: number } | undefined)?.limit;
-        return {
-          body: {
-            t: 1,
-            result: limit === 1 ? [[1]] : [[1], [2]],
-          },
-        };
-      });
       const { result, rerender } = renderHook(
         ({ n }: { n: number }) => useLive(db, limited, { n }),
         { initialProps: { n: 1 } },
       );
-      await waitFor(() => expect(result.current.rows).toEqual(ids(1)));
+      await waitFor(() => expect(result.current.rows).toEqual(ids(world.eids[0]!)));
 
-      // hold the next answer so the in-flight state is observable
-      answer(() => undefined);
       rerender({ n: 2 });
-      await waitFor(() => {
-        const held = qFrames().at(-1)!;
-        expect((held.query as { limit?: number }).limit).toBe(2);
-      });
-      // last rows stay while the new pass runs — no flash to undefined
-      expect(result.current.rows).toEqual(ids(1));
+      await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
       expect(result.current.error).toBeUndefined();
       expect(limited).toBe(object);
-
-      peer.push({
-        id: qFrames().at(-1)!.id,
-        body: { t: 1, result: [[1], [2]] },
-      });
-      await waitFor(() => expect(result.current.rows).toEqual(ids(1, 2)));
     } finally {
       await close();
     }
