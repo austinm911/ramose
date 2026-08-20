@@ -8,10 +8,11 @@
  */
 
 import { Connection } from "../internal/core/conn.ts";
-import { type Datom, Index } from "../internal/core/datom.ts";
+import { type Datom, Index, ValueTag } from "../internal/core/datom.ts";
 import { Db as EngineDb } from "../internal/core/db.ts";
 import { fromWireDatom, type WireDatom } from "../internal/core/log.ts";
 import { Novelty } from "../internal/core/novelty.ts";
+import type { Schema } from "../internal/core/schema.ts";
 import {
   QueryBudgetError,
   QueryError,
@@ -98,18 +99,87 @@ const clientTxId = (): string =>
     ? globalThis.crypto.randomUUID()
     : `c${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
-const rewriteDeep = (value: unknown, ids: Record<string, number>): unknown => {
-  if (typeof value === "string" && ids[value] !== undefined) return ids[value];
-  if (Array.isArray(value)) return value.map((v) => rewriteDeep(v, ids));
-  if (value !== null && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = rewriteDeep(v, ids);
-    }
-    return out;
-  }
-  return value;
+const rewriteTempid = (value: unknown, ids: Record<string, number>): unknown =>
+  typeof value === "string" && ids[value] !== undefined ? ids[value] : value;
+
+const isLookupRef = (value: unknown): value is readonly [string, unknown] =>
+  Array.isArray(value) &&
+  value.length === 2 &&
+  typeof value[0] === "string" &&
+  value[0].startsWith(":");
+
+const forwardIdent = (ident: string): string => {
+  const slash = ident.lastIndexOf("/");
+  return slash >= 0 && ident[slash + 1] === "_"
+    ? ident.slice(0, slash + 1) + ident.slice(slash + 2)
+    : ident;
 };
+
+const isRefAttr = (schema: Schema | undefined, a: unknown): boolean => {
+  if (schema === undefined) return false;
+  if (typeof a === "number") return schema.attr(a)?.valueType === ValueTag.Ref;
+  if (typeof a !== "string") return false;
+  return schema.attr(forwardIdent(a))?.valueType === ValueTag.Ref;
+};
+
+/** Rewrite a tempid only in entity / ref positions — never a scalar like a title. */
+const rewriteEntityForm = (
+  value: unknown,
+  ids: Record<string, number>,
+  schema: Schema | undefined,
+): unknown => {
+  if (isLookupRef(value)) return value;
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    return rewriteMap(value as Record<string, unknown>, ids, schema);
+  }
+  return rewriteTempid(value, ids);
+};
+
+const rewriteMap = (
+  m: Record<string, unknown>,
+  ids: Record<string, number>,
+  schema: Schema | undefined,
+): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(m)) {
+    if (k === ":db/id") {
+      out[k] = rewriteEntityForm(v, ids, schema);
+    } else if (isRefAttr(schema, k)) {
+      out[k] = Array.isArray(v) && !isLookupRef(v)
+        ? v.map((x) => rewriteEntityForm(x, ids, schema))
+        : rewriteEntityForm(v, ids, schema);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+};
+
+const rewriteTx = (
+  tx: readonly unknown[],
+  ids: Record<string, number>,
+  schema: Schema | undefined,
+): unknown[] =>
+  tx.map((item) => {
+    if (Array.isArray(item)) {
+      const [op, e, a, v] = item as unknown[];
+      if (op === ":db/retractEntity") return [op, rewriteEntityForm(e, ids, schema)];
+      if (op === ":db/add" || op === ":db/retract") {
+        const next: unknown[] = [op, rewriteEntityForm(e, ids, schema), a];
+        if (item.length >= 4) {
+          next.push(isRefAttr(schema, a) ? rewriteEntityForm(v, ids, schema) : v);
+        }
+        return next;
+      }
+      return item;
+    }
+    if (item !== null && typeof item === "object") {
+      return rewriteMap(item as Record<string, unknown>, ids, schema);
+    }
+    return item;
+  });
+
+const factKey = (d: Datom): string => `${d.a}\0${JSON.stringify(d.v)}\0${d.op}`;
 
 const rewriteEid = (e: number, eids: Map<number, number>): number =>
   eids.get(e) ?? e;
@@ -262,7 +332,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         if (layer.tempids[tmp] === undefined) foreign[tmp] = serverEid;
       }
       if (Object.keys(foreign).length > 0) {
-        layer.tx = rewriteDeep(layer.tx, foreign) as unknown[];
+        layer.tx = rewriteTx(layer.tx, foreign, conn?.db().schema);
       }
       layer.datoms = rewriteDatoms(layer.datoms, eids);
       for (const [tmp, e] of Object.entries(layer.tempids)) {
@@ -277,37 +347,64 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     return pending.splice(i, 1)[0];
   };
 
-  /** Inbound `{ op: "tx" }` may land before the HTTP ack; drop the layer it covers. */
-  const dropCoveredPending = (incoming: readonly Datom[]): void => {
-    if (incoming.length === 0 || pending.length === 0) return;
+  const remapDropped = (layer: PendingLayer, incoming: readonly Datom[]): void => {
     const serverE = new Map<string, number>();
     for (const d of incoming) {
-      if (d.e < TX_EID_CAP) {
-        serverE.set(`${d.a}\0${JSON.stringify(d.v)}\0${d.op}`, d.e);
-      }
+      if (d.e < TX_EID_CAP) serverE.set(factKey(d), d.e);
     }
-    for (let i = pending.length - 1; i >= 0; i--) {
-      const layer = pending[i]!;
-      const facts = layer.datoms.filter((d) => d.e < TX_EID_CAP);
+    const eids = new Map<number, number>();
+    for (const d of layer.datoms) {
+      if (d.e >= TX_EID_CAP) continue;
+      const e = serverE.get(factKey(d));
+      if (e !== undefined && d.e !== e) eids.set(d.e, e);
+    }
+    const acked: Record<string, number> = {};
+    for (const [tmp, e] of Object.entries(layer.tempids)) {
+      acked[tmp] = eids.get(e) ?? e;
+    }
+    remapQueued(acked, layer.tempids);
+  };
+
+  /**
+   * Inbound `{ op: "tx" }` may land before the HTTP ack. Prefer `clientTxId`
+   * on the frame; otherwise the full incoming fact set must uniquely identify
+   * one layer (a/v/op covering alone can match the wrong pending tx).
+   */
+  const dropCoveredPending = (
+    incoming: readonly Datom[],
+    coveredId?: string,
+  ): void => {
+    if (pending.length === 0) return;
+    if (typeof coveredId === "string" && coveredId.length > 0) {
+      const layer = dropLayer(coveredId);
+      if (layer !== undefined) remapDropped(layer, incoming);
+      return;
+    }
+    if (incoming.length === 0) return;
+    const incomingKeys = new Set<string>();
+    for (const d of incoming) {
+      if (d.e < TX_EID_CAP) incomingKeys.add(factKey(d));
+    }
+    if (incomingKeys.size === 0) return;
+    const matches: number[] = [];
+    for (let i = 0; i < pending.length; i++) {
+      const facts = pending[i]!.datoms.filter((d) => d.e < TX_EID_CAP);
       if (facts.length === 0) continue;
-      const eids = new Map<number, number>();
-      let covered = true;
-      for (const d of facts) {
-        const e = serverE.get(`${d.a}\0${JSON.stringify(d.v)}\0${d.op}`);
-        if (e === undefined) {
-          covered = false;
+      const keys = new Set(facts.map(factKey));
+      if (keys.size !== incomingKeys.size) continue;
+      let eq = true;
+      for (const k of keys) {
+        if (!incomingKeys.has(k)) {
+          eq = false;
           break;
         }
-        if (d.e !== e) eids.set(d.e, e);
       }
-      if (!covered) continue;
-      const acked: Record<string, number> = {};
-      for (const [tmp, e] of Object.entries(layer.tempids)) {
-        acked[tmp] = eids.get(e) ?? e;
-      }
-      pending.splice(i, 1);
-      remapQueued(acked, layer.tempids);
+      if (eq) matches.push(i);
     }
+    if (matches.length !== 1) return;
+    const i = matches[0]!;
+    const layer = pending.splice(i, 1)[0]!;
+    remapDropped(layer, incoming);
   };
 
   const ensureConn = async (): Promise<void> => {
@@ -459,12 +556,10 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                   const datoms = asWireDatoms(ack.datoms);
                   const tempids = asTempids(ack.tempids);
                   const layer = dropLayer(id);
-                  applyConfirmed(
-                    datoms.length > 0
-                      ? datoms.map(fromWireDatom)
-                      : (layer?.datoms ?? []),
-                    t,
-                  );
+                  // Confirmed follows the sieved server log. Never apply the
+                  // local expansion — empty ack.datoms (ensure skip / filtered
+                  // empty / hidden-only) still advances confirmedT.
+                  applyConfirmed(datoms.map(fromWireDatom), t);
                   if (layer !== undefined) remapQueued(tempids, layer.tempids);
                   wake();
                   resume(
@@ -514,7 +609,10 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       if (frame.op === "tx") {
         const incoming = asWireDatoms(frame.datoms).map(fromWireDatom);
         applyConfirmed(incoming, t);
-        dropCoveredPending(incoming);
+        dropCoveredPending(
+          incoming,
+          typeof frame.clientTxId === "string" ? frame.clientTxId : undefined,
+        );
         wake();
       }
     };

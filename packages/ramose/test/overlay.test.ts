@@ -27,7 +27,12 @@ import { Meta, Movie, Movies, User } from "./db/fixture.ts";
 const Doc = Namespace("doc", {
   slug: Attr(Schema.String, { unique: "value" }),
 });
+const Secret = Namespace("secret", {
+  note: Attr(Schema.String),
+});
 const WithSlug = Catalog({ user: User, movie: Movie, meta: Meta, doc: Doc });
+const WithSecret = Catalog({ user: User, movie: Movie, meta: Meta, secret: Secret });
+const secretNotes = query(Secret).select({ note: Secret.note });
 
 const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
 const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
@@ -268,9 +273,155 @@ describe("optimistic transact", () => {
     expect(posts).toEqual([]);
     await c.dispose();
   });
+
+  test("empty ack.datoms drop the pending layer and do not commit it to confirmed", async () => {
+    const server = await moviesWorld();
+    const peer = fakePeer({
+      http: (call) => {
+        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
+        return {
+          body: {
+            t: server.t + 1,
+            txEid: 0,
+            tempids: {},
+            datoms: [],
+            clientTxId: call.body.clientTxId,
+          },
+        };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", WithSecret);
+    await seedClient(peer, db, server);
+
+    const live = collect(db.live(secretNotes));
+    await settle();
+    expect(live.seen.at(-1)).toEqual([]);
+
+    const report = await run(
+      db.transact(function* (tx) {
+        const e = yield* tx.entity();
+        yield* e.add(Secret.note, "classified");
+      }),
+    );
+    await settle();
+    expect(report.datoms).toEqual([]);
+    expect(report.t).toBe(server.t + 1);
+    expect(live.seen.at(-1)).toEqual([]);
+    expect(await run(db.q(secretNotes))).toEqual([]);
+
+    await live.stop();
+    await c.dispose();
+  });
+
+  test("queued rewrite remaps a tempid entity, not a title that equals the tempid", async () => {
+    const server = await moviesWorld();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const posts: unknown[][] = [];
+    const peer = fakePeer({
+      http: async (call) => {
+        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
+        if (posts.length === 0) await gate;
+        posts.push(call.body.tx as unknown[]);
+        const rep = await server.transact(call.body.tx);
+        return {
+          body: {
+            t: rep.t,
+            txEid: rep.txEid,
+            tempids: rep.tempids,
+            datoms: rep.txData.map(toWireDatom),
+            clientTxId: call.body.clientTxId,
+          },
+        };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    await seedClient(peer, db, server);
+
+    const first = Effect.runPromise(
+      db.transact(function* (tx) {
+        const e = yield* tx.entity("new");
+        yield* e.add(User.name, "Ada");
+      }),
+    );
+    await settle();
+    const second = Effect.runPromise(
+      db.transact(function* (tx) {
+        const e = yield* tx.entity();
+        yield* e.add(Movie.title, "new");
+      }),
+    );
+    await settle();
+    release();
+    await first;
+    await second;
+    expect(posts).toHaveLength(2);
+    const titleAdds = (posts[1] as unknown[]).filter(
+      (op) => Array.isArray(op) && op[0] === ":db/add" && op[2] === ":movie/title",
+    );
+    expect(titleAdds).toEqual([[":db/add", titleAdds[0]![1], ":movie/title", "new"]]);
+    await c.dispose();
+  });
 });
 
 describe("confirmed follower", () => {
+  test("inbound tx with clientTxId drops only that pending layer", async () => {
+    const server = await moviesWorld();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const peer = fakePeer({
+      http: async (call) => {
+        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
+        await gate;
+        return {
+          status: 409,
+          body: { error: "stopped", tag: "TxRejected", code: "tx/unique-conflict" },
+        };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    await seedClient(peer, db, server);
+
+    const live = collect(db.live(names));
+    await settle();
+
+    const first = runFail(
+      db.transact(function* (tx) {
+        const e = yield* tx.entity();
+        yield* e.add(User.name, "Ada");
+      }),
+    );
+    await settle();
+    const second = runFail(
+      db.transact(function* (tx) {
+        const e = yield* tx.entity();
+        yield* e.add(User.name, "Bea");
+      }),
+    );
+    await settle();
+    expect(live.seen.at(-1)).toEqual([{ name: "Ada" }, { name: "Bea" }]);
+
+    const ids = peer.calls
+      .filter((call) => call.url.endsWith("/transact"))
+      .map((call) => call.body.clientTxId as string);
+    peer.push({ op: "tx", t: server.t + 1, clientTxId: ids[0], datoms: [] });
+    await settle();
+    expect(live.seen.at(-1)).toEqual([{ name: "Bea" }]);
+
+    release();
+    await first;
+    await second;
+    await live.stop();
+    await c.dispose();
+  });
+
   test("same-t ack then { op: tx } is a no-op on confirmed", async () => {
     const server = await moviesWorld();
     const peer = fakePeer({
