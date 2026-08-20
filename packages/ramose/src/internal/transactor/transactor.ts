@@ -17,7 +17,7 @@
  *
  * HTTP surface (the DO shell forwards `fetch` here; `/subscribe` upgrades are
  * done by the shell, which then calls `onSubscribe`):
- *   POST /transact   { tx: TxData }   → { t, txEid, tempids, datoms }
+ *   POST /transact   { tx: TxData, clientTxId? }   → { t, txEid, tempids, datoms: WireDatom[], clientTxId? }
  *   GET  /info                        → { t, root, novelty, logWatermark, ... }
  *   GET  /log?from=&to=               → { entries: NoveltyFrameV1[] }
  *   POST /admin/index                 → run the indexer now
@@ -44,12 +44,16 @@ import {
   Histogram,
   type Logger,
   type Principal,
+  type WireDatom,
   RateMeter,
   TxError,
   checkTx,
   componentLogger,
+  filterDb,
   isAdmin,
+  toWireDatom,
 } from "../core/index.ts";
+import { FilteredDb } from "../core/policy/filter.ts";
 import { R2NodeStore, readCurrentRoot, recordToRoots, rootsToRecord } from "../storage/index.ts";
 import * as Effect from "effect/Effect";
 import { BadRequest, NotFound, TransactorDeadError, TxRejected, errorResponse, toHttpError } from "./errors.ts";
@@ -64,7 +68,9 @@ export interface TxAck {
   t: number;
   txEid: number;
   tempids: Record<string, number>;
-  datoms: number;
+  /** facts that landed, already filtered for this principal */
+  datoms: WireDatom[];
+  clientTxId?: string;
 }
 
 export interface TransactorStats {
@@ -92,8 +98,20 @@ interface Pending {
   tx: TxData;
   /** verified by the Worker; trusted metadata (the DO is only reachable behind the internal secret) */
   principal?: Principal;
+  /** opaque client id; a replay of a recent id returns the original ack */
+  clientTxId?: string;
   resolve: (r: TxAck) => void;
   reject: (e: unknown) => void;
+}
+
+/** How many recent `clientTxId`s this instance remembers. FIFO once full. */
+const RECENT_CLIENT_TX_LIMIT = 256;
+
+/** Replay keys are per writer: a foreign principal must not see someone else's filtered ack. */
+export function clientTxReplayKey(principal: Principal | undefined, id: string): string {
+  if (!principal) return `\0:${id}`;
+  const who = principal.sub ?? (principal.eid !== undefined ? `#${principal.eid}` : principal.class);
+  return `${principal.db}\0${principal.kind}\0${who}\0${id}`;
 }
 
 const yieldToEventLoop = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
@@ -120,6 +138,8 @@ export class Transactor {
   private indexer!: Indexer;
   private txSinceIndex = 0;
   private dead: string | undefined;
+  /** recent `clientTxReplayKey(principal, clientTxId)` → original ack; replay must not assign a second `t` */
+  private readonly recentAcks = new Map<string, TxAck>();
   readonly stats: TransactorStats = { txs: 0, batches: 0, maxBatch: 0, rejected: 0, indexRuns: 0, broadcasts: 0, commitMs: 0, resolveMs: 0, loopMs: 0, fenceMs: 0 };
   /** metrics: tx/s over the last 10 s, batch-size and commit-latency distributions */
   readonly txRate = new RateMeter(10_000);
@@ -277,15 +297,28 @@ export class Transactor {
   // ---------------------------------------------------------------------------
 
   /** Submit a transaction. Resolves once it is durably committed. */
-  transact(tx: TxData, principal?: Principal): Promise<TxAck> {
+  transact(tx: TxData, principal?: Principal, clientTxId?: string): Promise<TxAck> {
     if (this.dead !== undefined) return Promise.reject(new TransactorDeadError(this.dead));
+    if (clientTxId !== undefined) {
+      const hit = this.recentAcks.get(clientTxReplayKey(principal, clientTxId));
+      if (hit) return Promise.resolve(hit);
+    }
     return new Promise<TxAck>((resolve, reject) => {
-      this.queue.push({ tx, principal, resolve, reject });
+      this.queue.push({ tx, principal, clientTxId, resolve, reject });
       if (!this.committing) {
         this.committing = true;
         void this.commitLoop();
       }
     });
+  }
+
+  private rememberAck(id: string, ack: TxAck): void {
+    this.recentAcks.set(id, ack);
+    while (this.recentAcks.size > RECENT_CLIENT_TX_LIMIT) {
+      const first = this.recentAcks.keys().next().value;
+      if (first === undefined) break;
+      this.recentAcks.delete(first);
+    }
   }
 
   private takeBatch(): Pending[] {
@@ -323,14 +356,31 @@ export class Transactor {
         const batch = this.takeBatch();
         const entries: LogEntry[] = [];
         const acks: { p: Pending; ack: TxAck }[] = [];
+        const batchAcks = new Map<string, TxAck>();
         const tResolve = performance.now();
         for (const p of batch) {
+          if (p.clientTxId !== undefined) {
+            const key = clientTxReplayKey(p.principal, p.clientTxId);
+            const hit = this.recentAcks.get(key) ?? batchAcks.get(key);
+            if (hit) {
+              p.resolve(hit);
+              continue;
+            }
+          }
           try {
             const tx = await this.authorize(p);
             const rep = await this.conn.transact(tx);
             const txInstant = rep.txData[0]?.v as number; // :db/txInstant is first
             entries.push({ t: rep.t, txInstant, datoms: rep.txData });
-            acks.push({ p, ack: { t: rep.t, txEid: rep.txEid, tempids: rep.tempids, datoms: rep.txData.length } });
+            const ack: TxAck = {
+              t: rep.t,
+              txEid: rep.txEid,
+              tempids: rep.tempids,
+              datoms: await this.ackDatoms(rep.txData, p.principal),
+              ...(p.clientTxId !== undefined ? { clientTxId: p.clientTxId } : {}),
+            };
+            if (p.clientTxId !== undefined) batchAcks.set(clientTxReplayKey(p.principal, p.clientTxId), ack);
+            acks.push({ p, ack });
           } catch (err) {
             const e = this.scrub(err, p);
             this.stats.rejected++;
@@ -370,6 +420,7 @@ export class Transactor {
         this.commitLatency.observe(writeMs);
         this.resolveLatency.observe(resolveMs);
         this.log.debug("tx.commit", { t: this.conn.t, batch: entries.length, datoms: entries.reduce((n, e) => n + e.datoms.length, 0), writeMs: round(writeMs), queued: this.queue.length, txsSinceIndex: this.txSinceIndex });
+        for (const [id, ack] of batchAcks) this.rememberAck(id, ack);
         for (const a of acks) a.p.resolve(a.ack);
         // dequeue → ack wall clock; "other" = loopMs - resolveMs - commitMs
         const loopMs = performance.now() - tLoop;
@@ -417,6 +468,23 @@ export class Transactor {
     const res = await checkTx(p.tx, db, policy, who);
     if (!res.ok) throw new TxRejected({ message: `${res.op} denied on ${res.attr}`, code: res.code, attr: res.attr });
     return res.ops as TxData;
+  }
+
+  /** Ack facts the writer may read, judged against the post-commit unfiltered db. */
+  private async ackDatoms(datoms: Datom[], principal?: Principal): Promise<WireDatom[]> {
+    const policy = this.host.policy;
+    if (!policy || !principal || isAdmin(principal)) return datoms.map(toWireDatom);
+    const db = this.conn.db();
+    let who = principal;
+    if (who.eid === undefined && who.sub !== undefined) {
+      const eid = await db.entid([policy.principal, who.sub] as never);
+      if (eid !== undefined) who = { ...who, eid };
+    }
+    const view = filterDb(db, db, policy, who);
+    if (!(view instanceof FilteredDb)) return datoms.map(toWireDatom);
+    const kept: WireDatom[] = [];
+    for (const d of datoms) if (await view.visible(d)) kept.push(toWireDatom(d));
+    return kept;
   }
 
   /** A unique conflict names the entity and value it collided with — a read leak under a policy. */
@@ -564,9 +632,10 @@ export class Transactor {
   private async route(request: Request, url: URL): Promise<Response> {
     const path = url.pathname;
     if (path === "/transact" && request.method === "POST") {
-      const body = fromJson(await request.json()) as { tx?: TxData; principal?: unknown };
+      const body = fromJson(await request.json()) as { tx?: TxData; principal?: unknown; clientTxId?: unknown };
       if (!body || !Array.isArray(body.tx)) throw new BadRequest({ message: "body must be { tx: [...] }" });
-      const ack = await this.transact(body.tx, asPrincipal(body.principal));
+      const clientTxId = typeof body.clientTxId === "string" && body.clientTxId.length > 0 ? body.clientTxId : undefined;
+      const ack = await this.transact(body.tx, asPrincipal(body.principal), clientTxId);
       return json(ack);
     }
     if (path === "/info") return json(this.info());

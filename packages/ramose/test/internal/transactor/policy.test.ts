@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { type Principal, parsePolicy } from "../../../src/internal/core/index.ts";
+import { Index, type Principal, parsePolicy } from "../../../src/internal/core/index.ts";
 import { Harness, attribute } from "./harness.ts";
 
 const allow = (expr: unknown) => [{ _tag: "allow", expr }];
@@ -19,6 +19,10 @@ const POLICY = parsePolicy({
   version: 1,
   principal: ":user/sub",
   classes: ["member", "admin"],
+  attrs: {
+    // owner may write this; only admin may read it — a raw-txData ack would leak it
+    ":doc/audit": { read: allow({ _tag: "class", class: "admin" }) },
+  },
   ns: {
     doc: {
       read: allow(eq(":doc/owner")),
@@ -39,6 +43,7 @@ const SCHEMA = [
   attribute(":user/sub", "string", { ":db/unique": ":db.unique/identity" }),
   attribute(":doc/title", "string"),
   attribute(":doc/owner", "ref"),
+  attribute(":doc/audit", "string"),
   attribute(":doc/slug", "string", { ":db/unique": ":db.unique/value" }),
 ];
 
@@ -118,6 +123,41 @@ describe("the commit loop's policy check", () => {
     expect(err?.code).toBe("tx/unique-conflict");
     expect(err?.message).toBe("unique conflict");
     expect(err?.message).not.toContain("roadmap");
+  });
+
+  test("ack.datoms omits facts the writer cannot read (hidden attr)", async () => {
+    const { h } = await seeded();
+    const ack = await h.transactor.transact([{ ":db/id": "d", ":doc/title": "Spec", ":doc/audit": "hunter2" }], member("user_ada"));
+    const values = ack.datoms.map((d) => d[3]);
+    expect(values).toContain("Spec");
+    expect(values).not.toContain("hunter2");
+    const db = h.transactor.connection.db();
+    const auditId = await db.entid([":db/ident", ":doc/audit"]);
+    expect(ack.datoms.some((d) => d[1] === auditId)).toBe(false);
+    // the durable log still has the fact — this would fail if ack were raw txData
+    const log = await db.datomsArray(Index.EAVT, { a: auditId as number });
+    expect(log.some((d) => d.v === "hunter2")).toBe(true);
+  });
+
+  test("clientTxId replay is scoped to the writer; a foreign principal does not see their ack", async () => {
+    const { h, eids } = await seeded();
+    const ada = member("user_ada");
+    const bob = member("user_bob");
+    const first = await h.transactor.transact([{ ":db/id": "d", ":doc/title": "Ada only", ":doc/audit": "secret-ack" }], ada, "c1");
+    expect(first.datoms.map((d) => d[3])).not.toContain("secret-ack");
+    const replay = await h.transactor.transact([{ ":db/id": "other", ":doc/title": "ignored" }], ada, "c1");
+    expect(replay).toEqual(first);
+    expect(h.transactor.t).toBe(first.t);
+
+    const denied = await rejection(h.transactor.transact([[":db/add", eids.doc, ":doc/title", "hacked"]], bob, "c1"));
+    expect(denied?.code).toBe("policy");
+
+    const foreign = await h.transactor.transact([{ ":db/id": "bobs", ":doc/title": "Bob doc" }], bob, "c1");
+    expect(foreign.t).toBe(first.t + 1);
+    expect(foreign.datoms).not.toEqual(first.datoms);
+    expect(foreign.datoms.map((d) => d[3])).toContain("Bob doc");
+    expect(JSON.stringify(foreign)).not.toContain("Ada only");
+    expect(JSON.stringify(foreign)).not.toContain("secret-ack");
   });
 
   test("without a policy the conflict is still verbatim (nothing to hide)", async () => {

@@ -239,3 +239,37 @@ describe("transactor: structured metrics", () => {
     expect(eventsOf("tx.commit").length).toBeGreaterThanOrEqual(commits.length);
   });
 });
+
+describe("transactor: TxAck datoms + clientTxId", () => {
+  test("ack.datoms is the wire array, not a count", async () => {
+    const h = await fresh();
+    const ack = await h.transactor.transact([{ ":k/id": 1, ":k/v": "a" }]);
+    expect(Array.isArray(ack.datoms)).toBe(true);
+    expect(ack.datoms.length).toBeGreaterThan(0);
+    expect(ack.datoms[0]).toHaveLength(6); // [e, a, vt, v, t, op]
+    expect(ack.datoms.every((d) => d[4] === ack.t)).toBe(true);
+    const http = await h.transactor.handleRequest(
+      new Request("https://t/transact", { method: "POST", body: JSON.stringify({ tx: [{ ":k/id": 2, ":k/v": "b" }] }) }),
+    );
+    const body = (await http.json()) as { datoms: unknown };
+    expect(Array.isArray(body.datoms)).toBe(true);
+  });
+
+  test("clientTxId replay returns the same ack and does not assign a second t", async () => {
+    const h = await fresh();
+    const t0 = h.transactor.t;
+    const first = await h.transactor.transact([{ ":k/id": 9, ":k/v": "once" }], undefined, "c1");
+    expect(first.t).toBe(t0 + 1);
+    expect(first.clientTxId).toBe("c1");
+    const replay = await h.transactor.transact([{ ":k/id": 9, ":k/v": "once more" }], undefined, "c1");
+    expect(replay).toEqual(first);
+    expect(h.transactor.t).toBe(first.t);
+    const viaHttp = await h.transactor.handleRequest(
+      new Request("https://t/transact", { method: "POST", body: JSON.stringify({ tx: [{ ":k/id": 10 }], clientTxId: "c1" }) }),
+    );
+    expect(((await viaHttp.json()) as { t: number }).t).toBe(first.t);
+    expect(h.transactor.t).toBe(first.t);
+    const next = await h.transactor.transact([{ ":k/id": 11 }], undefined, "c2");
+    expect(next.t).toBe(first.t + 1);
+  });
+});

@@ -10,7 +10,7 @@
  *
  *   GET  /                                  demo app (CRUD + as-of history view)
  *   GET  /health
- *   POST /db/:name/transact   { tx }        → { t, txEid, tempids, datoms }
+ *   POST /db/:name/transact   { tx, clientTxId? }        → { t, txEid, tempids, datoms: WireDatom[], clientTxId? }
  *   POST /db/:name/query      { query, inputs?, asOf?, history? }   → { t, result }
  *   POST /db/:name/pull       { eid, pattern, asOf?, history? }     → { t, result }
  *   GET  /db/:name/entity/:eid[?asOf=]                              → { t, entity }
@@ -30,17 +30,18 @@
  * (analytics.ts) — a no-op when the `ANALYTICS` binding is absent.
  */
 
-import { DEFAULT_QUERY_MAX_CELLS, Histogram, type Principal, type PullElemPred, type PullPattern, type QueryStats, RateMeter, allows, componentLogger, fromJson, isAdmin, normalizePullPattern, pull, query, setTelemetryLevel, toJson } from "../internal/core/index.ts";
+import { DEFAULT_QUERY_MAX_CELLS, Histogram, type Principal, type PullElemPred, type PullPattern, type QueryStats, RateMeter, allows, componentLogger, fromJson, fromWireDatom, isAdmin, normalizePullPattern, pull, query, setTelemetryLevel, toJson } from "../internal/core/index.ts";
 import type { Db as CoreDb } from "../internal/core/index.ts";
 import { type RamoseEnv, envInt, internalHeaders } from "../internal/transactor/index.ts";
 import { TransactorDO } from "../internal/transactor/transactor-do.ts";
-import { QueryReplicaDO } from "../internal/replica/index.ts";
+import { QueryReplicaDO, dbFromBasis } from "../internal/replica/index.ts";
 import * as Effect from "effect/Effect";
 import { Analytics, type Route, bindingOf, fromBinding, httpPoint, routeOf } from "./analytics.ts";
-import { allowedOrigin, authState, checkWrite, describePrincipal, isTokenOnly, principalForToken, principalOf, viewDb } from "./auth.ts";
+import { allowedOrigin, authState, checkWrite, describePrincipal, isTokenOnly, principalForToken, principalOf, viewDb, withEid } from "./auth.ts";
 import { BadRequest, type Internal, NotFound, type QueryBudgetExceeded, type RamoseError, Unauthorized, UpstreamError, fromThrown, toHttp } from "./errors.ts";
 import { basisHeaders, coloHeader, fetchBasisWithStats, hintOf, invalidateBasis, regionOf, replicaId, segmentSource } from "./peer.ts";
 import { type SocketLike, openSession } from "./session.ts";
+import { currentViewDatoms, decideSessionTx } from "./session-sync.ts";
 import { DEMO_HTML } from "./demo.ts";
 
 export { TransactorDO, QueryReplicaDO };
@@ -195,20 +196,23 @@ function pollRequest(request: Request, env: RamoseEnv, db: string): Request {
  * to the writer, which checks authoritatively anyway.
  */
 async function ingress(request: Request, env: RamoseEnv, db: string, principal: Principal, text: string, t0: number): Promise<{ body: string; done?: undefined } | { done: Response }> {
-  let raw: { tx?: unknown };
+  let raw: { tx?: unknown; clientTxId?: unknown };
   try {
-    raw = JSON.parse(text) as { tx?: unknown };
+    raw = JSON.parse(text) as { tx?: unknown; clientTxId?: unknown };
   } catch {
     throw new BadRequest({ message: "body must be { tx: [...] }" });
   }
   const tx = fromJson(raw?.tx);
-  const forward = (ops: unknown, p: Principal = principal) => ({ body: JSON.stringify({ tx: toJson(ops), principal: p }) });
+  const clientTxId = typeof raw.clientTxId === "string" && raw.clientTxId.length > 0 ? raw.clientTxId : undefined;
+  const forward = (ops: unknown, p: Principal = principal) => ({
+    body: JSON.stringify({ tx: toJson(ops), principal: p, ...(clientTxId !== undefined ? { clientTxId } : {}) }),
+  });
   if (!Array.isArray(tx)) return forward(tx);
   try {
     const bf = await fetchBasisWithStats(env, db, request);
     const checked = await checkWrite(env, principal, segmentSource(env, db), bf.basis, tx);
     // a no-op `ensure`: the idents are already deployed, so there is nothing to transact
-    if (checked.kind === "skip") return { done: json({ t: bf.basis.t, txEid: 0, tempids: {}, datoms: 0 }, 200, { "x-ramose-ms": String(Date.now() - t0) }) };
+    if (checked.kind === "skip") return { done: json({ t: bf.basis.t, txEid: 0, tempids: {}, datoms: [], ...(clientTxId !== undefined ? { clientTxId } : {}) }, 200, { "x-ramose-ms": String(Date.now() - t0) }) };
     return forward(checked.tx, checked.principal);
   } catch (err) {
     if ((err as { _tag?: string })?._tag === "Unauthorized") throw err;
@@ -355,6 +359,33 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
       },
       watchKey: `${db}|${hintOf(request, env) ?? ""}`,
       pollBasis: async () => (await fetchBasisWithStats(env, db, pollRequest(request, env, db))).basis.t,
+      pollLog: async () => {
+        const basis = (await fetchBasisWithStats(env, db, pollRequest(request, env, db))).basis;
+        return { t: basis.t, rootT: basis.root.t, entries: basis.novelty.map((f) => ({ t: f.t, datoms: f.datoms })) };
+      },
+      filterEntry: async (entry, p) => {
+        const st = authState(env);
+        const store = segmentSource(env, db);
+        const basis = (await fetchBasisWithStats(env, db, pollRequest(request, env, db))).basis;
+        const raw = await dbFromBasis(store, basis);
+        const after = raw.asOf(entry.t);
+        const before = raw.asOf(Math.max(0, entry.t - 1));
+        let who = p;
+        if (st.policy && who) who = await withEid(st.policy, who, after);
+        return decideSessionTx({
+          datoms: entry.datoms.map(fromWireDatom),
+          policy: st.policy,
+          principal: who,
+          ruleDbAfter: after,
+          ruleDbBefore: before,
+        });
+      },
+      snapshot: async (p) => {
+        const store = segmentSource(env, db);
+        const basis = (await fetchBasisWithStats(env, db, pollRequest(request, env, db))).basis;
+        const dbv = await viewDb(env, p ?? principal, store, basis);
+        return { t: basis.t, datoms: await currentViewDatoms(dbv) };
+      },
     });
     // hold the request open until the socket closes
     ctx?.waitUntil(session.closed);

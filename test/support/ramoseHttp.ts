@@ -35,7 +35,7 @@ export interface Ack {
   t: number;
   txEid: number;
   tempids: Record<string, number>;
-  datoms: number;
+  datoms: unknown[];
 }
 
 export interface QueryReply<T = unknown> {
