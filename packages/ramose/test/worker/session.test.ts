@@ -985,7 +985,14 @@ describe("filtered log walk", () => {
     const { dispatch } = fakeDispatch();
     const s = session(socket, {
       dispatch,
-      pollLog: async () => ({ t: 6, rootT: 1, entries: [{ t: 6, datoms: [wire(6)] }] }),
+      pollLog: async () => ({
+        t: 6,
+        rootT: 1,
+        entries: [
+          { t: 5, datoms: [wire(5)] },
+          { t: 6, datoms: [wire(6)] },
+        ],
+      }),
       filterEntry: async () => {
         throw new Error("sieve exploded");
       },
