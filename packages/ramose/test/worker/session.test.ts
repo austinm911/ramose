@@ -1250,4 +1250,64 @@ describe("sieve security: openSession + decideSessionTx", () => {
     expect(values(ack.datoms)).toContain("Q3");
     expect(values(ack.datoms)).not.toContain("LEAK-AUDIT");
   });
+
+  test("writer { op: tx } echo carries this session's clientTxId; another session's poll does not", async () => {
+    const { conn, ids, policy, seedT, ada } = await world();
+    const entries: SessionLogEntry[] = [];
+    let log: SessionLog = { t: seedT, rootT: 1, entries };
+    let ack:
+      | { t: number; txEid: number; tempids: Record<string, never>; datoms: WireDatom[]; clientTxId: string }
+      | undefined;
+    const writerSock = new FakeSocket();
+    const otherSock = new FakeSocket();
+    const { dispatch } = fakeDispatch(() => json(ack));
+    const { schedule, tick, now } = manualScheduler();
+    const writer = session(writerSock, {
+      dispatch,
+      principal: ada,
+      schedule,
+      now,
+      watchKey: "acme|writer-echo",
+      pollLog: async () => log,
+      filterEntry: sieveOf(conn, policy),
+    });
+    session(otherSock, {
+      dispatch,
+      principal: ada,
+      schedule,
+      now,
+      watchKey: "acme|other-echo",
+      pollLog: async () => log,
+      filterEntry: sieveOf(conn, policy),
+    });
+    await tick();
+    const before = conn.db();
+    const rep = await conn.transact([
+      { ":db/id": "q3", ":doc/title": "Q3", ":doc/owner": ids.ada, ":doc/project": ids.proj, ":doc/audit": "LEAK-AUDIT" },
+    ]);
+    const decision = await decideSessionTx({
+      datoms: rep.txData,
+      policy,
+      principal: ada,
+      ruleDbAfter: conn.db(),
+      ruleDbBefore: before,
+    });
+    expect(decision.kind).toBe("tx");
+    if (decision.kind !== "tx") throw new Error("expected tx");
+    ack = { t: rep.t, txEid: 1, tempids: {}, datoms: decision.datoms, clientTxId: "c-writer" };
+    entries.push({ t: rep.t, datoms: rep.txData.map(toWireDatom) });
+    log = { t: conn.t, rootT: 1, entries: [...entries] };
+    await writer.onMessage(JSON.stringify({ id: 1, op: "transact", tx: [], clientTxId: "c-writer" }));
+    expect(writerSock.txs()).toHaveLength(1);
+    expect(writerSock.txs()[0]).toEqual({
+      op: "tx",
+      t: rep.t,
+      datoms: ack.datoms,
+      clientTxId: "c-writer",
+    });
+    await tick();
+    expect(otherSock.txs()).toHaveLength(1);
+    expect(otherSock.txs()[0]).toEqual({ op: "tx", t: rep.t, datoms: ack.datoms });
+    expect(otherSock.txs()[0].clientTxId).toBeUndefined();
+  });
 });

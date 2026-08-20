@@ -18,7 +18,7 @@ import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import { schemaTx } from "../src/db/ensure.ts";
 import { Attr, Catalog, Namespace, query } from "../src/db/internal.ts";
-import { openOverlay } from "../src/db/overlay.ts";
+import { openOverlay, type Overlay } from "../src/db/overlay.ts";
 import type { Session } from "../src/db/session.ts";
 import { client, fakePeer, settle, type Call } from "./peer.ts";
 
@@ -589,6 +589,320 @@ describe("confirmed follower", () => {
     peer.push({ op: "resync", t: snap.t, datoms: snap.datoms });
     await settle();
     expect(await run(db.q(names))).toEqual([{ name: "Bea" }]);
+    await c.dispose();
+  });
+});
+
+describe("two-writer races", () => {
+  test("queued inbound t=N is not skipped when HTTP ack for t=N+1 arrives first", async () => {
+    const schemaConn = await Connection.create();
+    await schemaConn.transact(schemaTx(Movies) as unknown[]);
+    const nameA = schemaConn.db().schema.requireAttr(":user/name").id;
+    const phone = toWireDatom({
+      e: 2001,
+      a: nameA,
+      vt: ValueTag.Str,
+      v: "Phone",
+      t: 40,
+      op: true,
+    });
+    const browser = toWireDatom({
+      e: 2002,
+      a: nameA,
+      vt: ValueTag.Str,
+      v: "Browser",
+      t: 41,
+      op: true,
+    });
+
+    let overlay!: Overlay;
+    let basis = 0;
+    let epoch = 0;
+    const session: Session = {
+      get t() {
+        return basis;
+      },
+      generation: 1,
+      principal: undefined,
+      connects: 1,
+      closed: false,
+      get epoch() {
+        return epoch;
+      },
+      request: async (frame) => {
+        if (frame.op === "sync") return { status: 200, body: { t: 39, from: frame.from ?? 0 } };
+        return { status: 200, body: {} };
+      },
+      bump: (n) => {
+        if (n > basis) basis = n;
+      },
+      nudge: () => {
+        epoch += 1;
+      },
+      onWake: () => () => {},
+      onPush: () => () => {},
+      close: () => {},
+    };
+
+    overlay = openOverlay({
+      session,
+      post: () => {
+        // already queued on `applied` when the HTTP ack runs
+        void overlay.handlePush({ op: "tx", t: 40, datoms: [phone] });
+        return Effect.succeed({
+          t: 41,
+          txEid: 1,
+          tempids: {},
+          datoms: [browser],
+          clientTxId: "c-browser",
+        });
+      },
+      catalog: Movies,
+    });
+    await run(overlay.ready());
+    expect(overlay.confirmedT).toBe(39);
+
+    await run(overlay.transact([{ ":user/name": "Browser" }]));
+    expect(overlay.confirmedT).toBe(41);
+    const body = (await run(
+      overlay.read("q", {
+        query: {
+          find: ["?n"],
+          where: [["?e", ":user/name", "?n"]],
+        },
+      }),
+    )) as { result: [string][] };
+    expect(body.result.map((row) => row[0]).sort()).toEqual(["Browser", "Phone"]);
+  });
+
+  test("writer { op: tx } with clientTxId drops pending even when the sieved set is a subset", async () => {
+    const server = await moviesWorld();
+    await server.transact([
+      { ":db/ident": ":note/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":note/audit", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+    ]);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const peer = fakePeer({
+      http: async (call) => {
+        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
+        await gate;
+        return {
+          status: 409,
+          body: { error: "stopped", tag: "TxRejected", code: "tx/unique-conflict" },
+        };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", WithNotes);
+    await seedClient(peer, db, server);
+
+    const titles = collect(db.live(noteTitles));
+    const audits = collect(db.live(noteAudits));
+    await settle();
+
+    const pending = runFail(
+      db.transact(function* (tx) {
+        const e = yield* tx.entity();
+        yield* e.add(Note.title, "Q3");
+        yield* e.add(Note.audit, "classified");
+      }),
+    );
+    await settle();
+    expect(titles.seen.at(-1)).toEqual([{ title: "Q3" }]);
+    expect(audits.seen.at(-1)).toEqual([{ audit: "classified" }]);
+
+    const id = peer.calls.filter((call) => call.url.endsWith("/transact")).at(-1)!.body.clientTxId as string;
+    const titleA = server.db().schema.requireAttr(":note/title").id;
+    const sieved = [
+      toWireDatom({
+        e: 3001,
+        a: titleA,
+        vt: ValueTag.Str,
+        v: "Q3",
+        t: server.t + 1,
+        op: true,
+      }),
+    ];
+    peer.push({ op: "tx", t: server.t + 1, clientTxId: id, datoms: sieved });
+    await settle();
+    expect(titles.seen.at(-1)).toEqual([{ title: "Q3" }]);
+    expect(audits.seen.at(-1)).toEqual([]);
+    expect(await run(db.q(noteAudits))).toEqual([]);
+
+    release();
+    await pending;
+    await titles.stop();
+    await audits.stop();
+    await c.dispose();
+  });
+
+  test("another session's { op: tx } with overlapping a/v/op does not drop this pending layer", async () => {
+    const server = await moviesWorld();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const peer = fakePeer({
+      http: async (call) => {
+        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
+        await gate;
+        return {
+          status: 409,
+          body: { error: "stopped", tag: "TxRejected", code: "tx/unique-conflict" },
+        };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    await seedClient(peer, db, server);
+
+    const live = collect(db.live(names));
+    await settle();
+
+    const pending = runFail(
+      db.transact(function* (tx) {
+        const e = yield* tx.entity();
+        yield* e.add(User.name, "Ada");
+      }),
+    );
+    await settle();
+    expect(live.seen.at(-1)).toEqual([{ name: "Ada" }]);
+
+    const nameA = server.db().schema.requireAttr(":user/name").id;
+    peer.push({
+      op: "tx",
+      t: server.t + 1,
+      clientTxId: "foreign-session",
+      datoms: [
+        toWireDatom({
+          e: 4001,
+          a: nameA,
+          vt: ValueTag.Str,
+          v: "Ada",
+          t: server.t + 1,
+          op: true,
+        }),
+      ],
+    });
+    await settle();
+    // pending layer still painted; inbound confirmed is a second Ada
+    expect(live.seen.at(-1)).toHaveLength(2);
+    expect(live.seen.at(-1)).toEqual([{ name: "Ada" }, { name: "Ada" }]);
+
+    release();
+    await pending;
+    await settle();
+    expect(live.seen.at(-1)).toEqual([{ name: "Ada" }]);
+
+    await live.stop();
+    await c.dispose();
+  });
+
+  test("empty ack does not apply local expansion; later inbound at that t still applies", async () => {
+    const server = await moviesWorld();
+    await server.transact([
+      { ":db/ident": ":secret/note", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+    ]);
+    const peer = fakePeer({
+      http: (call) => {
+        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
+        return {
+          body: {
+            t: server.t + 1,
+            txEid: 0,
+            tempids: {},
+            datoms: [],
+            clientTxId: call.body.clientTxId,
+          },
+        };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", WithSecret);
+    await seedClient(peer, db, server);
+
+    const report = await run(
+      db.transact(function* (tx) {
+        const e = yield* tx.entity();
+        yield* e.add(Secret.note, "classified");
+      }),
+    );
+    await settle();
+    expect(await run(db.q(secretNotes))).toEqual([]);
+
+    const noteA = server.db().schema.requireAttr(":secret/note").id;
+    peer.push({
+      op: "tx",
+      t: report.t,
+      datoms: [
+        toWireDatom({
+          e: 5001,
+          a: noteA,
+          vt: ValueTag.Str,
+          v: "from-log",
+          t: report.t,
+          op: true,
+        }),
+      ],
+    });
+    await settle();
+    expect(await run(db.q(secretNotes))).toEqual([{ note: "from-log" }]);
+    await c.dispose();
+  });
+
+  test("count-only ack does not apply local expansion; later inbound at that t still applies", async () => {
+    const server = await moviesWorld();
+    await server.transact([
+      { ":db/ident": ":secret/note", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+    ]);
+    const peer = fakePeer({
+      http: (call) => {
+        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
+        return {
+          body: {
+            t: server.t + 1,
+            txEid: 0,
+            tempids: {},
+            datoms: 4,
+            clientTxId: call.body.clientTxId,
+          },
+        };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", WithSecret);
+    await seedClient(peer, db, server);
+
+    const report = await run(
+      db.transact(function* (tx) {
+        const e = yield* tx.entity();
+        yield* e.add(Secret.note, "classified");
+      }),
+    );
+    await settle();
+    expect(report.datomCount).toBe(4);
+    expect(await run(db.q(secretNotes))).toEqual([]);
+
+    const noteA = server.db().schema.requireAttr(":secret/note").id;
+    peer.push({
+      op: "tx",
+      t: report.t,
+      datoms: [
+        toWireDatom({
+          e: 5002,
+          a: noteA,
+          vt: ValueTag.Str,
+          v: "from-log",
+          t: report.t,
+          op: true,
+        }),
+      ],
+    });
+    await settle();
+    expect(await run(db.q(secretNotes))).toEqual([{ note: "from-log" }]);
     await c.dispose();
   });
 });

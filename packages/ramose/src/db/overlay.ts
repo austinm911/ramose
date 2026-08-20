@@ -259,11 +259,21 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   const pending: PendingLayer[] = [];
   let conn: Connection | undefined;
   let confirmedT = 0;
+  /** Last `t` at which a non-empty datom array was applied. Empty/count-only
+   * acks may raise `confirmedT` without moving this, so a later inbound at
+   * that same `t` can still land real facts. */
+  let appliedFactsT = 0;
   let epoch = 0;
   let readyGen = -1;
   let opening: Promise<void> | undefined;
   let applied: Promise<void> = Promise.resolve();
   let outbox: Promise<unknown> = Promise.resolve();
+
+  const enqueueApply = (fn: () => void | Promise<void>): Promise<void> => {
+    const next = applied.then(fn, fn);
+    applied = next.then(() => undefined, () => undefined);
+    return next;
+  };
 
   const wake = (): void => {
     epoch += 1;
@@ -295,11 +305,18 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
 
   const applyConfirmed = (datoms: readonly Datom[], t: number): void => {
     if (conn === undefined) return;
-    if (t <= confirmedT) return;
-    const fresh = datoms.filter((d) => d.t > confirmedT);
-    if (fresh.length > 0) conn.applyDatoms(fresh);
-    confirmedT = t;
-    options.session.bump(t);
+    // Do not skip a same-`t` inbound after an empty/count-only stamp — only
+    // a strictly older `t` is news we have already moved past.
+    if (t < confirmedT) return;
+    const fresh = datoms.filter((d) => d.t > appliedFactsT);
+    if (fresh.length > 0) {
+      conn.applyDatoms(fresh);
+      if (t > appliedFactsT) appliedFactsT = t;
+    }
+    if (t > confirmedT) {
+      confirmedT = t;
+      options.session.bump(t);
+    }
   };
 
   const replaceConfirmed = async (datoms: readonly Datom[], t: number): Promise<void> => {
@@ -309,6 +326,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     }
     conn = next;
     confirmedT = t;
+    appliedFactsT = t;
     options.session.bump(t);
   };
 
@@ -366,45 +384,18 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   };
 
   /**
-   * Inbound `{ op: "tx" }` may land before the HTTP ack. Prefer `clientTxId`
-   * on the frame; otherwise the full incoming fact set must uniquely identify
-   * one layer (a/v/op covering alone can match the wrong pending tx).
+   * Inbound `{ op: "tx" }` may land before the HTTP ack. Covering is by
+   * `clientTxId` on the writer's own echo — a sieved subset still drops that
+   * layer. Fact-set equality is not used: another session's overlapping
+   * a/v/op must not drop this session's pending.
    */
   const dropCoveredPending = (
     incoming: readonly Datom[],
     coveredId?: string,
   ): void => {
-    if (pending.length === 0) return;
-    if (typeof coveredId === "string" && coveredId.length > 0) {
-      const layer = dropLayer(coveredId);
-      if (layer !== undefined) remapDropped(layer, incoming);
-      return;
-    }
-    if (incoming.length === 0) return;
-    const incomingKeys = new Set<string>();
-    for (const d of incoming) {
-      if (d.e < TX_EID_CAP) incomingKeys.add(factKey(d));
-    }
-    if (incomingKeys.size === 0) return;
-    const matches: number[] = [];
-    for (let i = 0; i < pending.length; i++) {
-      const facts = pending[i]!.datoms.filter((d) => d.e < TX_EID_CAP);
-      if (facts.length === 0) continue;
-      const keys = new Set(facts.map(factKey));
-      if (keys.size !== incomingKeys.size) continue;
-      let eq = true;
-      for (const k of keys) {
-        if (!incomingKeys.has(k)) {
-          eq = false;
-          break;
-        }
-      }
-      if (eq) matches.push(i);
-    }
-    if (matches.length !== 1) return;
-    const i = matches[0]!;
-    const layer = pending.splice(i, 1)[0]!;
-    remapDropped(layer, incoming);
+    if (typeof coveredId !== "string" || coveredId.length === 0) return;
+    const layer = dropLayer(coveredId);
+    if (layer !== undefined) remapDropped(layer, incoming);
   };
 
   const ensureConn = async (): Promise<void> => {
@@ -553,23 +544,29 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                   id,
                 ),
               )
-                .then((body) => {
+                .then(async (body) => {
                   const ack = record(body);
                   const t = typeof ack.t === "number" ? ack.t : 0;
                   const raw = ack.datoms;
                   const datoms = Array.isArray(raw) ? (raw as WireDatom[]) : [];
                   const tempids = asTempids(ack.tempids);
-                  const layer = dropLayer(id);
-                  // Confirmed follows the sieved server log. Apply only a
-                  // real `WireDatom[]`. A number is datomCount, never facts
-                  // (and never the local processTx expansion).
-                  if (Array.isArray(raw)) {
-                    applyConfirmed(datoms.map(fromWireDatom), t);
-                  } else {
-                    applyConfirmed([], t);
-                  }
-                  if (layer !== undefined) remapQueued(tempids, layer.tempids);
-                  wake();
+                  // Join `applied` the same way inbound `{ op: "tx" }` does.
+                  // An HTTP ack that stamps `confirmedT` off the queue can
+                  // skip a queued earlier frame (`t <= confirmedT`); sync
+                  // then uses `from: confirmedT` and that `t` never returns.
+                  await enqueueApply(() => {
+                    const layer = dropLayer(id);
+                    // Confirmed follows the sieved server log. Apply only a
+                    // real `WireDatom[]`. A number is datomCount, never facts
+                    // (and never the local processTx expansion).
+                    if (Array.isArray(raw)) {
+                      applyConfirmed(datoms.map(fromWireDatom), t);
+                    } else {
+                      applyConfirmed([], t);
+                    }
+                    if (layer !== undefined) remapQueued(tempids, layer.tempids);
+                    wake();
+                  });
                   resume(
                     Effect.succeed({
                       t,
@@ -587,9 +584,11 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                     }),
                   );
                 })
-                .catch((err) => {
-                  dropLayer(id);
-                  wake();
+                .catch(async (err) => {
+                  await enqueueApply(() => {
+                    dropLayer(id);
+                    wake();
+                  });
                   resume(
                     Effect.fail(isDatabaseError(err) ? err : classifyTx(err)),
                   );
@@ -604,7 +603,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     );
 
   const handlePush = async (frame: Record<string, unknown>): Promise<void> => {
-    const run = async () => {
+    await enqueueApply(async () => {
       await ensureConn();
       const t = typeof frame.t === "number" ? frame.t : 0;
       if (frame.op === "resync") {
@@ -623,10 +622,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         );
         wake();
       }
-    };
-    const next = applied.then(run, run);
-    applied = next.then(() => undefined, () => undefined);
-    await next;
+    });
   };
 
   options.session.onPush(handlePush);
