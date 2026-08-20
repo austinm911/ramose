@@ -1,8 +1,9 @@
 /**
  * The kanban board. Rows come straight from one `useLive(db, boardQuery)`
- * read (already rank-sorted); a drag writes exactly two datoms (status +
- * rank) and the board re-renders when the peer's basis tick comes back —
- * there is no local reordering state to reconcile.
+ * read (already rank-sorted) against the session overlay. A drag writes
+ * exactly two datoms (status + rank); the overlay applies them locally
+ * and the standing query re-runs — there is no local reordering state
+ * to reconcile.
  */
 
 import * as stylex from "@stylexjs/stylex";
