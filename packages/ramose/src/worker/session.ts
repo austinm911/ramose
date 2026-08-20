@@ -49,6 +49,8 @@ export interface TxPushFrame {
   op: "tx";
   t: number;
   datoms: WireDatom[];
+  /** Writer's own echo only — the session that POSTed this tx. */
+  clientTxId?: string;
 }
 
 /** Unsolicited: this principal's rule view flipped — drop local state and sieve current. */
@@ -263,6 +265,8 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
   let watermark = 0;
   let dead = false;
   let principal = options.principal;
+  /** This socket's last committed write — attached only to that `t`'s `{ op: "tx" }`. */
+  let writerEcho: { t: number; clientTxId: string } | undefined;
   let expiring = false;
   let unsubscribe: (() => void) | undefined;
   let resolveClosed!: () => void;
@@ -349,7 +353,15 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
       // entry — that is the unfiltered log.
       if (decision.datoms === undefined) throw new Error("session filter returned tx without datoms");
       watermark = Math.max(watermark, e.t);
-      send({ op: "tx", t: e.t, datoms: decision.datoms });
+      const echo =
+        writerEcho !== undefined && writerEcho.t === e.t ? writerEcho.clientTxId : undefined;
+      if (echo !== undefined) writerEcho = undefined;
+      send({
+        op: "tx",
+        t: e.t,
+        datoms: decision.datoms,
+        ...(echo !== undefined ? { clientTxId: echo } : {}),
+      });
       notifyT(e.t);
     }
   };
@@ -471,6 +483,18 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     send({ id: plan.id, status: res.status, body, ...(Object.keys(headers).length > 0 ? { headers } : {}) });
     // ack.t: a write on this socket is the cheapest possible basis notification — after its reply
     if (plan.op === "transact" && res.ok) {
+      const ack = body as { t?: unknown; clientTxId?: unknown } | null;
+      const echoT = typeof ack?.t === "number" ? ack.t : undefined;
+      let echoId = typeof ack?.clientTxId === "string" && ack.clientTxId.length > 0 ? ack.clientTxId : undefined;
+      if (echoId === undefined && plan.body !== undefined) {
+        try {
+          const req = JSON.parse(plan.body) as { clientTxId?: unknown };
+          if (typeof req.clientTxId === "string" && req.clientTxId.length > 0) echoId = req.clientTxId;
+        } catch {
+          /* body was not JSON — no clientTxId to echo */
+        }
+      }
+      if (echoT !== undefined && echoId !== undefined) writerEcho = { t: echoT, clientTxId: echoId };
       if (filtered && options.pollLog) {
         try {
           const log = await options.pollLog();
