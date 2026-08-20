@@ -89,6 +89,7 @@ examples/reef/
 | `src/infra/api.ts` | the auth Worker: BetterAuth (organization + jwt + `ramose/better-auth` mint plugins) on D1 and the built SPA as Worker assets |
 | `src/infra/resources.ts` / `alchemy.run.ts` | the peer (R2 + DOs + compiled policy via `Ramose.authEnv`) and the one stack wiring both Workers plus the dev-only `Ui` (`Command.Dev` running Vite) |
 | `src/app/ramose.ts` | the workspace wiring: `Ramose.token.jwt` over `authClient.ramose.token` plus first-entry provisioning, handed to screens as `{ slug, cls, token, myEid }` — the living client is `<RamoseProvider key={slug}>`'s own |
+| `src/app/route.tsx` | path-based SPA pages (`/`, `/:slug`, `/:slug/issues/:id`) so refresh and a shared URL land on the same screen |
 | `src/app/` | the SPA: `ui.tsx` primitives (icons, buttons, dialog, toasts, priority glyph), auth screen, workspace picker, live kanban board, issue detail, time travel |
 | `test/` | policy compilation + masked-pull checks, role→class mapping, ranking — part of `bun run test` |
 
@@ -96,10 +97,11 @@ examples/reef/
 
 - **Workspace picker** — multi-tenancy. Creating "Coral Team" runs
   `ramose.db("coral-team").install()` under the creator's freshly-minted
-  admin JWT. Switching workspaces is React's own remount:
-  `<RamoseProvider key={slug}>` closes the old client and connects a new one
-  whose `Ramose.token.jwt` source re-mints as the token nears `exp`, so
-  15-minute tokens refresh themselves.
+  admin JWT, then the URL becomes `/coral-team`. Switching workspaces is
+  React's own remount: `<RamoseProvider key={slug}>` closes the old client
+  and connects a new one whose `Ramose.token.jwt` source re-mints as the
+  token nears `exp`, so 15-minute tokens refresh themselves. Refresh stays
+  on the board — Vite and the auth Worker both fall back to `index.html`.
 - **Board** — local-first reactivity. Columns render one `useLive(db, boardQuery)`
   read against the session overlay; a drag is one `useTransact` `run` writing
   two datoms (status + rank) and the card moves as soon as the pending layer
@@ -108,8 +110,10 @@ examples/reef/
   anywhere in the app. On a phone, hold a card still, then drag — a flick
   still scrolls the board. An empty board offers **Add sample issues**: nine
   issues, labels and assignees in one `db.transact`.
-- **Issue detail** — policy in the small. Description and the admin-only
-  note ride one standing `usePull`, so edits from another tab land in place.
+- **Issue detail** — policy in the small. Opening a card is
+  `/:slug/issues/:id`, so refresh keeps the panel open. Description and the
+  admin-only note ride one standing `usePull`, so edits from another tab
+  land in place.
   That note is `Issue.privateNote.optional` in pull shapes (required pulls of
   a masked attribute fail *at compile time* — see `test/policy.test.ts`), and
   comments — a `useLive` on a per-issue query — carry `preset` authorship.

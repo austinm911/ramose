@@ -17,6 +17,7 @@ import {
   type OrgSummary,
   type SessionUser,
 } from "../auth.ts";
+import { Link } from "../route.tsx";
 import { isWorkspaceSlug, slugify } from "../../domain/shared.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
 import {
@@ -118,6 +119,7 @@ const styles = stylex.create({
     borderRadius: radii.md,
     backgroundColor: { default: colors.bgRaised, ":hover": colors.surfaceHover },
     backgroundImage: "none",
+    textDecoration: "none",
     borderWidth: 1,
     borderStyle: "solid",
     borderColor: { default: colors.border, ":hover": colors.borderStrong },
@@ -178,7 +180,7 @@ export const WorkspacesScreen = ({
   user: SessionUser;
   opening: string | null;
   onOpen: (slug: string, name: string) => void;
-  onCreate: (slug: string, name: string) => void;
+  onCreate: (slug: string, name: string) => void | Promise<void>;
 }) => {
   const toast = useToast();
   const [orgs, setOrgs] = useState<readonly OrgSummary[] | null>(null);
@@ -213,7 +215,7 @@ export const WorkspacesScreen = ({
     setBusy(true);
     try {
       await createWorkspace(name.trim(), slug);
-      onCreate(slug, name.trim());
+      await onCreate(slug, name.trim());
     } catch (err) {
       toast("error", err instanceof Error ? err.message : String(err));
       setBusy(false);
@@ -323,12 +325,14 @@ export const WorkspacesScreen = ({
                 {orgs.map((org) => {
                   const isOpening = opening === org.slug;
                   return (
-                    <button
+                    <Link
                       key={org.id}
-                      type="button"
+                      to={{ kind: "board", slug: org.slug }}
                       {...stylex.props(styles.row)}
-                      disabled={opening !== null}
-                      onClick={() => onOpen(org.slug, org.name)}
+                      aria-disabled={opening !== null}
+                      onClick={(e) => {
+                        if (opening !== null) e.preventDefault();
+                      }}
                     >
                       <span
                         {...stylex.props(styles.tile)}
@@ -351,7 +355,7 @@ export const WorkspacesScreen = ({
                           </>
                         )}
                       </span>
-                    </button>
+                    </Link>
                   );
                 })}
               </div>

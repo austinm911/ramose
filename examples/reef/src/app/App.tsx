@@ -1,6 +1,7 @@
 /**
  * Session-gated shell: Better Auth session → workspace picker → board.
- * Plain state routing (SPA, no RSC). The active workspace's Ramose client is
+ * Paths are the pages (`/`, `/:slug`, `/:slug/issues/:id`) so refresh and a
+ * shared URL land on the same screen. The active workspace's Ramose client is
  * owned by `<RamoseProvider key={slug}>`: switching workspaces changes the
  * key, which closes the old client and connects the next one.
  *
@@ -16,11 +17,13 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useLayoutEffect,
   useState,
 } from "react";
-import { authClient, type SessionUser } from "./auth.ts";
+import { authClient, listWorkspaces, type SessionUser } from "./auth.ts";
 import { openWorkspace, RAMOSE_URL, type Workspace } from "./ramose.ts";
+import { RouteProvider, useRoute } from "./route.tsx";
 import { AuthScreen } from "./screens/AuthScreen.tsx";
 import { BoardScreen } from "./screens/BoardScreen.tsx";
 import { WorkspacesScreen } from "./screens/WorkspacesScreen.tsx";
@@ -103,7 +106,9 @@ export const App = () => {
     <ThemeContext.Provider value={{ theme, toggle }}>
       <div {...stylex.props(app.root)}>
         <ToastProvider>
-          <Root />
+          <RouteProvider>
+            <Root />
+          </RouteProvider>
         </ToastProvider>
       </div>
     </ThemeContext.Provider>
@@ -119,50 +124,93 @@ interface Open {
 const Root = () => {
   const session = authClient.useSession();
   const toast = useToast();
+  const { route, navigate } = useRoute();
   const [open, setOpen] = useState<Open | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
+  const user = session.data?.user;
+  const userId = user?.id;
+  const userName = user?.name;
+  const userEmail = user?.email;
+  const wantedSlug = route.kind === "board" ? route.slug : null;
+  const loadedSlug = open?.workspace.slug ?? null;
 
-  const enter = useCallback(
-    async (slug: string, name: string, user: SessionUser, provision = false) => {
-      setOpening(slug);
+  useEffect(() => {
+    if (wantedSlug === null) {
+      setOpen(null);
+      return;
+    }
+    if (userId === undefined || userName === undefined || userEmail === undefined) {
+      return;
+    }
+    if (loadedSlug === wantedSlug) return;
+    const self: SessionUser = { id: userId, name: userName, email: userEmail };
+    let cancelled = false;
+    setOpening(wantedSlug);
+    void (async () => {
       try {
-        setOpen({ workspace: await openWorkspace(slug, user, provision), name });
+        const orgs = await listWorkspaces().catch(() => []);
+        if (cancelled) return;
+        const org = orgs.find((o) => o.slug === wantedSlug);
+        const workspace = await openWorkspace(wantedSlug, self, false);
+        if (cancelled) return;
+        setOpen({ workspace, name: org?.name ?? wantedSlug });
+      } catch (err) {
+        if (cancelled) return;
+        toast("error", errorMessage(err));
+        setOpen(null);
+        navigate({ kind: "home" }, { replace: true });
+      } finally {
+        if (!cancelled) setOpening(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [wantedSlug, loadedSlug, userId, userName, userEmail, toast, navigate]);
+
+  const createAndOpen = useCallback(
+    async (slug: string, user: SessionUser) => {
+      try {
+        await openWorkspace(slug, user, true);
+        navigate({ kind: "board", slug });
       } catch (err) {
         toast("error", errorMessage(err));
-      } finally {
-        setOpening(null);
+        throw err;
       }
     },
-    [toast],
+    [toast, navigate],
   );
 
   if (session.isPending) return <Loading />;
-  const user = session.data?.user;
   if (user === undefined) return <AuthScreen />;
   const me: SessionUser = { id: user.id, name: user.name, email: user.email };
 
-  if (open !== null) {
-    return (
-      <RamoseProvider
-        key={open.workspace.slug}
-        url={RAMOSE_URL}
-        token={open.workspace.token}
-      >
-        <BoardScreen
-          workspace={open.workspace}
-          name={open.name}
-          user={me}
-          onLeave={() => setOpen(null)}
-        />
-      </RamoseProvider>
-    );
+  if (wantedSlug !== null) {
+    if (open !== null && open.workspace.slug === wantedSlug) {
+      return (
+        <RamoseProvider
+          key={open.workspace.slug}
+          url={RAMOSE_URL}
+          token={open.workspace.token}
+        >
+          <BoardScreen
+            workspace={open.workspace}
+            name={open.name}
+            user={me}
+            onLeave={() => navigate({ kind: "home" })}
+          />
+        </RamoseProvider>
+      );
+    }
+    return <Loading text={`opening ${wantedSlug}…`} />;
   }
+
   return (
     <WorkspacesScreen
       user={me}
       opening={opening}
-      onOpen={(slug, name) => void enter(slug, name, me)}
-      onCreate={(slug, name) => void enter(slug, name, me, true)}
+      onOpen={(slug) => navigate({ kind: "board", slug })}
+      onCreate={(slug) => createAndOpen(slug, me)}
     />
   );
 };

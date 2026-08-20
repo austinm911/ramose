@@ -156,7 +156,7 @@ Both are values you can match by name — see [Errors](/reference/errors/). Writ
 
 In React, `useTransact` runs the write and hands you the refusal:
 
-```ts title="examples/reef/src/app/screens/BoardScreen.tsx:241-245"
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx:246-250"
   // Every write is one `run(...)`; a policy denial (or any DbError) becomes
   // a toast — enforcement is server-side, the UI is only a hint.
   const { run } = useTransact({

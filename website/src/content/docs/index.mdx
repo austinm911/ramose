@@ -88,9 +88,9 @@ export const Issue = Ramose.Namespace("issue", {
     <p class="rg-cta"><a href="/guides/live-queries/">Live queries →</a></p>
   </div>
   <div class="rg-moment-code">
-    <Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged to Done in the top window moves in the bottom one too" caption="The live pill pulses on every update." code="examples/reef/src/app/screens/BoardScreen.tsx:230-234" />
+    <Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged to Done in the top window moves in the bottom one too" caption="The live pill pulses on every update." code="examples/reef/src/app/screens/BoardScreen.tsx:234-238" />
 
-```ts title="examples/reef/src/domain/queries.ts:66-68 · app/screens/BoardScreen.tsx:230-232"
+```ts title="examples/reef/src/domain/queries.ts:66-68 · app/screens/BoardScreen.tsx:234-236"
 export const boardQuery = Ramose.query(Issue)
   .orderBy(Issue.rank, "asc")
   .select(boardShape);
@@ -127,7 +127,7 @@ issue: {
 },
 ```
 
-    <Shot src="/reef/denied-toast.png" alt="A viewer's board: red toast retract denied on :issue/status; the card snapped back" caption="A viewer forced a drag. The server answered Unauthorized; the card snapped back." code="examples/reef/src/app/screens/BoardScreen.tsx:241-245" />
+    <Shot src="/reef/denied-toast.png" alt="A viewer's board: red toast retract denied on :issue/status; the card snapped back" caption="A viewer forced a drag. The server answered Unauthorized; the card snapped back." code="examples/reef/src/app/screens/BoardScreen.tsx:248-250" />
 
   </div>
 </div>
@@ -146,7 +146,7 @@ issue: {
   <div>
     <h3>Nothing is overwritten</h3>
     <p>Drag the slider and the board becomes what it was after write number <code>t</code>. Same query, one extra argument, nothing copied.</p>
-    <Shot src="/reef/time-travel.png" alt="Reef's board with the time-travel slider open" caption="Pick a version; the board re-reads at it." code="examples/reef/src/app/screens/BoardScreen.tsx:448-453" />
+    <Shot src="/reef/time-travel.png" alt="Reef's board with the time-travel slider open" caption="Pick a version; the board re-reads at it." code="examples/reef/src/app/screens/BoardScreen.tsx:479-485" />
     <p class="rg-cta"><a href="/concepts/time-travel/">Time travel →</a></p>
   </div>
 </div>

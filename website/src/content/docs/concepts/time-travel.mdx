@@ -12,11 +12,11 @@ Nothing is overwritten, so the past is a query away. This page is for anyone who
 
 ## See it in Reef
 
-<Shot src="/reef/time-travel.png" alt="Reef board under a blue Time travel bar with the slider at db.asOf(27) of 42, the header pill reading paused, and fewer cards than the live board" caption="The board read at version 27 of 42. Same board query; the slider picks the version." code="examples/reef/src/app/screens/BoardScreen.tsx:448-454" />
+<Shot src="/reef/time-travel.png" alt="Reef board under a blue Time travel bar with the slider at db.asOf(27) of 42, the header pill reading paused, and fewer cards than the live board" caption="The board read at version 27 of 42. Same board query; the slider picks the version." code="examples/reef/src/app/screens/BoardScreen.tsx:479-485" />
 
 The slider's ceiling is the current **version number `t`** — the number every write gets, in order ([glossary](/concepts/glossary/#version-number)). Its value picks a view of the database:
 
-```ts title="examples/reef/src/app/screens/BoardScreen.tsx:448-454"
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx:479-485"
   const maxT = useBasis(db);
   const [scrubbed, setScrubbed] = useState<number | null>(null);
   const t = scrubbed ?? maxT;

@@ -405,17 +405,44 @@ d("ramose session socket e2e", () => {
         closed: boolean;
         next: number;
       }
-      const openSock = (): Promise<RawSock> =>
+      const openOnce = (): Promise<RawSock> =>
         new Promise((resolve, reject) => {
           const ws = new WebSocket(wsUrl);
           const s: RawSock = { ws, frames: [], closed: false, next: 1 };
           ws.addEventListener("open", () => resolve(s));
-          ws.addEventListener("error", (ev) => reject(new Error(`session socket error: ${String((ev as { message?: unknown }).message ?? ev)}`)));
+          ws.addEventListener("error", (ev) => {
+            try {
+              ws.close();
+            } catch {
+              // already dead
+            }
+            reject(
+              new Error(
+                `session socket error: ${String((ev as { message?: unknown }).message ?? ev)}`,
+              ),
+            );
+          });
           ws.addEventListener("close", () => {
             s.closed = true;
           });
           ws.addEventListener("message", (ev) => s.frames.push(JSON.parse(String(ev.data))));
         });
+      // Same workers.dev eventual-consistency window as `Peer.retryTransientMs`:
+      // a colo can refuse the upgrade (non-101 / HTML placeholder) after
+      // /health already passed. Application errors still fail the test — they
+      // just take up to 30s to do so.
+      const openSock = async (): Promise<RawSock> => {
+        const deadline = Date.now() + 30_000;
+        for (let attempt = 0; ; attempt++) {
+          try {
+            return await openOnce();
+          } catch (e) {
+            if (Date.now() >= deadline) throw e;
+            const base = Math.min(2000, 150 * 2 ** attempt);
+            await Bun.sleep(Math.round(base * (0.5 + Math.random())));
+          }
+        }
+      };
       const until = async (cond: () => boolean, ms: number): Promise<boolean> => {
         const t0 = Date.now();
         while (!cond() && Date.now() - t0 < ms) await Bun.sleep(100);

@@ -39,6 +39,7 @@ import { IssueDetail } from "../components/IssueDetail.tsx";
 import { TimeTravelBar } from "../components/TimeTravel.tsx";
 import { createIssue, moveIssue, seedSampleIssues, type NewIssue } from "../mutations.ts";
 import type { Workspace } from "../ramose.ts";
+import { useBoardSelection } from "../route.tsx";
 import { INVITABLE_ROLES } from "../../domain/roles.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
 import {
@@ -236,7 +237,7 @@ export const BoardScreen = ({
   const people = useLive(db, peopleQuery);
   const labels = useLive(db, labelsQuery);
 
-  const [selected, setSelected] = useState<number | null>(null);
+  const [selected, setSelected] = useBoardSelection(slug);
   const lastSelected = useRef<BoardRow | undefined>(undefined);
   const [draftStatus, setDraftStatus] = useState<Status | null>(null);
   const [invite, setInvite] = useState(false);
@@ -253,7 +254,7 @@ export const BoardScreen = ({
       setSelected(null);
       setDraftStatus(null);
       setInvite(false);
-    }, []),
+    }, [setSelected]),
   );
 
   const liveRows = board.rows;
@@ -277,11 +278,18 @@ export const BoardScreen = ({
             r.creator.id === prior.creator.id,
         ));
   if (selectedRow !== undefined) lastSelected.current = selectedRow;
+  else if (selected === null) lastSelected.current = undefined;
   useEffect(() => {
     if (selectedRow !== undefined && selectedRow.id !== selected) {
       setSelected(selectedRow.id);
+    } else if (
+      selected !== null &&
+      liveRows !== undefined &&
+      selectedRow === undefined
+    ) {
+      setSelected(null);
     }
-  }, [selected, selectedRow]);
+  }, [selected, selectedRow, liveRows, setSelected]);
   const canWrite = myEid !== undefined;
 
   if (board.error !== undefined) {
