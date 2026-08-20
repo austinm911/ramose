@@ -26,7 +26,7 @@ POST /db/:name/admin/index | /admin/gc | /admin/replica/reconnect   (admin only 
 | route | notes |
 | --- | --- |
 | `/health` | liveness; needs no token even under a policy |
-| `/transact` | the only write; every key in the body is a full field name (`:todo/title`). Optional `clientTxId` is a client-chosen id: sending the same id again returns the original reply and does not write a second time. The response `datoms` is the list of facts that landed (not a count) — **breaking** vs an earlier count. The TypeScript client still exposes `datomCount` as that list's length |
+| `/transact` | the only write; every key in the body is a full field name (`:todo/title`). Optional `clientTxId` is a client-chosen id **for that writer**: the same id from the same principal returns the original reply and does not write a second time; a different principal using the same id is a new write (or a denial), not a replay of someone else's filtered ack. The response `datoms` is the facts that writer may read (not a count, and not the raw log) — **breaking** vs an earlier count. The TypeScript client still exposes `datomCount` as that list's length |
 | `/query`, `/pull` | reads at the current version, or at `asOf` / with `history`. `t` is the version read at; `/query` also returns `root`, the newest snapshot behind it, and `explain: true` adds the plan (admin only) |
 | `/entity` | every field of one record, at the current version or at `?asOf=`. There is no `history` on this route |
 | `/info` | `t` and `principal` for everyone; admins also get writer, read-copy and Worker internals |

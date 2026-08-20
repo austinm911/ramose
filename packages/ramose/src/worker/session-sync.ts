@@ -30,11 +30,11 @@ import { FilteredDb } from "../internal/core/policy/filter.ts";
 
 export type SessionTxKind = "skip" | "tx" | "resync";
 
-export interface SessionTxDecision {
-  readonly kind: SessionTxKind;
-  /** present when `kind === "tx"` — already sieved */
-  readonly datoms?: WireDatom[];
-}
+/** A `tx` decision must carry the sieved facts — never fall back to the replica entry. */
+export type SessionTxDecision =
+  | { readonly kind: "skip" }
+  | { readonly kind: "resync" }
+  | { readonly kind: "tx"; readonly datoms: WireDatom[] };
 
 export interface SessionLogEntry {
   readonly t: number;

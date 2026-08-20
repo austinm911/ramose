@@ -336,22 +336,40 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     for (const e of log.entries) {
       if (e.t <= from) continue;
       const decision = await filter(e, principal);
-      watermark = Math.max(watermark, e.t);
-      if (decision.kind === "skip") continue;
+      if (decision.kind === "skip") {
+        watermark = Math.max(watermark, e.t);
+        continue;
+      }
       if (decision.kind === "resync") {
         await pushResync(e.t);
-        watermark = Math.max(watermark, log.t);
+        watermark = Math.max(watermark, e.t, log.t);
         return;
       }
-      send({ op: "tx", t: e.t, datoms: decision.datoms ?? e.datoms });
+      // `kind: "tx"` without `datoms` is a sieve bug. Never send the replica
+      // entry — that is the unfiltered log.
+      if (decision.datoms === undefined) throw new Error("session filter returned tx without datoms");
+      watermark = Math.max(watermark, e.t);
+      send({ op: "tx", t: e.t, datoms: decision.datoms });
       notifyT(e.t);
     }
   };
 
+  const failSieve = (): void => {
+    if (dead) return;
+    die();
+    try {
+      socket.close(1011, "session filter failed");
+    } catch {
+      /* already gone */
+    }
+  };
+
   let considering: Promise<void> = Promise.resolve();
+  /** Walk the log. A filter/snapshot throw rejects — callers must not treat it as silence. */
   const enqueueConsider = (log: SessionLog, from: number): Promise<void> => {
-    considering = considering.then(() => consider(log, from)).catch(() => undefined);
-    return considering;
+    const run = considering.then(() => consider(log, from));
+    considering = run.catch(() => undefined);
+    return run;
   };
 
   /** `{op:"auth", token}`: re-verify, then swap. A refusal keeps the old principal. */
@@ -406,6 +424,7 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
         send({ id, status: 200, body: { t: log.t, from } });
       } catch (err) {
         send({ id, status: 500, body: { error: err instanceof Error ? err.message : String(err) } });
+        failSieve();
       }
       return;
     }
@@ -455,7 +474,11 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
       if (filtered && options.pollLog) {
         try {
           const log = await options.pollLog();
-          await enqueueConsider(log, watermark);
+          try {
+            await enqueueConsider(log, watermark);
+          } catch {
+            failSieve();
+          }
         } catch {
           const t = (body as { t?: unknown } | null)?.t;
           if (typeof t === "number") notifyT(t);
@@ -507,7 +530,7 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
         if (log.t > watermark) watermark = log.t;
         return;
       }
-      void enqueueConsider(log, watermark);
+      void enqueueConsider(log, watermark).catch(failSieve);
     };
 
     // this session's own poll is in flight; overlapping ticks are dropped rather than queued

@@ -107,6 +107,13 @@ interface Pending {
 /** How many recent `clientTxId`s this instance remembers. FIFO once full. */
 const RECENT_CLIENT_TX_LIMIT = 256;
 
+/** Replay keys are per writer: a foreign principal must not see someone else's filtered ack. */
+export function clientTxReplayKey(principal: Principal | undefined, id: string): string {
+  if (!principal) return `\0:${id}`;
+  const who = principal.sub ?? (principal.eid !== undefined ? `#${principal.eid}` : principal.class);
+  return `${principal.db}\0${principal.kind}\0${who}\0${id}`;
+}
+
 const yieldToEventLoop = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 const round = (x: number) => Math.round(x * 100) / 100;
 const safeName = (host: TransactorHost): string | undefined => {
@@ -131,7 +138,7 @@ export class Transactor {
   private indexer!: Indexer;
   private txSinceIndex = 0;
   private dead: string | undefined;
-  /** recent `clientTxId` → original ack; replay must not assign a second `t` */
+  /** recent `clientTxReplayKey(principal, clientTxId)` → original ack; replay must not assign a second `t` */
   private readonly recentAcks = new Map<string, TxAck>();
   readonly stats: TransactorStats = { txs: 0, batches: 0, maxBatch: 0, rejected: 0, indexRuns: 0, broadcasts: 0, commitMs: 0, resolveMs: 0, loopMs: 0, fenceMs: 0 };
   /** metrics: tx/s over the last 10 s, batch-size and commit-latency distributions */
@@ -293,7 +300,7 @@ export class Transactor {
   transact(tx: TxData, principal?: Principal, clientTxId?: string): Promise<TxAck> {
     if (this.dead !== undefined) return Promise.reject(new TransactorDeadError(this.dead));
     if (clientTxId !== undefined) {
-      const hit = this.recentAcks.get(clientTxId);
+      const hit = this.recentAcks.get(clientTxReplayKey(principal, clientTxId));
       if (hit) return Promise.resolve(hit);
     }
     return new Promise<TxAck>((resolve, reject) => {
@@ -353,7 +360,8 @@ export class Transactor {
         const tResolve = performance.now();
         for (const p of batch) {
           if (p.clientTxId !== undefined) {
-            const hit = this.recentAcks.get(p.clientTxId) ?? batchAcks.get(p.clientTxId);
+            const key = clientTxReplayKey(p.principal, p.clientTxId);
+            const hit = this.recentAcks.get(key) ?? batchAcks.get(key);
             if (hit) {
               p.resolve(hit);
               continue;
@@ -371,7 +379,7 @@ export class Transactor {
               datoms: await this.ackDatoms(rep.txData, p.principal),
               ...(p.clientTxId !== undefined ? { clientTxId: p.clientTxId } : {}),
             };
-            if (p.clientTxId !== undefined) batchAcks.set(p.clientTxId, ack);
+            if (p.clientTxId !== undefined) batchAcks.set(clientTxReplayKey(p.principal, p.clientTxId), ack);
             acks.push({ p, ack });
           } catch (err) {
             const e = this.scrub(err, p);
