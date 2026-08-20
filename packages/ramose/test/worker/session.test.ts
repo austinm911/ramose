@@ -1271,7 +1271,7 @@ describe("sieve security: openSession + decideSessionTx", () => {
       pollLog: async () => log,
       filterEntry: sieveOf(conn, policy),
     });
-    session(otherSock, {
+    const other = session(otherSock, {
       dispatch,
       principal: ada,
       schedule,
@@ -1305,7 +1305,7 @@ describe("sieve security: openSession + decideSessionTx", () => {
       datoms: ack.datoms,
       clientTxId: "c-writer",
     });
-    await tick();
+    await other.onMessage(JSON.stringify({ id: 2, op: "sync", from: seedT }));
     expect(otherSock.txs()).toHaveLength(1);
     expect(otherSock.txs()[0]).toEqual({ op: "tx", t: rep.t, datoms: ack.datoms });
     expect(otherSock.txs()[0].clientTxId).toBeUndefined();
