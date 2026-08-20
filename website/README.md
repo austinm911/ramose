@@ -92,5 +92,6 @@ looking at.
 | `src/components/` | `SiteTitle` (lockup), `ThemeProvider`/`ThemeSelect` (dark-only) |
 | `src/assets/ramose-mark.svg` | the mark (the two-stroke ramose loop) |
 | `public/favicon.svg` | micro-use mark (loop only, per the brand guide) |
+| `public/reef/` | light-theme product shots; regenerate with `bun scripts/shots/capture.mjs` |
 | `astro.config.mjs` | Starlight config: sidebar, edit links, code theme |
 | `alchemy.run.ts` | the Cloudflare deploy stack |
