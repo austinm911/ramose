@@ -46,6 +46,7 @@ export interface FakeSocket {
   readonly sent: Frame[];
   /** Deliver a server frame (`{ op: "t", t }`, or a held frame's reply). */
   push(frame: unknown): void;
+  drop(): void;
 }
 
 export interface FakePeer {
@@ -60,6 +61,8 @@ export interface FakePeer {
   frameOps(op: string): Frame[];
   /** Deliver a server frame on the newest socket. */
   push(frame: unknown): void;
+  /** Close the newest socket as if the isolate died. */
+  drop(): void;
 }
 
 export interface PeerOptions {
@@ -117,11 +120,24 @@ export const fakePeer = (options: PeerOptions = {}): FakePeer => {
       const frame = JSON.parse(data) as Frame;
       this.sent.push(frame);
       frames.push(frame);
-      const reply = answer(frame);
+      const reply =
+        frame.op === "sync"
+          ? (answer(frame) ?? { body: { t: 0, from: frame.from ?? 0 } })
+          : answer(frame);
       if (reply === undefined) return;
       const { delay, ...rest } = reply;
       const deliver = () => {
         if (this.dead) return;
+        const body = rest.body as { t?: unknown; datoms?: unknown } | undefined;
+        if (frame.op === "sync" && Array.isArray(body?.datoms)) {
+          this.emit("message", {
+            data: JSON.stringify({
+              op: "resync",
+              t: body.t,
+              datoms: body.datoms,
+            }),
+          });
+        }
         this.emit("message", {
           data: JSON.stringify({ id: frame.id, ...rest }),
         });
@@ -138,6 +154,11 @@ export const fakePeer = (options: PeerOptions = {}): FakePeer => {
 
     push(frame: unknown): void {
       this.emit("message", { data: JSON.stringify(frame) });
+    }
+
+    drop(): void {
+      this.dead = true;
+      this.emit("close", {});
     }
   }
 
@@ -169,5 +190,6 @@ export const fakePeer = (options: PeerOptions = {}): FakePeer => {
     frames,
     frameOps: (op) => frames.filter((f) => f.op === op),
     push: (frame) => sockets[sockets.length - 1]?.push(frame),
+    drop: () => sockets[sockets.length - 1]?.drop(),
   };
 };

@@ -196,7 +196,7 @@ describe("db.principal()", () => {
 
     // the peer expires the principal; the next read swaps in place
     refuse = true;
-    await run(db.q(names));
+    await run(db.asOf(2).q(names));
     expect(peer.frameOps("auth")).toHaveLength(1);
 
     // the old eid must not be served: the swapped principal has no row yet

@@ -117,25 +117,36 @@ describe("db.basis()", () => {
     await c.dispose();
   });
 
-  test("a standing live re-runs after basis() observes a newer t", async () => {
-    const state = { t: 5, rows: [row("Ada")] };
-    const peer = peerAt(state);
+  test("a standing live wakes after basis() observes a newer t", async () => {
+    const { catalogWorld, snapshotOf } = await import("./overlay-seed.ts");
+    const conn = await catalogWorld(Movies);
+    await conn.transact([{ ":user/name": "Ada" }]);
+    const snap = await snapshotOf(conn);
+    const state = { t: snap.t, rows: [row("Ada")] };
+    const peer = fakePeer({
+      answer: (frame) =>
+        frame.op === "sync"
+          ? { body: { t: snap.t, datoms: snap.datoms } }
+          : { body: { t: state.t, root: state.t, result: state.rows } },
+      http: (call: Call) =>
+        call.method === "GET" && call.url.endsWith("/db/movies/info")
+          ? { body: { db: "movies", t: state.t } }
+          : { body: { t: state.t, txEid: 1, tempids: {}, datoms: 1 } },
+    });
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
     const live = collect(db.live(names));
     await settle();
     expect(live.seen).toEqual([[{ name: "Ada" }]]);
 
-    // the peer moved, but this session heard no tick — basis() is the news
+    // the peer moved; basis() bumps the session. Overlay data is unchanged,
+    // so digest-dedup keeps a single emission and no /query is sent.
     state.t = 9;
-    state.rows = [row("Ada"), row("Bob")];
     expect(await run(db.basis())).toEqual({ t: 9 });
     await settle();
 
-    expect(live.seen).toHaveLength(2);
-    expect(live.seen[1]).toEqual([{ name: "Ada" }, { name: "Bob" }]);
-    // the re-run is fenced at the basis the bump carried
-    expect(peer.frameOps("q").at(-1)?.minT).toBe(9);
+    expect(live.seen).toEqual([[{ name: "Ada" }]]);
+    expect(peer.frameOps("q")).toEqual([]);
     expect(live.error).toBeUndefined();
 
     await live.stop();

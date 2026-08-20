@@ -1,15 +1,9 @@
 /**
  * `db.livePull` — a standing `db.pull` as a `Stream`.
  *
- * The two terminals share one subject and shape, so everything `pull` can
- * project `livePull` can too. The standing loop is the one `live` uses
- * (`standing` in `Db.ts`): re-run on every basis tick and after a local
- * `transact`, dedupe by digest, retry with backoff, fail only on the
- * terminal refusals, and over a pinned view emit once and complete.
- *
- * What is specific to a pull: the emission is one projection or `null`,
- * and `null` (the entity retracted, a required field gone) is a legitimate
- * emission — the stream keeps standing after it.
+ * Session clients pull against the overlay. Wake is overlay apply / ack /
+ * `{ op: "tx" }` / `{ op: "resync" }`. `null` (entity retracted) is a
+ * legitimate emission. Pinned views still emit once from the peer.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -18,13 +12,15 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
+import type { Connection } from "../src/internal/core/conn.ts";
+import { toWireDatom } from "../src/internal/core/log.ts";
 import { client, fakePeer, settle, type Frame, type Reply } from "./peer.ts";
+import { catalogWorld, snapshotOf, txSnap } from "./overlay-seed.ts";
 
 import { Movies, User } from "./db/fixture.ts";
 
 const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
 
-/** Drain a stream into an array on its own fiber, as a hook would. */
 const collect = <A, E>(stream: Stream.Stream<A, E>) => {
   const seen: A[] = [];
   let error: unknown;
@@ -59,52 +55,70 @@ const collect = <A, E>(stream: Stream.Stream<A, E>) => {
   };
 };
 
-const ada = { id: 17 };
 const shape = { name: User.name, age: User.age.optional };
 
-/** The wire pattern `shape` lowers to. */
-const shapeWire = [
-  { kind: "attr", attr: ":user/name", reverse: false, as: "name" },
-  { kind: "attr", attr: ":user/age", reverse: false, as: "age" },
-];
+const adaWorld = async (age = 36) => {
+  const conn = await catalogWorld(Movies);
+  const added = txSnap(
+    await conn.transact([
+      { ":db/id": "ada", ":user/name": "Ada", ":user/age": age },
+    ]),
+  );
+  const snap = await snapshotOf(conn);
+  return { conn, eid: added.tempids.ada, ...snap };
+};
 
-/** A peer whose entity and basis the test moves under it. */
 const peerAt = (state: {
   t: number;
-  entity: unknown;
+  datoms: unknown[];
   ackT?: number;
+  conn?: Connection;
   answer?: (frame: Frame) => Reply | undefined;
 }) =>
   fakePeer({
-    http: () => ({
-      body: { t: state.ackT ?? state.t, txEid: 1, tempids: {}, datoms: 1 },
-    }),
+    http: async (call) => {
+      if (call.url.endsWith("/transact") && state.conn !== undefined) {
+        const rep = await state.conn.transact(call.body.tx);
+        return {
+          body: {
+            t: state.ackT ?? rep.t,
+            txEid: rep.txEid,
+            tempids: rep.tempids,
+            datoms: rep.txData.map(toWireDatom),
+            clientTxId: call.body.clientTxId,
+          },
+        };
+      }
+      return {
+        body: { t: state.ackT ?? state.t, txEid: 1, tempids: {}, datoms: [] },
+      };
+    },
     answer: (frame) => {
       const custom = state.answer?.(frame);
       if (custom !== undefined) return custom;
-      return { body: { t: state.t, result: state.entity } };
+      if (frame.op === "sync") {
+        return { body: { t: state.t, from: frame.from ?? 0, datoms: state.datoms } };
+      }
+      return { body: { t: state.t, result: null } };
     },
   });
 
 describe("pull and livePull are two terminals over one shape", () => {
-  test("the first pass emits the projection, over a pull frame", async () => {
-    const state = { t: 5, entity: { name: "Ada", age: 36 } };
-    const peer = peerAt(state);
+  test("the first pass emits the projection, locally", async () => {
+    const world = await adaWorld();
+    const peer = peerAt({ t: world.t, datoms: world.datoms });
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
+    const ada = { id: world.eid };
 
     expect(await run(db.pull(ada, shape))).toEqual({ name: "Ada", age: 36 });
     const live = collect(db.livePull(ada, shape));
     await settle();
 
     expect(live.seen).toEqual([{ name: "Ada", age: 36 }]);
-    // both terminals took the pull op with the same lowered shape
     expect(peer.frameOps("q")).toHaveLength(0);
-    expect(peer.frameOps("pull").map((f) => f.pattern)).toEqual([
-      shapeWire,
-      shapeWire,
-    ]);
-    expect(peer.frameOps("pull").map((f) => f.eid)).toEqual([17, 17]);
+    expect(peer.frameOps("pull")).toHaveLength(0);
+    expect(peer.frames.some((f) => f.op === "sync")).toBe(true);
 
     await live.stop();
     await c.dispose();
@@ -112,47 +126,47 @@ describe("pull and livePull are two terminals over one shape", () => {
 });
 
 describe("the basis is the wake", () => {
-  test("a t frame re-runs the pull at that fence", async () => {
-    const state = { t: 5, entity: { name: "Ada", age: 36 } };
-    const peer = peerAt(state);
+  test("a tx frame re-runs the pull locally", async () => {
+    const world = await adaWorld(36);
+    const peer = peerAt({ t: world.t, datoms: world.datoms });
     const c = client(peer);
+    const ada = { id: world.eid };
     const live = collect(c.ramose.db("movies", Movies).livePull(ada, shape));
     await settle();
     expect(live.seen).toHaveLength(1);
 
-    state.t = 9;
-    state.entity = { name: "Ada", age: 37 };
-    peer.push({ op: "t", t: 9 });
+    const older = txSnap(
+      await world.conn.transact([{ ":db/id": world.eid, ":user/age": 37 }]),
+    );
+    peer.push({ op: "tx", t: older.t, datoms: older.datoms });
     await settle();
 
     expect(live.seen).toHaveLength(2);
     expect(live.seen[1]).toEqual({ name: "Ada", age: 37 });
-    expect(peer.frameOps("pull").map((f) => f.minT)).toEqual([undefined, 9]);
+    expect(peer.frameOps("pull")).toEqual([]);
 
     await live.stop();
     await c.dispose();
   });
 
   test("a tick the projection did not notice is not an emission", async () => {
-    const state = { t: 5, entity: { name: "Ada", age: 36 } };
-    const peer = peerAt(state);
+    const world = await adaWorld();
+    const peer = peerAt({ t: world.t, datoms: world.datoms });
     const c = client(peer);
+    const ada = { id: world.eid };
     const live = collect(c.ramose.db("movies", Movies).livePull(ada, shape));
     await settle();
     expect(live.seen).toHaveLength(1);
 
-    // the basis moves (some other write), the entity does not
-    state.t = 9;
-    peer.push({ op: "t", t: 9 });
+    peer.push({ op: "t", t: world.t + 4 });
     await settle();
-    // ...so the pull re-ran at the new fence but nothing was re-emitted
-    expect(peer.frameOps("pull").map((f) => f.minT)).toEqual([undefined, 9]);
+    expect(peer.frameOps("pull")).toEqual([]);
     expect(live.seen).toHaveLength(1);
 
-    // the next tick that changes the projection is news again
-    state.t = 12;
-    state.entity = { name: "Ada", age: 40 };
-    peer.push({ op: "t", t: 12 });
+    const older = txSnap(
+      await world.conn.transact([{ ":db/id": world.eid, ":user/age": 40 }]),
+    );
+    peer.push({ op: "tx", t: older.t, datoms: older.datoms });
     await settle();
     expect(live.seen).toHaveLength(2);
     expect(live.seen[1]).toEqual({ name: "Ada", age: 40 });
@@ -162,33 +176,28 @@ describe("the basis is the wake", () => {
   });
 
   test("retractEntity on the same connection emits null, and the stream keeps standing", async () => {
-    const state = { t: 5, entity: { name: "Ada", age: 36 } as unknown, ackT: 30 };
+    const world = await adaWorld();
+    const state = { t: world.t, datoms: world.datoms, ackT: 30, conn: world.conn };
     const peer = peerAt(state);
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
+    const ada = { id: world.eid };
     const live = collect(db.livePull(ada, shape));
     await settle();
     expect(live.seen).toEqual([{ name: "Ada", age: 36 }]);
 
-    // the local write bumps the basis; the entity is gone at the new fence
-    state.t = 30;
-    state.entity = null;
     await run(
       db.transact(function* (tx) {
-        yield* tx.retractEntity(17);
+        yield* tx.retractEntity(world.eid);
       }),
     );
     await settle();
 
-    // `null` is a legitimate emission, not an end
     expect(live.seen).toEqual([{ name: "Ada", age: 36 }, null]);
     expect(live.done).toBe(false);
-    expect(peer.frameOps("pull").at(-1)?.minT).toBe(30);
+    expect(peer.frameOps("pull")).toEqual([]);
 
-    // ...and it stays null until something changes it back
-    state.t = 42;
-    state.entity = { name: "Ada", age: 36 };
-    peer.push({ op: "t", t: 42 });
+    peer.push({ op: "resync", t: Math.max(world.t, 31), datoms: world.datoms });
     await settle();
     expect(live.seen).toHaveLength(3);
     expect(live.seen[2]).toEqual({ name: "Ada", age: 36 });
@@ -200,15 +209,20 @@ describe("the basis is the wake", () => {
 
 describe("livePull survives the network like live", () => {
   test("a dropped socket reconnects in place and the stream keeps emitting", async () => {
-    const state = { t: 5, entity: { name: "Ada", age: 36 } as unknown };
+    const world = await adaWorld(36);
+    const state = { t: world.t, datoms: world.datoms };
     const peer = peerAt(state);
     const c = client(peer);
+    const ada = { id: world.eid };
     const live = collect(c.ramose.db("movies", Movies).livePull(ada, shape));
     await settle();
     expect(live.seen).toHaveLength(1);
     expect(peer.sockets).toHaveLength(1);
 
-    state.entity = { name: "Ada", age: 37 };
+    await world.conn.transact([{ ":db/id": world.eid, ":user/age": 37 }]);
+    const snap = await snapshotOf(world.conn);
+    state.t = snap.t;
+    state.datoms = snap.datoms;
     peer.drop();
     await settle(60);
 
@@ -221,14 +235,15 @@ describe("livePull survives the network like live", () => {
   });
 
   test("Unauthorized re-reads the token and re-authenticates in place; the stream never sees it", async () => {
+    const world = await adaWorld();
     let issued = 0;
     let refusals = 1;
     const state = {
-      t: 5,
-      entity: { name: "Ada", age: 36 },
+      t: world.t,
+      datoms: world.datoms,
       answer: (frame: Frame) => {
         if (frame.op === "auth") return { ok: true };
-        if (frame.op === "pull" && refusals > 0) {
+        if (frame.op === "sync" && refusals > 0) {
           refusals -= 1;
           return { status: 401, body: { error: "token expired" } };
         }
@@ -239,12 +254,13 @@ describe("livePull survives the network like live", () => {
     const c = client(peer, {
       token: Effect.sync(() => Redacted.make(`token-${++issued}`)),
     });
-    const live = collect(c.ramose.db("movies", Movies).livePull(ada, shape));
+    const live = collect(
+      c.ramose.db("movies", Movies).livePull({ id: world.eid }, shape),
+    );
     await settle();
 
-    // the swap happened on the same socket, and the stream never saw it
     expect(peer.sockets).toHaveLength(1);
-    expect(peer.frames.map((f) => f.op)).toEqual(["pull", "auth", "pull"]);
+    expect(peer.frames.map((f) => f.op)).toEqual(["sync", "auth", "sync"]);
     expect(live.seen).toEqual([{ name: "Ada", age: 36 }]);
     expect(live.error).toBeUndefined();
 
@@ -255,11 +271,11 @@ describe("livePull survives the network like live", () => {
   test("a refusal that survives the fresh token fails the stream", async () => {
     const peer = peerAt({
       t: 5,
-      entity: null,
+      datoms: [],
       answer: () => ({ status: 401, body: { error: "no" } }),
     });
     const c = client(peer, { token: Effect.succeed(Redacted.make("stale")) });
-    const live = collect(c.ramose.db("movies", Movies).livePull(ada, shape));
+    const live = collect(c.ramose.db("movies", Movies).livePull({ id: 17 }, shape));
     await settle();
 
     expect(live.done).toBe(true);
@@ -270,11 +286,12 @@ describe("livePull survives the network like live", () => {
 
 describe("a pinned view has no news", () => {
   test("livePull over asOf emits once and completes", async () => {
-    const state = { t: 5, entity: { name: "Ada", age: 36 } };
-    const peer = peerAt(state);
+    const peer = fakePeer({
+      answer: () => ({ body: { t: 5, result: { name: "Ada", age: 36 } } }),
+    });
     const c = client(peer);
     const live = collect(
-      c.ramose.db("movies", Movies).asOf(3).livePull(ada, shape),
+      c.ramose.db("movies", Movies).asOf(3).livePull({ id: 17 }, shape),
     );
     await settle();
 
@@ -289,11 +306,12 @@ describe("a pinned view has no news", () => {
   });
 
   test("livePull over history emits once and completes", async () => {
-    const state = { t: 5, entity: { name: "Ada", age: 36 } };
-    const peer = peerAt(state);
+    const peer = fakePeer({
+      answer: () => ({ body: { t: 5, result: { name: "Ada", age: 36 } } }),
+    });
     const c = client(peer);
     const live = collect(
-      c.ramose.db("movies", Movies).history.livePull(ada, shape),
+      c.ramose.db("movies", Movies).history.livePull({ id: 17 }, shape),
     );
     await settle();
 

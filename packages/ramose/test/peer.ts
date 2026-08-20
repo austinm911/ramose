@@ -79,19 +79,25 @@ export interface FakePeer {
 export interface PeerOptions {
   /** Answers socket frames. */
   readonly answer?: Answer | undefined;
-  /** Answers HTTPS requests. */
+  /** Answers HTTPS requests. A Promise delays the response (outbox / overlay tests). */
   readonly http?:
-    | ((call: Call) => {
-        status?: number;
-        body: unknown;
-        headers?: Record<string, string>;
-      })
+    | ((call: Call) =>
+        | {
+            status?: number;
+            body: unknown;
+            headers?: Record<string, string>;
+          }
+        | Promise<{
+            status?: number;
+            body: unknown;
+            headers?: Record<string, string>;
+          }>)
     | undefined;
   /** Refuse the next `n` upgrades by closing the socket at once. */
   readonly refuseUpgrades?: number | undefined;
 }
 
-const DEFAULT_ACK = { t: 2, txEid: 13194139533319, tempids: {}, datoms: 1 };
+const DEFAULT_ACK = { t: 2, txEid: 13194139533319, tempids: {}, datoms: [] as const };
 
 export type Http = NonNullable<PeerOptions["http"]>;
 
@@ -148,11 +154,25 @@ export const fakePeer = (options: PeerOptions = {}): FakePeer => {
       const frame = JSON.parse(data) as Frame;
       this.sent.push(frame);
       frames.push(frame);
-      const reply = answer(frame);
+      const reply =
+        frame.op === "sync"
+          ? (answer(frame) ?? { body: { t: 0, from: frame.from ?? 0 } })
+          : answer(frame);
       if (reply === undefined) return;
       const { delay, ...rest } = reply;
       const deliver = () => {
         if (this.dead) return;
+        // #112: a sync dump is an unsolicited resync, then the correlated ack
+        const body = rest.body as { t?: unknown; datoms?: unknown } | undefined;
+        if (frame.op === "sync" && Array.isArray(body?.datoms)) {
+          this.emit("message", {
+            data: JSON.stringify({
+              op: "resync",
+              t: body.t,
+              datoms: body.datoms,
+            }),
+          });
+        }
         this.emit("message", {
           data: JSON.stringify({ id: frame.id, ...rest }),
         });
@@ -194,7 +214,7 @@ export const fakePeer = (options: PeerOptions = {}): FakePeer => {
         typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
     };
     calls.push(call);
-    const reply = http(call);
+    const reply = await http(call);
     return new Response(JSON.stringify(reply.body), {
       status: reply.status ?? 200,
       headers: { "content-type": "application/json", ...(reply.headers ?? {}) },

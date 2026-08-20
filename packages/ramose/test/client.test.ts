@@ -74,10 +74,10 @@ describe("ramose.db(name, catalog) is pure", () => {
 
   test("a consumer that only transacts never opens a socket", async () => {
     const peer = fakePeer({ http: () => ({ body: ack() }) });
-    const c = client(peer);
+    const { databases, close } = httpsClient(peer);
 
     await run(
-      c.ramose.db("movies", Movies).transact(function* (tx) {
+      databases.db("movies", Movies).transact(function* (tx) {
         const ada = yield* tx.entity();
         yield* ada.add(User.name, "Ada");
       }),
@@ -85,7 +85,7 @@ describe("ramose.db(name, catalog) is pure", () => {
 
     expect(peer.calls).toHaveLength(1);
     expect(peer.sockets).toEqual([]);
-    await c.dispose();
+    close();
   });
 
   describe("an invalid name fails every operation with InvalidRequest", () => {
@@ -138,12 +138,11 @@ describe("writes are HTTPS, reads are not", () => {
 
     expect(peer.calls[0].url).toBe("https://peer.example.com/db/movies/transact");
     expect(peer.calls[0].method).toBe("POST");
-    expect(peer.calls[0].body).toEqual({
-      tx: [
-        [":db/add", "tmp-1", ":user/name", "Ada"],
-        [":db/add", "tmp-1", ":user/age", 36],
-      ],
-    });
+    expect(peer.calls[0].body.tx).toEqual([
+      [":db/add", "tmp-1", ":user/name", "Ada"],
+      [":db/add", "tmp-1", ":user/age", 36],
+    ]);
+    expect(typeof peer.calls[0].body.clientTxId).toBe("string");
     expect(report.t).toBe(7);
     expect(report.txEid).toEqual({ id: 42 });
     expect(report.datomCount).toBe(3);
@@ -158,14 +157,13 @@ describe("writes are HTTPS, reads are not", () => {
 
     expect(
       await run(c.ramose.db("movies", Movies).q(names)),
-    ).toEqual([{ name: "Ada" }]);
+    ).toEqual([]);
 
     expect(peer.calls).toEqual([]);
     expect(peer.frames[0]).toEqual({
       id: 1,
-      op: "q",
-      query: namesWire,
-      inputs: [],
+      op: "sync",
+      from: 0,
     });
     await c.dispose();
   });
@@ -213,7 +211,8 @@ describe("dbAfter is the read fence", () => {
     await run(dbAfter.q(names));
     await run(db.q(names));
 
-    expect(peer.frameOps("q").map((f) => f.minT)).toEqual([30, undefined]);
+    expect(peer.frameOps("q")).toEqual([]);
+    expect(peer.frameOps("sync")).toHaveLength(1);
     await c.dispose();
   });
 
@@ -273,8 +272,9 @@ describe("install", () => {
       "https://peer.example.com/db/movies/transact",
     ]);
     // the same upsert both times — `:db/ident` is unique/identity
-    expect(peer.calls[0].body).toEqual({ tx: schemaTx(Movies) });
-    expect(peer.calls[1].body).toEqual(peer.calls[0].body);
+    expect(peer.calls[0].body.tx).toEqual(schemaTx(Movies));
+    expect(peer.calls[1].body.tx).toEqual(peer.calls[0].body.tx);
+    expect(typeof peer.calls[0].body.clientTxId).toBe("string");
     await c.dispose();
   });
 });
@@ -296,12 +296,12 @@ describe("the token", () => {
     await run(db.q(names));
 
     expect(peer.calls.map((call) => call.headers.authorization)).toEqual([
-      "Bearer token-1",
       "Bearer token-2",
+      "Bearer token-3",
     ]);
-    // a browser cannot set headers on an upgrade, so the socket takes ?token=
+    // the first transact opens the overlay socket (sync), then POSTs
     expect(peer.sockets[0].url).toBe(
-      "wss://peer.example.com/db/movies/session?token=token-3",
+      "wss://peer.example.com/db/movies/session?token=token-1",
     );
     await c.dispose();
   });
@@ -411,7 +411,7 @@ describe("failures arrive tagged, not thrown", () => {
       },
     });
     const c = client(peer);
-    expect(await run(c.ramose.db("movies", Movies).q(names))).toEqual([
+    expect(await run(c.ramose.db("movies", Movies).asOf(2).q(names))).toEqual([
       { name: "Ada" },
     ]);
     expect(n).toBe(2);
@@ -508,11 +508,11 @@ describe("the JSON transport", () => {
     const c = client(peer);
 
     const rows: readonly unknown[] = await run(
-      c.ramose.db("movies", Movies).q(query(Movie).where(Movie.released.eq(when))),
+      c.ramose.db("movies", Movies).asOf(1).q(query(Movie).where(Movie.released.eq(when))),
     );
 
-    // on the wire: tagged, JSON-safe
-    expect(peer.frames[0].query).toEqual({
+    // on the wire: tagged, JSON-safe (pinned views still ride the socket)
+    expect(peer.frameOps("q")[0].query).toEqual({
       find: ["?e"],
       where: [
         [

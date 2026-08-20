@@ -3,10 +3,11 @@
  *
  * A db is a **value**: `ramose.db(name, catalog)` is pure, `asOf(t)` and
  * `history` are `Db -> ReadDb` with zero I/O, and `dbAfter` on a
- * {@link TxReport} is the same db carrying a min-`t` floor. Nothing here names
- * a transport: reads take the session socket when there is one and HTTPS when
- * there is not, writes are always `POST /db/:name/transact`, and neither is
- * reachable from the public surface.
+ * {@link TxReport} is the same db (a min-`t` floor on HTTPS; the local
+ * confirmed overlay on a session client). Nothing here names a transport:
+ * a session client reads the overlay and writes `POST /transact` with a
+ * pending layer; HTTPS-only clients POST reads and writes, and neither
+ * path is reachable from the public surface.
  */
 
 import * as Cause from "effect/Cause";
@@ -109,7 +110,29 @@ export interface Wire {
   transact(
     name: string,
     tx: readonly unknown[],
+    clientTxId?: string,
   ): Effect.Effect<unknown, DbError>;
+  /**
+   * Session overlay — confirmed follower + pending layers. Absent on an
+   * HTTPS-only client, where reads stay on the peer and writes have no
+   * optimistic layer. `makeDb` binds the catalog without opening a socket.
+   */
+  bindCatalog?(name: string, catalog: AnyCatalog): void;
+  overlay?(name: string):
+    | {
+        transact(
+          tx: readonly unknown[],
+        ): Effect.Effect<
+          {
+            readonly t: number;
+            readonly txEid: number;
+            readonly datoms: unknown;
+            readonly datomCount: number;
+          },
+          DbError
+        >;
+      }
+    | undefined;
   /** `GET /db/:name/info` — where the basis is. Always HTTPS: cheap, authoritative. */
   info(name: string): Effect.Effect<unknown, DbError>;
   /**
@@ -139,7 +162,7 @@ export interface TxReport<C extends AnyCatalog = AnyCatalog> {
   readonly t: number;
   readonly txEid: Eid<C>;
   readonly datomCount: number;
-  /** The same db, floored at `t` — no second round trip and no `sync`. */
+  /** The same db after the write — overlay at `t`, or a min-`t` fence on HTTPS. */
   readonly dbAfter: Db<C>;
 }
 
@@ -511,6 +534,8 @@ const makeRead = <C extends AnyCatalog>(
         let last: string | undefined;
         for (;;) {
           const seen = session?.t ?? 0;
+          const generation = session?.generation ?? 0;
+          const epoch = session?.epoch ?? 0;
           // one pass; the wire ladder retries its transient attempts, and
           // withBackoff only re-runs the pass once that ladder is spent
           const pass = yield* withBackoff(runPass(seen || undefined));
@@ -524,7 +549,8 @@ const makeRead = <C extends AnyCatalog>(
           yield* awaitWake(
             session,
             Math.max(seen, pass.t),
-            session.generation,
+            generation,
+            epoch,
           );
         }
         return yield* Queue.end(queue);
@@ -610,11 +636,12 @@ const makeRead = <C extends AnyCatalog>(
   return read;
 };
 
-/** Resolve when the session's basis moves past `seen`, or the socket drops. */
+/** Resolve when the session's basis moves past `seen`, the overlay applies, or the socket drops. */
 const awaitWake = (
   session: Session,
   seen: number,
   generation: number,
+  epoch: number,
 ): Effect.Effect<void> =>
   Effect.callback<void>((resume) => {
     let done = false;
@@ -624,10 +651,14 @@ const awaitWake = (
       off();
       resume(Effect.void);
     };
+    const news = () =>
+      session.t > seen ||
+      session.generation !== generation ||
+      session.epoch !== epoch;
     const off = session.onWake(() => {
-      if (session.t > seen || session.generation !== generation) settle();
+      if (news()) settle();
     });
-    if (session.t > seen || session.generation !== generation) settle();
+    if (news()) settle();
     return Effect.sync(() => {
       done = true;
       off();
@@ -646,27 +677,47 @@ export const makeDb = <C extends AnyCatalog>(
     ? undefined
     : invalidDatabaseName(name);
 
+  // remember the catalog so the first session read can install schema
+  // locally — must not open a socket (db() is pure)
+  wire.bindCatalog?.(name, catalog);
+
   const submit = (
     tx: readonly unknown[],
-  ): Effect.Effect<TxReport<C>, DbError> =>
-    bad !== undefined
-      ? Effect.fail(bad)
-      : wire.transact(name, tx).pipe(
-          Effect.map((body) => {
-            const ack = record(body);
-            const t = typeof ack.t === "number" ? ack.t : 0;
-            // a write advances the whole connection: standing `live` re-runs
-            wire.session(name)?.bump(t);
-            return {
-              t,
-              txEid: makeEid<C>(
-                typeof ack.txEid === "number" ? ack.txEid : 0,
-              ),
-              datomCount: Array.isArray(ack.datoms) ? ack.datoms.length : typeof ack.datoms === "number" ? ack.datoms : 0,
-              dbAfter: makeDb(wire, name, catalog, { ...view, minT: t }),
-            };
-          }),
-        );
+  ): Effect.Effect<TxReport<C>, DbError> => {
+    if (bad !== undefined) return Effect.fail(bad);
+    const overlay = wire.overlay?.(name);
+    if (overlay !== undefined) {
+      return overlay.transact(tx).pipe(
+        Effect.map((ack) => ({
+          t: ack.t,
+          txEid: makeEid<C>(ack.txEid),
+          datomCount: ack.datomCount,
+          // local confirmed db at `t` — no min-t fence, no refetch
+          dbAfter: makeDb(wire, name, catalog, view),
+        })),
+      );
+    }
+    return wire.transact(name, tx).pipe(
+      Effect.map((body) => {
+        const ack = record(body);
+        const t = typeof ack.t === "number" ? ack.t : 0;
+        // a write advances the whole connection: standing `live` re-runs
+        wire.session(name)?.bump(t);
+        return {
+          t,
+          txEid: makeEid<C>(
+            typeof ack.txEid === "number" ? ack.txEid : 0,
+          ),
+          datomCount: Array.isArray(ack.datoms)
+            ? ack.datoms.length
+            : typeof ack.datoms === "number"
+              ? ack.datoms
+              : 0,
+          dbAfter: makeDb(wire, name, catalog, { ...view, minT: t }),
+        };
+      }),
+    );
+  };
 
   return {
     ...makeRead(wire, name, catalog, view, bad),

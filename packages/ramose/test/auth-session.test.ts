@@ -42,7 +42,7 @@ describe("the credential on the wire", () => {
       "wss://peer.example.com/db/movies/session?token=s3cret",
     );
     // the upgrade is the only place the socket carries it — no auth frame
-    expect(peer.frames.map((f) => f.op)).toEqual(["q"]);
+    expect(peer.frames.map((f) => f.op)).toEqual(["sync"]);
     expect(peer.calls[0].headers.authorization).toBe("Bearer s3cret");
     await c.dispose();
   });
@@ -90,18 +90,24 @@ describe("the credential on the wire", () => {
 });
 
 describe("a token swap is not a reconnect", () => {
-  test("db.live keeps its stream, its socket and its rows across the swap", async () => {
-    const state = { t: 2, rows: [[{ name: "Ada" }]] as unknown[][] };
+  test("db.live keeps its stream and socket across an overlay tx; asOf still re-auths in place", async () => {
+    const { catalogWorld, snapshotOf, txSnap } = await import("./overlay-seed.ts");
+    const conn = await catalogWorld(Movies);
+    await conn.transact([{ ":user/name": "Ada" }]);
+    const snap = await snapshotOf(conn);
     let issued = 0;
     let refuse = false;
     const peer = fakePeer({
       answer: (frame) => {
         if (frame.op === "auth") return { ok: true };
+        if (frame.op === "sync") {
+          return { body: { t: snap.t, datoms: snap.datoms } };
+        }
         if (refuse) {
           refuse = false;
           return { status: 401, body: { error: "token expired" } };
         }
-        return { body: { t: state.t, root: state.t, result: state.rows } };
+        return { body: { t: 5, root: 5, result: [[{ name: "Ada" }], [{ name: "Bob" }]] } };
       },
     });
     const c = client(peer, {
@@ -119,19 +125,19 @@ describe("a token swap is not a reconnect", () => {
     await settle();
     expect(seen).toEqual([[{ name: "Ada" }]]);
 
-    // the peer expires the principal mid-flight; the next pass re-reads and swaps
-    refuse = true;
-    state.t = 5;
-    state.rows = [[{ name: "Ada" }], [{ name: "Bob" }]];
-    peer.push({ op: "t", t: 5 });
+    const bob = txSnap(await conn.transact([{ ":user/name": "Bob" }]));
+    peer.push({ op: "tx", t: bob.t, datoms: bob.datoms });
     await settle();
-
-    expect(seen).toHaveLength(2);
-    expect(seen[1]).toEqual([{ name: "Ada" }, { name: "Bob" }]);
-    // one socket throughout: the swap is a frame, not a reconnect
+    expect(seen.at(-1)).toEqual([{ name: "Ada" }, { name: "Bob" }]);
     expect(peer.sockets).toHaveLength(1);
-    expect(peer.frames.map((f) => f.op)).toEqual(["q", "q", "auth", "q"]);
-    expect(peer.frames[2].token).toBe("token-2");
+
+    refuse = true;
+    expect(
+      await run(c.ramose.db("movies", Movies).asOf(5).q(names)),
+    ).toEqual([{ name: "Ada" }, { name: "Bob" }]);
+    expect(peer.sockets).toHaveLength(1);
+    expect(peer.frames.filter((f) => f.op === "auth")).toHaveLength(1);
+    expect(peer.frames.find((f) => f.op === "auth")!.token).toBe("token-2");
 
     await Effect.runPromise(Fiber.interrupt(fiber));
     await c.dispose();

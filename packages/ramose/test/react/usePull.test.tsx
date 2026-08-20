@@ -1,15 +1,8 @@
 /**
- * `usePull` — a standing `db.livePull` as `Live`:
+ * `usePull` — a standing `db.livePull` as `Live`.
  *
- * - the first emission populates `rows`; a tick that changes the projection
- *   re-emits and counts in `ticks`; a retract emits `null` and keeps standing;
- * - `subject` is compared structurally, so inline `{ id }` literals and both
- *   spellings of a lookup ref hold one subscription; a *different* subject
- *   resets and re-subscribes;
- * - over a pinned view the stream emits once and completes, and `rows` stay
- *   (completion is not an error);
- * - a terminal refusal lands in `error`, over the last `rows`;
- * - StrictMode's mount → unmount → mount holds exactly one subscription.
+ * Session current-view pulls run on the overlay. Pinned `asOf` still rides
+ * the peer. Subject identity is structural.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -19,26 +12,47 @@ import { renderHook, waitFor } from "@testing-library/react";
 import type * as Ramose from "../../src/db/index.ts";
 import { registerDom, sleep, Todo, Todos, wrapperFor } from "./harness.tsx";
 import { fakePeer, type Frame } from "./peer.ts";
+import { catalogWorld, snapshotOf, txSnap } from "../overlay-seed.ts";
 import { useDb, usePull } from "../../src/react/index.ts";
 
 registerDom();
 
 const shape = { title: Todo.title };
-const ada: Ramose.Eid<typeof Todos> = { id: 17 };
 
-/** A peer whose entity and basis the test moves under it. */
-const peerAt = (state: { t: number; entity: unknown }) =>
+const todoWorld = async () => {
+  const conn = await catalogWorld(Todos);
+  const a = txSnap(
+    await conn.transact([
+      { ":db/id": "a", ":todo/title": "A", ":todo/slug": "a" },
+    ]),
+  );
+  const b = txSnap(
+    await conn.transact([
+      { ":db/id": "b", ":todo/title": "other", ":todo/slug": "b" },
+    ]),
+  );
+  return {
+    conn,
+    a: a.tempids.a,
+    b: b.tempids.b,
+    ...(await snapshotOf(conn)),
+  };
+};
+
+const overlayPeer = (world: { t: number; datoms: unknown[] }) =>
   fakePeer({
     answer: (frame: Frame) =>
-      frame.op === "pull"
-        ? { body: { t: state.t, result: state.entity } }
-        : { body: { t: state.t, result: [] } },
+      frame.op === "sync"
+        ? { body: { t: world.t, datoms: world.datoms } }
+        : { body: { t: world.t, result: null } },
+    http: () => ({ body: { t: world.t, txEid: 1, tempids: {}, datoms: 1 } }),
   });
 
 describe("usePull", () => {
-  test("first emission, a tick's re-emission, and a retract's null", async () => {
-    const state = { t: 1, entity: { title: "A" } as unknown };
-    const peer = peerAt(state);
+  test("first emission, a tx re-emission, and a retract's null", async () => {
+    const world = await todoWorld();
+    const peer = overlayPeer(world);
+    const ada: Ramose.Eid<typeof Todos> = { id: world.a };
     const { result } = renderHook(
       () => usePull(useDb("todos", Todos), ada, shape),
       { wrapper: wrapperFor(peer) },
@@ -47,48 +61,45 @@ describe("usePull", () => {
     await waitFor(() => expect(result.current.rows).toEqual({ title: "A" }));
     expect(result.current.ticks).toBe(0);
 
-    state.t = 2;
-    state.entity = { title: "B" };
-    peer.push({ op: "t", t: 2 });
+    const renamed = txSnap(
+      await world.conn.transact([{ ":db/id": world.a, ":todo/title": "B" }]),
+    );
+    peer.push({ op: "tx", t: renamed.t, datoms: renamed.datoms });
     await waitFor(() => expect(result.current.rows).toEqual({ title: "B" }));
     expect(result.current.ticks).toBe(1);
 
-    // retracted: `null` is a legitimate emission, and the stream keeps standing
-    state.t = 3;
-    state.entity = null;
-    peer.push({ op: "t", t: 3 });
+    const gone = txSnap(
+      await world.conn.transact([[":db/retractEntity", world.a]]),
+    );
+    peer.push({ op: "tx", t: gone.t, datoms: gone.datoms });
     await waitFor(() => expect(result.current.rows).toBeNull());
     expect(result.current.ticks).toBe(2);
     expect(result.current.error).toBeUndefined();
   });
 
   test("the subject is structural: equal literals hold one subscription, a new subject re-subscribes", async () => {
-    const state = { t: 1, entity: { title: "A" } as unknown };
-    const peer = peerAt(state);
+    const world = await todoWorld();
+    const peer = overlayPeer(world);
     const { result, rerender } = renderHook(
       ({ id }: { id: number }) =>
         usePull(useDb("todos", Todos), { id }, shape),
-      { wrapper: wrapperFor(peer), initialProps: { id: 17 } },
+      { wrapper: wrapperFor(peer), initialProps: { id: world.a } },
     );
     await waitFor(() => expect(result.current.rows).toEqual({ title: "A" }));
 
-    // fresh `{ id: 17 }` objects every render: still the one subscription
-    rerender({ id: 17 });
-    rerender({ id: 17 });
+    rerender({ id: world.a });
+    rerender({ id: world.a });
     await sleep(20);
-    expect(peer.frameOps("pull")).toHaveLength(1);
+    expect(peer.frameOps("pull")).toHaveLength(0);
 
-    // a different entity is a different subscription, reset and re-run
-    state.entity = { title: "other" };
-    rerender({ id: 18 });
-    expect(result.current.rows).toBeUndefined();
+    rerender({ id: world.b });
     await waitFor(() => expect(result.current.rows).toEqual({ title: "other" }));
-    expect(peer.frameOps("pull").map((f) => f.eid)).toEqual([17, 18]);
+    expect(peer.frameOps("pull")).toHaveLength(0);
   });
 
   test("both spellings of a lookup ref are one subject", async () => {
-    const state = { t: 1, entity: { title: "A" } as unknown };
-    const peer = peerAt(state);
+    const world = await todoWorld();
+    const peer = overlayPeer(world);
     const { result, rerender } = renderHook(
       ({ byRef }: { byRef: boolean }) =>
         usePull(
@@ -102,16 +113,20 @@ describe("usePull", () => {
 
     rerender({ byRef: false });
     await sleep(20);
-    expect(peer.frameOps("pull")).toHaveLength(1);
-    expect(peer.frameOps("pull")[0]!.eid).toEqual([":todo/slug", "a"]);
+    expect(result.current.rows).toEqual({ title: "A" });
+    expect(peer.frameOps("pull")).toHaveLength(0);
   });
 
   test("a pinned view emits once, completes, and keeps its rows", async () => {
     const state = { t: 5, entity: { title: "then" } as unknown };
-    const peer = peerAt(state);
+    const peer = fakePeer({
+      answer: (frame: Frame) =>
+        frame.op === "pull"
+          ? { body: { t: state.t, result: state.entity } }
+          : { body: { t: state.t, result: [] } },
+    });
     const { result, rerender } = renderHook(
-      // inline `asOf`: a new object every render, the same view
-      () => usePull(useDb("todos", Todos).asOf(3), ada, shape),
+      () => usePull(useDb("todos", Todos).asOf(3), { id: 17 }, shape),
       { wrapper: wrapperFor(peer) },
     );
     await waitFor(() => expect(result.current.rows).toEqual({ title: "then" }));
@@ -126,23 +141,27 @@ describe("usePull", () => {
   });
 
   test("a terminal refusal lands in error, over the last rows", async () => {
-    const state = { t: 1, entity: { title: "A" } as unknown };
+    const world = await todoWorld();
     let refuse = false;
     const peer = fakePeer({
       answer: (frame: Frame) => {
-        if (frame.op !== "pull") return { body: { t: state.t, result: [] } };
-        if (refuse) return { status: 401, body: { error: "no" } };
-        return { body: { t: state.t, result: state.entity } };
+        if (refuse && frame.op === "sync") {
+          return { status: 401, body: { error: "no" } };
+        }
+        if (frame.op === "sync") {
+          return { body: { t: world.t, datoms: world.datoms } };
+        }
+        return { body: { t: world.t, result: null } };
       },
     });
     const { result } = renderHook(
-      () => usePull(useDb("todos", Todos), ada, shape),
+      () => usePull(useDb("todos", Todos), { id: world.a }, shape),
       { wrapper: wrapperFor(peer) },
     );
     await waitFor(() => expect(result.current.rows).toEqual({ title: "A" }));
 
     refuse = true;
-    peer.push({ op: "t", t: 2 });
+    peer.drop();
     await waitFor(() => expect(result.current.error).toBeDefined());
     expect(result.current.rows).toEqual({ title: "A" });
     const squashed = Cause.squash(result.current.error!) as { _tag?: string };
@@ -150,10 +169,10 @@ describe("usePull", () => {
   });
 
   test("StrictMode holds exactly one subscription at steady state", async () => {
-    const state = { t: 1, entity: { title: "A" } as unknown };
-    const peer = peerAt(state);
+    const world = await todoWorld();
+    const peer = overlayPeer(world);
     const { result } = renderHook(
-      () => usePull(useDb("todos", Todos), ada, shape),
+      () => usePull(useDb("todos", Todos), { id: world.a }, shape),
       {
         wrapper: ({ children }) => (
           <StrictMode>{wrapperFor(peer)({ children })}</StrictMode>
@@ -163,13 +182,13 @@ describe("usePull", () => {
     await waitFor(() => expect(result.current.rows).toEqual({ title: "A" }));
     await sleep(20);
 
-    // one standing loop means one re-pull per tick
-    const before = peer.frameOps("pull").length;
-    state.t = 2;
-    state.entity = { title: "B" };
-    peer.push({ op: "t", t: 2 });
+    const renamed = txSnap(
+      await world.conn.transact([{ ":db/id": world.a, ":todo/title": "B" }]),
+    );
+    peer.push({ op: "tx", t: renamed.t, datoms: renamed.datoms });
     await waitFor(() => expect(result.current.rows).toEqual({ title: "B" }));
     await sleep(20);
-    expect(peer.frameOps("pull").length).toBe(before + 1);
+    expect(result.current.ticks).toBe(1);
+    expect(result.current.error).toBeUndefined();
   });
 });
