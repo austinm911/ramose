@@ -259,7 +259,7 @@ export const useLive = <A, E>(stream: Stream.Stream<A, E>) => {
 - **QueryReplica first-class.** Reads take their basis from the server's replica path; no replica selection, no novelty access.
 - **A database is a name.** `ramose.db(name, catalog)` is the whole creation step — no create / list / delete, one resource for N tenants.
 - **HTTP is Worker internals.** No endpoint, source, URL or admin type is exported; the two transports are Layers, not clients.
-- **Browser sockets terminate in the Worker isolate.** The client speaks only `GET /db/:name/session`; no DO route is reachable or nameable.
+- **Browser sockets terminate at `GET /db/:name/session`.** The Worker verifies the caller and upgrades onto the replica that session already queries; no DO is reachable or nameable from the browser.
 - **Write-WS is not the default, and `processTx` / `SortedNovelty.flush` are untouched.** Writes go over HTTPS `/transact`; `install()` is an ordinary transaction.
 
 ## 7. Resolved: subpaths, not packages

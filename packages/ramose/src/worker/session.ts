@@ -1,4 +1,4 @@
-/** Session socket: Worker-accepted WS, frames dispatched into existing HTTP routes. */
+/** Session socket protocol: inbound frames + the apply-then-push walk. */
 
 import type { Principal, WireDatom } from "../internal/core/index.ts";
 import type { SessionLog, SessionLogEntry, SessionTxDecision } from "./session-sync.ts";
@@ -76,20 +76,28 @@ export const META_HEADERS: readonly string[] = [
   "x-ramose-colo",
 ];
 
+/** Worker→replica upgrade: the verified principal, so the replica does not re-parse the JWT. */
+export const PRINCIPAL_HEADER = "x-ramose-principal";
+
 // ---- seams -----------------------------------------------------------------
 
-/** The bits of a `WebSocket` a session uses (a Workers server socket after `accept()`). */
+/** The bits of a `WebSocket` a session uses (a Workers / DO server socket). */
 export interface SocketLike {
   send(data: string): void;
   close(code?: number, reason?: string): void;
   addEventListener(type: "message" | "close" | "error", cb: (ev: any) => void): void;
 }
 
-/** Runs one planned frame against the Worker's own routes; never rejects for a non-2xx. */
+/** Runs one planned frame against HTTP routes; never rejects for a non-2xx. */
 export type SessionDispatch = (rest: string, init: { method: string; headers: Record<string, string>; body?: string }, principal?: Principal) => Promise<Response>;
 
-/** `setInterval`-shaped; returns its own cancel. */
-export type Scheduler = (fn: () => void, ms: number) => () => void;
+/** Hibernation attachment / reconstruct seed. */
+export interface SessionState {
+  readonly principal?: Principal;
+  readonly lastT: number;
+  readonly watermark: number;
+  readonly writerEcho?: { t: number; clientTxId: string };
+}
 
 export interface SessionOptions {
   dispatch: SessionDispatch;
@@ -99,28 +107,33 @@ export interface SessionOptions {
   authenticate?: (token: string) => Promise<Principal>;
   /** `{ eid, class }` for the `auth` ack — the swapped principal's entity, `null` when its row does not exist yet */
   describe?: (principal: Principal) => Promise<WirePrincipal>;
-  /** reads the current basis `t` (isolate-local, cache-bypassing) — omit to disable polling */
-  pollBasis?: () => Promise<number>;
   /**
-   * richer poll: novelty since the current root. When set (with {@link filterEntry}),
-   * the session walks a filtered log instead of ticking every `t`.
+   * Novelty since the current root — used by `{ op: "sync" }` only.
+   * Follow is apply-then-push ({@link Session.applyEntry}), not a poller.
    */
-  pollLog?: () => Promise<SessionLog>;
+  readLog?: () => Promise<SessionLog>;
   /** sieve one unfiltered log entry for this socket's current principal */
   filterEntry?: (entry: SessionLogEntry, principal?: Principal) => Promise<SessionTxDecision>;
   /** current-value dump through the read view — first sync / resync */
   snapshot?: (principal?: Principal) => Promise<{ t: number; datoms: WireDatom[] }>;
-  /** sessions sharing this key share one basis reading (the read path's `db|hint`) */
-  watchKey?: string;
-  pollIntervalMs?: number;
-  schedule?: Scheduler;
-  /** clock seam for tests */
-  now?: () => number;
+  /** restore after hibernation */
+  seed?: SessionState;
+  /**
+   * When false, the caller drives {@link Session.onMessage} (hibernating DO
+   * `webSocketMessage`). Default true for tests / a Worker-accepted socket.
+   */
+  listen?: boolean;
 }
 
 export interface Session {
   /** Handle one inbound frame. Never rejects; concurrent calls are fine (frames are not serialized). */
   onMessage(data: string | ArrayBuffer): Promise<void>;
+  /**
+   * Replica apply: walk this one applied frame. The follow cursor is the
+   * walked `t` (and the replica's `basisT` after apply). Never stamps a tip
+   * that was not applied.
+   */
+  applyEntry(entry: SessionLogEntry, rootT: number): Promise<void>;
   /** Send `{ op: "t", t }` if this is news to this socket. */
   notifyT(t: number): void;
   close(): void;
@@ -128,21 +141,17 @@ export interface Session {
   readonly lastT: number;
   /**
    * Follow cursor: last `t` this session has **walked** (including sieved
-   * skips). Advances only by walking replica novelty in `t` order, or to a
-   * snapshot's `t` after a dump. Never jumps to `log.t` / `shared.t` without
-   * that dump — a later `e.t <= from` would drop a still-missing visible `t`.
+   * skips). Advances only by walking applied novelty in `t` order, or to a
+   * snapshot's `t` after a dump. Never jumps to a log tip without that dump.
    */
   readonly watermark: number;
-  /** Resolves when the socket is closed or errors (index.ts holds the request open with it). */
+  /** Current principal (upgrade or last successful `auth`). */
+  readonly principal: Principal | undefined;
+  /** Persist across DO hibernation. */
+  state(): SessionState;
+  /** Resolves when the socket is closed or errors. */
   readonly closed: Promise<void>;
 }
-
-export const DEFAULT_POLL_INTERVAL_MS = 1_000;
-
-const defaultSchedule: Scheduler = (fn, ms) => {
-  const handle = setInterval(fn, ms);
-  return () => clearInterval(handle as unknown as number);
-};
 
 // ---- planning --------------------------------------------------------------
 
@@ -221,70 +230,41 @@ export function planOf(frame: unknown): SessionPlan | PlanError {
   }
 }
 
-// ---- shared basis readings (one per db|hint per isolate, refcounted) --------
-//
-// Every session runs its own poll timer, created inside `openSession` — that
-// is, inside the session's own WS-upgrade request context — so the poll's
-// sub-request and the `socket.send` it triggers are always I/O this session is
-// allowed to perform. A single shared timer fanning `{op:"t"}` out to every
-// subscribed socket runs in whichever request context created it, and workerd
-// forbids touching another request's socket from there ("Cannot perform I/O on
-// behalf of a different request"); the send throws, and the session it was
-// meant for dies. It also ties every session's ticks to the lifetime of the
-// owning request: when that session closes, the timer dies with its context
-// and the survivors silently stop hearing about the basis.
-//
-// What sessions on one key *do* share is the reading: a context-free
-// `{ t, at }` snapshot of the basis, so N sessions on one db still cost about
-// one replica poll per interval, not N. A session whose timer fires while the
-// reading is fresh (or while another session's poll is in flight) reads the
-// snapshot instead of polling, at the price of learning about movement up to
-// one interval later than the session that polled.
-
-interface BasisReading {
-  /** highest basis `t` any session on this key has observed */
-  t: number;
-  rootT: number;
-  entries: SessionLogEntry[];
-  /** when `t` was last confirmed by a poll (0: never) */
-  at: number;
-  /** a poll started then is in flight (0: none) — a stale mark self-heals after one interval */
-  pollingSince: number;
-  /** sessions currently subscribed; the last one out deletes the entry */
-  refs: number;
-}
-
-const readings = new Map<string, BasisReading>();
-
-/** Test hook: the live watch keys (a session that closed must not leave one behind). */
-export function watcherKeys(): string[] {
-  return [...readings.keys()];
+export function parsePrincipalHeader(raw: string | null): Principal | undefined {
+  if (raw === null || raw === "") return undefined;
+  try {
+    const p = JSON.parse(raw) as Principal;
+    if (typeof p !== "object" || p === null || typeof p.class !== "string" || typeof p.db !== "string") return undefined;
+    return p;
+  } catch {
+    return undefined;
+  }
 }
 
 // ---- the session ------------------------------------------------------------
 
-/** Wire an accepted socket to the Worker's routes. Returns the session (also driven by the socket's own events). */
+/**
+ * Wire an accepted socket to dispatch + the apply-then-push walk.
+ * The replica is the thing that applies the log and the thing that notifies.
+ */
 export function openSession(socket: SocketLike, options: SessionOptions): Session {
-  let lastT = 0;
+  const seed = options.seed;
+  let lastT = seed?.lastT ?? 0;
   /** last `t` considered, including skipped empties — must not leak via `lastT` */
-  let watermark = 0;
+  let watermark = seed?.watermark ?? 0;
   let dead = false;
-  let principal = options.principal;
+  let principal = seed?.principal ?? options.principal;
   /** This socket's last committed write — attached only to that `t`'s `{ op: "tx" }`. */
-  let writerEcho: { t: number; clientTxId: string } | undefined;
+  let writerEcho: { t: number; clientTxId: string } | undefined = seed?.writerEcho;
   let expiring = false;
-  let unsubscribe: (() => void) | undefined;
   let resolveClosed!: () => void;
   const closed = new Promise<void>((resolve) => {
     resolveClosed = resolve;
   });
-  const filtered = options.pollLog !== undefined && options.filterEntry !== undefined;
 
   const die = () => {
     if (dead) return;
     dead = true;
-    unsubscribe?.();
-    unsubscribe = undefined;
     resolveClosed();
   };
 
@@ -322,7 +302,7 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
       const snap = await options.snapshot(principal);
       send({ op: "resync", t: snap.t, datoms: snap.datoms });
       notifyT(snap.t);
-      // dump in hand — the cursor may sit at the snapshot's t, not log.t
+      // dump in hand — the cursor may sit at the snapshot's t, not a guessed tip
       watermark = snap.t;
       return;
     }
@@ -332,11 +312,11 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
   };
 
   /**
-   * Walk replica novelty in `t` order from `from`. A sieved skip is silence
+   * Walk applied novelty in `t` order from `from`. A sieved skip is silence
    * (watermark moves, no `t` leak). A missing `t` in `(from, log.t]` with
-   * `t > rootT` is a torn window — fill if the later poll grows the log,
-   * otherwise dump. Never jump the cursor to `log.t` and later `continue`
-   * a late-appearing visible `t`.
+   * `t > rootT` is a torn window — dump if we have a snapshot, otherwise hold
+   * the cursor. Never jump the cursor to `log.t` and later `continue` a
+   * late-appearing visible `t`.
    */
   const consider = async (log: SessionLog, from: number): Promise<void> => {
     if (dead) return;
@@ -346,14 +326,24 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     }
     const filter = options.filterEntry;
     if (!filter) {
-      if (log.t > lastT) notifyT(log.t);
+      for (const e of log.entries) {
+        if (e.t <= from) continue;
+        if (e.t > from + 1 && e.t > log.rootT) {
+          if (options.snapshot) await pushResync(log.t);
+          return;
+        }
+        watermark = e.t;
+        send({ op: "tx", t: e.t, datoms: e.datoms });
+        notifyT(e.t);
+        from = e.t;
+      }
       return;
     }
     const pending = log.entries.filter((e) => e.t > from).sort((a, b) => a.t - b.t);
     let cursor = from;
     const torn = async (): Promise<void> => {
-      // worker can name the missing t; browser cannot. A snapshot dump is
-      // honest. Without one, hold the cursor so a later poll can fill.
+      // replica apply is dense, so a hole here is a test / catch-up tear.
+      // A snapshot dump is honest. Without one, hold the cursor.
       if (options.snapshot) await pushResync(log.t);
     };
     for (const e of pending) {
@@ -408,6 +398,12 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     return run;
   };
 
+  const applyEntry = (entry: SessionLogEntry, rootT: number): Promise<void> =>
+    enqueueConsider({ t: entry.t, rootT, entries: [entry] }, watermark).catch((err) => {
+      failSieve();
+      throw err;
+    });
+
   /** `{op:"auth", token}`: re-verify, then swap. A refusal keeps the old principal. */
   const refresh = async (f: Record<string, unknown>): Promise<void> => {
     const id = typeof f.id === "number" && Number.isFinite(f.id) ? f.id : 0;
@@ -449,12 +445,12 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
       const f = frame as Record<string, unknown>;
       const id = typeof f.id === "number" && Number.isFinite(f.id) ? f.id : 0;
       const from = typeof f.from === "number" && Number.isFinite(f.from) && f.from >= 0 ? f.from : 0;
-      if (!options.pollLog) {
+      if (!options.readLog) {
         send({ id, status: 400, body: { error: "this session cannot sync a log" } });
         return;
       }
       try {
-        const log = await options.pollLog();
+        const log = await options.readLog();
         watermark = from;
         await enqueueConsider(log, from);
         // walk cursor, not log tip — a torn window must not claim log.t
@@ -506,7 +502,8 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
       if (v !== null) headers[h] = v;
     }
     send({ id: plan.id, status: res.status, body, ...(Object.keys(headers).length > 0 ? { headers } : {}) });
-    // ack.t: a write on this socket is the cheapest possible basis notification — after its reply
+    // HTTP ack paints the writer overlay. It does not move the follow cursor —
+    // that moves when the replica applies this t and walks the socket.
     if (plan.op === "transact" && res.ok) {
       const ack = body as { t?: unknown; clientTxId?: unknown } | null;
       const echoT = typeof ack?.t === "number" ? ack.t : undefined;
@@ -520,120 +517,18 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
         }
       }
       if (echoT !== undefined && echoId !== undefined) writerEcho = { t: echoT, clientTxId: echoId };
-      if (filtered && options.pollLog) {
-        try {
-          const log = await options.pollLog();
-          try {
-            await enqueueConsider(log, watermark);
-          } catch {
-            failSieve();
-          }
-        } catch {
-          const t = (body as { t?: unknown } | null)?.t;
-          if (typeof t === "number") notifyT(t);
-        }
-      } else {
-        const t = (body as { t?: unknown } | null)?.t;
-        if (typeof t === "number") notifyT(t);
-      }
     }
   };
 
-  socket.addEventListener("message", (ev: { data: string | ArrayBuffer }) => void onMessage(ev.data));
-  socket.addEventListener("close", die);
-  socket.addEventListener("error", die);
-
-  if ((options.pollBasis || options.pollLog) && options.watchKey !== undefined) {
-    const key = options.watchKey;
-    const pollT = options.pollBasis;
-    const pollLog = options.pollLog;
-    const intervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
-    const now = options.now ?? Date.now;
-
-    let entry = readings.get(key);
-    if (!entry) {
-      entry = { t: 0, rootT: 0, entries: [], at: 0, pollingSince: 0, refs: 0 };
-      readings.set(key, entry);
-    }
-    const shared = entry;
-    shared.refs++;
-
-    // Unfiltered `{ op: t }` still silently seeds lastT so the current basis
-    // does not tick. The follow cursor must not: jumping watermark / lastT to
-    // shared.t or log.t without a dump is the hole (later e.t <= from drops
-    // a still-missing visible t). Filtered observe always walks.
-    let seeded = shared.at > 0;
-    if (!filtered && seeded && shared.t > lastT) lastT = shared.t;
-    const observeT = (t: number) => {
-      if (!seeded) {
-        seeded = true;
-        if (t > lastT) lastT = t;
-        return;
-      }
-      notifyT(t);
-    };
-    const observeLog = (log: SessionLog) => {
-      seeded = true;
-      void enqueueConsider(log, watermark).catch(failSieve);
-    };
-
-    // this session's own poll is in flight; overlapping ticks are dropped rather than queued
-    let inflight = false;
-    const tick = async (): Promise<void> => {
-      if (dead || inflight) return;
-      const ts = now();
-      if (shared.at > 0 && ts - shared.at < intervalMs) {
-        if (filtered) observeLog({ t: shared.t, rootT: shared.rootT, entries: shared.entries });
-        else observeT(shared.t);
-        return;
-      }
-      if (shared.pollingSince > 0 && ts - shared.pollingSince < intervalMs) {
-        // another session is polling this key; read what is already known
-        if (shared.at > 0) {
-          if (filtered) observeLog({ t: shared.t, rootT: shared.rootT, entries: shared.entries });
-          else observeT(shared.t);
-        }
-        return;
-      }
-      inflight = true;
-      shared.pollingSince = ts;
-      try {
-        if (pollLog) {
-          const log = await pollLog();
-          if (typeof log.t !== "number" || !Number.isFinite(log.t)) return;
-          if (log.t >= shared.t) {
-            shared.t = log.t;
-            shared.rootT = log.rootT;
-            shared.entries = log.entries.slice();
-          }
-          shared.at = now();
-          if (filtered) observeLog({ t: shared.t, rootT: shared.rootT, entries: shared.entries });
-          else observeT(shared.t);
-        } else if (pollT) {
-          const t = await pollT();
-          if (typeof t !== "number" || !Number.isFinite(t)) return;
-          if (t > shared.t) shared.t = t;
-          shared.at = now();
-          observeT(shared.t);
-        }
-      } catch {
-        /* a transient replica error just means no news this tick */
-      } finally {
-        shared.pollingSince = 0;
-        inflight = false;
-      }
-    };
-
-    const cancel = (options.schedule ?? defaultSchedule)(() => void tick(), intervalMs);
-    unsubscribe = () => {
-      cancel();
-      shared.refs--;
-      if (shared.refs === 0 && readings.get(key) === shared) readings.delete(key);
-    };
+  if (options.listen !== false) {
+    socket.addEventListener("message", (ev: { data: string | ArrayBuffer }) => void onMessage(ev.data));
+    socket.addEventListener("close", die);
+    socket.addEventListener("error", die);
   }
 
   return {
     onMessage,
+    applyEntry,
     notifyT,
     close() {
       const wasDead = dead;
@@ -646,6 +541,20 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     get watermark() {
       return watermark;
     },
+    get principal() {
+      return principal;
+    },
+    state: () => ({
+      ...(principal !== undefined ? { principal } : {}),
+      lastT,
+      watermark,
+      ...(writerEcho !== undefined ? { writerEcho } : {}),
+    }),
     closed,
   };
+}
+
+/** After the replica applies one dense `t`, walk every attached session. */
+export async function pushApplied(sessions: Iterable<Session>, entry: SessionLogEntry, rootT: number): Promise<void> {
+  for (const s of sessions) await s.applyEntry(entry, rootT);
 }
