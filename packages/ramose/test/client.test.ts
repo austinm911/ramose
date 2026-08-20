@@ -411,7 +411,7 @@ describe("failures arrive tagged, not thrown", () => {
       },
     });
     const c = client(peer);
-    expect(await run(c.ramose.db("movies", Movies).q(names))).toEqual([
+    expect(await run(c.ramose.db("movies", Movies).asOf(2).q(names))).toEqual([
       { name: "Ada" },
     ]);
     expect(n).toBe(2);
@@ -508,11 +508,11 @@ describe("the JSON transport", () => {
     const c = client(peer);
 
     const rows: readonly unknown[] = await run(
-      c.ramose.db("movies", Movies).q(query(Movie).where(Movie.released.eq(when))),
+      c.ramose.db("movies", Movies).asOf(1).q(query(Movie).where(Movie.released.eq(when))),
     );
 
-    // on the wire: tagged, JSON-safe
-    expect(peer.frames[0].query).toEqual({
+    // on the wire: tagged, JSON-safe (pinned views still ride the socket)
+    expect(peer.frameOps("q")[0].query).toEqual({
       find: ["?e"],
       where: [
         [

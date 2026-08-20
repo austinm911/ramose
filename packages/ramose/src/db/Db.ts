@@ -115,8 +115,9 @@ export interface Wire {
   /**
    * Session overlay — confirmed follower + pending layers. Absent on an
    * HTTPS-only client, where reads stay on the peer and writes have no
-   * optimistic layer.
+   * optimistic layer. `makeDb` binds the catalog without opening a socket.
    */
+  bindCatalog?(name: string, catalog: AnyCatalog): void;
   overlay?(name: string):
     | {
         transact(
@@ -126,6 +127,7 @@ export interface Wire {
             readonly t: number;
             readonly txEid: number;
             readonly datoms: unknown;
+            readonly datomCount: number;
           },
           DbError
         >;
@@ -675,6 +677,10 @@ export const makeDb = <C extends AnyCatalog>(
     ? undefined
     : invalidDatabaseName(name);
 
+  // remember the catalog so the first session read can install schema
+  // locally — must not open a socket (db() is pure)
+  wire.bindCatalog?.(name, catalog);
+
   const submit = (
     tx: readonly unknown[],
   ): Effect.Effect<TxReport<C>, DbError> => {
@@ -685,9 +691,7 @@ export const makeDb = <C extends AnyCatalog>(
         Effect.map((ack) => ({
           t: ack.t,
           txEid: makeEid<C>(ack.txEid),
-          datomCount: Array.isArray(ack.datoms)
-            ? ack.datoms.length
-            : 0,
+          datomCount: ack.datomCount,
           // local confirmed db at `t` — no min-t fence, no refetch
           dbAfter: makeDb(wire, name, catalog, view),
         })),

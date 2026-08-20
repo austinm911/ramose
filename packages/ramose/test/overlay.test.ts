@@ -17,11 +17,17 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
-import { query } from "../src/db/internal.ts";
+import * as Schema from "effect/Schema";
+import { Attr, Catalog, Namespace, query } from "../src/db/internal.ts";
 import { currentViewDatoms, decideSessionTx } from "../src/worker/session-sync.ts";
 import { client, fakePeer, settle, type Call } from "./peer.ts";
 
-import { Movies, User } from "./db/fixture.ts";
+import { Meta, Movie, Movies, User } from "./db/fixture.ts";
+
+const Doc = Namespace("doc", {
+  slug: Attr(Schema.String, { unique: "value" }),
+});
+const WithSlug = Catalog({ user: User, movie: Movie, meta: Meta, doc: Doc });
 
 const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
 const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
@@ -187,20 +193,25 @@ describe("optimistic transact", () => {
     const fact = await server.db().first(Index.AVET, {
       a: server.db().schema.requireAttr(":user/name").id,
     });
-    expect(rows[0]!.id).toBe(fact!.e);
+    expect(rows[0]!.id as number).toBe(fact!.e);
     await c.dispose();
   });
 
   test("409 drops the pending row and fails TxRejected", async () => {
     const server = await moviesWorld();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
     const peer = fakePeer({
-      http: (call) =>
-        call.url.endsWith("/transact")
-          ? {
-              status: 409,
-              body: { error: "unique conflict", tag: "TxRejected", code: "tx/unique-conflict" },
-            }
-          : { body: { t: server.t } },
+      http: async (call) => {
+        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
+        await gate;
+        return {
+          status: 409,
+          body: { error: "unique conflict", tag: "TxRejected", code: "tx/unique-conflict" },
+        };
+      },
     });
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
@@ -218,6 +229,7 @@ describe("optimistic transact", () => {
     await settle();
     expect(live.seen.at(-1)).toEqual([{ name: "Ada" }]);
 
+    release();
     const e = await failed;
     await settle();
     expect(e._tag).toBe("TxRejected");
@@ -230,7 +242,10 @@ describe("optimistic transact", () => {
 
   test("local unique conflict does not POST", async () => {
     const server = await moviesWorld();
-    await server.transact([{ ":user/name": "Ada" }]);
+    await server.transact([
+      { ":db/ident": ":doc/slug", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/value" },
+    ]);
+    await server.transact([{ ":doc/slug": "ada" }]);
     const posts: Call[] = [];
     const peer = fakePeer({
       http: (call) => {
@@ -239,13 +254,13 @@ describe("optimistic transact", () => {
       },
     });
     const c = client(peer);
-    const db = c.ramose.db("movies", Movies);
+    const db = c.ramose.db("movies", WithSlug);
     await seedClient(peer, db, server);
 
     const e = await runFail(
       db.transact(function* (tx) {
         const row = yield* tx.entity();
-        yield* row.add(User.name, "Ada");
+        yield* row.add(Doc.slug, "ada");
       }),
     );
     expect(e._tag).toBe("TxRejected");

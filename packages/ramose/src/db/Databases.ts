@@ -148,6 +148,7 @@ export const makeDatabases = (
 ): { readonly databases: DatabasesShape; readonly close: () => void } => {
   const sessions = new Map<string, Session>();
   const overlays = new Map<string, Overlay>();
+  const catalogs = new Map<string, AnyCatalog>();
   let closed = false;
 
   // rejects with the typed DbError itself (not a FiberFailure), so the
@@ -187,6 +188,7 @@ export const makeDatabases = (
       existing = openOverlay({
         session: socket,
         post: (tx, clientTxId) => postTx(name, tx, clientTxId),
+        catalog: catalogs.get(name),
       });
       overlays.set(name, existing);
     }
@@ -349,6 +351,9 @@ export const makeDatabases = (
 
   const wire: Wire = {
     session,
+    bindCatalog: (name, catalog) => {
+      catalogs.set(name, catalog);
+    },
     overlay: overlayOf,
     read: (name, op, body, minT) => {
       const pinned = body.asOf !== undefined || body.history === true;

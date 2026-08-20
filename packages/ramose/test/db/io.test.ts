@@ -247,12 +247,13 @@ describe("install → transact → q → pull", () => {
     expect(soup![":user/name"]).toBe("Ada");
     expect(soup![":user/age"]).toBe(36);
 
-    // writes stay HTTPS; current-view reads run on the overlay (one catch-up sync)
+    // writes stay HTTPS; current-view reads run on the overlay (catch-up sync)
     expect(peer.calls.map((c) => c.url)).toEqual([
       "https://peer.local/db/movies/transact",
       "https://peer.local/db/movies/transact",
     ]);
-    expect(peer.frames.map((f) => f.op)).toEqual(["sync"]);
+    expect(peer.frames.filter((f) => f.op === "q" || f.op === "pull")).toEqual([]);
+    expect(peer.frames.some((f) => f.op === "sync")).toBe(true);
     await peer.dispose();
   });
 
@@ -262,7 +263,7 @@ describe("install → transact → q → pull", () => {
     const first = await run(db.install());
     const second = await run(db.install());
     expect(second.t).toBeGreaterThan(first.t);
-    expect(peer.calls[1].body).toEqual(peer.calls[0].body);
+    expect(peer.calls[1].body.tx).toEqual(peer.calls[0].body.tx);
 
     // and the schema is usable either way round
     await run(
@@ -294,7 +295,8 @@ describe("install → transact → q → pull", () => {
     expect(rows.map((r) => r.name).sort()).toEqual(["Ada", "Bob"]);
     expect(rows.every((r) => typeof r.id === "number")).toBe(true);
     // current-view q is local — only the first-connect sync rode the socket
-    expect(peer.frames.map((f) => f.op)).toEqual(["sync"]);
+    expect(peer.frames.filter((f) => f.op === "q")).toEqual([]);
+    expect(peer.frames.some((f) => f.op === "sync")).toBe(true);
     await peer.dispose();
   });
 });
@@ -332,8 +334,8 @@ describe("views", () => {
     const past = db.asOf(1);
     await run(db.q(names));
     await run(past.q(names));
-    expect(peer.frames.map((f) => f.op)).toEqual(["sync", "q"]);
-    expect(peer.frames[1]!.asOf).toBe(1);
+    expect(peer.frames.filter((f) => f.op === "q").map((f) => f.asOf)).toEqual([1]);
+    expect(peer.frames.some((f) => f.op === "sync")).toBe(true);
     await peer.dispose();
   });
 });
@@ -358,17 +360,13 @@ describe("the read fence is what dbAfter carries", () => {
 });
 
 describe("failures", () => {
-  test("pull against an uninstalled database fails InvalidRequest, like q", async () => {
+  test("an uninstalled peer still answers locally from the catalog schema", async () => {
     const peer = await inProcessPeer();
     const db = peer.ramose.db("movies", Movies);
-    // note: no install()
+    // note: no install() — the overlay knows the catalog, the peer does not
 
-    const pulled = await runFail(db.pull({ id: 1 }, { name: User.name }));
-    expect(pulled._tag).toBe("InvalidRequest");
-    expect(pulled.message).toContain(":user/name");
-
-    const queried = await runFail(db.q(names));
-    expect(queried._tag).toBe("InvalidRequest");
+    expect(await run(db.pull({ id: 1 }, { name: User.name }))).toBeNull();
+    expect(await run(db.q(names))).toEqual([]);
     await peer.dispose();
   });
 

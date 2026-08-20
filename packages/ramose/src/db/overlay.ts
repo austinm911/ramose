@@ -24,6 +24,8 @@ import {
 } from "../internal/core/query/pull.ts";
 import { processTx, TxError } from "../internal/core/tx.ts";
 import * as Effect from "effect/Effect";
+import type { AnyCatalog } from "./Catalog.ts";
+import { schemaTx } from "./ensure.ts";
 import {
   type DbError,
   fromResponse,
@@ -42,6 +44,7 @@ export interface OverlayAck {
   readonly txEid: number;
   readonly tempids: Record<string, number>;
   readonly datoms: WireDatom[];
+  readonly datomCount: number;
   readonly clientTxId?: string;
 }
 
@@ -65,6 +68,8 @@ export interface OverlayOptions {
     tx: readonly unknown[],
     clientTxId: string,
   ) => Effect.Effect<unknown, DbError>;
+  /** Installs catalog attrs locally so processTx / q can resolve idents. */
+  readonly catalog?: AnyCatalog | undefined;
 }
 
 interface PendingLayer {
@@ -187,6 +192,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   let epoch = 0;
   let readyGen = -1;
   let opening: Promise<void> | undefined;
+  let applied: Promise<void> = Promise.resolve();
   let outbox: Promise<unknown> = Promise.resolve();
 
   const wake = (): void => {
@@ -227,7 +233,11 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   };
 
   const replaceConfirmed = async (datoms: readonly Datom[], t: number): Promise<void> => {
-    conn = await Connection.fromDatoms(datoms);
+    const next = await Connection.fromDatoms(datoms);
+    if (options.catalog !== undefined) {
+      await next.transact(schemaTx(options.catalog) as unknown[]);
+    }
+    conn = next;
     confirmedT = t;
     options.session.bump(t);
   };
@@ -267,13 +277,49 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     return pending.splice(i, 1)[0];
   };
 
+  /** Inbound `{ op: "tx" }` may land before the HTTP ack; drop the layer it covers. */
+  const dropCoveredPending = (incoming: readonly Datom[]): void => {
+    if (incoming.length === 0 || pending.length === 0) return;
+    const serverE = new Map<string, number>();
+    for (const d of incoming) {
+      if (d.e < TX_EID_CAP) {
+        serverE.set(`${d.a}\0${JSON.stringify(d.v)}\0${d.added}`, d.e);
+      }
+    }
+    for (let i = pending.length - 1; i >= 0; i--) {
+      const layer = pending[i]!;
+      const facts = layer.datoms.filter((d) => d.e < TX_EID_CAP);
+      if (facts.length === 0) continue;
+      const eids = new Map<number, number>();
+      let covered = true;
+      for (const d of facts) {
+        const e = serverE.get(`${d.a}\0${JSON.stringify(d.v)}\0${d.added}`);
+        if (e === undefined) {
+          covered = false;
+          break;
+        }
+        if (d.e !== e) eids.set(d.e, e);
+      }
+      if (!covered) continue;
+      const acked: Record<string, number> = {};
+      for (const [tmp, e] of Object.entries(layer.tempids)) {
+        acked[tmp] = eids.get(e) ?? e;
+      }
+      pending.splice(i, 1);
+      remapQueued(acked, layer.tempids);
+    }
+  };
+
   const ensureConn = async (): Promise<void> => {
-    if (conn === undefined) conn = await Connection.create();
+    if (conn !== undefined) return;
+    conn = await Connection.create();
+    if (options.catalog !== undefined) {
+      await conn.transact(schemaTx(options.catalog) as unknown[]);
+    }
   };
 
   const sync = async (): Promise<void> => {
     await ensureConn();
-    const gen = options.session.generation;
     const reply = await options.session.request({
       op: "sync",
       from: confirmedT,
@@ -289,21 +335,24 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       confirmedT = t;
       options.session.bump(t);
     }
-    readyGen = gen;
+    readyGen = options.session.generation;
+    await applied;
   };
 
   const ready: Overlay["ready"] = () =>
     Effect.tryPromise({
-      try: () => {
-        if (readyGen === options.session.generation && conn !== undefined) {
-          return Promise.resolve();
+      try: async () => {
+        if (readyGen !== options.session.generation || conn === undefined) {
+          if (opening !== undefined) await opening;
+          else {
+            const started = sync().finally(() => {
+              if (opening === started) opening = undefined;
+            });
+            opening = started;
+            await started;
+          }
         }
-        if (opening !== undefined) return opening;
-        const started = sync().finally(() => {
-          if (opening === started) opening = undefined;
-        });
-        opening = started;
-        return started;
+        await applied;
       },
       catch: (cause) =>
         isDatabaseError(cause)
@@ -402,6 +451,12 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                       txEid: typeof ack.txEid === "number" ? ack.txEid : 0,
                       tempids,
                       datoms,
+                      datomCount:
+                        datoms.length > 0
+                          ? datoms.length
+                          : typeof ack.datoms === "number"
+                            ? ack.datoms
+                            : 0,
                       clientTxId:
                         typeof ack.clientTxId === "string" ? ack.clientTxId : id,
                     }),
@@ -424,19 +479,26 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     );
 
   const handlePush = async (frame: Record<string, unknown>): Promise<void> => {
-    await ensureConn();
-    const t = typeof frame.t === "number" ? frame.t : 0;
-    if (frame.op === "resync") {
-      pending.length = 0;
-      const datoms = asWireDatoms(frame.datoms).map(fromWireDatom);
-      await replaceConfirmed(datoms, t);
-      wake();
-      return;
-    }
-    if (frame.op === "tx") {
-      applyConfirmed(asWireDatoms(frame.datoms).map(fromWireDatom), t);
-      wake();
-    }
+    const run = async () => {
+      await ensureConn();
+      const t = typeof frame.t === "number" ? frame.t : 0;
+      if (frame.op === "resync") {
+        pending.length = 0;
+        const datoms = asWireDatoms(frame.datoms).map(fromWireDatom);
+        await replaceConfirmed(datoms, t);
+        wake();
+        return;
+      }
+      if (frame.op === "tx") {
+        const incoming = asWireDatoms(frame.datoms).map(fromWireDatom);
+        applyConfirmed(incoming, t);
+        dropCoveredPending(incoming);
+        wake();
+      }
+    };
+    const next = applied.then(run, run);
+    applied = next.then(() => undefined, () => undefined);
+    await next;
   };
 
   options.session.onPush(handlePush);
