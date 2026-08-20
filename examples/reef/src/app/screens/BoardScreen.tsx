@@ -73,7 +73,9 @@ const styles = stylex.create({
     flexDirection: "column",
     flexGrow: 1,
     minHeight: 0,
-    height: "100vh",
+    height: "100dvh",
+    overflow: "hidden",
+    overscrollBehavior: "none",
   },
   header: {
     display: "flex",

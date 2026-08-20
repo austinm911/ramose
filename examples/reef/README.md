@@ -105,7 +105,8 @@ examples/reef/
   two datoms (status + rank) and the card moves as soon as the pending layer
   applies — the `live` pill pulses on every `ticks` bump `useLive` reports
   (local apply, ack, or an inbound filtered `tx`). There is no refetch code
-  anywhere in the app. An empty board offers **Add sample issues**: nine
+  anywhere in the app. On a phone, hold a card still, then drag — a flick
+  still scrolls the board. An empty board offers **Add sample issues**: nine
   issues, labels and assignees in one `db.transact`.
 - **Issue detail** — policy in the small. Description and the admin-only
   note ride one standing `usePull`, so edits from another tab land in place.
