@@ -305,7 +305,7 @@ describe("optimistic transact", () => {
       }),
     );
     await settle();
-    expect(report.datoms).toEqual([]);
+    expect(report.datomCount).toBe(0);
     expect(report.t).toBe(server.t + 1);
     expect(live.seen.at(-1)).toEqual([]);
     expect(await run(db.q(secretNotes))).toEqual([]);
@@ -360,10 +360,13 @@ describe("optimistic transact", () => {
     await first;
     await second;
     expect(posts).toHaveLength(2);
-    const titleAdds = (posts[1] as unknown[]).filter(
-      (op) => Array.isArray(op) && op[0] === ":db/add" && op[2] === ":movie/title",
+    const secondTx = posts[1] ?? [];
+    const titleAdds = secondTx.filter(
+      (op): op is unknown[] =>
+        Array.isArray(op) && op[0] === ":db/add" && op[2] === ":movie/title",
     );
-    expect(titleAdds).toEqual([[":db/add", titleAdds[0]![1], ":movie/title", "new"]]);
+    expect(titleAdds).toHaveLength(1);
+    expect(titleAdds[0]![3]).toBe("new");
     await c.dispose();
   });
 });
