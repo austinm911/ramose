@@ -79,13 +79,19 @@ export interface FakePeer {
 export interface PeerOptions {
   /** Answers socket frames. */
   readonly answer?: Answer | undefined;
-  /** Answers HTTPS requests. */
+  /** Answers HTTPS requests. A Promise delays the response (outbox / overlay tests). */
   readonly http?:
-    | ((call: Call) => {
-        status?: number;
-        body: unknown;
-        headers?: Record<string, string>;
-      })
+    | ((call: Call) =>
+        | {
+            status?: number;
+            body: unknown;
+            headers?: Record<string, string>;
+          }
+        | Promise<{
+            status?: number;
+            body: unknown;
+            headers?: Record<string, string>;
+          }>)
     | undefined;
   /** Refuse the next `n` upgrades by closing the socket at once. */
   readonly refuseUpgrades?: number | undefined;
@@ -148,7 +154,10 @@ export const fakePeer = (options: PeerOptions = {}): FakePeer => {
       const frame = JSON.parse(data) as Frame;
       this.sent.push(frame);
       frames.push(frame);
-      const reply = answer(frame);
+      const reply =
+        frame.op === "sync"
+          ? (answer(frame) ?? { body: { t: 0, from: frame.from ?? 0 } })
+          : answer(frame);
       if (reply === undefined) return;
       const { delay, ...rest } = reply;
       const deliver = () => {
@@ -194,7 +203,7 @@ export const fakePeer = (options: PeerOptions = {}): FakePeer => {
         typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
     };
     calls.push(call);
-    const reply = http(call);
+    const reply = await http(call);
     return new Response(JSON.stringify(reply.body), {
       status: reply.status ?? 200,
       headers: { "content-type": "application/json", ...(reply.headers ?? {}) },

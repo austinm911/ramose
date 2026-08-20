@@ -36,6 +36,7 @@ import {
   retryTransient,
   send,
 } from "./http.ts";
+import { openOverlay, type Overlay } from "./overlay.ts";
 import {
   globalWebSocket,
   openSession,
@@ -146,6 +147,7 @@ export const makeDatabases = (
   config: DatabasesConfig,
 ): { readonly databases: DatabasesShape; readonly close: () => void } => {
   const sessions = new Map<string, Session>();
+  const overlays = new Map<string, Overlay>();
   let closed = false;
 
   // rejects with the typed DbError itself (not a FiberFailure), so the
@@ -173,6 +175,20 @@ export const makeDatabases = (
       // fail rather than silently changing transport
       if (closed) existing.close();
       sessions.set(name, existing);
+    }
+    return existing;
+  };
+
+  const overlayOf = (name: string): Overlay | undefined => {
+    if (session(name) === undefined) return undefined;
+    let existing = overlays.get(name);
+    if (existing === undefined) {
+      const socket = session(name)!;
+      existing = openOverlay({
+        session: socket,
+        post: (tx, clientTxId) => postTx(name, tx, clientTxId),
+      });
+      overlays.set(name, existing);
     }
     return existing;
   };
@@ -231,6 +247,28 @@ export const makeDatabases = (
         token: yield* bearer(config.token),
         headers: { ...(config.headers ?? {}), ...minTHeader(minT) },
         body,
+      });
+      return result.body;
+    });
+
+  const postTx = (
+    name: string,
+    tx: readonly unknown[],
+    clientTxId?: string,
+  ): Effect.Effect<unknown, DbError> =>
+    Effect.gen(function* () {
+      const result = yield* send({
+        fetch: config.fetch,
+        url: yield* config.url,
+        method: "POST",
+        path: dbPath(name, "/transact"),
+        // re-read per transact, exactly as on every (re)connect
+        token: yield* bearer(config.token),
+        headers: config.headers,
+        body: {
+          tx,
+          ...(clientTxId !== undefined ? { clientTxId } : {}),
+        },
       });
       return result.body;
     });
@@ -311,26 +349,19 @@ export const makeDatabases = (
 
   const wire: Wire = {
     session,
+    overlay: overlayOf,
     read: (name, op, body, minT) => {
+      const pinned = body.asOf !== undefined || body.history === true;
+      if (!pinned) {
+        const ov = overlayOf(name);
+        if (ov !== undefined) return ov.read(op, body);
+      }
       const socket = session(name);
       return socket === undefined
         ? post(name, op, body, minT)
         : frame(socket, op, body, minT);
     },
-    transact: (name, tx) =>
-      Effect.gen(function* () {
-        const result = yield* send({
-          fetch: config.fetch,
-          url: yield* config.url,
-          method: "POST",
-          path: dbPath(name, "/transact"),
-          // re-read per transact, exactly as on every (re)connect
-          token: yield* bearer(config.token),
-          headers: config.headers,
-          body: { tx },
-        });
-        return result.body;
-      }),
+    transact: (name, tx, clientTxId) => postTx(name, tx, clientTxId),
     info,
     principal,
   };

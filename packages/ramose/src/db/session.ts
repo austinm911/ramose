@@ -85,6 +85,13 @@ export interface SessionOptions {
    */
   readonly token?: (() => Promise<Redacted.Redacted<string> | undefined>) | undefined;
   readonly connect: SocketFactory;
+  /**
+   * Unsolicited `{ op: "tx" }` / `{ op: "resync" }` frames. The overlay
+   * applies them; `{ op: "t" }` still only bumps the basis.
+   */
+  readonly onPush?:
+    | ((frame: Record<string, unknown>) => void | Promise<void>)
+    | undefined;
 }
 
 export interface Session {
@@ -104,8 +111,17 @@ export interface Session {
   readonly connects: number;
   /** Move the basis (a local `transact` is the cheapest possible notification). */
   bump(t: number): void;
+  /**
+   * Wake waiters without moving `t` — a pending overlay apply, or an ack
+   * that replaced a layer at the same confirmed basis.
+   */
+  nudge(): void;
+  /** Bumped by {@link nudge} (and never by a basis tick alone). */
+  readonly epoch: number;
   /** Called on a basis tick *and* on a dropped socket. Returns the unsubscribe. */
   onWake(cb: () => void): () => void;
+  /** Overlay registers for `{ op: "tx" }` / `{ op: "resync" }`. */
+  onPush(cb: (frame: Record<string, unknown>) => void | Promise<void>): () => void;
   /** Close for good; nothing reopens. */
   close(): void;
   /** `true` once {@link close} ran: every request from here on fails at once. */
@@ -147,11 +163,13 @@ export const openSession = (options: SessionOptions): Session => {
     { resolve: (r: Reply) => void; reject: (e: unknown) => void }
   >();
   const wakers = new Set<() => void>();
+  const pushers = new Set<(frame: Record<string, unknown>) => void | Promise<void>>();
 
   let socket: WebSocketLike | undefined;
   let opening: Promise<void> | undefined;
   let nextId = 1;
   let basisT = 0;
+  let epoch = 0;
   let generation = 0;
   let connects = 0;
   let closed = false;
@@ -167,6 +185,17 @@ export const openSession = (options: SessionOptions): Session => {
     if (value <= basisT) return;
     basisT = value;
     wake();
+  };
+
+  const nudge = (): void => {
+    epoch += 1;
+    wake();
+  };
+
+  const pushFrame = (frame: Record<string, unknown>): void => {
+    const cbs = [...pushers];
+    if (options.onPush !== undefined) cbs.unshift(options.onPush);
+    for (const cb of cbs) void cb(frame);
   };
 
   /** This socket is gone. Everything waiting on it fails; the next request reopens. */
@@ -209,6 +238,7 @@ export const openSession = (options: SessionOptions): Session => {
       return;
     }
     if (frame.op === "t") bump(frame.t);
+    if (frame.op === "tx" || frame.op === "resync") pushFrame(frame);
   };
 
   const connect = (): Promise<void> => {
@@ -294,6 +324,9 @@ export const openSession = (options: SessionOptions): Session => {
     get t() {
       return basisT;
     },
+    get epoch() {
+      return epoch;
+    },
     get generation() {
       return generation;
     },
@@ -307,10 +340,17 @@ export const openSession = (options: SessionOptions): Session => {
       return closed;
     },
     bump: (t) => bump(t),
+    nudge,
     onWake: (cb) => {
       wakers.add(cb);
       return () => {
         wakers.delete(cb);
+      };
+    },
+    onPush: (cb) => {
+      pushers.add(cb);
+      return () => {
+        pushers.delete(cb);
       };
     },
     close: () => {

@@ -39,13 +39,12 @@ describe("connect().db() is layer's client, without the runtime", () => {
     const c = ramose(peer);
     const db = c.db("movies", Movies);
 
-    expect(await run(db.q(names))).toEqual([{ name: "Ada" }]);
+    expect(await run(db.q(names))).toEqual([]);
     expect(peer.calls).toEqual([]);
     expect(peer.frames[0]).toEqual({
       id: 1,
-      op: "q",
-      query: expect.anything(),
-      inputs: [],
+      op: "sync",
+      from: 0,
     });
 
     const report = await run(
