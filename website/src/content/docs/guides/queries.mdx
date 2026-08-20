@@ -241,7 +241,7 @@ The subject is `{ id }` or a lookup by unique key, `[User.sub, "user_ada"]`. The
 
 Every query runs unchanged against an earlier version of the database. Reef's time-travel slider is `useQuery` on `db.asOf(t)`; its "deleted, still in history" strip is the same idea over `db.history`:
 
-```ts title="examples/reef/src/app/screens/BoardScreen.tsx:453-454"
+```ts title="examples/reef/src/app/screens/BoardScreen.tsx:484-485"
   const past = useQuery(t === undefined ? db : db.asOf(t), boardQuery);
   const everything = useQuery(db.history, everyIssueEverQuery);
 ```

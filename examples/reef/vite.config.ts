@@ -10,11 +10,14 @@ import { defineConfig } from "vite";
  *
  * `/api` is proxied to the auth Worker so Better Auth cookies stay
  * same-origin in dev — in production the same Worker serves these built
- * assets, so the paths line up with no proxy at all.
+ * assets, so the paths line up with no proxy at all. `appType: "spa"`
+ * (Vite's default) serves `index.html` for `/`, `/:slug` and
+ * `/:slug/issues/:id` so a refresh stays on the same page.
  */
 export default defineConfig({
   root: fileURLToPath(new URL(".", import.meta.url)),
   plugins: [stylex.vite({ useCSSLayers: true }), react()],
+  appType: "spa",
   server: {
     proxy: {
       "/api": {
