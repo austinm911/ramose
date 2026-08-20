@@ -13,6 +13,7 @@ import {
   pull,
   query as coreQuery,
   toJson,
+  toWireDatom,
 } from "../../src/internal/core/index.ts";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -82,7 +83,7 @@ const inProcessPeer = async () => {
             t: rep.t,
             txEid: rep.txEid,
             tempids: rep.tempids,
-            datoms: rep.txData.length,
+            datoms: rep.txData.map(toWireDatom),
           },
         };
       }

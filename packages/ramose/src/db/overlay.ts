@@ -448,14 +448,17 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         ? retryTransient(requestSync, { while: () => !options.session.closed })
         : requestSync(),
     );
+    readyGen = options.session.generation;
+    // #112 delivers `{ op: "tx" }` frames, then the sync reply `{ t, from }`.
+    // Those applies are queued on `applied`. Stamp the watermark only after
+    // they run — `applyConfirmed` is `if (t <= confirmedT) return`.
+    await applied;
     const t = record(reply.body).t;
     if (typeof t === "number" && t > confirmedT) {
-      // a sync reply may be the only news when the gap was empty
+      // reply is the only news when the gap was empty
       confirmedT = t;
       options.session.bump(t);
     }
-    readyGen = options.session.generation;
-    await applied;
   };
 
   const ready: Overlay["ready"] = (retry = true) =>
@@ -553,13 +556,18 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                 .then((body) => {
                   const ack = record(body);
                   const t = typeof ack.t === "number" ? ack.t : 0;
-                  const datoms = asWireDatoms(ack.datoms);
+                  const raw = ack.datoms;
+                  const datoms = Array.isArray(raw) ? (raw as WireDatom[]) : [];
                   const tempids = asTempids(ack.tempids);
                   const layer = dropLayer(id);
-                  // Confirmed follows the sieved server log. Never apply the
-                  // local expansion — empty ack.datoms (ensure skip / filtered
-                  // empty / hidden-only) still advances confirmedT.
-                  applyConfirmed(datoms.map(fromWireDatom), t);
+                  // Confirmed follows the sieved server log. Apply only a
+                  // real `WireDatom[]`. A number is datomCount, never facts
+                  // (and never the local processTx expansion).
+                  if (Array.isArray(raw)) {
+                    applyConfirmed(datoms.map(fromWireDatom), t);
+                  } else {
+                    applyConfirmed([], t);
+                  }
                   if (layer !== undefined) remapQueued(tempids, layer.tempids);
                   wake();
                   resume(

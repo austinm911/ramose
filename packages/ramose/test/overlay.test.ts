@@ -7,19 +7,19 @@ import { describe, expect, test } from "bun:test";
 import { Connection } from "../src/internal/core/conn.ts";
 import {
   Index,
-  filterDb,
+  ValueTag,
   toWireDatom,
-  type Principal,
   type WireDatom,
 } from "../src/internal/core/index.ts";
-import { PolicyAst as A, parsePolicy } from "../src/internal/core/policy/index.ts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
+import { schemaTx } from "../src/db/ensure.ts";
 import { Attr, Catalog, Namespace, query } from "../src/db/internal.ts";
-import { currentViewDatoms, decideSessionTx } from "../src/worker/session-sync.ts";
+import { openOverlay } from "../src/db/overlay.ts";
+import type { Session } from "../src/db/session.ts";
 import { client, fakePeer, settle, type Call } from "./peer.ts";
 
 import { Meta, Movie, Movies, User } from "./db/fixture.ts";
@@ -30,9 +30,16 @@ const Doc = Namespace("doc", {
 const Secret = Namespace("secret", {
   note: Attr(Schema.String),
 });
+const Note = Namespace("note", {
+  title: Attr(Schema.String),
+  audit: Attr(Schema.String),
+});
 const WithSlug = Catalog({ user: User, movie: Movie, meta: Meta, doc: Doc });
 const WithSecret = Catalog({ user: User, movie: Movie, meta: Meta, secret: Secret });
+const WithNotes = Catalog({ user: User, movie: Movie, meta: Meta, note: Note });
 const secretNotes = query(Secret).select({ note: Secret.note });
+const noteTitles = query(Note).select({ title: Note.title });
+const noteAudits = query(Note).select({ audit: Note.audit });
 
 const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
 const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
@@ -314,6 +321,44 @@ describe("optimistic transact", () => {
     await c.dispose();
   });
 
+  test("count-only ack.datoms is datomCount, not confirmed facts", async () => {
+    const server = await moviesWorld();
+    const peer = fakePeer({
+      http: (call) => {
+        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
+        return {
+          body: {
+            t: server.t + 1,
+            txEid: 0,
+            tempids: {},
+            datoms: 4,
+            clientTxId: call.body.clientTxId,
+          },
+        };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", WithSecret);
+    await seedClient(peer, db, server);
+
+    const live = collect(db.live(secretNotes));
+    await settle();
+
+    const report = await run(
+      db.transact(function* (tx) {
+        const e = yield* tx.entity();
+        yield* e.add(Secret.note, "classified");
+      }),
+    );
+    await settle();
+    expect(report.datomCount).toBe(4);
+    expect(live.seen.at(-1)).toEqual([]);
+    expect(await run(db.q(secretNotes))).toEqual([]);
+
+    await live.stop();
+    await c.dispose();
+  });
+
   test("queued rewrite remaps a tempid entity, not a title that equals the tempid", async () => {
     const server = await moviesWorld();
     let release!: () => void;
@@ -463,6 +508,72 @@ describe("confirmed follower", () => {
     await c.dispose();
   });
 
+  test("sync reply t does not skip a later-queued earlier tx frame", async () => {
+    const schemaConn = await Connection.create();
+    await schemaConn.transact(schemaTx(Movies) as unknown[]);
+    const nameA = schemaConn.db().schema.requireAttr(":user/name").id;
+    const fact = toWireDatom({
+      e: 2001,
+      a: nameA,
+      vt: ValueTag.Str,
+      v: "Ada",
+      t: 6,
+      op: true,
+    });
+
+    let pusher: (frame: Record<string, unknown>) => void | Promise<void> = () => {};
+    let basis = 0;
+    let epoch = 0;
+    const session: Session = {
+      get t() {
+        return basis;
+      },
+      generation: 1,
+      principal: undefined,
+      connects: 1,
+      closed: false,
+      get epoch() {
+        return epoch;
+      },
+      request: async (frame) => {
+        if (frame.op === "sync") {
+          void pusher({ op: "tx", t: 6, datoms: [fact] });
+          return { status: 200, body: { t: 8, from: frame.from ?? 0 } };
+        }
+        return { status: 200, body: {} };
+      },
+      bump: (n) => {
+        if (n > basis) basis = n;
+      },
+      nudge: () => {
+        epoch += 1;
+      },
+      onWake: () => () => {},
+      onPush: (cb) => {
+        pusher = cb;
+        return () => {};
+      },
+      close: () => {},
+    };
+
+    const overlay = openOverlay({
+      session,
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+    });
+    await run(overlay.ready());
+    expect(overlay.confirmedT).toBe(8);
+    const body = (await run(
+      overlay.read("q", {
+        query: {
+          find: ["?n"],
+          where: [["?e", ":user/name", "?n"]],
+        },
+      }),
+    )) as { result: unknown };
+    expect(body.result).toEqual([["Ada"]]);
+  });
+
   test("{ op: sync } / resync rebuilds confirmed from the snapshot", async () => {
     const server = await moviesWorld();
     await server.transact([{ ":user/name": "Ada" }]);
@@ -483,86 +594,82 @@ describe("confirmed follower", () => {
 });
 
 describe("filtered tx frames (#112 sieve)", () => {
-  const SCHEMA = [
-    { ":db/ident": ":user/sub", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity" },
-    { ":db/ident": ":org/members", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/many" },
-    { ":db/ident": ":project/org", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
-    { ":db/ident": ":doc/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
-    { ":db/ident": ":doc/owner", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
-    { ":db/ident": ":doc/project", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
-  ];
-  const inOrg = A.ref(":doc/project", A.ref(":project/org", A.eq(":org/members", A.principal)));
-  const POLICY = parsePolicy({
-    version: 1,
-    principal: ":user/sub",
-    classes: ["member", "admin"],
-    ns: {
-      doc: { read: [A.allow(A.or(A.eq(":doc/owner", A.principal), inOrg))] },
-      project: { read: [A.allow(A.ref(":project/org", A.eq(":org/members", A.principal)))] },
-      org: { read: [A.allow(A.eq(":org/members", A.principal))] },
-      user: { read: [A.allow(A.eq(":user/sub", A.claim("sub")))] },
-    },
-    preset: { ":doc/owner": A.principal },
-  });
-  const user = (sub: string, eid: number): Principal => ({
-    kind: "user",
-    class: "member",
-    sub,
-    eid,
-    claims: { sub },
-    db: "acme",
-  });
-
-  test("Cal does not observe Ada's t or Ada's filtered-away write", async () => {
-    const conn = await Connection.create({ now: () => 1_700_000_000_000 });
-    await conn.transact(SCHEMA);
-    const seeded = await conn.transact([
-      { ":db/id": "ada", ":user/sub": "user_ada" },
-      { ":db/id": "cal", ":user/sub": "user_cal" },
-      { ":db/id": "org", ":org/members": ["ada"] },
-      { ":db/id": "proj", ":project/org": "org" },
+  test("Ada's POST is {tx, clientTxId}; Cal sees skip; filtered ack omits hidden", async () => {
+    const server = await moviesWorld();
+    await server.transact([
+      { ":db/ident": ":note/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+      { ":db/ident": ":note/audit", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
     ]);
-    const adaP = user("user_ada", seeded.tempids.ada);
-    const calP = user("user_cal", seeded.tempids.cal);
-    const seedT = conn.t;
 
-    const hidden = await conn.transact([
-      { ":db/id": "doc", ":doc/title": "Q3", ":doc/owner": "ada", ":doc/project": "proj" },
-    ]);
-    const decision = await decideSessionTx({
-      datoms: hidden.txData,
-      policy: POLICY,
-      principal: calP,
-      ruleDbAfter: conn.db().asOf(hidden.t),
-      ruleDbBefore: conn.db().asOf(Math.max(0, hidden.t - 1)),
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
     });
-    expect(decision.kind).toBe("skip");
+    const posts: Call[] = [];
+    const adaPeer = fakePeer({
+      http: async (call) => {
+        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
+        posts.push(call);
+        await gate;
+        const rep = await server.transact(call.body.tx);
+        const auditId = server.db().schema.requireAttr(":note/audit").id;
+        const visible = rep.txData.filter((d) => d.a !== auditId).map(toWireDatom);
+        return {
+          body: {
+            t: rep.t,
+            txEid: rep.txEid,
+            tempids: rep.tempids,
+            datoms: visible,
+            clientTxId: call.body.clientTxId,
+          },
+        };
+      },
+    });
+    const calPeer = fakePeer({
+      http: () => ({ body: { t: server.t } }),
+    });
+    const adaC = client(adaPeer);
+    const calC = client(calPeer);
+    const ada = adaC.ramose.db("acme", WithNotes);
+    const cal = calC.ramose.db("acme", WithNotes);
+    await seedClient(adaPeer, ada, server);
+    await seedClient(calPeer, cal, server);
 
-    const calPeer = fakePeer();
-    const c = client(calPeer);
-    const db = c.ramose.db("acme", Movies);
-    await run(db.q(names));
-    const view = filterDb(conn.db(), conn.db(), POLICY, calP);
-    calPeer.socket.push({
-      op: "resync",
-      t: seedT,
-      datoms: await currentViewDatoms(view),
-    });
+    const adaTitles = collect(ada.live(noteTitles));
+    const adaAudits = collect(ada.live(noteAudits));
+    const calTitles = collect(cal.live(noteTitles));
     await settle();
 
-    const confirmedBefore = calPeer.sockets[0];
-    void confirmedBefore;
-    // Cal's overlay is at the seed snapshot — Ada's write must not arrive
-    calPeer.socket.push({ op: "t", t: hidden.t });
+    const pending = Effect.runPromise(
+      ada.transact(function* (tx) {
+        const e = yield* tx.entity();
+        yield* e.add(Note.title, "Q3");
+        yield* e.add(Note.audit, "classified");
+      }),
+    );
     await settle();
-    // a tick without datoms must not install Ada's facts
-    expect(await run(db.q(names))).toEqual([]);
 
-    // the sieve said skip: do not deliver a tx frame (or the replica entry)
-    const leak: WireDatom[] = hidden.txData.map(toWireDatom);
-    void leak;
-    expect(decision.kind === "skip").toBe(true);
-    await c.dispose();
+    expect(posts).toHaveLength(1);
+    expect(Object.keys(posts[0]!.body).sort()).toEqual(["clientTxId", "tx"]);
+    expect(posts[0]!.body.datoms).toBeUndefined();
+    expect(adaTitles.seen.at(-1)).toEqual([{ title: "Q3" }]);
+    expect(adaAudits.seen.at(-1)).toEqual([{ audit: "classified" }]);
+    expect(calTitles.seen.at(-1)).toEqual([]);
+
+    release();
+    await pending;
+    await settle();
+    expect(adaTitles.seen.at(-1)).toEqual([{ title: "Q3" }]);
+    expect(adaAudits.seen.at(-1)).toEqual([]);
+    expect(await run(ada.q(noteAudits))).toEqual([]);
+    expect(calTitles.seen.at(-1)).toEqual([]);
+    expect(await run(cal.q(noteTitles))).toEqual([]);
+
+    await adaTitles.stop();
+    await adaAudits.stop();
+    await calTitles.stop();
+    await adaC.dispose();
+    await calC.dispose();
   });
 });
 

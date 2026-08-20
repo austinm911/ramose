@@ -97,7 +97,7 @@ export interface PeerOptions {
   readonly refuseUpgrades?: number | undefined;
 }
 
-const DEFAULT_ACK = { t: 2, txEid: 13194139533319, tempids: {}, datoms: 1 };
+const DEFAULT_ACK = { t: 2, txEid: 13194139533319, tempids: {}, datoms: [] as const };
 
 export type Http = NonNullable<PeerOptions["http"]>;
 
