@@ -644,10 +644,22 @@ describe("two-writer races", () => {
       close: () => {},
     };
 
+    const namesOf = async () => {
+      const body = (await run(
+        overlay.read("q", {
+          query: {
+            find: ["?n"],
+            where: [["?e", ":user/name", "?n"]],
+          },
+        }),
+      )) as { result: [string][] };
+      return body.result.map((row) => row[0]).sort();
+    };
+
     overlay = openOverlay({
       session,
       post: () => {
-        // already queued on `applied` when the HTTP ack runs
+        // other device’s t=40 is already queued when this later writer’s ack runs
         void overlay.handlePush({ op: "tx", t: 40, datoms: [phone] });
         return Effect.succeed({
           t: 41,
@@ -663,7 +675,75 @@ describe("two-writer races", () => {
     expect(overlay.confirmedT).toBe(39);
 
     await run(overlay.transact([{ ":user/name": "Browser" }]));
+    // Ack painted the writer’s facts but must not jump the prefix. The queued
+    // t=40 frame is the watermark mover; sync from 41 would skip Phone.
+    expect(overlay.confirmedT).toBe(40);
+    expect(await namesOf()).toEqual(["Browser", "Phone"]);
+
+    await overlay.handlePush({ op: "tx", t: 41, datoms: [browser] });
     expect(overlay.confirmedT).toBe(41);
+    expect(await namesOf()).toEqual(["Browser", "Phone"]);
+  });
+
+  test("a late lower-t { op: tx } still applies after a higher-t echo", async () => {
+    const schemaConn = await Connection.create();
+    await schemaConn.transact(schemaTx(Movies) as unknown[]);
+    const nameA = schemaConn.db().schema.requireAttr(":user/name").id;
+    const phone = toWireDatom({
+      e: 2001,
+      a: nameA,
+      vt: ValueTag.Str,
+      v: "Phone",
+      t: 40,
+      op: true,
+    });
+    const browser = toWireDatom({
+      e: 2002,
+      a: nameA,
+      vt: ValueTag.Str,
+      v: "Browser",
+      t: 41,
+      op: true,
+    });
+
+    let overlay!: Overlay;
+    let basis = 0;
+    let epoch = 0;
+    const session: Session = {
+      get t() {
+        return basis;
+      },
+      generation: 1,
+      principal: undefined,
+      connects: 1,
+      closed: false,
+      get epoch() {
+        return epoch;
+      },
+      request: async (frame) => {
+        if (frame.op === "sync") return { status: 200, body: { t: 39, from: frame.from ?? 0 } };
+        return { status: 200, body: {} };
+      },
+      bump: (n) => {
+        if (n > basis) basis = n;
+      },
+      nudge: () => {
+        epoch += 1;
+      },
+      onWake: () => () => {},
+      onPush: () => () => {},
+      close: () => {},
+    };
+
+    overlay = openOverlay({
+      session,
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+    });
+    await run(overlay.ready());
+    await overlay.handlePush({ op: "tx", t: 41, datoms: [browser] });
+    expect(overlay.confirmedT).toBe(41);
+    await overlay.handlePush({ op: "tx", t: 40, datoms: [phone] });
     const body = (await run(
       overlay.read("q", {
         query: {
@@ -775,7 +855,6 @@ describe("two-writer races", () => {
     peer.push({
       op: "tx",
       t: server.t + 1,
-      clientTxId: "foreign-session",
       datoms: [
         toWireDatom({
           e: 4001,

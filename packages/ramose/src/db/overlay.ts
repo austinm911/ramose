@@ -259,10 +259,10 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   const pending: PendingLayer[] = [];
   let conn: Connection | undefined;
   let confirmedT = 0;
-  /** Last `t` at which a non-empty datom array was applied. Empty/count-only
-   * acks may raise `confirmedT` without moving this, so a later inbound at
-   * that same `t` can still land real facts. */
-  let appliedFactsT = 0;
+  /** `t` values whose facts are already in the follower. Used so a late
+   * lower-`t` frame still applies after a higher `t` was painted, and so
+   * empty/count-only stamps cannot skip a later real inbound at the same `t`. */
+  const factTs = new Set<number>();
   let epoch = 0;
   let readyGen = -1;
   let opening: Promise<void> | undefined;
@@ -303,16 +303,24 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     return n;
   };
 
+  /** Paint server facts into the follower without claiming a log prefix. */
+  const paintFacts = (datoms: readonly Datom[]): void => {
+    if (conn === undefined || datoms.length === 0) return;
+    const fresh = datoms.filter((d) => !factTs.has(d.t));
+    if (fresh.length === 0) return;
+    conn.applyDatoms(fresh);
+    for (const d of fresh) factTs.add(d.t);
+  };
+
+  /**
+   * `{ op: "tx" }` is the only `confirmedT` mover. A higher `t` does not mean
+   * every lower visible `t` is present — paint-by-`t` is idempotent and will
+   * still apply a late lower frame. Empty arrays never stamp.
+   */
   const applyConfirmed = (datoms: readonly Datom[], t: number): void => {
     if (conn === undefined) return;
-    // Do not skip a same-`t` inbound after an empty/count-only stamp — only
-    // a strictly older `t` is news we have already moved past.
-    if (t < confirmedT) return;
-    const fresh = datoms.filter((d) => d.t > appliedFactsT);
-    if (fresh.length > 0) {
-      conn.applyDatoms(fresh);
-      if (t > appliedFactsT) appliedFactsT = t;
-    }
+    paintFacts(datoms);
+    if (datoms.length === 0) return;
     if (t > confirmedT) {
       confirmedT = t;
       options.session.bump(t);
@@ -326,7 +334,8 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     }
     conn = next;
     confirmedT = t;
-    appliedFactsT = t;
+    factTs.clear();
+    for (const d of datoms) factTs.add(d.t);
     options.session.bump(t);
   };
 
@@ -442,7 +451,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     readyGen = options.session.generation;
     // #112 delivers `{ op: "tx" }` frames, then the sync reply `{ t, from }`.
     // Those applies are queued on `applied`. Stamp the watermark only after
-    // they run — `applyConfirmed` is `if (t <= confirmedT) return`.
+    // they run so a later-queued earlier frame is not left behind.
     await applied;
     const t = record(reply.body).t;
     if (typeof t === "number" && t > confirmedT) {
@@ -550,20 +559,14 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                   const raw = ack.datoms;
                   const datoms = Array.isArray(raw) ? (raw as WireDatom[]) : [];
                   const tempids = asTempids(ack.tempids);
-                  // Join `applied` the same way inbound `{ op: "tx" }` does.
-                  // An HTTP ack that stamps `confirmedT` off the queue can
-                  // skip a queued earlier frame (`t <= confirmedT`); sync
-                  // then uses `from: confirmedT` and that `t` never returns.
+                  // Drop + remap on the apply queue so covering stays ordered.
+                  // Do not stamp `confirmedT` — a later writer’s ack.t is not
+                  // a prefix. `{ op: "tx" }` is the only watermark mover.
+                  // Paint a real WireDatom[] so dbAfter / live keep the write
+                  // (never local processTx; a number is datomCount only).
                   await enqueueApply(() => {
                     const layer = dropLayer(id);
-                    // Confirmed follows the sieved server log. Apply only a
-                    // real `WireDatom[]`. A number is datomCount, never facts
-                    // (and never the local processTx expansion).
-                    if (Array.isArray(raw)) {
-                      applyConfirmed(datoms.map(fromWireDatom), t);
-                    } else {
-                      applyConfirmed([], t);
-                    }
+                    if (Array.isArray(raw)) paintFacts(datoms.map(fromWireDatom));
                     if (layer !== undefined) remapQueued(tempids, layer.tempids);
                     wake();
                   });
