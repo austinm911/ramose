@@ -675,13 +675,13 @@ describe("two-writer races", () => {
     expect(overlay.confirmedT).toBe(39);
 
     await run(overlay.transact([{ ":user/name": "Browser" }]));
-    // Ack painted the writer’s facts but must not jump the prefix. The queued
-    // t=40 frame is the watermark mover; sync from 41 would skip Phone.
-    expect(overlay.confirmedT).toBe(40);
+    // Ack painted the writer’s facts but must not jump the prefix. Own echo
+    // and inbound tx paint; they do not claim the follow cursor.
+    expect(overlay.confirmedT).toBe(39);
     expect(await namesOf()).toEqual(["Browser", "Phone"]);
 
-    await overlay.handlePush({ op: "tx", t: 41, datoms: [browser] });
-    expect(overlay.confirmedT).toBe(41);
+    await overlay.handlePush({ op: "tx", t: 41, datoms: [browser], clientTxId: "c-browser" });
+    expect(overlay.confirmedT).toBe(39);
     expect(await namesOf()).toEqual(["Browser", "Phone"]);
   });
 
@@ -742,7 +742,7 @@ describe("two-writer races", () => {
     });
     await run(overlay.ready());
     await overlay.handlePush({ op: "tx", t: 41, datoms: [browser] });
-    expect(overlay.confirmedT).toBe(41);
+    expect(overlay.confirmedT).toBe(39);
     await overlay.handlePush({ op: "tx", t: 40, datoms: [phone] });
     const body = (await run(
       overlay.read("q", {
@@ -753,6 +753,87 @@ describe("two-writer races", () => {
       }),
     )) as { result: [string][] };
     expect(body.result.map((row) => row[0]).sort()).toEqual(["Browser", "Phone"]);
+  });
+
+  test("own echo does not claim the prefix: sync({ from }) still includes the other device's t", async () => {
+    const schemaConn = await Connection.create();
+    await schemaConn.transact(schemaTx(Movies) as unknown[]);
+    const nameA = schemaConn.db().schema.requireAttr(":user/name").id;
+    const phone = toWireDatom({
+      e: 2001,
+      a: nameA,
+      vt: ValueTag.Str,
+      v: "Phone",
+      t: 40,
+      op: true,
+    });
+    const browser = toWireDatom({
+      e: 2002,
+      a: nameA,
+      vt: ValueTag.Str,
+      v: "Browser",
+      t: 41,
+      op: true,
+    });
+
+    let overlay!: Overlay;
+    let basis = 0;
+    let epoch = 0;
+    const session: Session = {
+      get t() {
+        return basis;
+      },
+      generation: 1,
+      principal: undefined,
+      connects: 1,
+      closed: false,
+      get epoch() {
+        return epoch;
+      },
+      request: async (frame) => {
+        if (frame.op === "sync") return { status: 200, body: { t: 39, from: frame.from ?? 0 } };
+        return { status: 200, body: {} };
+      },
+      bump: (n) => {
+        if (n > basis) basis = n;
+      },
+      nudge: () => {
+        epoch += 1;
+      },
+      onWake: () => () => {},
+      onPush: () => () => {},
+      close: () => {},
+    };
+
+    overlay = openOverlay({
+      session,
+      post: () =>
+        Effect.succeed({
+          t: 41,
+          txEid: 1,
+          tempids: {},
+          datoms: [browser],
+          clientTxId: "c-browser",
+        }),
+      catalog: Movies,
+    });
+    await run(overlay.ready());
+    expect(overlay.confirmedT).toBe(39);
+
+    await run(overlay.transact([{ ":user/name": "Browser" }]));
+    await overlay.handlePush({ op: "tx", t: 40, datoms: [phone] });
+    await overlay.handlePush({ op: "tx", t: 41, datoms: [browser], clientTxId: "c-browser" });
+    const body = (await run(
+      overlay.read("q", {
+        query: {
+          find: ["?n"],
+          where: [["?e", ":user/name", "?n"]],
+        },
+      }),
+    )) as { result: [string][] };
+    expect(body.result.map((row) => row[0]).sort()).toEqual(["Browser", "Phone"]);
+    // follow cursor still at the last walked prefix — sync({ from: 41 }) would skip Phone
+    expect(overlay.confirmedT).toBe(39);
   });
 
   test("writer { op: tx } with clientTxId drops pending even when the sieved set is a subset", async () => {

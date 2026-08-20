@@ -50,7 +50,7 @@ export interface OverlayAck {
 }
 
 export interface Overlay {
-  /** Last `t` applied to confirmed state (visible txs + resync dumps). */
+  /** Follow cursor: last walked `t` or snapshot dump `t`. Not max applied `t`. */
   readonly confirmedT: number;
   /** Bumped on overlay apply / ack / inbound tx / resync — live wakes on it. */
   readonly epoch: number;
@@ -313,18 +313,14 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   };
 
   /**
-   * `{ op: "tx" }` is the only `confirmedT` mover. A higher `t` does not mean
-   * every lower visible `t` is present — paint-by-`t` is idempotent and will
-   * still apply a late lower frame. Empty arrays never stamp.
+   * `{ op: "tx" }` paints by the datom's `t`. It does **not** move the follow
+   * cursor: own echo of N+1 must not claim the prefix (a still-queued N would
+   * then be skipped by `sync({ from })`). `confirmedT` moves on a walked
+   * sync reply or a snapshot dump.
    */
-  const applyConfirmed = (datoms: readonly Datom[], t: number): void => {
+  const applyConfirmed = (datoms: readonly Datom[]): void => {
     if (conn === undefined) return;
     paintFacts(datoms);
-    if (datoms.length === 0) return;
-    if (t > confirmedT) {
-      confirmedT = t;
-      options.session.bump(t);
-    }
   };
 
   const replaceConfirmed = async (datoms: readonly Datom[], t: number): Promise<void> => {
@@ -449,13 +445,12 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         : requestSync(),
     );
     readyGen = options.session.generation;
-    // #112 delivers `{ op: "tx" }` frames, then the sync reply `{ t, from }`.
-    // Those applies are queued on `applied`. Stamp the watermark only after
-    // they run so a later-queued earlier frame is not left behind.
+    // Frames from this walk are queued on `applied`. Stamp the follow cursor
+    // only after they run, and only to the worker's walked `t` — not a log
+    // tip the worker jumped to. A resync dump already stamped via replaceConfirmed.
     await applied;
     const t = record(reply.body).t;
     if (typeof t === "number" && t > confirmedT) {
-      // reply is the only news when the gap was empty
       confirmedT = t;
       options.session.bump(t);
     }
@@ -565,7 +560,8 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                   const tempids = asTempids(ack.tempids);
                   // Drop + remap on the apply queue so covering stays ordered.
                   // Do not stamp `confirmedT` — a later writer’s ack.t is not
-                  // a prefix. `{ op: "tx" }` is the only watermark mover.
+                  // a prefix. Own `{ op: "tx" }` paints and drops pending; it
+                  // does not claim the follow cursor either.
                   // Paint a real WireDatom[] so dbAfter / live keep the write
                   // (never local processTx; a number is datomCount only).
                   await enqueueApply(() => {
@@ -622,7 +618,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       }
       if (frame.op === "tx") {
         const incoming = asWireDatoms(frame.datoms).map(fromWireDatom);
-        applyConfirmed(incoming, t);
+        applyConfirmed(incoming);
         dropCoveredPending(
           incoming,
           typeof frame.clientTxId === "string" ? frame.clientTxId : undefined,

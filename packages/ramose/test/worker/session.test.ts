@@ -696,15 +696,15 @@ describe("filtered log walk", () => {
       pollLog: async () => log,
       filterEntry: filterOf(() => ({ kind: "skip" })),
     });
-    await tick(); // seed at 5
-    expect(s.lastT).toBe(5);
+    await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 5 }));
+    expect(s.lastT).toBe(0);
     expect(s.watermark).toBe(5);
     log = { t: 6, rootT: 1, entries: [{ t: 6, datoms: [wire(6)] }] };
     await tick();
     expect(socket.ticks()).toEqual([]);
     expect(socket.txs()).toEqual([]);
     expect(socket.resyncs()).toEqual([]);
-    expect(s.lastT).toBe(5); // skip must not leak t
+    expect(s.lastT).toBe(0); // skip must not leak t
     expect(s.watermark).toBe(6);
   });
 
@@ -713,7 +713,7 @@ describe("filtered log walk", () => {
     const { dispatch } = fakeDispatch();
     let log: SessionLog = { t: 5, rootT: 1, entries: [] };
     const { schedule, tick, now } = manualScheduler();
-    session(socket, {
+    const s = session(socket, {
       dispatch,
       schedule,
       now,
@@ -721,7 +721,7 @@ describe("filtered log walk", () => {
       pollLog: async () => log,
       filterEntry: filterOf((t) => (t === 6 ? { kind: "resync" } : { kind: "skip" })),
     });
-    await tick();
+    await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 5 }));
     log = { t: 6, rootT: 1, entries: [{ t: 6, datoms: [wire(6)] }] };
     await tick();
     expect(socket.resyncs()).toEqual([{ op: "resync", t: 6 }]);
@@ -734,7 +734,7 @@ describe("filtered log walk", () => {
     const { dispatch } = fakeDispatch();
     let log: SessionLog = { t: 5, rootT: 1, entries: [] };
     const { schedule, tick, now } = manualScheduler();
-    session(socket, {
+    const s = session(socket, {
       dispatch,
       schedule,
       now,
@@ -743,7 +743,7 @@ describe("filtered log walk", () => {
       filterEntry: filterOf(() => ({ kind: "resync" })),
       snapshot: async () => ({ t: 6, datoms: [wire(1), wire(2)] }),
     });
-    await tick();
+    await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 5 }));
     log = { t: 6, rootT: 1, entries: [{ t: 6, datoms: [wire(6)] }] };
     await tick();
     expect(socket.resyncs()).toEqual([{ op: "resync", t: 6, datoms: [wire(1), wire(2)] }]);
@@ -756,7 +756,7 @@ describe("filtered log walk", () => {
     let log: SessionLog = { t: 5, rootT: 1, entries: [] };
     const kept = [wire(6)];
     const { schedule, tick, now } = manualScheduler();
-    session(socket, {
+    const s = session(socket, {
       dispatch,
       schedule,
       now,
@@ -764,7 +764,7 @@ describe("filtered log walk", () => {
       pollLog: async () => log,
       filterEntry: filterOf(() => ({ kind: "tx", datoms: kept })),
     });
-    await tick();
+    await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 5 }));
     log = { t: 6, rootT: 1, entries: [{ t: 6, datoms: [wire(6), wire(6)] }] };
     await tick();
     expect(socket.txs()).toEqual([{ op: "tx", t: 6, datoms: kept }]);
@@ -822,12 +822,12 @@ describe("filtered log walk", () => {
       pollLog: async () => log,
       filterEntry: async () => ({ kind: "tx" }) as SessionTxDecision,
     });
-    await tick();
+    await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 5 }));
     log = { t: 6, rootT: 1, entries: [{ t: 6, datoms: [leak] }] };
     await tick();
     expect(JSON.stringify(socket.frames)).not.toContain("UNFILTERED-LEAK");
     expect(socket.txs()).toEqual([]);
-    expect(s.lastT).toBe(5);
+    expect(s.lastT).toBe(0);
     expect(socket.closed).toBe(true);
     expect(socket.closeCode).toBe(1011);
   });
@@ -847,14 +847,137 @@ describe("filtered log walk", () => {
         throw new Error("sieve exploded");
       },
     });
-    await tick();
+    await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 5 }));
     log = { t: 6, rootT: 1, entries: [{ t: 6, datoms: [wire(6)] }] };
     await tick();
     expect(socket.txs()).toEqual([]);
     expect(socket.ticks()).toEqual([]);
-    expect(s.lastT).toBe(5);
+    expect(s.lastT).toBe(0);
     expect(socket.closed).toBe(true);
     expect(socket.closeCode).toBe(1011);
+  });
+
+  test("later writer torn poll does not jump watermark over a missing t", async () => {
+    const socket = new FakeSocket();
+    const { dispatch } = fakeDispatch();
+    const phone = [wire(11)];
+    const browser = [wire(12)];
+    let log: SessionLog = { t: 10, rootT: 10, entries: [] };
+    const { schedule, tick, now } = manualScheduler();
+    const s = session(socket, {
+      dispatch,
+      schedule,
+      now,
+      watchKey: "acme|torn-poll",
+      pollLog: async () => log,
+      filterEntry: filterOf((t) => ({ kind: "tx", datoms: t === 11 ? phone : browser })),
+    });
+    await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 10 }));
+    expect(s.watermark).toBe(10);
+    // replica lag: tip is 12 but t=11 is not in this poll
+    log = { t: 12, rootT: 10, entries: [{ t: 12, datoms: browser }] };
+    await tick();
+    expect(s.watermark).toBe(10); // must not jump to 12
+    expect(socket.txs()).toEqual([]);
+    expect(socket.resyncs()).toEqual([]);
+    // later poll is dense — both commits must arrive (fill, not e.t <= from drop)
+    log = {
+      t: 12,
+      rootT: 10,
+      entries: [
+        { t: 11, datoms: phone },
+        { t: 12, datoms: browser },
+      ],
+    };
+    await tick();
+    expect(socket.txs().map((f) => f.t)).toEqual([11, 12]);
+    expect(s.watermark).toBe(12);
+  });
+
+  test("torn poll with a snapshot dumps instead of claiming log.t", async () => {
+    const socket = new FakeSocket();
+    const { dispatch } = fakeDispatch();
+    const dump = [wire(11), wire(12)];
+    let log: SessionLog = { t: 10, rootT: 10, entries: [] };
+    const { schedule, tick, now } = manualScheduler();
+    const s = session(socket, {
+      dispatch,
+      schedule,
+      now,
+      watchKey: "acme|torn-dump",
+      pollLog: async () => log,
+      filterEntry: filterOf(() => ({ kind: "tx", datoms: [wire(12)] })),
+      snapshot: async () => ({ t: 12, datoms: dump }),
+    });
+    await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 10 }));
+    log = { t: 12, rootT: 10, entries: [{ t: 12, datoms: [wire(12)] }] };
+    await tick();
+    expect(socket.resyncs()).toEqual([{ op: "resync", t: 12, datoms: dump }]);
+    expect(s.watermark).toBe(12);
+    expect(socket.txs()).toEqual([]);
+  });
+
+  test("warm readings / first observeLog do not jump watermark without a snapshot", async () => {
+    const a = new FakeSocket();
+    const { dispatch } = fakeDispatch();
+    const log: SessionLog = { t: 12, rootT: 10, entries: [{ t: 11, datoms: [wire(11)] }, { t: 12, datoms: [wire(12)] }] };
+    const dump = [wire(1), wire(11), wire(12)];
+    const { schedule, tick, now } = manualScheduler();
+    const opts = {
+      dispatch,
+      schedule,
+      now,
+      watchKey: "acme|warm-walk",
+      pollLog: async () => log,
+      filterEntry: filterOf((t) => ({ kind: "tx", datoms: [wire(t)] })),
+    };
+    const sa = session(a, opts);
+    await sa.onMessage(JSON.stringify({ id: 1, op: "sync", from: 10 }));
+    await tick();
+    expect(sa.watermark).toBe(12);
+    expect(a.txs().map((f) => f.t)).toEqual([11, 12]);
+
+    const b = new FakeSocket();
+    const sb = session(b, { ...opts, snapshot: async () => ({ t: 12, datoms: dump }) });
+    expect(sb.watermark).toBe(0); // must not seed-jump to shared.t
+    expect(sb.lastT).toBe(0);
+    await tick();
+    expect(b.resyncs()).toEqual([{ op: "resync", t: 12, datoms: dump }]);
+    expect(sb.watermark).toBe(12);
+  });
+
+  test("sieved skip is not a hole: cursor advances, later visible tx arrives", async () => {
+    const socket = new FakeSocket();
+    const { dispatch } = fakeDispatch();
+    let log: SessionLog = { t: 10, rootT: 10, entries: [] };
+    const { schedule, tick, now } = manualScheduler();
+    const s = session(socket, {
+      dispatch,
+      schedule,
+      now,
+      watchKey: "acme|skip-not-hole",
+      pollLog: async () => log,
+      filterEntry: filterOf((t) => (t === 11 ? { kind: "skip" } : { kind: "tx", datoms: [wire(t)] })),
+    });
+    await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 10 }));
+    log = { t: 11, rootT: 10, entries: [{ t: 11, datoms: [wire(11)] }] };
+    await tick();
+    expect(socket.txs()).toEqual([]);
+    expect(socket.ticks()).toEqual([]);
+    expect(socket.resyncs()).toEqual([]);
+    expect(s.lastT).toBe(0);
+    expect(s.watermark).toBe(11);
+    log = {
+      t: 12,
+      rootT: 10,
+      entries: [
+        { t: 11, datoms: [wire(11)] },
+        { t: 12, datoms: [wire(12)] },
+      ],
+    };
+    await tick();
+    expect(socket.txs()).toEqual([{ op: "tx", t: 12, datoms: [wire(12)] }]);
+    expect(s.watermark).toBe(12);
   });
 
   test("sync answers 500 when the sieve throws (not a successful empty catch-up)", async () => {
@@ -1162,29 +1285,21 @@ describe("sieve security: openSession + decideSessionTx", () => {
     const title = await conn.transact([[":db/add", ids.doc, ":doc/title", "Roadmap v2"]]);
     const grant = await conn.transact([[":db/add", ids.org, ":org/members", ids.cal]]);
     const created = await conn.transact([{ ":db/id": "q3", ":doc/title": "Q3", ":doc/owner": ids.ada, ":doc/project": ids.proj }]);
-    const adaLog: SessionLog = {
-      t: conn.t,
-      rootT: seedT,
-      entries: [
-        { t: hidden.t, datoms: hidden.txData.map(toWireDatom) },
-        { t: created.t, datoms: created.txData.map(toWireDatom) },
-      ],
-    };
-    const calLog: SessionLog = {
-      t: conn.t,
-      rootT: seedT,
-      entries: [
-        { t: title.t, datoms: title.txData.map(toWireDatom) },
-        { t: grant.t, datoms: grant.txData.map(toWireDatom) },
-      ],
-    };
+    const all: SessionLogEntry[] = [
+      { t: hidden.t, datoms: hidden.txData.map(toWireDatom) },
+      { t: title.t, datoms: title.txData.map(toWireDatom) },
+      { t: grant.t, datoms: grant.txData.map(toWireDatom) },
+      { t: created.t, datoms: created.txData.map(toWireDatom) },
+    ];
+    const adaLog: SessionLog = { t: conn.t, rootT: seedT, entries: all };
+    const calLog: SessionLog = { t: conn.t, rootT: seedT, entries: all };
     const { dispatch } = fakeDispatch();
 
     const adaSock = new FakeSocket();
     const adaS = session(adaSock, { dispatch, principal: ada, pollLog: async () => adaLog, filterEntry: sieveOf(conn, policy) });
     await adaS.onMessage(JSON.stringify({ id: 1, op: "sync", from: seedT }));
-    expect(adaSock.txs().map((f) => f.t)).toEqual([created.t]);
-    expect(adaSock.ticks().map((f) => f.t)).toEqual([created.t]);
+    expect(adaSock.txs().map((f) => f.t)).toEqual([title.t, grant.t, created.t]);
+    expect(adaSock.ticks().map((f) => f.t)).toEqual([title.t, grant.t, created.t]);
     expect(adaSock.resyncs()).toEqual([]);
     expect(JSON.stringify(adaSock.frames)).not.toContain("Cal only");
 
@@ -1198,7 +1313,7 @@ describe("sieve security: openSession + decideSessionTx", () => {
     });
     await calS.onMessage(JSON.stringify({ id: 2, op: "sync", from: seedT }));
     expect(calSock.resyncs()).toHaveLength(1);
-    expect(calSock.txs()).toEqual([]);
+    expect(calSock.txs().every((f) => f.t < grant.t)).toBe(true);
     expect(values(calSock.resyncs()[0].datoms ?? [])).toContain("Roadmap v2");
 
     const late = new FakeSocket();
@@ -1232,7 +1347,7 @@ describe("sieve security: openSession + decideSessionTx", () => {
       pollLog: async () => log,
       filterEntry: sieveOf(conn, policy),
     });
-    await tick();
+    await s.onMessage(JSON.stringify({ id: 0, op: "sync", from: seedT }));
     const before = conn.db();
     const rep = await conn.transact([{ ":db/id": "q3", ":doc/title": "Q3", ":doc/owner": ids.ada, ":doc/project": ids.proj, ":doc/audit": "LEAK-AUDIT" }]);
     const decision = await decideSessionTx({ datoms: rep.txData, policy, principal: ada, ruleDbAfter: conn.db(), ruleDbBefore: before });
@@ -1243,7 +1358,7 @@ describe("sieve security: openSession + decideSessionTx", () => {
     log = { t: conn.t, rootT: 1, entries: [...entries] };
     expect(values(entries[0].datoms)).toContain("LEAK-AUDIT");
     await s.onMessage(JSON.stringify({ id: 1, op: "transact", tx: [] }));
-    const reply = socket.replies()[0];
+    const reply = socket.replies().find((f) => f.id === 1);
     expect(reply.body.datoms).toEqual(ack.datoms);
     expect(socket.txs()).toHaveLength(1);
     expect(socket.txs()[0]).toEqual({ op: "tx", t: rep.t, datoms: ack.datoms });
@@ -1280,7 +1395,8 @@ describe("sieve security: openSession + decideSessionTx", () => {
       pollLog: async () => log,
       filterEntry: sieveOf(conn, policy),
     });
-    await tick();
+    await writer.onMessage(JSON.stringify({ id: 0, op: "sync", from: seedT }));
+    await other.onMessage(JSON.stringify({ id: 0, op: "sync", from: seedT }));
     const before = conn.db();
     const rep = await conn.transact([
       { ":db/id": "q3", ":doc/title": "Q3", ":doc/owner": ids.ada, ":doc/project": ids.proj, ":doc/audit": "LEAK-AUDIT" },

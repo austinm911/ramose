@@ -126,7 +126,12 @@ export interface Session {
   close(): void;
   /** Highest `t` this socket has been told about (does not advance on a skipped empty). */
   readonly lastT: number;
-  /** Highest `t` this session has considered, including skipped empties. */
+  /**
+   * Follow cursor: last `t` this session has **walked** (including sieved
+   * skips). Advances only by walking replica novelty in `t` order, or to a
+   * snapshot's `t` after a dump. Never jumps to `log.t` / `shared.t` without
+   * that dump — a later `e.t <= from` would drop a still-missing visible `t`.
+   */
   readonly watermark: number;
   /** Resolves when the socket is closed or errors (index.ts holds the request open with it). */
   readonly closed: Promise<void>;
@@ -317,14 +322,22 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
       const snap = await options.snapshot(principal);
       send({ op: "resync", t: snap.t, datoms: snap.datoms });
       notifyT(snap.t);
-      watermark = Math.max(watermark, snap.t, t);
+      // dump in hand — the cursor may sit at the snapshot's t, not log.t
+      watermark = snap.t;
       return;
     }
     send({ op: "resync", t });
     notifyT(t);
-    watermark = Math.max(watermark, t);
+    watermark = t;
   };
 
+  /**
+   * Walk replica novelty in `t` order from `from`. A sieved skip is silence
+   * (watermark moves, no `t` leak). A missing `t` in `(from, log.t]` with
+   * `t > rootT` is a torn window — fill if the later poll grows the log,
+   * otherwise dump. Never jump the cursor to `log.t` and later `continue`
+   * a late-appearing visible `t`.
+   */
   const consider = async (log: SessionLog, from: number): Promise<void> => {
     if (dead) return;
     if (from < log.rootT) {
@@ -334,25 +347,35 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     const filter = options.filterEntry;
     if (!filter) {
       if (log.t > lastT) notifyT(log.t);
-      watermark = Math.max(watermark, log.t);
       return;
     }
-    for (const e of log.entries) {
-      if (e.t <= from) continue;
+    const pending = log.entries.filter((e) => e.t > from).sort((a, b) => a.t - b.t);
+    let cursor = from;
+    const torn = async (): Promise<void> => {
+      // worker can name the missing t; browser cannot. A snapshot dump is
+      // honest. Without one, hold the cursor so a later poll can fill.
+      if (options.snapshot) await pushResync(log.t);
+    };
+    for (const e of pending) {
+      if (e.t > cursor + 1) {
+        await torn();
+        return;
+      }
       const decision = await filter(e, principal);
       if (decision.kind === "skip") {
-        watermark = Math.max(watermark, e.t);
+        cursor = e.t;
+        watermark = e.t;
         continue;
       }
       if (decision.kind === "resync") {
         await pushResync(e.t);
-        watermark = Math.max(watermark, e.t, log.t);
         return;
       }
       // `kind: "tx"` without `datoms` is a sieve bug. Never send the replica
       // entry — that is the unfiltered log.
       if (decision.datoms === undefined) throw new Error("session filter returned tx without datoms");
-      watermark = Math.max(watermark, e.t);
+      cursor = e.t;
+      watermark = e.t;
       const echo =
         writerEcho !== undefined && writerEcho.t === e.t ? writerEcho.clientTxId : undefined;
       if (echo !== undefined) writerEcho = undefined;
@@ -364,6 +387,7 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
       });
       notifyT(e.t);
     }
+    if (cursor < log.t) await torn();
   };
 
   const failSieve = (): void => {
@@ -433,7 +457,8 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
         const log = await options.pollLog();
         watermark = from;
         await enqueueConsider(log, from);
-        send({ id, status: 200, body: { t: log.t, from } });
+        // walk cursor, not log tip — a torn window must not claim log.t
+        send({ id, status: 200, body: { t: watermark, from } });
       } catch (err) {
         send({ id, status: 500, body: { error: err instanceof Error ? err.message : String(err) } });
         failSieve();
@@ -533,27 +558,22 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     const shared = entry;
     shared.refs++;
 
-    // the first value only seeds — a watcher reports movement, not the current
-    // value; a warm reading seeds right away so the very next move ticks
+    // Unfiltered `{ op: t }` still silently seeds lastT so the current basis
+    // does not tick. The follow cursor must not: jumping watermark / lastT to
+    // shared.t or log.t without a dump is the hole (later e.t <= from drops
+    // a still-missing visible t). Filtered observe always walks.
     let seeded = shared.at > 0;
-    if (seeded && shared.t > lastT) lastT = shared.t;
-    if (seeded && shared.t > watermark) watermark = shared.t;
+    if (!filtered && seeded && shared.t > lastT) lastT = shared.t;
     const observeT = (t: number) => {
       if (!seeded) {
         seeded = true;
         if (t > lastT) lastT = t;
-        if (t > watermark) watermark = t;
         return;
       }
       notifyT(t);
     };
     const observeLog = (log: SessionLog) => {
-      if (!seeded) {
-        seeded = true;
-        if (log.t > lastT) lastT = log.t;
-        if (log.t > watermark) watermark = log.t;
-        return;
-      }
+      seeded = true;
       void enqueueConsider(log, watermark).catch(failSieve);
     };
 
