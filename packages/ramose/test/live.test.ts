@@ -14,6 +14,8 @@ import * as Fiber from "effect/Fiber";
 import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
 import { query } from "../src/db/internal.ts";
+import type { Connection } from "../src/internal/core/conn.ts";
+import { toWireDatom } from "../src/internal/core/log.ts";
 import { client, fakePeer, settle, type Frame, type Reply } from "./peer.ts";
 import { catalogWorld, snapshotOf, txSnap } from "./overlay-seed.ts";
 
@@ -72,12 +74,27 @@ const peerAt = (state: {
   t: number;
   datoms: unknown[];
   ackT?: number;
+  conn?: Connection;
   answer?: (frame: Frame) => Reply | undefined;
 }) =>
   fakePeer({
-    http: () => ({
-      body: { t: state.ackT ?? state.t, txEid: 1, tempids: {}, datoms: 1 },
-    }),
+    http: async (call) => {
+      if (call.url.endsWith("/transact") && state.conn !== undefined) {
+        const rep = await state.conn.transact(call.body.tx);
+        return {
+          body: {
+            t: state.ackT ?? rep.t,
+            txEid: rep.txEid,
+            tempids: rep.tempids,
+            datoms: rep.txData.map(toWireDatom),
+            clientTxId: call.body.clientTxId,
+          },
+        };
+      }
+      return {
+        body: { t: state.ackT ?? state.t, txEid: 1, tempids: {}, datoms: [] },
+      };
+    },
     answer: (frame) => {
       const custom = state.answer?.(frame);
       if (custom !== undefined) return custom;
@@ -172,7 +189,7 @@ describe("the basis is the wake", () => {
 
   test("a local transact is visible to live before POST returns", async () => {
     const world = await users("Ada");
-    const state = { t: world.t, datoms: world.datoms, ackT: 30 };
+    const state = { t: world.t, datoms: world.datoms, ackT: 30, conn: world.conn };
     const peer = peerAt(state);
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);

@@ -12,6 +12,8 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
+import type { Connection } from "../src/internal/core/conn.ts";
+import { toWireDatom } from "../src/internal/core/log.ts";
 import { client, fakePeer, settle, type Frame, type Reply } from "./peer.ts";
 import { catalogWorld, snapshotOf, txSnap } from "./overlay-seed.ts";
 
@@ -70,12 +72,27 @@ const peerAt = (state: {
   t: number;
   datoms: unknown[];
   ackT?: number;
+  conn?: Connection;
   answer?: (frame: Frame) => Reply | undefined;
 }) =>
   fakePeer({
-    http: () => ({
-      body: { t: state.ackT ?? state.t, txEid: 1, tempids: {}, datoms: 1 },
-    }),
+    http: async (call) => {
+      if (call.url.endsWith("/transact") && state.conn !== undefined) {
+        const rep = await state.conn.transact(call.body.tx);
+        return {
+          body: {
+            t: state.ackT ?? rep.t,
+            txEid: rep.txEid,
+            tempids: rep.tempids,
+            datoms: rep.txData.map(toWireDatom),
+            clientTxId: call.body.clientTxId,
+          },
+        };
+      }
+      return {
+        body: { t: state.ackT ?? state.t, txEid: 1, tempids: {}, datoms: [] },
+      };
+    },
     answer: (frame) => {
       const custom = state.answer?.(frame);
       if (custom !== undefined) return custom;
@@ -160,7 +177,7 @@ describe("the basis is the wake", () => {
 
   test("retractEntity on the same connection emits null, and the stream keeps standing", async () => {
     const world = await adaWorld();
-    const state = { t: world.t, datoms: world.datoms, ackT: 30 };
+    const state = { t: world.t, datoms: world.datoms, ackT: 30, conn: world.conn };
     const peer = peerAt(state);
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
@@ -180,8 +197,7 @@ describe("the basis is the wake", () => {
     expect(live.done).toBe(false);
     expect(peer.frameOps("pull")).toEqual([]);
 
-    const back = await snapshotOf(world.conn);
-    peer.push({ op: "resync", t: Math.max(back.t, 31), datoms: back.datoms });
+    peer.push({ op: "resync", t: Math.max(world.t, 31), datoms: world.datoms });
     await settle();
     expect(live.seen).toHaveLength(3);
     expect(live.seen[2]).toEqual({ name: "Ada", age: 36 });
