@@ -3,8 +3,10 @@
  *
  * The replica stays unfiltered. This is the sieve the Worker session applies
  * before a `{ op: "tx" }` / `{ op: "resync" }` leaves toward the browser.
- * A fully-filtered data tx is silence (no `t` leak). A grant or revoke that
- * flips this principal's rule view is `resync`, not a one-datom apply.
+ * A fully-filtered data tx is silence (no `t` leak). A membership/owner
+ * change that flips this principal's access to other facts is `resync`.
+ * A peer-visible create or update (no grant change on existing facts) is
+ * `{ op: "tx" }`, not a view reload.
  */
 
 import {
@@ -82,9 +84,23 @@ async function isVisible(d: Datom, ruleDb: Db, policy: CompiledPolicy, principal
   return allowsOp(policy, "read", attr.ident, { db: ruleDb, principal, e: d.e, memo });
 }
 
+/** Did `e` already have a current-view fact before this tx? */
+async function existedBefore(db: Db, e: number, memo: Map<number, boolean>): Promise<boolean> {
+  const hit = memo.get(e);
+  if (hit !== undefined) return hit;
+  const d = await db.first(Index.EAVT, { e });
+  const ok = d !== undefined;
+  memo.set(e, ok);
+  return ok;
+}
+
 /**
- * Did this tx change what `principal` can read? Fast path: a grant-attr
- * datom that names them. Slow path: `allowsOp("read")` flips on any fact.
+ * Did this tx change what `principal` can read *beyond the facts in this tx*?
+ *
+ * A grant/revoke of membership or owner on an entity that already existed
+ * hides or reveals historical facts that are not in the entry → `resync`.
+ * Creating a new readable entity (Ada's own doc, an in-org add Bea can see)
+ * only introduces facts that are already in the entry → incremental `tx`.
  */
 export async function ruleViewChanged(opts: {
   datoms: readonly Datom[];
@@ -101,11 +117,17 @@ export async function ruleViewChanged(opts: {
     if (attr) grantIds.add(attr.id);
   }
   const peid = principal.eid;
+  const existed = new Map<number, boolean>();
   const memoBefore = new PolicyMemo();
   const memoAfter = new PolicyMemo();
   for (const d of datoms) {
-    if (peid !== undefined && grantIds.has(d.a) && (d.e === peid || d.v === peid)) return true;
+    // grant attr naming P, on an entity that already had facts (membership /
+    // owner change). A *new* row that happens to set :doc/owner = P is a create.
+    if (peid !== undefined && grantIds.has(d.a) && (d.e === peid || d.v === peid) && (await existedBefore(ruleDbBefore, d.e, existed))) {
+      return true;
+    }
     if (isSystemAttrId(d.a)) continue;
+    if (!(await existedBefore(ruleDbBefore, d.e, existed))) continue;
     const attr = ruleDbAfter.attr(d.a) ?? ruleDbBefore.attr(d.a);
     if (!attr) continue;
     const before = await allowsOp(policy, "read", attr.ident, { db: ruleDbBefore, principal, e: d.e, memo: memoBefore });

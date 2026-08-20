@@ -846,13 +846,21 @@ describe("decideSessionTx: post-commit rule view", () => {
     await conn.transact(SCHEMA);
     const rep = await conn.transact([
       { ":db/id": "ada", ":user/sub": "user_ada" },
+      { ":db/id": "bea", ":user/sub": "user_bea" },
       { ":db/id": "cal", ":user/sub": "user_cal" },
-      { ":db/id": "org", ":org/members": ["ada"] },
+      { ":db/id": "org", ":org/members": ["ada", "bea"] },
       { ":db/id": "proj", ":project/org": "org" },
       { ":db/id": "doc", ":doc/title": "Roadmap", ":doc/owner": "ada", ":doc/project": "proj" },
       { ":db/id": "other", ":org/members": ["cal"] },
     ]);
-    return { conn, ids: rep.tempids, policy: POLICY, ada: user("user_ada", rep.tempids.ada), cal: user("user_cal", rep.tempids.cal) };
+    return {
+      conn,
+      ids: rep.tempids,
+      policy: POLICY,
+      ada: user("user_ada", rep.tempids.ada),
+      bea: user("user_bea", rep.tempids.bea),
+      cal: user("user_cal", rep.tempids.cal),
+    };
   }
 
   test("a fully-filtered other-org write is skip (no t leak)", async () => {
@@ -890,5 +898,18 @@ describe("decideSessionTx: post-commit rule view", () => {
     expect(decision.kind).toBe("tx");
     expect((decision.datoms ?? []).length).toBeGreaterThan(0);
     expect((decision.datoms ?? []).every((d) => d[4] === rep.t)).toBe(true);
+  });
+
+  test("a peer-visible create is tx, not resync", async () => {
+    const { conn, ids, policy, ada, bea } = await world();
+    const before = conn.db();
+    const rep = await conn.transact([{ ":db/id": "q3", ":doc/title": "Q3", ":doc/owner": ids.ada, ":doc/project": ids.proj }]);
+    const after = conn.db();
+    const adaDecision = await decideSessionTx({ datoms: rep.txData, policy, principal: ada, ruleDbAfter: after, ruleDbBefore: before });
+    const beaDecision = await decideSessionTx({ datoms: rep.txData, policy, principal: bea, ruleDbAfter: after, ruleDbBefore: before });
+    expect(adaDecision.kind).toBe("tx");
+    expect(beaDecision.kind).toBe("tx");
+    expect((adaDecision.datoms ?? []).length).toBeGreaterThan(0);
+    expect((beaDecision.datoms ?? []).length).toBeGreaterThan(0);
   });
 });
