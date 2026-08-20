@@ -330,7 +330,7 @@ describe("ensure and privileged surfaces", () => {
     for (const tok of [member, "s3cret"]) {
       const res = await peer.json("/db/acme/transact", post(subset, tok));
       expect(res.status).toBe(200);
-      expect(res.body.datoms).toBe(0);
+      expect(res.body.datoms).toEqual([]);
     }
     const fresh = await peer.json("/db/acme/transact", post({ tx: [attr(":doc/secret", "string")] }, member));
     expect(fresh.status).toBe(403);

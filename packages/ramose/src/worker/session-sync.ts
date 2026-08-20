@@ -139,12 +139,21 @@ export async function decideSessionTx(opts: {
   }
   const view = filterDb(ruleDbAfter, ruleDbAfter, policy, principal);
   const kept: WireDatom[] = [];
+  let userKept = 0;
+  const keep = async (d: Datom, visible: boolean): Promise<void> => {
+    if (!visible) return;
+    kept.push(toWireDatom(d));
+    if (!isSystemAttrId(d.a)) userKept++;
+  };
   if (view instanceof FilteredDb) {
-    for (const d of datoms) if (await view.visible(d)) kept.push(toWireDatom(d));
+    for (const d of datoms) await keep(d, await view.visible(d));
   } else {
-    for (const d of datoms) if (await isVisible(d, ruleDbAfter, policy, principal, new PolicyMemo())) kept.push(toWireDatom(d));
+    const memo = new PolicyMemo();
+    for (const d of datoms) await keep(d, await isVisible(d, ruleDbAfter, policy, principal, memo));
   }
-  if (kept.length === 0) return { kind: "skip" };
+  // `:db/txInstant` and other bootstrap facts are always visible; they must
+  // not keep a fully-filtered data tx on the socket (that would leak `t`).
+  if (userKept === 0) return { kind: "skip" };
   return { kind: "tx", datoms: kept };
 }
 
