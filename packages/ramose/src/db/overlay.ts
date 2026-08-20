@@ -529,7 +529,11 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
               processTx(
                 view(),
                 tx as unknown[],
-                confirmedT + pending.length + 1,
+                // Fake local `t` only — not a dense log assignment. Must sit
+                // above painted server facts (`factTs`) as well as `confirmedT`,
+                // or a later pending layer collides with an ack we did not
+                // stamp as prefix.
+                Math.max(confirmedT, ...factTs, 0) + pending.length + 1,
                 nextEid(),
                 Date.now(),
               ),
