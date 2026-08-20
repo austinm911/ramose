@@ -283,8 +283,18 @@ describe("writes", () => {
 
     const created = await peer.json("/db/acme/transact", post({ tx: [{ ":db/id": "new", ":doc/title": "Spec", ":doc/project": eids.proj }] }, ada));
     expect(created.status).toBe(200);
+    expect(Array.isArray(created.body.datoms)).toBe(true);
+    expect(created.body.datoms.length).toBeGreaterThan(0);
     const owner = await peer.json("/db/acme/pull", post({ eid: created.body.tempids.new, pattern: [":doc/title", ":doc/owner"] }, ada));
     expect(owner.body.result[":doc/owner"]).toEqual({ ":db/id": eids.ada });
+
+    const first = await peer.json("/db/acme/transact", post({ tx: [{ ":db/id": "again", ":doc/title": "Idempotent", ":doc/project": eids.proj }], clientTxId: "c1" }, ada));
+    expect(first.status).toBe(200);
+    const replay = await peer.json("/db/acme/transact", post({ tx: [{ ":db/id": "again", ":doc/title": "Idempotent", ":doc/project": eids.proj }], clientTxId: "c1" }, ada));
+    expect(replay.status).toBe(200);
+    expect(replay.body.t).toBe(first.body.t);
+    expect(replay.body.datoms).toEqual(first.body.datoms);
+    expect(await titles(peer, ada)).toEqual(["Idempotent", "Roadmap v2", "Spec"]);
     peer.close();
   });
 

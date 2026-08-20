@@ -35,7 +35,7 @@ There is no refetch code anywhere in Reef. Nothing at the write site announces t
 ## What re-runs, and when
 
 - **After your own write** — including in the window that wrote.
-- **After anyone else's write.** Other windows hear about the new version over their **WebSocket connection** ([glossary](/concepts/glossary/#connection)) and re-run within about a second, locally and deployed. Writes always go over HTTPS; reads and updates share that connection.
+- **After anyone else's write.** Other windows hear about the new version over their **WebSocket connection** ([glossary](/concepts/glossary/#connection)) and re-run within about a second, locally and deployed. Writes always go over HTTPS; reads and updates share that connection. A write this caller cannot read does not wake the connection. If their access itself changes (they gain or lose a record), the connection says so and the next run sees the new view.
 - **A re-run is a whole re-run.** No diffing: the query is evaluated again, permissions and limits applied exactly as for `db.q`.
 - **Only news is emitted.** Identical results are not emitted again, so a write the query does not see is not a re-render.
 - **Dropped connections recover on their own** — retries back off from 250 ms to 5 s and the connection reconnects in place.

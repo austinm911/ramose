@@ -1,6 +1,7 @@
 /** Session socket: Worker-accepted WS, frames dispatched into existing HTTP routes. */
 
-import type { Principal } from "../internal/core/index.ts";
+import type { Principal, WireDatom } from "../internal/core/index.ts";
+import type { SessionLog, SessionLogEntry, SessionTxDecision } from "./session-sync.ts";
 
 // ---- wire ------------------------------------------------------------------
 
@@ -8,7 +9,9 @@ import type { Principal } from "../internal/core/index.ts";
 export type ClientFrame =
   /** token refresh — the only frame that is not a sub-request */
   | { id: number; op: "auth"; token: string }
-  | { id: number; op: "transact"; tx: unknown[] }
+  | { id: number; op: "transact"; tx: unknown[]; clientTxId?: string }
+  /** catch-up: walk `(from, now]` and skip empties; resync if the gap is gone or a rule view flipped */
+  | { id: number; op: "sync"; from: number }
   | { id: number; op: "q"; query: string | object; inputs?: unknown[]; asOf?: number; history?: boolean; explain?: boolean; minT?: number }
   | { id: number; op: "pull"; eid: number | string | [string, unknown]; pattern: string | unknown[]; asOf?: number; history?: boolean; minT?: number }
   | { id: number; op: "entity"; eid: number; asOf?: number }
@@ -39,6 +42,20 @@ export interface AuthAck {
 export interface TickFrame {
   op: "t";
   t: number;
+}
+
+/** Unsolicited: facts this principal may read from one committed tx. */
+export interface TxPushFrame {
+  op: "tx";
+  t: number;
+  datoms: WireDatom[];
+}
+
+/** Unsolicited: this principal's rule view flipped — drop local state and sieve current. */
+export interface ResyncFrame {
+  op: "resync";
+  t: number;
+  datoms?: WireDatom[];
 }
 
 /** Diagnostic response headers worth carrying back on a reply (the `x-ramose-*` set the routes set). */
@@ -82,6 +99,15 @@ export interface SessionOptions {
   describe?: (principal: Principal) => Promise<WirePrincipal>;
   /** reads the current basis `t` (isolate-local, cache-bypassing) — omit to disable polling */
   pollBasis?: () => Promise<number>;
+  /**
+   * richer poll: novelty since the current root. When set (with {@link filterEntry}),
+   * the session walks a filtered log instead of ticking every `t`.
+   */
+  pollLog?: () => Promise<SessionLog>;
+  /** sieve one unfiltered log entry for this socket's current principal */
+  filterEntry?: (entry: SessionLogEntry, principal?: Principal) => Promise<SessionTxDecision>;
+  /** current-value dump through the read view — first sync / resync */
+  snapshot?: (principal?: Principal) => Promise<{ t: number; datoms: WireDatom[] }>;
   /** sessions sharing this key share one basis reading (the read path's `db|hint`) */
   watchKey?: string;
   pollIntervalMs?: number;
@@ -96,8 +122,10 @@ export interface Session {
   /** Send `{ op: "t", t }` if this is news to this socket. */
   notifyT(t: number): void;
   close(): void;
-  /** Highest `t` this socket has been told about. */
+  /** Highest `t` this socket has been told about (does not advance on a skipped empty). */
   readonly lastT: number;
+  /** Highest `t` this session has considered, including skipped empties. */
+  readonly watermark: number;
   /** Resolves when the socket is closed or errors (index.ts holds the request open with it). */
   readonly closed: Promise<void>;
 }
@@ -152,7 +180,9 @@ export function planOf(frame: unknown): SessionPlan | PlanError {
   switch (f.op) {
     case "transact": {
       if (!Array.isArray(f.tx)) return { id, error: "transact frame needs tx: unknown[]" };
-      return { id, op: "transact", rest: "/transact", method: "POST", headers: { ...JSON_CT }, body: JSON.stringify({ tx: f.tx }) };
+      const body: Record<string, unknown> = { tx: f.tx };
+      if (typeof f.clientTxId === "string" && f.clientTxId.length > 0) body.clientTxId = f.clientTxId;
+      return { id, op: "transact", rest: "/transact", method: "POST", headers: { ...JSON_CT }, body: JSON.stringify(body) };
     }
     case "q": {
       if (f.query === undefined || f.query === null) return { id, error: "q frame needs query" };
@@ -207,6 +237,8 @@ export function planOf(frame: unknown): SessionPlan | PlanError {
 interface BasisReading {
   /** highest basis `t` any session on this key has observed */
   t: number;
+  rootT: number;
+  entries: SessionLogEntry[];
   /** when `t` was last confirmed by a poll (0: never) */
   at: number;
   /** a poll started then is in flight (0: none) — a stale mark self-heals after one interval */
@@ -227,6 +259,8 @@ export function watcherKeys(): string[] {
 /** Wire an accepted socket to the Worker's routes. Returns the session (also driven by the socket's own events). */
 export function openSession(socket: SocketLike, options: SessionOptions): Session {
   let lastT = 0;
+  /** last `t` considered, including skipped empties — must not leak via `lastT` */
+  let watermark = 0;
   let dead = false;
   let principal = options.principal;
   let expiring = false;
@@ -235,6 +269,7 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
   const closed = new Promise<void>((resolve) => {
     resolveClosed = resolve;
   });
+  const filtered = options.pollLog !== undefined && options.filterEntry !== undefined;
 
   const die = () => {
     if (dead) return;
@@ -250,7 +285,7 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     if (!wasDead) socket.close(1008, "unauthorized");
   };
 
-  const send = (frame: ReplyFrame | TickFrame | AuthAck) => {
+  const send = (frame: ReplyFrame | TickFrame | TxPushFrame | ResyncFrame | AuthAck) => {
     if (dead) return;
     try {
       socket.send(JSON.stringify(frame));
@@ -271,6 +306,52 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     if (dead || typeof t !== "number" || !Number.isFinite(t) || t <= lastT) return;
     lastT = t;
     send({ op: "t", t });
+  };
+
+  const pushResync = async (t: number): Promise<void> => {
+    if (options.snapshot) {
+      const snap = await options.snapshot(principal);
+      send({ op: "resync", t: snap.t, datoms: snap.datoms });
+      notifyT(snap.t);
+      watermark = Math.max(watermark, snap.t, t);
+      return;
+    }
+    send({ op: "resync", t });
+    notifyT(t);
+    watermark = Math.max(watermark, t);
+  };
+
+  const consider = async (log: SessionLog, from: number): Promise<void> => {
+    if (dead) return;
+    if (from < log.rootT) {
+      await pushResync(log.t);
+      return;
+    }
+    const filter = options.filterEntry;
+    if (!filter) {
+      if (log.t > lastT) notifyT(log.t);
+      watermark = Math.max(watermark, log.t);
+      return;
+    }
+    for (const e of log.entries) {
+      if (e.t <= from) continue;
+      const decision = await filter(e, principal);
+      watermark = Math.max(watermark, e.t);
+      if (decision.kind === "skip") continue;
+      if (decision.kind === "resync") {
+        await pushResync(e.t);
+        watermark = Math.max(watermark, log.t);
+        return;
+      }
+      send({ op: "tx", t: e.t, datoms: decision.datoms ?? e.datoms });
+      notifyT(e.t);
+    }
+  };
+
+  let considering: Promise<void> = Promise.resolve();
+  const enqueueConsider = (log: SessionLog, from: number): Promise<void> => {
+    considering = considering.then(() => consider(log, from)).catch(() => undefined);
+    return considering;
   };
 
   /** `{op:"auth", token}`: re-verify, then swap. A refusal keeps the old principal. */
@@ -309,6 +390,24 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     }
     if (typeof frame === "object" && frame !== null && (frame as { op?: unknown }).op === "auth") {
       return refresh(frame as Record<string, unknown>);
+    }
+    if (typeof frame === "object" && frame !== null && (frame as { op?: unknown }).op === "sync") {
+      const f = frame as Record<string, unknown>;
+      const id = typeof f.id === "number" && Number.isFinite(f.id) ? f.id : 0;
+      const from = typeof f.from === "number" && Number.isFinite(f.from) && f.from >= 0 ? f.from : 0;
+      if (!options.pollLog) {
+        send({ id, status: 400, body: { error: "this session cannot sync a log" } });
+        return;
+      }
+      try {
+        const log = await options.pollLog();
+        watermark = from;
+        await enqueueConsider(log, from);
+        send({ id, status: 200, body: { t: log.t, from } });
+      } catch (err) {
+        send({ id, status: 500, body: { error: err instanceof Error ? err.message : String(err) } });
+      }
+      return;
     }
     const plan = planOf(frame);
     if (isPlanError(plan)) {
@@ -353,8 +452,18 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     send({ id: plan.id, status: res.status, body, ...(Object.keys(headers).length > 0 ? { headers } : {}) });
     // ack.t: a write on this socket is the cheapest possible basis notification — after its reply
     if (plan.op === "transact" && res.ok) {
-      const t = (body as { t?: unknown } | null)?.t;
-      if (typeof t === "number") notifyT(t);
+      if (filtered && options.pollLog) {
+        try {
+          const log = await options.pollLog();
+          await enqueueConsider(log, watermark);
+        } catch {
+          const t = (body as { t?: unknown } | null)?.t;
+          if (typeof t === "number") notifyT(t);
+        }
+      } else {
+        const t = (body as { t?: unknown } | null)?.t;
+        if (typeof t === "number") notifyT(t);
+      }
     }
   };
 
@@ -362,15 +471,16 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
   socket.addEventListener("close", die);
   socket.addEventListener("error", die);
 
-  if (options.pollBasis && options.watchKey !== undefined) {
+  if ((options.pollBasis || options.pollLog) && options.watchKey !== undefined) {
     const key = options.watchKey;
-    const poll = options.pollBasis;
+    const pollT = options.pollBasis;
+    const pollLog = options.pollLog;
     const intervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     const now = options.now ?? Date.now;
 
     let entry = readings.get(key);
     if (!entry) {
-      entry = { t: 0, at: 0, pollingSince: 0, refs: 0 };
+      entry = { t: 0, rootT: 0, entries: [], at: 0, pollingSince: 0, refs: 0 };
       readings.set(key, entry);
     }
     const shared = entry;
@@ -380,13 +490,24 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     // value; a warm reading seeds right away so the very next move ticks
     let seeded = shared.at > 0;
     if (seeded && shared.t > lastT) lastT = shared.t;
-    const observe = (t: number) => {
+    if (seeded && shared.t > watermark) watermark = shared.t;
+    const observeT = (t: number) => {
       if (!seeded) {
         seeded = true;
         if (t > lastT) lastT = t;
+        if (t > watermark) watermark = t;
         return;
       }
       notifyT(t);
+    };
+    const observeLog = (log: SessionLog) => {
+      if (!seeded) {
+        seeded = true;
+        if (log.t > lastT) lastT = log.t;
+        if (log.t > watermark) watermark = log.t;
+        return;
+      }
+      void enqueueConsider(log, watermark);
     };
 
     // this session's own poll is in flight; overlapping ticks are dropped rather than queued
@@ -395,22 +516,39 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
       if (dead || inflight) return;
       const ts = now();
       if (shared.at > 0 && ts - shared.at < intervalMs) {
-        observe(shared.t);
+        if (filtered) observeLog({ t: shared.t, rootT: shared.rootT, entries: shared.entries });
+        else observeT(shared.t);
         return;
       }
       if (shared.pollingSince > 0 && ts - shared.pollingSince < intervalMs) {
         // another session is polling this key; read what is already known
-        if (shared.at > 0) observe(shared.t);
+        if (shared.at > 0) {
+          if (filtered) observeLog({ t: shared.t, rootT: shared.rootT, entries: shared.entries });
+          else observeT(shared.t);
+        }
         return;
       }
       inflight = true;
       shared.pollingSince = ts;
       try {
-        const t = await poll();
-        if (typeof t !== "number" || !Number.isFinite(t)) return;
-        if (t > shared.t) shared.t = t;
-        shared.at = now();
-        observe(shared.t);
+        if (pollLog) {
+          const log = await pollLog();
+          if (typeof log.t !== "number" || !Number.isFinite(log.t)) return;
+          if (log.t >= shared.t) {
+            shared.t = log.t;
+            shared.rootT = log.rootT;
+            shared.entries = log.entries.slice();
+          }
+          shared.at = now();
+          if (filtered) observeLog({ t: shared.t, rootT: shared.rootT, entries: shared.entries });
+          else observeT(shared.t);
+        } else if (pollT) {
+          const t = await pollT();
+          if (typeof t !== "number" || !Number.isFinite(t)) return;
+          if (t > shared.t) shared.t = t;
+          shared.at = now();
+          observeT(shared.t);
+        }
       } catch {
         /* a transient replica error just means no news this tick */
       } finally {
@@ -437,6 +575,9 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     },
     get lastT() {
       return lastT;
+    },
+    get watermark() {
+      return watermark;
     },
     closed,
   };

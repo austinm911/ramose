@@ -662,7 +662,7 @@ export const makeDb = <C extends AnyCatalog>(
               txEid: makeEid<C>(
                 typeof ack.txEid === "number" ? ack.txEid : 0,
               ),
-              datomCount: typeof ack.datoms === "number" ? ack.datoms : 0,
+              datomCount: Array.isArray(ack.datoms) ? ack.datoms.length : typeof ack.datoms === "number" ? ack.datoms : 0,
               dbAfter: makeDb(wire, name, catalog, { ...view, minT: t }),
             };
           }),

@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { Connection } from "../../src/internal/core/conn.ts";
 import type { Principal } from "../../src/internal/core/index.ts";
+import { PolicyAst as A, parsePolicy } from "../../src/internal/core/policy/index.ts";
 import { META_HEADERS, type Scheduler, type SessionDispatch, type SocketLike, openSession, planOf, watcherKeys } from "../../src/worker/session.ts";
+import { decideSessionTx, type SessionLog, type SessionTxDecision } from "../../src/worker/session-sync.ts";
 
 /** A `WebSocket` stand-in: records what the session sent, replays what a client would do. */
 class FakeSocket implements SocketLike {
@@ -33,6 +36,12 @@ class FakeSocket implements SocketLike {
   }
   ticks() {
     return this.frames.filter((f) => f.op === "t");
+  }
+  txs() {
+    return this.frames.filter((f) => f.op === "tx");
+  }
+  resyncs() {
+    return this.frames.filter((f) => f.op === "resync");
   }
   replies() {
     return this.frames.filter((f) => f.op === undefined);
@@ -129,6 +138,8 @@ describe("planOf: frame → sub-request", () => {
     const tx = planOf({ id: 3, op: "transact", tx: [{ ":db/id": -1 }] }) as any;
     expect([tx.rest, tx.method]).toEqual(["/transact", "POST"]);
     expect(JSON.parse(tx.body)).toEqual({ tx: [{ ":db/id": -1 }] });
+    const replay = planOf({ id: 4, op: "transact", tx: [{ ":db/id": -1 }], clientTxId: "c1" }) as any;
+    expect(JSON.parse(replay.body)).toEqual({ tx: [{ ":db/id": -1 }], clientTxId: "c1" });
   });
 
   test("entity/info → GET, asOf on the query string", () => {
@@ -664,5 +675,220 @@ describe("the auth frame", () => {
     expect(socket.replies()).toEqual([{ id: 1, status: 401, body: { error: "token expired" } }]);
     await new Promise((r) => setTimeout(r, 0));
     expect(socket.closed).toBe(true);
+  });
+});
+
+const wire = (t: number): [number, number, number, string, number, 0 | 1] => [1, 2, 3, "x", t, 1];
+
+describe("filtered log walk", () => {
+  const filterOf = (decide: (t: number) => SessionTxDecision) => async (entry: { t: number }) => decide(entry.t);
+
+  test("a fully-filtered tx does not appear on that socket (no t, no datoms)", async () => {
+    const socket = new FakeSocket();
+    const { dispatch } = fakeDispatch();
+    let log: SessionLog = { t: 5, rootT: 1, entries: [] };
+    const { schedule, tick, now } = manualScheduler();
+    const s = session(socket, {
+      dispatch,
+      schedule,
+      now,
+      watchKey: "acme|enam",
+      pollLog: async () => log,
+      filterEntry: filterOf(() => ({ kind: "skip" })),
+    });
+    await tick(); // seed at 5
+    expect(s.lastT).toBe(5);
+    expect(s.watermark).toBe(5);
+    log = { t: 6, rootT: 1, entries: [{ t: 6, datoms: [wire(6)] }] };
+    await tick();
+    expect(socket.ticks()).toEqual([]);
+    expect(socket.txs()).toEqual([]);
+    expect(socket.resyncs()).toEqual([]);
+    expect(s.lastT).toBe(5); // skip must not leak t
+    expect(s.watermark).toBe(6);
+  });
+
+  test("a revoke-of-P produces resync, not silence", async () => {
+    const socket = new FakeSocket();
+    const { dispatch } = fakeDispatch();
+    let log: SessionLog = { t: 5, rootT: 1, entries: [] };
+    const { schedule, tick, now } = manualScheduler();
+    session(socket, {
+      dispatch,
+      schedule,
+      now,
+      watchKey: "acme|enam",
+      pollLog: async () => log,
+      filterEntry: filterOf((t) => (t === 6 ? { kind: "resync" } : { kind: "skip" })),
+    });
+    await tick();
+    log = { t: 6, rootT: 1, entries: [{ t: 6, datoms: [wire(6)] }] };
+    await tick();
+    expect(socket.resyncs()).toEqual([{ op: "resync", t: 6 }]);
+    expect(socket.ticks()).toEqual([{ op: "t", t: 6 }]); // existing clients still wake
+    expect(socket.txs()).toEqual([]);
+  });
+
+  test("a same-tx grant yields resync, not a one-datom apply", async () => {
+    const socket = new FakeSocket();
+    const { dispatch } = fakeDispatch();
+    let log: SessionLog = { t: 5, rootT: 1, entries: [] };
+    const { schedule, tick, now } = manualScheduler();
+    session(socket, {
+      dispatch,
+      schedule,
+      now,
+      watchKey: "acme|enam",
+      pollLog: async () => log,
+      filterEntry: filterOf(() => ({ kind: "resync" })),
+      snapshot: async () => ({ t: 6, datoms: [wire(1), wire(2)] }),
+    });
+    await tick();
+    log = { t: 6, rootT: 1, entries: [{ t: 6, datoms: [wire(6)] }] };
+    await tick();
+    expect(socket.resyncs()).toEqual([{ op: "resync", t: 6, datoms: [wire(1), wire(2)] }]);
+    expect(socket.txs()).toEqual([]);
+  });
+
+  test("a visible tx is { op: tx, t, datoms } and still ticks t for existing clients", async () => {
+    const socket = new FakeSocket();
+    const { dispatch } = fakeDispatch();
+    let log: SessionLog = { t: 5, rootT: 1, entries: [] };
+    const kept = [wire(6)];
+    const { schedule, tick, now } = manualScheduler();
+    session(socket, {
+      dispatch,
+      schedule,
+      now,
+      watchKey: "acme|enam",
+      pollLog: async () => log,
+      filterEntry: filterOf(() => ({ kind: "tx", datoms: kept })),
+    });
+    await tick();
+    log = { t: 6, rootT: 1, entries: [{ t: 6, datoms: [wire(6), wire(6)] }] };
+    await tick();
+    expect(socket.txs()).toEqual([{ op: "tx", t: 6, datoms: kept }]);
+    expect(socket.ticks()).toEqual([{ op: "t", t: 6 }]);
+  });
+
+  test("catch-up from skips empties; from < root.t is resync", async () => {
+    const socket = new FakeSocket();
+    const { dispatch } = fakeDispatch();
+    const log: SessionLog = {
+      t: 8,
+      rootT: 4,
+      entries: [
+        { t: 5, datoms: [wire(5)] },
+        { t: 6, datoms: [wire(6)] },
+        { t: 7, datoms: [wire(7)] },
+        { t: 8, datoms: [wire(8)] },
+      ],
+    };
+    const s = session(socket, {
+      dispatch,
+      pollLog: async () => log,
+      filterEntry: filterOf((t) => (t === 6 || t === 8 ? { kind: "tx", datoms: [wire(t)] } : { kind: "skip" })),
+    });
+    await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 4 }));
+    expect(socket.txs().map((f) => f.t)).toEqual([6, 8]);
+    expect(socket.ticks().map((f) => f.t)).toEqual([6, 8]);
+    expect(socket.resyncs()).toEqual([]);
+    expect(s.watermark).toBe(8);
+    expect(socket.replies()).toEqual([{ id: 1, status: 200, body: { t: 8, from: 4 } }]);
+
+    const late = new FakeSocket();
+    const sl = session(late, {
+      dispatch,
+      pollLog: async () => log,
+      filterEntry: filterOf(() => ({ kind: "tx", datoms: [wire(1)] })),
+      snapshot: async () => ({ t: 8, datoms: [wire(1)] }),
+    });
+    await sl.onMessage(JSON.stringify({ id: 2, op: "sync", from: 2 })); // 2 < rootT 4
+    expect(late.resyncs()).toEqual([{ op: "resync", t: 8, datoms: [wire(1)] }]);
+    expect(late.txs()).toEqual([]);
+  });
+});
+
+describe("decideSessionTx: post-commit rule view", () => {
+  const SCHEMA = [
+    { ":db/ident": ":user/sub", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one", ":db/unique": ":db.unique/identity" },
+    { ":db/ident": ":org/members", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/many" },
+    { ":db/ident": ":project/org", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
+    { ":db/ident": ":doc/title", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+    { ":db/ident": ":doc/owner", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
+    { ":db/ident": ":doc/project", ":db/valueType": ":db.type/ref", ":db/cardinality": ":db.cardinality/one" },
+  ];
+  const inOrg = A.ref(":doc/project", A.ref(":project/org", A.eq(":org/members", A.principal)));
+  const POLICY = parsePolicy({
+    version: 1,
+    principal: ":user/sub",
+    classes: ["member", "admin"],
+    attrs: {},
+    ns: {
+      doc: { read: [A.allow(A.or(A.eq(":doc/owner", A.principal), inOrg))] },
+      project: { read: [A.allow(A.ref(":project/org", A.eq(":org/members", A.principal)))] },
+      org: { read: [A.allow(A.eq(":org/members", A.principal))] },
+      user: { read: [A.allow(A.eq(":user/sub", A.claim("sub")))] },
+    },
+    preset: { ":doc/owner": A.principal },
+  });
+  const user = (sub: string, eid: number): Principal => ({
+    kind: "user",
+    class: "member",
+    sub,
+    eid,
+    claims: { sub },
+    db: "acme",
+  });
+
+  async function world() {
+    const conn = await Connection.create({ now: () => 1_700_000_000_000 });
+    await conn.transact(SCHEMA);
+    const rep = await conn.transact([
+      { ":db/id": "ada", ":user/sub": "user_ada" },
+      { ":db/id": "cal", ":user/sub": "user_cal" },
+      { ":db/id": "org", ":org/members": ["ada"] },
+      { ":db/id": "proj", ":project/org": "org" },
+      { ":db/id": "doc", ":doc/title": "Roadmap", ":doc/owner": "ada", ":doc/project": "proj" },
+      { ":db/id": "other", ":org/members": ["cal"] },
+    ]);
+    return { conn, ids: rep.tempids, policy: POLICY, ada: user("user_ada", rep.tempids.ada), cal: user("user_cal", rep.tempids.cal) };
+  }
+
+  test("a fully-filtered other-org write is skip (no t leak)", async () => {
+    const { conn, ids, policy, ada } = await world();
+    const before = conn.db();
+    const rep = await conn.transact([{ ":db/id": "secret", ":doc/title": "Cal only", ":doc/owner": ids.cal, ":doc/project": ids.other }]);
+    const decision = await decideSessionTx({ datoms: rep.txData, policy, principal: ada, ruleDbAfter: conn.db(), ruleDbBefore: before });
+    expect(decision.kind).toBe("skip");
+  });
+
+  test("a revoke-of-P is resync, not silence", async () => {
+    const { conn, ids, policy, ada } = await world();
+    const before = conn.db();
+    const rep = await conn.transact([
+      [":db/retract", ids.doc, ":doc/owner", ids.ada],
+      [":db/retract", ids.proj, ":project/org", ids.org],
+    ]);
+    const decision = await decideSessionTx({ datoms: rep.txData, policy, principal: ada, ruleDbAfter: conn.db(), ruleDbBefore: before });
+    expect(decision.kind).toBe("resync");
+  });
+
+  test("a same-tx grant of membership is resync, not a one-datom apply", async () => {
+    const { conn, ids, policy, cal } = await world();
+    const before = conn.db();
+    const rep = await conn.transact([[":db/add", ids.org, ":org/members", ids.cal]]);
+    const decision = await decideSessionTx({ datoms: rep.txData, policy, principal: cal, ruleDbAfter: conn.db(), ruleDbBefore: before });
+    expect(decision.kind).toBe("resync");
+  });
+
+  test("a visible add is filtered against the post-commit ruleDb", async () => {
+    const { conn, ids, policy, ada } = await world();
+    const before = conn.db();
+    const rep = await conn.transact([[":db/add", ids.doc, ":doc/title", "Roadmap v2"]]);
+    const decision = await decideSessionTx({ datoms: rep.txData, policy, principal: ada, ruleDbAfter: conn.db(), ruleDbBefore: before });
+    expect(decision.kind).toBe("tx");
+    expect((decision.datoms ?? []).length).toBeGreaterThan(0);
+    expect((decision.datoms ?? []).every((d) => d[4] === rep.t)).toBe(true);
   });
 });
