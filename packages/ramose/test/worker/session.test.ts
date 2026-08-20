@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { Connection } from "../../src/internal/core/conn.ts";
 import { filterDb, fromWireDatom, toWireDatom, type Principal, type WireDatom } from "../../src/internal/core/index.ts";
 import { PolicyAst as A, parsePolicy } from "../../src/internal/core/policy/index.ts";
-import { META_HEADERS, type Scheduler, type SessionDispatch, type SocketLike, openSession, planOf, watcherKeys } from "../../src/worker/session.ts";
+import { META_HEADERS, PRINCIPAL_HEADER, type SessionDispatch, type SocketLike, openSession, parsePrincipalHeader, planOf, pushApplied } from "../../src/worker/session.ts";
 import { currentViewDatoms, decideSessionTx, type SessionLog, type SessionLogEntry, type SessionTxDecision } from "../../src/worker/session-sync.ts";
 
 /** A `WebSocket` stand-in: records what the session sent, replays what a client would do. */
@@ -71,43 +71,7 @@ function fakeDispatch(reply: (call: Call) => Response = () => json({ ok: true })
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 
-/** A scheduler and clock the test drives by hand (pass `now` to the session so freshness follows the fake clock). */
-function manualScheduler() {
-  const state = { timers: [] as { fn: () => void; canceled: boolean }[], ms: [] as number[], cancels: 0, now: 10_000 };
-  const schedule: Scheduler = (fn, ms) => {
-    const timer = { fn, canceled: false };
-    state.timers.push(timer);
-    state.ms.push(ms);
-    return () => {
-      if (timer.canceled) return;
-      timer.canceled = true;
-      state.cancels++;
-    };
-  };
-  const now = () => state.now;
-  const settle = async () => {
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-  };
-  /** move the clock past every session's freshness window */
-  const advance = () => {
-    state.now += Math.max(0, ...state.ms);
-  };
-  /** one interval elapses: advance the clock, fire every live timer, let the poll promises settle */
-  const tick = async () => {
-    advance();
-    for (const t of state.timers) if (!t.canceled) t.fn();
-    await settle();
-  };
-  /** fire one session's timer alone, without touching the clock */
-  const fire = async (i: number) => {
-    const t = state.timers[i];
-    if (t && !t.canceled) t.fn();
-    await settle();
-  };
-  return { schedule, tick, fire, advance, settle, state, now };
-}
+const wire = (t: number): [number, number, number, string, number, 0 | 1] => [1, 2, 3, "x", t, 1];
 
 let open: { close(): void }[] = [];
 const session = (socket: FakeSocket, options: Parameters<typeof openSession>[1]) => {
@@ -119,7 +83,6 @@ const session = (socket: FakeSocket, options: Parameters<typeof openSession>[1])
 afterEach(() => {
   for (const s of open) s.close();
   open = [];
-  expect(watcherKeys()).toEqual([]); // every test must leave the isolate's watcher map empty
 });
 
 describe("planOf: frame → sub-request", () => {
@@ -166,6 +129,18 @@ describe("planOf: frame → sub-request", () => {
     expect(planOf({ id: 1, op: "q" })).toMatchObject({ id: 1, error: "q frame needs query" });
     expect(planOf({ id: 1, op: "pull", eid: 1 })).toMatchObject({ id: 1, error: "pull frame needs pattern" });
     expect(planOf({ id: 1, op: "entity", eid: "x" })).toMatchObject({ id: 1 });
+  });
+});
+
+describe("parsePrincipalHeader", () => {
+  test("the worker hands the replica a JSON principal; junk is ignored", () => {
+    const ada: Principal = { kind: "user", class: "member", sub: "ada", claims: { sub: "ada" }, db: "acme" };
+    expect(PRINCIPAL_HEADER).toBe("x-ramose-principal");
+    expect(parsePrincipalHeader(JSON.stringify(ada))).toEqual(ada);
+    expect(parsePrincipalHeader(null)).toBeUndefined();
+    expect(parsePrincipalHeader("")).toBeUndefined();
+    expect(parsePrincipalHeader("{")).toBeUndefined();
+    expect(parsePrincipalHeader(JSON.stringify({ class: "member" }))).toBeUndefined();
   });
 });
 
@@ -238,20 +213,21 @@ describe("frame dispatch", () => {
 });
 
 describe("t frames", () => {
-  test("ack.t: a write on this socket ticks after its reply, and only ever forwards", async () => {
+  test("HTTP ack does not move the follow cursor; applyEntry does", async () => {
     const socket = new FakeSocket();
-    let t = 9;
-    const { dispatch } = fakeDispatch(() => json({ t, txEid: 1, tempids: {}, datoms: [] }));
-    const s = session(socket, { dispatch });
+    const { dispatch } = fakeDispatch(() => json({ t: 9, txEid: 1, tempids: {}, datoms: [] }));
+    const s = session(socket, {
+      dispatch,
+      filterEntry: async (e) => ({ kind: "tx", datoms: e.datoms }),
+    });
     await s.onMessage(JSON.stringify({ id: 1, op: "transact", tx: [] }));
-    expect(socket.frames.map((f) => (f.op === "t" ? `t:${f.t}` : `reply:${f.id}`))).toEqual(["reply:1", "t:9"]);
+    expect(socket.frames.map((f) => (f.op === "t" ? `t:${f.t}` : `reply:${f.id}`))).toEqual(["reply:1"]);
+    expect(s.lastT).toBe(0);
+    expect(s.watermark).toBe(0);
+    await s.applyEntry({ t: 9, datoms: [wire(9)] }, 1);
+    expect(socket.ticks()).toEqual([{ op: "t", t: 9 }]);
     expect(s.lastT).toBe(9);
-    await s.onMessage(JSON.stringify({ id: 2, op: "transact", tx: [] })); // same t: nothing new to say
-    expect(socket.ticks().length).toBe(1);
-    t = 10;
-    await s.onMessage(JSON.stringify({ id: 3, op: "transact", tx: [] }));
-    expect(socket.ticks()).toEqual([{ op: "t", t: 9 }, { op: "t", t: 10 }]);
-    expect(s.lastT).toBe(10);
+    expect(s.watermark).toBe(9);
   });
 
   test("a failed write does not ack, and a read that answers with a t does not either", async () => {
@@ -263,251 +239,9 @@ describe("t frames", () => {
     expect(socket.ticks()).toEqual([]);
     expect(s.lastT).toBe(0);
   });
-
-  test("polling /basis: the first poll only seeds, a move ticks once", async () => {
-    const socket = new FakeSocket();
-    const { dispatch } = fakeDispatch();
-    const seen = [5, 5, 6, 6];
-    let i = 0;
-    const { schedule, tick, state, now } = manualScheduler();
-    session(socket, { dispatch, schedule, now, watchKey: "demo|enam", pollBasis: async () => seen[i++] ?? 6, pollIntervalMs: 250 });
-    expect(state.ms).toEqual([250]);
-    expect(watcherKeys()).toEqual(["demo|enam"]);
-    for (let n = 0; n < 4; n++) await tick();
-    expect(socket.ticks()).toEqual([{ op: "t", t: 6 }]);
-  });
-
-  test("a poll that throws is just no news; the watcher keeps going", async () => {
-    const socket = new FakeSocket();
-    const { dispatch } = fakeDispatch();
-    const answers: (() => number)[] = [
-      () => 3,
-      () => {
-        throw new Error("replica down");
-      },
-      () => 4,
-    ];
-    let i = 0;
-    const { schedule, tick, now } = manualScheduler();
-    session(socket, { dispatch, schedule, now, watchKey: "demo|enam", pollBasis: async () => (answers[i++] ?? (() => 4))() });
-    for (let n = 0; n < 3; n++) await tick();
-    expect(socket.ticks()).toEqual([{ op: "t", t: 4 }]);
-  });
-
-  test("an in-flight poll suppresses overlapping ticks", async () => {
-    const socket = new FakeSocket();
-    const { dispatch } = fakeDispatch();
-    let polls = 0;
-    let release!: (t: number) => void;
-    const { schedule, tick, now } = manualScheduler();
-    session(socket, {
-      dispatch,
-      schedule,
-      now,
-      watchKey: "demo|enam",
-      pollBasis: () => {
-        polls++;
-        return new Promise<number>((r) => {
-          release = r;
-        });
-      },
-    });
-    await tick();
-    await tick();
-    await tick();
-    expect(polls).toBe(1);
-    release(5);
-    await Promise.resolve();
-    await Promise.resolve();
-    await tick();
-    expect(polls).toBe(2);
-  });
-
-  test("a poll never re-sends a t the socket already learned from its own ack", async () => {
-    const socket = new FakeSocket();
-    const { dispatch } = fakeDispatch(() => json({ t: 9 }));
-    const { schedule, tick, now } = manualScheduler();
-    const s = session(socket, { dispatch, schedule, now, watchKey: "demo|enam", pollBasis: async () => 9 });
-    await s.onMessage(JSON.stringify({ id: 1, op: "transact", tx: [] }));
-    await tick();
-    await tick();
-    expect(socket.ticks()).toEqual([{ op: "t", t: 9 }]); // the ack's, not the poll's
-  });
 });
 
-describe("per-session watchers over a shared basis reading", () => {
-  // Regression for issue #28: one shared timer fanning out to every session's
-  // socket runs in the first session's request context, and workerd forbids
-  // touching another request's socket from there — every other session died on
-  // the first fan-out. Each session must drive its own socket from its own
-  // timer; what is shared is only the polled value.
-
-  test("two sessions on one db keep receiving ticks across successive writes; one poll per interval per key", async () => {
-    const a = new FakeSocket();
-    const b = new FakeSocket();
-    const c = new FakeSocket();
-    const { dispatch } = fakeDispatch();
-    let t = 1;
-    let polls = 0;
-    let cPolls = 0;
-    const { schedule, tick, state, now } = manualScheduler();
-    const opts = {
-      dispatch,
-      schedule,
-      now,
-      watchKey: "demo|enam",
-      pollBasis: async () => {
-        polls++;
-        return t;
-      },
-    };
-    const sa = session(a, opts);
-    const sb = session(b, opts);
-    // a different db|hint is a different reading with its own poller
-    const sc = session(c, {
-      ...opts,
-      watchKey: "demo|wnam",
-      pollBasis: async () => {
-        cPolls++;
-        return t;
-      },
-    });
-    expect(state.timers.length).toBe(3); // one timer per session, each in its own request context
-    expect(watcherKeys().sort()).toEqual(["demo|enam", "demo|wnam"]); // ...but one shared reading per key
-
-    await tick(); // the first session on each key polls and seeds; b sees nothing known yet
-    await tick(); // b seeds from the shared reading
-    expect(polls).toBe(2); // one poll per interval for the key, not one per session
-    expect(cPolls).toBe(2); // the other key polls for itself
-    expect(a.ticks()).toEqual([]);
-    expect(b.ticks()).toEqual([]);
-    expect(c.ticks()).toEqual([]);
-
-    t = 2; // a write moves the basis
-    await tick();
-    await tick(); // the non-polling session learns from the reading one interval later
-    expect(a.ticks()).toEqual([{ op: "t", t: 2 }]);
-    expect(b.ticks()).toEqual([{ op: "t", t: 2 }]);
-    expect(c.ticks()).toEqual([{ op: "t", t: 2 }]);
-
-    t = 3; // the second write still reaches everyone — the sessions must not have died on the first
-    await tick();
-    await tick();
-    expect(a.ticks()).toEqual([{ op: "t", t: 2 }, { op: "t", t: 3 }]);
-    expect(b.ticks()).toEqual([{ op: "t", t: 2 }, { op: "t", t: 3 }]);
-    expect(c.ticks()).toEqual([{ op: "t", t: 2 }, { op: "t", t: 3 }]);
-    expect(polls).toBe(6);
-    expect(cPolls).toBe(6);
-
-    sa.close();
-    expect(state.cancels).toBe(1); // its own timer, canceled at once
-    expect(watcherKeys().sort()).toEqual(["demo|enam", "demo|wnam"]); // b still holds its reading
-    sb.close();
-    expect(state.cancels).toBe(2);
-    expect(watcherKeys()).toEqual(["demo|wnam"]);
-    sc.close();
-    expect(state.cancels).toBe(3);
-    expect(watcherKeys()).toEqual([]);
-  });
-
-  test("a session's timer only ever writes to its own socket", async () => {
-    const a = new FakeSocket();
-    const b = new FakeSocket();
-    const { dispatch } = fakeDispatch();
-    let t = 1;
-    const { schedule, fire, advance, now } = manualScheduler();
-    const opts = { dispatch, schedule, now, watchKey: "demo|enam", pollBasis: async () => t };
-    session(a, opts);
-    session(b, opts);
-    advance();
-    await fire(0); // a polls and seeds the reading
-    await fire(1); // b seeds from it
-    t = 2;
-    advance();
-    await fire(0); // a's timer alone: only a's socket may be written
-    expect(a.ticks()).toEqual([{ op: "t", t: 2 }]);
-    expect(b.frames).toEqual([]);
-    await fire(1); // b hears about it from its own timer
-    expect(b.ticks()).toEqual([{ op: "t", t: 2 }]);
-    expect(a.ticks()).toEqual([{ op: "t", t: 2 }]);
-  });
-
-  test("a poll slower than the interval may overlap; the late result never ticks wrong", async () => {
-    const a = new FakeSocket();
-    const b = new FakeSocket();
-    const { dispatch } = fakeDispatch();
-    const { schedule, tick, settle, now } = manualScheduler();
-    let polls = 0;
-    const pending: ((t: number) => void)[] = [];
-    const opts = {
-      dispatch,
-      schedule,
-      now,
-      watchKey: "demo|enam",
-      pollBasis: () => {
-        polls++;
-        return new Promise<number>((resolve) => pending.push(resolve));
-      },
-    };
-    session(a, opts);
-    session(b, opts);
-
-    let round = tick();
-    pending.shift()!(1); // a's poll answers within the interval
-    await round; // a seeds at 1
-    round = tick();
-    pending.shift()!(1);
-    await round; // b seeds from the reading
-    expect(polls).toBe(2);
-
-    await tick(); // a polls; the answer does not come back this interval
-    expect(polls).toBe(3);
-    await tick(); // a is still in flight — its in-flight mark has aged out, so b polls too
-    expect(polls).toBe(4); // the mark is time-bounded, not exclusive: an extra poll is allowed
-
-    pending[1](3); // b's (fresher) poll answers first
-    await settle();
-    expect(b.ticks()).toEqual([{ op: "t", t: 3 }]);
-    pending[0](2); // a's slow poll finally answers, with an older basis
-    await settle();
-    expect(a.ticks()).toEqual([{ op: "t", t: 3 }]); // the reading is monotone: never a backwards or wrong tick
-  });
-
-  test("the polling session closing does not strand the others", async () => {
-    const a = new FakeSocket();
-    const b = new FakeSocket();
-    const { dispatch } = fakeDispatch();
-    let t = 1;
-    const { schedule, tick, now } = manualScheduler();
-    const opts = { dispatch, schedule, now, watchKey: "demo|enam", pollBasis: async () => t };
-    const sa = session(a, opts);
-    session(b, opts);
-    await tick();
-    await tick(); // both seeded; a has been doing the polling
-    sa.close();
-    t = 2;
-    await tick(); // b takes over the poll on its own timer
-    expect(b.ticks()).toEqual([{ op: "t", t: 2 }]);
-    expect(a.ticks()).toEqual([]);
-  });
-
-  test("a late joiner is seeded from the warm reading; the next move ticks, the current value does not", async () => {
-    const a = new FakeSocket();
-    const { dispatch } = fakeDispatch();
-    let t = 5;
-    const { schedule, tick, now } = manualScheduler();
-    const opts = { dispatch, schedule, now, watchKey: "demo|enam", pollBasis: async () => t };
-    session(a, opts);
-    await tick(); // the reading is warm at 5
-    const c = new FakeSocket();
-    const sc = session(c, opts);
-    expect(sc.lastT).toBe(5); // seeded silently at subscribe
-    t = 6;
-    await tick();
-    await tick();
-    expect(c.ticks()).toEqual([{ op: "t", t: 6 }]);
-  });
-
+describe("socket lifetime", () => {
   test("a send that throws closes the socket instead of zombieing the session", async () => {
     const socket = new FakeSocket();
     const { dispatch, calls } = fakeDispatch();
@@ -527,11 +261,10 @@ describe("per-session watchers over a shared basis reading", () => {
     expect(calls.length).toBe(1);
   });
 
-  test("a client-side close unsubscribes and resolves closed", async () => {
+  test("a client-side close resolves closed and drops racing frames", async () => {
     const socket = new FakeSocket();
     const { dispatch, calls } = fakeDispatch();
-    const { schedule, tick, state } = manualScheduler();
-    const s = session(socket, { dispatch, schedule, watchKey: "demo|enam", pollBasis: async () => 7 });
+    const s = session(socket, { dispatch });
     let done = false;
     void s.closed.then(() => {
       done = true;
@@ -539,34 +272,19 @@ describe("per-session watchers over a shared basis reading", () => {
     socket.emit("close", { code: 1000 });
     await Promise.resolve();
     expect(done).toBe(true);
-    expect(state.cancels).toBe(1);
-    expect(watcherKeys()).toEqual([]);
-    await tick();
     await s.onMessage(JSON.stringify({ id: 1, op: "info" })); // a frame racing the close is dropped
     expect(calls.length).toBe(0);
     expect(socket.frames).toEqual([]);
   });
 
-  test("a socket error unsubscribes too, and close() is idempotent", () => {
+  test("a socket error dies too, and close() is idempotent", () => {
     const socket = new FakeSocket();
     const { dispatch } = fakeDispatch();
-    const { schedule, state } = manualScheduler();
-    const s = session(socket, { dispatch, schedule, watchKey: "demo|enam", pollBasis: async () => 7 });
+    const s = session(socket, { dispatch });
     socket.emit("error", { message: "boom" });
-    expect(state.cancels).toBe(1);
     s.close();
     s.close();
-    expect(state.cancels).toBe(1);
     expect(socket.closed).toBe(false); // the socket was already gone; nothing to close
-  });
-
-  test("no watchKey/pollBasis means no poller at all", async () => {
-    const socket = new FakeSocket();
-    const { dispatch } = fakeDispatch();
-    const { schedule, state } = manualScheduler();
-    session(socket, { dispatch, schedule });
-    expect(state.timers.length).toBe(0);
-    expect(watcherKeys()).toEqual([]);
   });
 });
 
@@ -678,7 +396,95 @@ describe("the auth frame", () => {
   });
 });
 
-const wire = (t: number): [number, number, number, string, number, 0 | 1] => [1, 2, 3, "x", t, 1];
+describe("apply-then-push", () => {
+  const filterOf = (decide: (t: number) => SessionTxDecision) => async (entry: { t: number }) => decide(entry.t);
+  const attached = (filter: (t: number) => SessionTxDecision, extra: Partial<Parameters<typeof openSession>[1]> = {}) => {
+    const socket = new FakeSocket();
+    const { dispatch } = extra.dispatch ? { dispatch: extra.dispatch } : fakeDispatch();
+    const s = session(socket, {
+      dispatch,
+      seed: { lastT: 0, watermark: 10 },
+      filterEntry: filterOf(filter),
+      ...extra,
+    });
+    return { socket, s };
+  };
+
+  test("two sessions on one replica receive both non-conflicting txs without a poll timer; later writer included", async () => {
+    const a = attached((t) => ({ kind: "tx", datoms: [wire(t)] }));
+    const b = attached((t) => ({ kind: "tx", datoms: [wire(t)] }));
+    await pushApplied([a.s, b.s], { t: 11, datoms: [wire(11)] }, 10);
+    await pushApplied([a.s, b.s], { t: 12, datoms: [wire(12)] }, 10);
+    expect(a.socket.txs().map((f) => f.t)).toEqual([11, 12]);
+    expect(b.socket.txs().map((f) => f.t)).toEqual([11, 12]);
+    expect(a.s.watermark).toBe(12);
+    expect(b.s.watermark).toBe(12);
+    expect(a.s.lastT).toBe(12);
+    expect(b.s.lastT).toBe(12);
+  });
+
+  test("cursor / basisT cannot get ahead of an unapplied frame", async () => {
+    const { socket, s } = attached((t) => ({ kind: "tx", datoms: [wire(t)] }));
+    expect(s.watermark).toBe(10);
+    await s.applyEntry({ t: 12, datoms: [wire(12)] }, 10);
+    expect(s.watermark).toBe(10);
+    expect(socket.txs()).toEqual([]);
+    expect(socket.resyncs()).toEqual([]);
+    await s.applyEntry({ t: 11, datoms: [wire(11)] }, 10);
+    await s.applyEntry({ t: 12, datoms: [wire(12)] }, 10);
+    expect(socket.txs().map((f) => f.t)).toEqual([11, 12]);
+    expect(s.watermark).toBe(12);
+  });
+
+  test("fully-filtered tx is silence (no t leak); later visible tx still arrives", async () => {
+    const { socket, s } = attached((t) => (t === 11 ? { kind: "skip" } : { kind: "tx", datoms: [wire(t)] }));
+    await s.applyEntry({ t: 11, datoms: [wire(11)] }, 10);
+    expect(socket.txs()).toEqual([]);
+    expect(socket.ticks()).toEqual([]);
+    expect(socket.resyncs()).toEqual([]);
+    expect(s.lastT).toBe(0);
+    expect(s.watermark).toBe(11);
+    await s.applyEntry({ t: 12, datoms: [wire(12)] }, 10);
+    expect(socket.txs()).toEqual([{ op: "tx", t: 12, datoms: [wire(12)] }]);
+    expect(s.watermark).toBe(12);
+  });
+
+  test("grant/revoke still resync", async () => {
+    const { socket, s } = attached(() => ({ kind: "resync" }), {
+      snapshot: async () => ({ t: 11, datoms: [wire(1), wire(2)] }),
+    });
+    await s.applyEntry({ t: 11, datoms: [wire(11)] }, 10);
+    expect(socket.resyncs()).toEqual([{ op: "resync", t: 11, datoms: [wire(1), wire(2)] }]);
+    expect(socket.txs()).toEqual([]);
+    expect(s.watermark).toBe(11);
+  });
+
+  test("connect still snapshot-then-tail (from < rootT or first attach)", async () => {
+    const socket = new FakeSocket();
+    const { dispatch } = fakeDispatch();
+    const log: SessionLog = {
+      t: 8,
+      rootT: 4,
+      entries: [
+        { t: 5, datoms: [wire(5)] },
+        { t: 6, datoms: [wire(6)] },
+        { t: 7, datoms: [wire(7)] },
+        { t: 8, datoms: [wire(8)] },
+      ],
+    };
+    const late = session(socket, {
+      dispatch,
+      readLog: async () => log,
+      filterEntry: filterOf(() => ({ kind: "tx", datoms: [wire(1)] })),
+      snapshot: async () => ({ t: 8, datoms: [wire(1)] }),
+    });
+    await late.onMessage(JSON.stringify({ id: 2, op: "sync", from: 2 }));
+    expect(socket.resyncs()).toEqual([{ op: "resync", t: 8, datoms: [wire(1)] }]);
+    expect(socket.txs()).toEqual([]);
+    await late.applyEntry({ t: 9, datoms: [wire(9)] }, 4);
+    expect(socket.txs().map((f) => f.t)).toEqual([9]);
+  });
+});
 
 describe("filtered log walk", () => {
   const filterOf = (decide: (t: number) => SessionTxDecision) => async (entry: { t: number }) => decide(entry.t);
@@ -686,21 +492,14 @@ describe("filtered log walk", () => {
   test("a fully-filtered tx does not appear on that socket (no t, no datoms)", async () => {
     const socket = new FakeSocket();
     const { dispatch } = fakeDispatch();
-    let log: SessionLog = { t: 5, rootT: 1, entries: [] };
-    const { schedule, tick, now } = manualScheduler();
     const s = session(socket, {
       dispatch,
-      schedule,
-      now,
-      watchKey: "acme|enam",
-      pollLog: async () => log,
+      seed: { lastT: 0, watermark: 5 },
       filterEntry: filterOf(() => ({ kind: "skip" })),
     });
-    await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 5 }));
     expect(s.lastT).toBe(0);
     expect(s.watermark).toBe(5);
-    log = { t: 6, rootT: 1, entries: [{ t: 6, datoms: [wire(6)] }] };
-    await tick();
+    await s.applyEntry({ t: 6, datoms: [wire(6)] }, 1);
     expect(socket.ticks()).toEqual([]);
     expect(socket.txs()).toEqual([]);
     expect(socket.resyncs()).toEqual([]);
@@ -711,19 +510,12 @@ describe("filtered log walk", () => {
   test("a revoke-of-P produces resync, not silence", async () => {
     const socket = new FakeSocket();
     const { dispatch } = fakeDispatch();
-    let log: SessionLog = { t: 5, rootT: 1, entries: [] };
-    const { schedule, tick, now } = manualScheduler();
     const s = session(socket, {
       dispatch,
-      schedule,
-      now,
-      watchKey: "acme|enam",
-      pollLog: async () => log,
+      seed: { lastT: 0, watermark: 5 },
       filterEntry: filterOf((t) => (t === 6 ? { kind: "resync" } : { kind: "skip" })),
     });
-    await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 5 }));
-    log = { t: 6, rootT: 1, entries: [{ t: 6, datoms: [wire(6)] }] };
-    await tick();
+    await s.applyEntry({ t: 6, datoms: [wire(6)] }, 1);
     expect(socket.resyncs()).toEqual([{ op: "resync", t: 6 }]);
     expect(socket.ticks()).toEqual([{ op: "t", t: 6 }]); // existing clients still wake
     expect(socket.txs()).toEqual([]);
@@ -732,20 +524,13 @@ describe("filtered log walk", () => {
   test("a same-tx grant yields resync, not a one-datom apply", async () => {
     const socket = new FakeSocket();
     const { dispatch } = fakeDispatch();
-    let log: SessionLog = { t: 5, rootT: 1, entries: [] };
-    const { schedule, tick, now } = manualScheduler();
     const s = session(socket, {
       dispatch,
-      schedule,
-      now,
-      watchKey: "acme|enam",
-      pollLog: async () => log,
+      seed: { lastT: 0, watermark: 5 },
       filterEntry: filterOf(() => ({ kind: "resync" })),
       snapshot: async () => ({ t: 6, datoms: [wire(1), wire(2)] }),
     });
-    await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 5 }));
-    log = { t: 6, rootT: 1, entries: [{ t: 6, datoms: [wire(6)] }] };
-    await tick();
+    await s.applyEntry({ t: 6, datoms: [wire(6)] }, 1);
     expect(socket.resyncs()).toEqual([{ op: "resync", t: 6, datoms: [wire(1), wire(2)] }]);
     expect(socket.txs()).toEqual([]);
   });
@@ -753,20 +538,13 @@ describe("filtered log walk", () => {
   test("a visible tx is { op: tx, t, datoms } and still ticks t for existing clients", async () => {
     const socket = new FakeSocket();
     const { dispatch } = fakeDispatch();
-    let log: SessionLog = { t: 5, rootT: 1, entries: [] };
     const kept = [wire(6)];
-    const { schedule, tick, now } = manualScheduler();
     const s = session(socket, {
       dispatch,
-      schedule,
-      now,
-      watchKey: "acme|enam",
-      pollLog: async () => log,
+      seed: { lastT: 0, watermark: 5 },
       filterEntry: filterOf(() => ({ kind: "tx", datoms: kept })),
     });
-    await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 5 }));
-    log = { t: 6, rootT: 1, entries: [{ t: 6, datoms: [wire(6), wire(6)] }] };
-    await tick();
+    await s.applyEntry({ t: 6, datoms: [wire(6), wire(6)] }, 1);
     expect(socket.txs()).toEqual([{ op: "tx", t: 6, datoms: kept }]);
     expect(socket.ticks()).toEqual([{ op: "t", t: 6 }]);
   });
@@ -786,7 +564,7 @@ describe("filtered log walk", () => {
     };
     const s = session(socket, {
       dispatch,
-      pollLog: async () => log,
+      readLog: async () => log,
       filterEntry: filterOf((t) => (t === 6 || t === 8 ? { kind: "tx", datoms: [wire(t)] } : { kind: "skip" })),
     });
     await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 4 }));
@@ -799,7 +577,7 @@ describe("filtered log walk", () => {
     const late = new FakeSocket();
     const sl = session(late, {
       dispatch,
-      pollLog: async () => log,
+      readLog: async () => log,
       filterEntry: filterOf(() => ({ kind: "tx", datoms: [wire(1)] })),
       snapshot: async () => ({ t: 8, datoms: [wire(1)] }),
     });
@@ -811,20 +589,13 @@ describe("filtered log walk", () => {
   test("kind: tx without datoms never sends the replica entry", async () => {
     const socket = new FakeSocket();
     const { dispatch } = fakeDispatch();
-    let log: SessionLog = { t: 5, rootT: 1, entries: [] };
     const leak: WireDatom = [1, 2, 3, "UNFILTERED-LEAK", 6, 1];
-    const { schedule, tick, now } = manualScheduler();
     const s = session(socket, {
       dispatch,
-      schedule,
-      now,
-      watchKey: "acme|no-fallback",
-      pollLog: async () => log,
+      seed: { lastT: 0, watermark: 5 },
       filterEntry: async () => ({ kind: "tx" }) as SessionTxDecision,
     });
-    await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 5 }));
-    log = { t: 6, rootT: 1, entries: [{ t: 6, datoms: [leak] }] };
-    await tick();
+    await s.applyEntry({ t: 6, datoms: [leak] }, 1).catch(() => undefined);
     expect(JSON.stringify(socket.frames)).not.toContain("UNFILTERED-LEAK");
     expect(socket.txs()).toEqual([]);
     expect(s.lastT).toBe(0);
@@ -835,21 +606,14 @@ describe("filtered log walk", () => {
   test("a filter throw is not silence: the socket closes, lastT does not jump", async () => {
     const socket = new FakeSocket();
     const { dispatch } = fakeDispatch();
-    let log: SessionLog = { t: 5, rootT: 1, entries: [] };
-    const { schedule, tick, now } = manualScheduler();
     const s = session(socket, {
       dispatch,
-      schedule,
-      now,
-      watchKey: "acme|filter-throw",
-      pollLog: async () => log,
+      seed: { lastT: 0, watermark: 5 },
       filterEntry: async () => {
         throw new Error("sieve exploded");
       },
     });
-    await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 5 }));
-    log = { t: 6, rootT: 1, entries: [{ t: 6, datoms: [wire(6)] }] };
-    await tick();
+    await s.applyEntry({ t: 6, datoms: [wire(6)] }, 1).catch(() => undefined);
     expect(socket.txs()).toEqual([]);
     expect(socket.ticks()).toEqual([]);
     expect(s.lastT).toBe(0);
@@ -857,125 +621,78 @@ describe("filtered log walk", () => {
     expect(socket.closeCode).toBe(1011);
   });
 
-  test("later writer torn poll does not jump watermark over a missing t", async () => {
+  test("apply of t+2 while t+1 is unapplied does not stamp the tip", async () => {
     const socket = new FakeSocket();
     const { dispatch } = fakeDispatch();
     const phone = [wire(11)];
     const browser = [wire(12)];
-    let log: SessionLog = { t: 10, rootT: 10, entries: [] };
-    const { schedule, tick, now } = manualScheduler();
     const s = session(socket, {
       dispatch,
-      schedule,
-      now,
-      watchKey: "acme|torn-poll",
-      pollLog: async () => log,
+      seed: { lastT: 0, watermark: 10 },
       filterEntry: filterOf((t) => ({ kind: "tx", datoms: t === 11 ? phone : browser })),
     });
-    await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 10 }));
     expect(s.watermark).toBe(10);
-    // replica lag: tip is 12 but t=11 is not in this poll
-    log = { t: 12, rootT: 10, entries: [{ t: 12, datoms: browser }] };
-    await tick();
+    await s.applyEntry({ t: 12, datoms: browser }, 10);
     expect(s.watermark).toBe(10); // must not jump to 12
     expect(socket.txs()).toEqual([]);
     expect(socket.resyncs()).toEqual([]);
-    // later poll is dense — both commits must arrive (fill, not e.t <= from drop)
-    log = {
-      t: 12,
-      rootT: 10,
-      entries: [
-        { t: 11, datoms: phone },
-        { t: 12, datoms: browser },
-      ],
-    };
-    await tick();
+    await s.applyEntry({ t: 11, datoms: phone }, 10);
+    await s.applyEntry({ t: 12, datoms: browser }, 10);
     expect(socket.txs().map((f) => f.t)).toEqual([11, 12]);
     expect(s.watermark).toBe(12);
   });
 
-  test("torn poll with a snapshot dumps instead of claiming log.t", async () => {
+  test("torn catch-up with a snapshot dumps instead of claiming log.t", async () => {
     const socket = new FakeSocket();
     const { dispatch } = fakeDispatch();
     const dump = [wire(11), wire(12)];
-    let log: SessionLog = { t: 10, rootT: 10, entries: [] };
-    const { schedule, tick, now } = manualScheduler();
     const s = session(socket, {
       dispatch,
-      schedule,
-      now,
-      watchKey: "acme|torn-dump",
-      pollLog: async () => log,
+      readLog: async () => ({ t: 12, rootT: 10, entries: [{ t: 12, datoms: [wire(12)] }] }),
       filterEntry: filterOf(() => ({ kind: "tx", datoms: [wire(12)] })),
       snapshot: async () => ({ t: 12, datoms: dump }),
     });
     await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 10 }));
-    log = { t: 12, rootT: 10, entries: [{ t: 12, datoms: [wire(12)] }] };
-    await tick();
     expect(socket.resyncs()).toEqual([{ op: "resync", t: 12, datoms: dump }]);
     expect(s.watermark).toBe(12);
     expect(socket.txs()).toEqual([]);
   });
 
-  test("warm readings / first observeLog do not jump watermark without a snapshot", async () => {
+  test("a newly attached session does not inherit another session's cursor", async () => {
     const a = new FakeSocket();
     const { dispatch } = fakeDispatch();
-    const log: SessionLog = { t: 12, rootT: 10, entries: [{ t: 11, datoms: [wire(11)] }, { t: 12, datoms: [wire(12)] }] };
-    const dump = [wire(1), wire(11), wire(12)];
-    const { schedule, tick, now } = manualScheduler();
     const opts = {
       dispatch,
-      schedule,
-      now,
-      watchKey: "acme|warm-walk",
-      pollLog: async () => log,
-      filterEntry: filterOf((t) => ({ kind: "tx", datoms: [wire(t)] })),
+      filterEntry: filterOf((t: number) => ({ kind: "tx" as const, datoms: [wire(t)] })),
     };
-    const sa = session(a, opts);
-    await sa.onMessage(JSON.stringify({ id: 1, op: "sync", from: 10 }));
-    await tick();
+    const sa = session(a, { ...opts, seed: { lastT: 0, watermark: 10 } });
+    await sa.applyEntry({ t: 11, datoms: [wire(11)] }, 10);
+    await sa.applyEntry({ t: 12, datoms: [wire(12)] }, 10);
     expect(sa.watermark).toBe(12);
     expect(a.txs().map((f) => f.t)).toEqual([11, 12]);
 
     const b = new FakeSocket();
-    const sb = session(b, { ...opts, snapshot: async () => ({ t: 12, datoms: dump }) });
-    expect(sb.watermark).toBe(0); // must not seed-jump to shared.t
+    const sb = session(b, opts);
+    expect(sb.watermark).toBe(0); // must not seed-jump to the other socket's t
     expect(sb.lastT).toBe(0);
-    await tick();
-    expect(b.resyncs()).toEqual([{ op: "resync", t: 12, datoms: dump }]);
-    expect(sb.watermark).toBe(12);
+    expect(b.frames).toEqual([]);
   });
 
   test("sieved skip is not a hole: cursor advances, later visible tx arrives", async () => {
     const socket = new FakeSocket();
     const { dispatch } = fakeDispatch();
-    let log: SessionLog = { t: 10, rootT: 10, entries: [] };
-    const { schedule, tick, now } = manualScheduler();
     const s = session(socket, {
       dispatch,
-      schedule,
-      now,
-      watchKey: "acme|skip-not-hole",
-      pollLog: async () => log,
+      seed: { lastT: 0, watermark: 10 },
       filterEntry: filterOf((t) => (t === 11 ? { kind: "skip" } : { kind: "tx", datoms: [wire(t)] })),
     });
-    await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 10 }));
-    log = { t: 11, rootT: 10, entries: [{ t: 11, datoms: [wire(11)] }] };
-    await tick();
+    await s.applyEntry({ t: 11, datoms: [wire(11)] }, 10);
     expect(socket.txs()).toEqual([]);
     expect(socket.ticks()).toEqual([]);
     expect(socket.resyncs()).toEqual([]);
     expect(s.lastT).toBe(0);
     expect(s.watermark).toBe(11);
-    log = {
-      t: 12,
-      rootT: 10,
-      entries: [
-        { t: 11, datoms: [wire(11)] },
-        { t: 12, datoms: [wire(12)] },
-      ],
-    };
-    await tick();
+    await s.applyEntry({ t: 12, datoms: [wire(12)] }, 10);
     expect(socket.txs()).toEqual([{ op: "tx", t: 12, datoms: [wire(12)] }]);
     expect(s.watermark).toBe(12);
   });
@@ -985,7 +702,7 @@ describe("filtered log walk", () => {
     const { dispatch } = fakeDispatch();
     const s = session(socket, {
       dispatch,
-      pollLog: async () => ({
+      readLog: async () => ({
         t: 6,
         rootT: 1,
         entries: [
@@ -1196,7 +913,7 @@ describe("sieve security: openSession + decideSessionTx", () => {
     const s = session(socket, {
       dispatch,
       principal: ada,
-      pollLog: async () => log,
+      readLog: async () => log,
       filterEntry: sieveOf(conn, policy),
     });
     s.notifyT(seedT);
@@ -1221,7 +938,7 @@ describe("sieve security: openSession + decideSessionTx", () => {
     const s = session(socket, {
       dispatch,
       principal: bea,
-      pollLog: async () => log,
+      readLog: async () => log,
       filterEntry: sieveOf(conn, policy),
       snapshot: snapshotOf(conn, policy),
     });
@@ -1254,7 +971,7 @@ describe("sieve security: openSession + decideSessionTx", () => {
     const createAda = new FakeSocket();
     const createBea = new FakeSocket();
     const { dispatch } = fakeDispatch();
-    const opts = { dispatch, pollLog: async () => log, filterEntry: sieveOf(conn, policy) };
+    const opts = { dispatch, readLog: async () => log, filterEntry: sieveOf(conn, policy) };
     const grantS = session(grantSock, { ...opts, principal: cal });
     const adaS = session(createAda, { ...opts, principal: ada });
     const beaS = session(createBea, { ...opts, principal: bea });
@@ -1303,7 +1020,7 @@ describe("sieve security: openSession + decideSessionTx", () => {
     const { dispatch } = fakeDispatch();
 
     const adaSock = new FakeSocket();
-    const adaS = session(adaSock, { dispatch, principal: ada, pollLog: async () => adaLog, filterEntry: sieveOf(conn, policy) });
+    const adaS = session(adaSock, { dispatch, principal: ada, readLog: async () => adaLog, filterEntry: sieveOf(conn, policy) });
     await adaS.onMessage(JSON.stringify({ id: 1, op: "sync", from: seedT }));
     expect(adaSock.txs().map((f) => f.t)).toEqual([title.t, grant.t, created.t]);
     expect(adaSock.ticks().map((f) => f.t)).toEqual([title.t, grant.t, created.t]);
@@ -1314,7 +1031,7 @@ describe("sieve security: openSession + decideSessionTx", () => {
     const calS = session(calSock, {
       dispatch,
       principal: cal,
-      pollLog: async () => calLog,
+      readLog: async () => calLog,
       filterEntry: sieveOf(conn, policy),
       snapshot: snapshotOf(conn, policy),
     });
@@ -1327,7 +1044,7 @@ describe("sieve security: openSession + decideSessionTx", () => {
     const lateS = session(late, {
       dispatch,
       principal: ada,
-      pollLog: async () => adaLog,
+      readLog: async () => adaLog,
       filterEntry: sieveOf(conn, policy),
       snapshot: snapshotOf(conn, policy),
     });
@@ -1339,71 +1056,55 @@ describe("sieve security: openSession + decideSessionTx", () => {
 
   test("writer HTTP ack and later { op: tx } for the same t are the same filtered list", async () => {
     const { conn, ids, policy, seedT, ada } = await world();
-    const entries: SessionLogEntry[] = [];
-    let log: SessionLog = { t: seedT, rootT: 1, entries };
     let ack: { t: number; txEid: number; tempids: Record<string, never>; datoms: WireDatom[] } | undefined;
     const socket = new FakeSocket();
     const { dispatch } = fakeDispatch(() => json(ack));
-    const { schedule, tick, now } = manualScheduler();
     const s = session(socket, {
       dispatch,
       principal: ada,
-      schedule,
-      now,
-      watchKey: "acme|writer-same-t",
-      pollLog: async () => log,
+      seed: { lastT: 0, watermark: seedT },
       filterEntry: sieveOf(conn, policy),
     });
-    await s.onMessage(JSON.stringify({ id: 0, op: "sync", from: seedT }));
     const before = conn.db();
     const rep = await conn.transact([{ ":db/id": "q3", ":doc/title": "Q3", ":doc/owner": ids.ada, ":doc/project": ids.proj, ":doc/audit": "LEAK-AUDIT" }]);
     const decision = await decideSessionTx({ datoms: rep.txData, policy, principal: ada, ruleDbAfter: conn.db(), ruleDbBefore: before });
     expect(decision.kind).toBe("tx");
     if (decision.kind !== "tx") throw new Error("expected tx");
     ack = { t: rep.t, txEid: 1, tempids: {}, datoms: decision.datoms };
-    entries.push({ t: rep.t, datoms: rep.txData.map(toWireDatom) });
-    log = { t: conn.t, rootT: 1, entries: [...entries] };
-    expect(values(entries[0].datoms)).toContain("LEAK-AUDIT");
+    const unfiltered = rep.txData.map(toWireDatom);
+    expect(values(unfiltered)).toContain("LEAK-AUDIT");
     await s.onMessage(JSON.stringify({ id: 1, op: "transact", tx: [] }));
     const reply = socket.replies().find((f) => f.id === 1);
     expect(reply.body.datoms).toEqual(ack.datoms);
+    expect(socket.txs()).toEqual([]); // ack paints; it does not push or move the cursor
+    expect(s.watermark).toBe(seedT);
+    await s.applyEntry({ t: rep.t, datoms: unfiltered }, 1);
     expect(socket.txs()).toHaveLength(1);
     expect(socket.txs()[0]).toEqual({ op: "tx", t: rep.t, datoms: ack.datoms });
     expect(values(ack.datoms)).toContain("Q3");
     expect(values(ack.datoms)).not.toContain("LEAK-AUDIT");
   });
 
-  test("writer { op: tx } echo carries this session's clientTxId; another session's poll does not", async () => {
+  test("writer { op: tx } echo carries this session's clientTxId; another session's apply does not", async () => {
     const { conn, ids, policy, seedT, ada } = await world();
-    const entries: SessionLogEntry[] = [];
-    let log: SessionLog = { t: seedT, rootT: 1, entries };
     let ack:
       | { t: number; txEid: number; tempids: Record<string, never>; datoms: WireDatom[]; clientTxId: string }
       | undefined;
     const writerSock = new FakeSocket();
     const otherSock = new FakeSocket();
     const { dispatch } = fakeDispatch(() => json(ack));
-    const { schedule, tick, now } = manualScheduler();
     const writer = session(writerSock, {
       dispatch,
       principal: ada,
-      schedule,
-      now,
-      watchKey: "acme|writer-echo",
-      pollLog: async () => log,
+      seed: { lastT: 0, watermark: seedT },
       filterEntry: sieveOf(conn, policy),
     });
     const other = session(otherSock, {
       dispatch,
       principal: ada,
-      schedule,
-      now,
-      watchKey: "acme|other-echo",
-      pollLog: async () => log,
+      seed: { lastT: 0, watermark: seedT },
       filterEntry: sieveOf(conn, policy),
     });
-    await writer.onMessage(JSON.stringify({ id: 0, op: "sync", from: seedT }));
-    await other.onMessage(JSON.stringify({ id: 0, op: "sync", from: seedT }));
     const before = conn.db();
     const rep = await conn.transact([
       { ":db/id": "q3", ":doc/title": "Q3", ":doc/owner": ids.ada, ":doc/project": ids.proj, ":doc/audit": "LEAK-AUDIT" },
@@ -1418,9 +1119,12 @@ describe("sieve security: openSession + decideSessionTx", () => {
     expect(decision.kind).toBe("tx");
     if (decision.kind !== "tx") throw new Error("expected tx");
     ack = { t: rep.t, txEid: 1, tempids: {}, datoms: decision.datoms, clientTxId: "c-writer" };
-    entries.push({ t: rep.t, datoms: rep.txData.map(toWireDatom) });
-    log = { t: conn.t, rootT: 1, entries: [...entries] };
+    const unfiltered = rep.txData.map(toWireDatom);
     await writer.onMessage(JSON.stringify({ id: 1, op: "transact", tx: [], clientTxId: "c-writer" }));
+    expect(writerSock.txs()).toEqual([]);
+    expect(writer.watermark).toBe(seedT);
+    await writer.applyEntry({ t: rep.t, datoms: unfiltered }, 1);
+    await other.applyEntry({ t: rep.t, datoms: unfiltered }, 1);
     expect(writerSock.txs()).toHaveLength(1);
     expect(writerSock.txs()[0]).toEqual({
       op: "tx",
@@ -1428,7 +1132,6 @@ describe("sieve security: openSession + decideSessionTx", () => {
       datoms: ack.datoms,
       clientTxId: "c-writer",
     });
-    await other.onMessage(JSON.stringify({ id: 2, op: "sync", from: seedT }));
     expect(otherSock.txs()).toHaveLength(1);
     expect(otherSock.txs()[0]).toEqual({ op: "tx", t: rep.t, datoms: ack.datoms });
     expect(otherSock.txs()[0].clientTxId).toBeUndefined();

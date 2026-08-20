@@ -15,7 +15,7 @@
  *   POST /db/:name/pull       { eid, pattern, asOf?, history? }     → { t, result }
  *   GET  /db/:name/entity/:eid[?asOf=]                              → { t, entity }
  *   GET  /db/:name/info                                            → { db, t, principal, … } — `t` and `principal` for everyone; transactor/replica internals for admin
- *   GET  /db/:name/session    (Upgrade: websocket)                 → the session socket (session.ts)
+ *   GET  /db/:name/session    (Upgrade: websocket)                 → auth + upgrade onto the replica stub (follow lives on the replica)
  *   POST /db/:name/admin/index | /admin/gc                         → indexer controls
  *
  * Reads: basis (root + novelty) from the nearest QueryReplica DO → Db over
@@ -30,18 +30,17 @@
  * (analytics.ts) — a no-op when the `ANALYTICS` binding is absent.
  */
 
-import { DEFAULT_QUERY_MAX_CELLS, Histogram, type Principal, type PullElemPred, type PullPattern, type QueryStats, RateMeter, allows, componentLogger, fromJson, fromWireDatom, isAdmin, normalizePullPattern, pull, query, setTelemetryLevel, toJson } from "../internal/core/index.ts";
+import { DEFAULT_QUERY_MAX_CELLS, Histogram, type Principal, type PullElemPred, type PullPattern, type QueryStats, RateMeter, allows, componentLogger, fromJson, isAdmin, normalizePullPattern, pull, query, setTelemetryLevel, toJson } from "../internal/core/index.ts";
 import type { Db as CoreDb } from "../internal/core/index.ts";
 import { type RamoseEnv, envInt, internalHeaders } from "../internal/transactor/index.ts";
 import { TransactorDO } from "../internal/transactor/transactor-do.ts";
-import { QueryReplicaDO, dbFromBasis } from "../internal/replica/index.ts";
+import { QueryReplicaDO } from "../internal/replica/index.ts";
 import * as Effect from "effect/Effect";
 import { Analytics, type Route, bindingOf, fromBinding, httpPoint, routeOf } from "./analytics.ts";
-import { allowedOrigin, authState, checkWrite, describePrincipal, isTokenOnly, principalForToken, principalOf, viewDb, withEid } from "./auth.ts";
+import { allowedOrigin, authState, checkWrite, describePrincipal, isTokenOnly, principalOf, viewDb } from "./auth.ts";
 import { BadRequest, type Internal, NotFound, type QueryBudgetExceeded, type RamoseError, Unauthorized, UpstreamError, fromThrown, toHttp } from "./errors.ts";
-import { basisHeaders, coloHeader, fetchBasisWithStats, hintOf, invalidateBasis, regionOf, replicaId, segmentSource } from "./peer.ts";
-import { type SocketLike, openSession } from "./session.ts";
-import { currentViewDatoms, decideSessionTx } from "./session-sync.ts";
+import { basisHeaders, coloHeader, fetchBasisWithStats, hintOf, invalidateBasis, nearestReplica, regionOf, replicaId, segmentSource } from "./peer.ts";
+import { PRINCIPAL_HEADER } from "./session.ts";
 import { DEMO_HTML } from "./demo.ts";
 
 export { TransactorDO, QueryReplicaDO };
@@ -172,24 +171,6 @@ const recordHttp = (request: Request, info: RequestInfo, status: number, ms: num
     peerMetrics.aeWrites++;
   }).pipe(Effect.ignoreCause);
 
-/** Session frame as a sub-request: inherit cf + replica hint from the upgrade. */
-function subRequest(request: Request, env: RamoseEnv, db: string, rest: string, init: { method: string; headers: Record<string, string>; body?: string }): Request {
-  const headers = new Headers();
-  const hint = hintOf(request, env);
-  if (hint) headers.set("x-ramose-replica-hint", hint);
-  for (const k of ["x-ramose-cache-basis", "x-ramose-cache-mode"]) {
-    const v = request.headers.get(k);
-    if (v !== null) headers.set(k, v);
-  }
-  for (const [k, v] of Object.entries(init.headers)) headers.set(k, v); // the frame's own headers win (min-t, content-type)
-  return new Request(`https://session/db/${encodeURIComponent(db)}${rest}`, { method: init.method, headers, body: init.body, cf: (request as { cf?: unknown }).cf } as RequestInit);
-}
-
-/** GET /basis poll with the isolate cache off, so movement is visible. */
-function pollRequest(request: Request, env: RamoseEnv, db: string): Request {
-  return subRequest(request, env, db, "/basis", { method: "GET", headers: { "x-ramose-cache-basis": "0" } });
-}
-
 /**
  * The ingress pre-check at the replica's basis, and the principal the
  * Transactor DO will trust. Best effort — anything but a denial falls through
@@ -221,7 +202,7 @@ async function ingress(request: Request, env: RamoseEnv, db: string, principal: 
 }
 
 /** Everything that used to live inside the Worker's try/…/catch; throws tagged failures. */
-async function route(request: Request, env: RamoseEnv, url: URL, db: string, rest: string, principal: Principal, t0: number, ctx?: ExecutionContext): Promise<Response> {
+async function route(request: Request, env: RamoseEnv, url: URL, db: string, rest: string, principal: Principal, t0: number): Promise<Response> {
   const transactor = () => env.TRANSACTOR.get(env.TRANSACTOR.idFromName(db));
   const txUrl = (path: string) => `https://transactor${path}${path.includes("?") ? "&" : "?"}db=${encodeURIComponent(db)}`;
   const policy = authState(env).policy;
@@ -338,65 +319,32 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
       worker: { aeWrites: peerMetrics.aeWrites, analytics: bindingOf(env) !== undefined },
     });
   }
-  // session socket
+  // session socket: verify here, then upgrade onto the replica this request
+  // would already query (`watchKey` / replica hint stays the pin). Follow
+  // lives on that replica after applyDatoms — the Worker is not the cursor.
   if (rest === "/session" && request.method === "GET") {
     if ((request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") throw new BadRequest({ message: "expected websocket" });
-    const pair = new WebSocketPair();
-    const [client, server] = [pair[0], pair[1]];
-    server.accept();
-    const session = openSession(server as unknown as SocketLike, {
-      principal,
-      authenticate: (token) => principalForToken(env, token.length === 0 ? undefined : token, db),
-      describe: async (p) => describePrincipal(env, p, segmentSource(env, db), (await fetchBasisWithStats(env, db, request)).basis),
-      dispatch: async (r, init, p) => {
-        const sub = subRequest(request, env, db, r, init);
-        try {
-          // route matches on path; query string stays on the URL
-          return await route(sub, env, new URL(sub.url), db, r.split("?")[0], p ?? principal, Date.now());
-        } catch (err) {
-          return respond(fromThrown(err, { stacks: env.RAMOSE_STAGE !== "prod" }));
-        }
-      },
-      watchKey: `${db}|${hintOf(request, env) ?? ""}`,
-      pollBasis: async () => (await fetchBasisWithStats(env, db, pollRequest(request, env, db))).basis.t,
-      pollLog: async () => {
-        const basis = (await fetchBasisWithStats(env, db, pollRequest(request, env, db))).basis;
-        return { t: basis.t, rootT: basis.root.t, entries: basis.novelty.map((f) => ({ t: f.t, datoms: f.datoms })) };
-      },
-      filterEntry: async (entry, p) => {
-        const st = authState(env);
-        const store = segmentSource(env, db);
-        const basis = (await fetchBasisWithStats(env, db, pollRequest(request, env, db))).basis;
-        const raw = await dbFromBasis(store, basis);
-        const after = raw.asOf(entry.t);
-        const before = raw.asOf(Math.max(0, entry.t - 1));
-        let who = p;
-        if (st.policy && who) who = await withEid(st.policy, who, after);
-        return decideSessionTx({
-          datoms: entry.datoms.map(fromWireDatom),
-          policy: st.policy,
-          principal: who,
-          ruleDbAfter: after,
-          ruleDbBefore: before,
-        });
-      },
-      snapshot: async (p) => {
-        const store = segmentSource(env, db);
-        const basis = (await fetchBasisWithStats(env, db, pollRequest(request, env, db))).basis;
-        const dbv = await viewDb(env, p ?? principal, store, basis);
-        return { t: basis.t, datoms: await currentViewDatoms(dbv) };
-      },
+    const headers = new Headers({
+      Upgrade: "websocket",
+      ...internalHeaders(env),
+      ...coloHeader(request),
     });
-    // hold the request open until the socket closes
-    ctx?.waitUntil(session.closed);
+    const hint = hintOf(request, env);
+    if (hint) headers.set("x-ramose-replica-hint", hint);
+    headers.set(PRINCIPAL_HEADER, JSON.stringify(principal));
+    const res = await nearestReplica(env, db, request).fetch(`https://replica/session?db=${encodeURIComponent(db)}`, { headers });
+    if (!res.webSocket) {
+      const headersOut = { "content-type": "application/json", ...CORS };
+      throw new UpstreamError({ status: res.status === 101 ? 502 : res.status, body: await res.text(), headers: headersOut });
+    }
     plog.debug("session.open", { db, colo: (request as { cf?: { colo?: string } }).cf?.colo });
-    return new Response(null, { status: 101, webSocket: client });
+    return new Response(null, { status: 101, webSocket: res.webSocket });
   }
   throw new NotFound({});
 }
 
 /** The request, as one Effect: `Response` on success, a tagged failure otherwise. */
-const handle = (request: Request, env: RamoseEnv, t0: number, info: RequestInfo, ctx?: ExecutionContext): Effect.Effect<Response, RamoseError> =>
+const handle = (request: Request, env: RamoseEnv, t0: number, info: RequestInfo): Effect.Effect<Response, RamoseError> =>
   Effect.gen(function* () {
     if (!levelApplied) {
       levelApplied = true;
@@ -431,7 +379,7 @@ const handle = (request: Request, env: RamoseEnv, t0: number, info: RequestInfo,
     });
 
     return yield* Effect.tryPromise({
-      try: () => route(request, env, url, db, rest, principal, t0, ctx),
+      try: () => route(request, env, url, db, rest, principal, t0),
       catch: (err) => fromThrown(err, { stacks: env.RAMOSE_STAGE !== "prod" }),
     });
   });
@@ -441,7 +389,7 @@ export default {
     const t0 = Date.now();
     const info: RequestInfo = { db: "-", path: "-", route: "other" };
     return Effect.runPromise(
-      handle(request, env, t0, info, ctx).pipe(
+      handle(request, env, t0, info).pipe(
         Effect.catchTags(recover(info, t0)),
         Effect.map((res) => withCors(env, request, res)),
         Effect.tap((res) => recordHttp(request, info, res.status, Date.now() - t0)),

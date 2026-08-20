@@ -1,12 +1,12 @@
 /**
  * Session log walk: what one principal may hear about one committed tx.
  *
- * The replica stays unfiltered. This is the sieve the Worker session applies
- * before a `{ op: "tx" }` / `{ op: "resync" }` leaves toward the browser.
- * A fully-filtered data tx is silence (no `t` leak). A membership/owner
- * change that flips this principal's access to other facts is `resync`.
- * A peer-visible create or update (no grant change on existing facts) is
- * `{ op: "tx" }`, not a view reload.
+ * The replica stays unfiltered. This is the sieve applied after the replica
+ * applies a frame (`applyDatoms`), before a `{ op: "tx" }` / `{ op: "resync" }`
+ * leaves toward the browser. A fully-filtered data tx is silence (no `t` leak). A
+ * membership/owner change that flips this principal's access to other facts
+ * is `resync`. A peer-visible create or update (no grant change on existing
+ * facts) is `{ op: "tx" }`, not a view reload.
  */
 
 import {

@@ -1,8 +1,9 @@
 /**
  * @internal One reconnecting WebSocket to `GET /db/:name/session`.
  *
- * The client speaks exactly one socket route, and it terminates in the peer
- * Worker's isolate — no Durable Object is reachable or nameable from here.
+ * The client speaks exactly one socket route (`GET /db/:name/session`). The
+ * Worker verifies the caller and upgrades onto the replica that session
+ * already queries — no Durable Object is reachable or nameable from here.
  * Reads (`q`, `pull`) and the unsolicited `{ op: "t" }` basis ticks ride it;
  * writes never do (`transact` is HTTPS, so `processTx` is untouched).
  *
