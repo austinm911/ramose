@@ -12,6 +12,14 @@
  * and every workspace's data. Pinned names make `--adopt` reattach the
  * existing resources instead. This matters far more here than for the docs
  * site, which is assets-only and has nothing to lose.
+ *
+ * `BetterAuthSecret` cannot be adopted the same way: it is `Alchemy.Random`,
+ * generated client-side and stored only in `.alchemy/`. A cache miss (a
+ * 411-byte restore is not real stack state) remints it. D1 `jwks` rows
+ * encrypt their private keys with that secret, so a new secret cannot sign
+ * until `ramoseToken` mints a replacement key. Old session *cookies* die
+ * (HMAC); password sign-in of an existing user still works. Do not delete
+ * AuthDb to "fix" a login bounce.
  */
 
 /** The demo's hostname, e.g. `reef.ramose.ai`. Unset outside the prod publish. */

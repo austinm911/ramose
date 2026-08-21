@@ -22,6 +22,11 @@
 # random suffix — so a cache eviction would mint empty replacements and orphan
 # the live data. `REEF_DOMAIN` pins the physical names (see
 # examples/reef/src/infra/domain.ts) and `--adopt` reattaches them.
+# `BetterAuthSecret` is Alchemy.Random (state-only, not adopt-able): a
+# 411-byte cache restore remints it. Old cookies die; password sign-in
+# still works. JWKS private keys stay encrypted with the old secret —
+# `ramoseToken` mints a replacement key, and Reef's jwt plugin sets
+# `disableSettingJwtHeader` so `/get-session` does not have to decrypt.
 #
 # Credentials come from the GitHub Environment "Development" — same as
 # docs-publish.yml. The token needs **Account / D1 / Edit** on top of the
