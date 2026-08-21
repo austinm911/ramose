@@ -54,14 +54,17 @@ Required credentials:
 
 | Name | Kind | Required | Purpose |
 |---|---|---|---|
-| `CLOUDFLARE_API_TOKEN` | secret | yes | Workers / DOs / R2 / Analytics Engine |
+| `CLOUDFLARE_API_TOKEN` | secret | yes | Workers / DOs / R2 / D1 / Analytics Engine |
 | `CLOUDFLARE_ACCOUNT_ID` | variable or secret | yes | Account to deploy into |
 | `RAMOSE_TOKEN` | secret | no | Only if the peer is deployed with bearer auth |
 
 Token permission groups (account-scoped), at minimum: **Workers Scripts Write**
 (covers Durable Objects), **Workers R2 Storage Write**, **Account Settings
-Read**. Grant **Account Analytics Read/Edit** if a deploy reports an Analytics
-Engine permission error.
+Read**. Reef publish also needs **Account / D1 / Edit** (Better Auth's
+database); without it Cloudflare answers `GET /d1/database` with 401 /
+code 10000 "Authentication error" and Alchemy fails at `AuthDb`. Grant
+**Account Analytics Read/Edit** if a deploy reports an Analytics Engine
+permission error.
 
 The throwaway deploy is an open peer (no `RAMOSE_TOKEN` / `RAMOSE_POLICY`); the
 stage name is unguessable and torn down at the end of the run.
@@ -85,8 +88,10 @@ token must be able to read the zone and edit its Workers). The existing GitHub
 variable may still be named `RIPPLE_DOCS_DOMAIN` — `docs-publish.yml` maps
 whichever name is set onto `RAMOSE_DOCS_DOMAIN` for the deploy, so rename the
 variable at your convenience. `REEF_DOMAIN` (variable) overrides the
-Reef demo's hostname (default `reef.ramose.ai`); publishing Reef additionally
-needs **Account / D1 / Edit** on the token, for the Better Auth database. Cursor Cloud Agents
+Reef demo's hostname (default `reef.ramose.ai`). Reef publish probes D1
+before the SPA build (`scripts/check-d1-token.sh`); a missing **Account /
+D1 / Edit** grant fails that step instead of Alchemy's `Unauthorized` at
+`AuthDb`. Cursor Cloud Agents
 need the same names in the Cursor secrets panel — see
 [`.cursor/CLOUD.md`](.cursor/CLOUD.md).
 

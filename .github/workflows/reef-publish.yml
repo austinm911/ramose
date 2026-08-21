@@ -58,6 +58,15 @@ jobs:
           key: reef-prod-state-${{ github.run_id }}
           restore-keys: |
             reef-prod-state-
+      # Fail before the Vite build if the token still lacks D1. Master run
+      # 32441031331 spent ~50s building, then Alchemy died at AuthDb with
+      # `Unauthorized: Authentication error` — Cloudflare's 401/10000 for a
+      # token that can manage Workers and R2 but not D1.
+      - name: Check D1 access
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: bash scripts/check-d1-token.sh
       - name: Deploy prod stage
         id: deploy
         env:
