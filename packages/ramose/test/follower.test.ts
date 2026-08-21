@@ -688,6 +688,71 @@ describe("resync rebases pending, it does not wipe", () => {
     expect(await namesOf(reloaded)).toEqual(["Ada", "Bea"]);
     expect((await reloaded.snapshot()).pending[0]!.clientTxId).toBe(beaId);
   });
+
+  test("a dump already on applied cannot interleave with the layer's first notify", async () => {
+    const memory = memoryStore();
+    let holdPuts = false;
+    let waitingPuts = 0;
+    let releasePuts!: () => void;
+    const putsHeld = new Promise<void>((resolve) => {
+      releasePuts = resolve;
+    });
+    const store: ByteStore = {
+      get: (key) => memory.get(key),
+      put: async (key, value) => {
+        if (holdPuts) {
+          waitingPuts += 1;
+          await putsHeld;
+        }
+        await memory.put(key, value);
+      },
+    };
+
+    const world = await schemaConn();
+    await world.transact([{ ":user/name": "Ada" }]);
+    const dump = await snapshotDatoms(world);
+
+    const overlay = openOverlay({
+      session: fakeSession(),
+      post: () => Effect.fail(new NetworkError({ message: "offline" })),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(overlay.ready());
+    await overlay.handlePush({ op: "resync", t: world.t, datoms: dump });
+    expect(await namesOf(overlay)).toEqual(["Ada"]);
+
+    holdPuts = true;
+    const dumpP = overlay.handlePush({
+      op: "resync",
+      t: world.t,
+      datoms: dump,
+    });
+    await until(() => waitingPuts === 1);
+    holdPuts = false;
+
+    const paints: string[][] = [];
+    overlay.onChange(() => {
+      void namesOf(overlay).then((n) => paints.push(n));
+    });
+
+    const transactP = run(overlay.transact([{ ":user/name": "Bea" }]));
+    expect(waitingPuts).toBe(1);
+    expect(paints).toEqual([]);
+
+    releasePuts();
+    await dumpP;
+    await transactP;
+
+    expect(await namesOf(overlay)).toEqual(["Ada", "Bea"]);
+    await until(() => paints.some((n) => n.includes("Bea")));
+    const beaAt = paints.findIndex((n) => n.includes("Bea"));
+    expect(beaAt).toBeGreaterThanOrEqual(0);
+    expect(paints.slice(beaAt).every((n) => n.includes("Bea"))).toBe(true);
+    expect(paints.at(-1)).toEqual(["Ada", "Bea"]);
+    expect((await overlay.snapshot()).pending).toHaveLength(1);
+  });
 });
 
 describe("from < rootT resync persists the dump", () => {

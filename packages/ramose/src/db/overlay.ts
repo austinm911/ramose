@@ -338,7 +338,9 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   /**
    * Orderer only. An idle, sync `fn` (a `{ op: tx }` with a ready
    * follower) runs before this returns — apply is the notify. A busy
-   * queue (in-flight resync) defers `fn` onto the tail.
+   * queue (in-flight resync) defers `fn` onto the tail. Local
+   * `transact` push + persist/notify rides this too, so a dump already
+   * on `applied` cannot interleave with the layer's first notify.
    */
   const enqueueApply = (fn: () => void | Promise<void>): Promise<void> => {
     if (applyQueued === 0) {
@@ -914,14 +916,18 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
           });
 
           const id = clientTxId();
-          pending.push({
-            clientTxId: id,
-            tx: tx as unknown[],
-            datoms: expansion.datoms,
-            tempids: expansion.tempids,
-          });
-          unsent.add(id);
-          yield* Effect.promise(() => Promise.resolve(persistThenNotify()));
+          yield* Effect.promise(() =>
+            enqueueApply(() => {
+              pending.push({
+                clientTxId: id,
+                tx: tx as unknown[],
+                datoms: expansion.datoms,
+                tempids: expansion.tempids,
+              });
+              unsent.add(id);
+              return persistThenNotify();
+            }),
+          );
 
           const posted = yield* Effect.callback<OverlayAck, DbError>((resume) => {
             const run = () => postLayer(id, tx as unknown[], resume);
