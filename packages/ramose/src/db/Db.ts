@@ -131,6 +131,10 @@ export interface Wire {
           },
           DbError
         >;
+        /** View-visible mutation generation — captured at `view()`, not before the pass. */
+        readonly epoch: number;
+        /** Subscribe to overlay apply (pending / ack / inbound tx / resync). */
+        onChange(cb: () => void): () => void;
       }
     | undefined;
   /** `GET /db/:name/info` — where the basis is. Always HTTPS: cheap, authoritative. */
@@ -188,13 +192,14 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
   ): Effect.Effect<QueryRows<C, R>, QueryError<R, P>>;
 
   /**
-   * Stand a query up. On an overlay session, re-run after each paint
-   * (`{ op: "tx" }` / `{ op: "resync" }` / local `transact`). HTTPS live
-   * (no overlay) still re-runs when the session's `t` moves. Requirements
-   * are `never` — teardown is fiber interruption — and a pinned view
-   * (`asOf` / `history`) emits once and completes. A pass that returns the
-   * rows already emitted is not emitted again: a write this query does not
-   * see is not a re-render. Bind params as the second argument.
+   * Stand a query up. On an overlay session, re-run when that overlay
+   * mutates (`{ op: "tx" }` / `{ op: "resync" }` / local `transact`) —
+   * apply is the notify. HTTPS live (no overlay) still re-runs when the
+   * session's `t` moves. Requirements are `never` — teardown is fiber
+   * interruption — and a pinned view (`asOf` / `history`) emits once and
+   * completes. A pass that returns the rows already emitted is not
+   * emitted again: a write this query does not see is not a re-render.
+   * Bind params as the second argument.
    */
   live<R>(
     input: NavQuery<R, never> | NavQueryBuilder<AnyNamespace, R, never>,
@@ -216,7 +221,8 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
 
   /**
    * Stand a pull up: `live`'s exact contract over one entity. Overlay
-   * re-runs on paint; HTTPS live still fences on `t`. Deduped by digest.
+   * re-runs when that overlay mutates; HTTPS live still fences on `t`.
+   * Deduped by digest.
    * `null` (entity gone, or a required field missing) is a legitimate
    * emission — a retracted entity emits `null` and keeps standing. A
    * pinned view (`asOf` / `history`) emits once and completes.
@@ -340,12 +346,15 @@ const attachSeam = (
 
 /**
  * One pass of a standing read: the emission, the raw wire result it is
- * digested from, and the basis `t` the peer answered at (the wake fence).
+ * digested from, the basis `t` the peer answered at (HTTPS wake fence),
+ * and — on an overlay — the overlay epoch captured in the same turn as
+ * `view()`.
  */
 interface Pass<A> {
   readonly value: A;
   readonly raw: unknown;
   readonly t: number;
+  readonly viewed?: number;
 }
 
 /** The pause between `live` passes that failed non-terminally, in ms. */
@@ -433,6 +442,7 @@ const makeRead = <C extends AnyCatalog>(
             value: reshapePullResult(pattern, rec.result),
             raw: rec.result,
             t: typeof rec.t === "number" ? rec.t : 0,
+            viewed: typeof rec.epoch === "number" ? rec.epoch : undefined,
           };
         }),
       );
@@ -442,7 +452,12 @@ const makeRead = <C extends AnyCatalog>(
     minT: number | undefined,
     bindings: Readonly<Record<string, unknown>> | undefined,
   ): Effect.Effect<
-    { readonly rows: unknown; readonly t: number; readonly raw: unknown },
+    {
+      readonly rows: unknown;
+      readonly t: number;
+      readonly raw: unknown;
+      readonly viewed?: number;
+    },
     DbError | NotOne | ParamError
   > =>
     Effect.gen(function* () {
@@ -469,8 +484,14 @@ const makeRead = <C extends AnyCatalog>(
         ),
       );
       const t = typeof body.t === "number" ? body.t : 0;
+      const viewed = typeof body.epoch === "number" ? body.epoch : undefined;
       if (nav.spec.aggregate !== undefined) {
-        return { rows: finalizeAggResult(body.result, nav.spec), t, raw: body.result };
+        return {
+          rows: finalizeAggResult(body.result, nav.spec),
+          t,
+          raw: body.result,
+          viewed,
+        };
       }
       const finalized = finalizeNavResult(body.result, lowered.pullMap);
       if (nav.spec.after !== undefined) {
@@ -478,11 +499,12 @@ const makeRead = <C extends AnyCatalog>(
           rows: finalizeNavPage(body.result, finalized, lowered.query.limit),
           t,
           raw: body.result,
+          viewed,
         };
       }
       const taken = takeNavResult(finalized, nav.spec.take);
       if (taken instanceof NotOne) return yield* Effect.fail(taken);
-      return { rows: taken, t, raw: body.result };
+      return { rows: taken, t, raw: body.result, viewed };
     });
 
   /**
@@ -509,8 +531,8 @@ const makeRead = <C extends AnyCatalog>(
 
   /**
    * The standing loop `live` and `livePull` share: run a pass, emit when the
-   * digest moved, sleep until paint (overlay) or the session's basis
-   * (HTTPS). What varies is only the pass itself — a query for `live`, a
+   * digest moved, sleep until the overlay mutates (or the session's basis
+   * on HTTPS). What varies is only the pass itself — a query for `live`, a
    * pull for `livePull`.
    */
   const standing = <A, E extends { readonly _tag: string } = DbError>(
@@ -522,8 +544,9 @@ const makeRead = <C extends AnyCatalog>(
         const session = wire.session(name);
         const pinned = view.asOf !== undefined || view.history === true;
         // pinned reads stay on the peer — do not construct an overlay just
-        // to decide the waiter. Overlay live waits on paint only.
-        const overlaid = !pinned && wire.overlay?.(name) !== undefined;
+        // to decide the waiter. Overlay live is a function of that db.
+        const overlay = !pinned ? wire.overlay?.(name) : undefined;
+        const overlaid = overlay !== undefined;
 
         if (!pinned && session === undefined) {
           return yield* Queue.failCause(
@@ -540,10 +563,11 @@ const makeRead = <C extends AnyCatalog>(
         for (;;) {
           const seen = session?.t ?? 0;
           const generation = session?.generation ?? 0;
-          const epoch = session?.epoch ?? 0;
+          const httpsEpoch = session?.epoch ?? 0;
           // one pass; the wire ladder retries its transient attempts, and
           // withBackoff only re-runs the pass once that ladder is spent.
-          // Overlay does not fence on session.t — live waits on paint.
+          // Overlay does not fence on session.t — live re-runs when that db
+          // mutates. The viewed epoch is captured at view(), not here.
           const pass = yield* withBackoff(
             runPass(overlaid ? undefined : seen || undefined),
           );
@@ -554,9 +578,18 @@ const makeRead = <C extends AnyCatalog>(
             yield* Queue.offer(queue, pass.value);
           }
           if (pinned || session === undefined) break;
-          yield* awaitWake(session, generation, epoch, {
-            minT: overlaid ? undefined : Math.max(seen, pass.t),
-          });
+          if (overlaid && overlay !== undefined) {
+            yield* awaitOverlay(
+              overlay,
+              session,
+              generation,
+              pass.viewed ?? overlay.epoch,
+            );
+          } else {
+            yield* awaitWake(session, generation, httpsEpoch, {
+              minT: Math.max(seen, pass.t),
+            });
+          }
         }
         return yield* Queue.end(queue);
       }).pipe(
@@ -590,6 +623,7 @@ const makeRead = <C extends AnyCatalog>(
             value: pass.rows,
             raw: pass.raw,
             t: pass.t,
+            viewed: pass.viewed,
           })),
         ),
       )) as ReadDb<C>["live"],
@@ -642,10 +676,50 @@ const makeRead = <C extends AnyCatalog>(
 };
 
 /**
- * Resolve when the overlay paints (`epoch`), the socket drops
- * (`generation`), or — HTTPS live only — the session's basis moves past
- * `minT`. Overlay live must not treat `session.t` as a wake: the bump
- * from `{ op: tx }.t` lands before `handlePush` paints.
+ * Overlay live: wait until that db mutates past the epoch this pass
+ * viewed, or the socket drops. The viewed epoch is captured at `view()`,
+ * so apply-then-notify cannot park a waiter on a newer epoch than the
+ * rows it just read.
+ */
+const awaitOverlay = (
+  overlay: {
+    readonly epoch: number;
+    onChange(cb: () => void): () => void;
+  },
+  session: Session,
+  generation: number,
+  viewed: number,
+): Effect.Effect<void> =>
+  Effect.callback<void>((resume) => {
+    let done = false;
+    const settle = () => {
+      if (done) return;
+      done = true;
+      offChange();
+      offWake();
+      resume(Effect.void);
+    };
+    const news = () =>
+      overlay.epoch !== viewed || session.generation !== generation;
+    const offChange = overlay.onChange(() => {
+      if (news()) settle();
+    });
+    const offWake = session.onWake(() => {
+      if (news()) settle();
+    });
+    if (news()) settle();
+    return Effect.sync(() => {
+      done = true;
+      offChange();
+      offWake();
+    });
+  });
+
+/**
+ * HTTPS live: resolve when the session's basis moves past `minT`, the
+ * socket drops (`generation`), or a paint nudge moves `epoch`. Overlay
+ * live does not use this — it waits on the overlay db via
+ * {@link awaitOverlay}.
  */
 const awaitWake = (
   session: Session,

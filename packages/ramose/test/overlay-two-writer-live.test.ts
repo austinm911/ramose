@@ -1,7 +1,9 @@
 /**
- * Reef hole: two session clients (phone + computer, same principal, same db)
- * each move a *different existing* issue at the same time. Both writes
- * commit. Until refresh, a live board can miss the other device's move.
+ * Overlay db is the store; apply is the notify. Two session clients
+ * (phone + computer, same principal, same db) each move a *different
+ * existing* issue. After both `{ op: tx }` frames apply, **both live
+ * streams** show both moves. No remount, no resync dump, no `q()` as
+ * the pass. No stubbed `nudge` / `holdApply`.
  *
  * Nearby pins stay green while this is red:
  * - session-follow walks two sockets (no overlay, no live, not HTTPS)
@@ -11,10 +13,7 @@
  * HTTPS `transact` is real `Connection.transact`. `{ op: tx }` comes from
  * QueryReplicaDO `applyDatoms` → `notifySessions` (no `clientTxId` — HTTPS
  * never sets writerEcho). A later writer's ack is `t+1` and must not drop
- * the other device's `t`. The pin delivers **only** `{ op: tx }` frames
- * (no leftover tick, no stubbed `nudge`). The test is a lie if it would pass
- * while one client's **live** row set is missing the other issue's new
- * status — `q()` after the fact is not the assertion.
+ * the other device's `t`. The pin delivers **only** `{ op: tx }` frames.
  */
 
 import { describe, expect, mock, test } from "bun:test";
@@ -292,6 +291,23 @@ const twoBoards = async (opts: { walk: "on-commit" | "after-acks" }) => {
   wrapPush(browserPeer, "browser");
   await settle();
 
+  const inboundMoves = async () => {
+    const first = await server.transact([
+      [":db/add", one, ":issue/status", "doing"],
+      [":db/add", one, ":issue/rank", 10],
+    ]);
+    const later = await server.transact([
+      [":db/add", two, ":issue/status", "done"],
+      [":db/add", two, ":issue/rank", 20],
+    ]);
+    for (const rep of [first, later]) {
+      const entry: LogEntry = { t: rep.t, txInstant: rep.t, datoms: [...rep.txData] };
+      commits.push(entry);
+      await replica.applyDatoms(entry);
+    }
+    return { first: first.t, later: later.t };
+  };
+
   return {
     one,
     two,
@@ -301,6 +317,7 @@ const twoBoards = async (opts: { walk: "on-commit" | "after-acks" }) => {
     replicaPhone,
     replicaBrowser,
     flushWalk,
+    inboundMoves,
     resyncs,
     phone,
     browser,
@@ -317,6 +334,8 @@ describe("two clients move two existing issues", () => {
     await settle();
     expect(statusesOf(phoneLive.seen.at(-1))).toEqual({ One: "todo", Two: "todo" });
     expect(statusesOf(browserLive.seen.at(-1))).toEqual({ One: "todo", Two: "todo" });
+    const phoneEmissions = phoneLive.seen.length;
+    const browserEmissions = browserLive.seen.length;
 
     const [phoneAck, browserAck] = await Promise.all([
       run(move(world.phone, world.one, "doing", 10)),
@@ -344,6 +363,8 @@ describe("two clients move two existing issues", () => {
     await waitBoards(phoneLive, browserLive);
 
     expect(world.resyncs).toEqual(resyncsBeforeWalk);
+    expect(phoneLive.seen.length).toBeGreaterThan(phoneEmissions);
+    expect(browserLive.seen.length).toBeGreaterThan(browserEmissions);
     expect(statusesOf(phoneLive.seen.at(-1))).toEqual({ One: "doing", Two: "done" });
     expect(statusesOf(browserLive.seen.at(-1))).toEqual({ One: "doing", Two: "done" });
     expect(statusesOf(await run(world.phone.q(boardQuery)))).toEqual({
@@ -373,6 +394,44 @@ describe("two clients move two existing issues", () => {
     ]);
     await waitBoards(phoneLive, browserLive);
 
+    expect(statusesOf(phoneLive.seen.at(-1))).toEqual({ One: "doing", Two: "done" });
+    expect(statusesOf(browserLive.seen.at(-1))).toEqual({ One: "doing", Two: "done" });
+
+    await phoneLive.stop();
+    await browserLive.stop();
+    await world.phoneC.dispose();
+    await world.browserC.dispose();
+  });
+
+  test("two inbound { op: tx } frames (no local pending): both live boards show both moves", async () => {
+    const world = await twoBoards({ walk: "after-acks" });
+    const phoneLive = collect(world.phone.live(boardQuery));
+    const browserLive = collect(world.browser.live(boardQuery));
+    await settle();
+    expect(statusesOf(phoneLive.seen.at(-1))).toEqual({ One: "todo", Two: "todo" });
+    expect(statusesOf(browserLive.seen.at(-1))).toEqual({ One: "todo", Two: "todo" });
+    const phoneEmissions = phoneLive.seen.length;
+    const browserEmissions = browserLive.seen.length;
+
+    const { first, later } = await world.inboundMoves();
+    expect(later).toBe(first + 1);
+    expect(world.replicaPhone.socket.frames.filter((f) => f.op === "tx").map((f) => f.t)).toEqual([
+      first,
+      later,
+    ]);
+    expect(world.replicaBrowser.socket.frames.filter((f) => f.op === "tx").map((f) => f.t)).toEqual([
+      first,
+      later,
+    ]);
+    expect(world.replicaPhone.socket.frames.some((f) => f.op === "t")).toBe(false);
+
+    const resyncsBeforeWalk = { ...world.resyncs };
+    world.flushWalk();
+    await waitBoards(phoneLive, browserLive);
+
+    expect(world.resyncs).toEqual(resyncsBeforeWalk);
+    expect(phoneLive.seen.length).toBeGreaterThan(phoneEmissions);
+    expect(browserLive.seen.length).toBeGreaterThan(browserEmissions);
     expect(statusesOf(phoneLive.seen.at(-1))).toEqual({ One: "doing", Two: "done" });
     expect(statusesOf(browserLive.seen.at(-1))).toEqual({ One: "doing", Two: "done" });
 

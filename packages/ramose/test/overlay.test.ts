@@ -1147,6 +1147,77 @@ describe("filtered tx frames (#112 sieve)", () => {
   });
 });
 
+describe("apply is the notify", () => {
+  test("a { op: tx } paints and notifies before handlePush returns", async () => {
+    const schemaConn = await Connection.create();
+    await schemaConn.transact(schemaTx(Movies) as unknown[]);
+    const nameA = schemaConn.db().schema.requireAttr(":user/name").id;
+    const ada = toWireDatom({
+      e: 2001,
+      a: nameA,
+      vt: ValueTag.Str,
+      v: "Ada",
+      t: 40,
+      op: true,
+    });
+
+    let basis = 0;
+    let sessionEpoch = 0;
+    const session: Session = {
+      get t() {
+        return basis;
+      },
+      generation: 1,
+      principal: undefined,
+      connects: 1,
+      closed: false,
+      get epoch() {
+        return sessionEpoch;
+      },
+      request: async (frame) => {
+        if (frame.op === "sync") return { status: 200, body: { t: 39, from: frame.from ?? 0 } };
+        return { status: 200, body: {} };
+      },
+      bump: (n) => {
+        if (n > basis) basis = n;
+      },
+      nudge: () => {
+        sessionEpoch += 1;
+      },
+      onWake: () => () => {},
+      onPush: () => () => {},
+      close: () => {},
+    };
+
+    const overlay = openOverlay({
+      session,
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+    });
+    await run(overlay.ready());
+
+    let notified = 0;
+    overlay.onChange(() => {
+      notified += 1;
+    });
+    const before = overlay.epoch;
+    const pending = overlay.handlePush({ op: "tx", t: 40, datoms: [ada] });
+    expect(notified).toBe(1);
+    expect(overlay.epoch).toBe(before + 1);
+    const body = (await run(
+      overlay.read("q", {
+        query: {
+          find: ["?n"],
+          where: [["?e", ":user/name", "?n"]],
+        },
+      }),
+    )) as { result: [string][]; epoch: number };
+    expect(body.result).toEqual([["Ada"]]);
+    expect(body.epoch).toBe(overlay.epoch);
+    await pending;
+  });
+});
+
 describe("HTTPS-only is unchanged", () => {
   test("reads still POST /query and there is no overlay sync", async () => {
     const { httpsClient } = await import("./peer.ts");

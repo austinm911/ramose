@@ -1,7 +1,7 @@
 /**
  * `db.livePull` — a standing `db.pull` as a `Stream`.
  *
- * Session clients pull against the overlay. Wake is overlay paint: apply /
+ * Session clients pull against the overlay. Apply is the notify: pending /
  * ack / `{ op: "tx" }` / `{ op: "resync" }`. `null` (entity retracted) is
  * a legitimate emission. Pinned views still emit once from the peer.
  */
