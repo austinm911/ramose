@@ -425,6 +425,47 @@ describe("apply-then-push", () => {
     expect(b.s.lastT).toBe(12);
   });
 
+  test("overlapping applyEntry still delivers t and t+1 — from is the walked cursor at run, not enqueue", async () => {
+    const { socket, s } = attached((t) => ({ kind: "tx", datoms: [wire(t)] }));
+    // Capturing watermark at enqueue made both jobs start from 10; the
+    // second walk then saw 12 > 10+1 and tore — t+1 never left.
+    await Promise.all([
+      s.applyEntry({ t: 11, datoms: [wire(11)] }, 10),
+      s.applyEntry({ t: 12, datoms: [wire(12)] }, 10),
+    ]);
+    expect(socket.resyncs()).toEqual([]);
+    expect(socket.txs().map((f) => f.t)).toEqual([11, 12]);
+    expect(s.watermark).toBe(12);
+  });
+
+  test("applyEntry twice before the first consider resolves still delivers both txs", async () => {
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = 0;
+    const socket = new FakeSocket();
+    const { dispatch } = fakeDispatch();
+    const s = session(socket, {
+      dispatch,
+      seed: { lastT: 0, watermark: 10 },
+      filterEntry: async (entry) => {
+        entered += 1;
+        if (entered === 1) await hold;
+        return { kind: "tx", datoms: [wire(entry.t)] };
+      },
+    });
+    const first = s.applyEntry({ t: 11, datoms: [wire(11)] }, 10);
+    const second = s.applyEntry({ t: 12, datoms: [wire(12)] }, 10);
+    for (let i = 0; i < 20 && entered === 0; i++) await Promise.resolve();
+    expect(entered).toBe(1);
+    release();
+    await Promise.all([first, second]);
+    expect(socket.resyncs()).toEqual([]);
+    expect(socket.txs().map((f) => f.t)).toEqual([11, 12]);
+    expect(s.watermark).toBe(12);
+  });
+
   test("cursor / basisT cannot get ahead of an unapplied frame", async () => {
     const { socket, s } = attached((t) => ({ kind: "tx", datoms: [wire(t)] }));
     expect(s.watermark).toBe(10);

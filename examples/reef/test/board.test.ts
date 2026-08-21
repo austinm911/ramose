@@ -81,13 +81,19 @@ const inProcessPeer = async () => {
         return denied;
       }
       const rep = await conn.transact(body.tx);
+      const datoms = rep.txData.map(toWireDatom);
+      // Replica apply-then-push: every attached session hears this t.
+      // HTTPS never sets writerEcho, so the frame has no clientTxId.
+      queueMicrotask(() => {
+        for (const push of pushes) push({ op: "tx", t: rep.t, datoms });
+      });
       return {
         status: 200,
         body: {
           t: rep.t,
           txEid: rep.txEid,
           tempids: rep.tempids,
-          datoms: rep.txData.map(toWireDatom),
+          datoms,
           clientTxId: body.clientTxId,
         },
       };
@@ -157,12 +163,21 @@ const inProcessPeer = async () => {
     return socket;
   }
 
-  const ramose = Ramose.connect({
-    url: "https://peer.local",
-    fetch: fetchImpl,
-    webSocket: WebSocketImpl as unknown as typeof WebSocket,
-  });
-  const db: ReefDb = ramose.db("coral-team", Reef);
+  const clients: Array<{ db: ReefDb; close: () => Promise<void> }> = [];
+  const openClient = () => {
+    const ramose = Ramose.connect({
+      url: "https://peer.local",
+      fetch: fetchImpl,
+      webSocket: WebSocketImpl as unknown as typeof WebSocket,
+    });
+    const db: ReefDb = ramose.db("coral-team", Reef);
+    const opened = { db, close: () => ramose.close() };
+    clients.push(opened);
+    return opened;
+  };
+
+  const first = openClient();
+  const db = first.db;
   await Effect.runPromise(db.install());
   const seeded = await Effect.runPromise(
     db.transact(function* (tx) {
@@ -179,6 +194,7 @@ const inProcessPeer = async () => {
     conn,
     db,
     myEid,
+    openClient,
     frames,
     httpPaths,
     queryOps: () => frames.filter((f) => f.op === "q"),
@@ -198,7 +214,9 @@ const inProcessPeer = async () => {
     pushTx: (datoms: readonly unknown[]) => {
       for (const push of pushes) push({ op: "tx", t: conn.t, datoms });
     },
-    dispose: () => ramose.close(),
+    dispose: async () => {
+      for (const c of clients) await c.close();
+    },
   };
 };
 
@@ -396,6 +414,66 @@ describe("the board's writes move the board's live stream", () => {
     // current-view q is local — asOf was the only new socket `q`
     expect(peer.queryOps()).toHaveLength(qBefore + 1);
 
+    await peer.dispose();
+  });
+
+  test("two clients moving two existing issues both see both moves without refresh", async () => {
+    const peer = await inProcessPeer();
+    await Effect.runPromise(
+      createIssue(peer.db, peer.myEid, undefined, {
+        title: "One",
+        status: "todo",
+        priority: 2,
+      }),
+    );
+    await Effect.runPromise(
+      createIssue(peer.db, peer.myEid, 1024, {
+        title: "Two",
+        status: "todo",
+        priority: 2,
+      }),
+    );
+
+    const other = peer.openClient();
+    const phone = live(peer.db.live(boardQuery));
+    const computer = live(other.db.live(boardQuery));
+    await awaitLive(phone, () => titles(phone.rows).length === 2);
+    await awaitLive(computer, () => titles(computer.rows).length === 2);
+    const one = phone.rows!.find((r) => r.title === "One")!.id;
+    const two = phone.rows!.find((r) => r.title === "Two")!.id;
+    const qBefore = peer.queryOps().length;
+
+    await Promise.all([
+      Effect.runPromise(moveIssue(peer.db, one, "doing", 10)),
+      Effect.runPromise(moveIssue(other.db, two, "done", 20)),
+    ]);
+    await awaitLive(
+      phone,
+      () =>
+        phone.rows?.some((r) => r.title === "One" && r.status === "doing") ===
+          true &&
+        phone.rows?.some((r) => r.title === "Two" && r.status === "done") ===
+          true,
+    );
+    await awaitLive(
+      computer,
+      () =>
+        computer.rows?.some((r) => r.title === "One" && r.status === "doing") ===
+          true &&
+        computer.rows?.some((r) => r.title === "Two" && r.status === "done") ===
+          true,
+    );
+
+    const statusOf = (rows: readonly BoardRow[] | undefined) =>
+      Object.fromEntries((rows ?? []).map((r) => [r.title, r.status]));
+    expect(statusOf(phone.rows)).toEqual({ One: "doing", Two: "done" });
+    expect(statusOf(computer.rows)).toEqual({ One: "doing", Two: "done" });
+    expect(peer.queryOps()).toHaveLength(qBefore);
+    expect(phone.error).toBeUndefined();
+    expect(computer.error).toBeUndefined();
+
+    await phone.stop();
+    await computer.stop();
     await peer.dispose();
   });
 

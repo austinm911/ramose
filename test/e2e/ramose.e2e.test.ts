@@ -186,6 +186,28 @@ const Session = Ramose.Namespace("s", {
 });
 const SessionCatalog = Ramose.Catalog({ s: Session });
 
+/** Reef-shaped card-one issue: title / status / rank + required creator join. */
+const ReefUser = Ramose.Namespace("user", {
+  name: Ramose.Attr(Schema.String),
+});
+const ReefIssue = Ramose.Namespace("issue", {
+  title: Ramose.Attr(Schema.String),
+  status: Ramose.Attr(Schema.String),
+  rank: Ramose.Attr(Schema.Number),
+  creator: Ramose.Attr(Ramose.Ref(() => ReefUser)),
+});
+const ReefBoard = Ramose.Catalog({ user: ReefUser, issue: ReefIssue });
+const reefBoardQuery = Ramose.query(ReefIssue)
+  .orderBy(ReefIssue.rank, "asc")
+  .select({
+    id: ReefIssue.id,
+    title: ReefIssue.title,
+    status: ReefIssue.status,
+    rank: ReefIssue.rank,
+    creator: ReefIssue.creator.select({ name: ReefUser.name }),
+  });
+type ReefBoardRow = Ramose.Row<typeof reefBoardQuery>;
+
 d("ramose session socket e2e", () => {
   const url = URL_ ?? "http://invalid";
   const sessionDb = `${dbName}-session`;
@@ -482,6 +504,136 @@ d("ramose session socket e2e", () => {
       } finally {
         s1.ws.close();
         s2.ws.close();
+      }
+    },
+    120_000,
+  );
+
+  /**
+   * Reef hole after #119/#120/#122: two session clients, same principal,
+   * same db, each move a *different existing* issue at the same time.
+   * Both writes commit. Both standing `db.live` boards must show both
+   * new statuses without a refresh and without a `q()` wait that would
+   * mask a live-only hole.
+   */
+  test(
+    "two clients moving two existing issues both see both moves on live (no refresh)",
+    async () => {
+      const options = {
+        url,
+        token: token === undefined ? undefined : Effect.succeed(Redacted.make(token)),
+      };
+      const phoneRt = ManagedRuntime.make(Ramose.layer(options));
+      const computerRt = ManagedRuntime.make(Ramose.layer(options));
+      const boardDb = `${dbName}-reef-two`;
+      try {
+        const phone = phoneRt.runSync(Ramose.Databases).db(boardDb, ReefBoard);
+        const computer = computerRt.runSync(Ramose.Databases).db(boardDb, ReefBoard);
+
+        await phoneRt.runPromise(absorb(phone.install()));
+        const person = await phoneRt.runPromise(
+          absorb(
+            phone.transact(function* (tx) {
+              const ada = yield* tx.entity();
+              yield* ada.add(ReefUser.name, "Ada");
+            }),
+          ),
+        );
+        const people = await phoneRt.runPromise(
+          absorb(
+            person.dbAfter.q(
+              Ramose.query(ReefUser).select({ id: ReefUser.id, name: ReefUser.name }),
+            ),
+          ),
+        );
+        const adaId = people[0]!.id;
+        const seeded = await phoneRt.runPromise(
+          absorb(
+            phone.transact(function* (tx) {
+              const one = yield* tx.entity();
+              yield* one.add(ReefIssue.title, "One");
+              yield* one.add(ReefIssue.status, "todo");
+              yield* one.add(ReefIssue.rank, 1);
+              yield* one.add(ReefIssue.creator, adaId);
+              const two = yield* tx.entity();
+              yield* two.add(ReefIssue.title, "Two");
+              yield* two.add(ReefIssue.status, "todo");
+              yield* two.add(ReefIssue.rank, 2);
+              yield* two.add(ReefIssue.creator, adaId);
+            }),
+          ),
+        );
+        expect(seeded.t).toBeGreaterThan(0);
+
+        const phoneSeen: Array<readonly ReefBoardRow[]> = [];
+        const computerSeen: Array<readonly ReefBoardRow[]> = [];
+        const phoneFiber = phoneRt.runFork(
+          Stream.runForEach(phone.live(reefBoardQuery), (rows) =>
+            Effect.sync(() => phoneSeen.push(rows)),
+          ),
+        );
+        const computerFiber = computerRt.runFork(
+          Stream.runForEach(computer.live(reefBoardQuery), (rows) =>
+            Effect.sync(() => computerSeen.push(rows)),
+          ),
+        );
+
+        const statusesOf = (rows: readonly ReefBoardRow[] | undefined) => {
+          const out: Record<string, string> = {};
+          for (const row of rows ?? []) out[row.title] = row.status;
+          return out;
+        };
+        const bothMoves = (rows: readonly ReefBoardRow[] | undefined) => {
+          const s = statusesOf(rows);
+          return s.One === "doing" && s.Two === "done";
+        };
+        const waitSeed = async (seen: Array<readonly ReefBoardRow[]>) => {
+          for (let i = 0; i < 80 && (seen.at(-1)?.length ?? 0) < 2; i++) {
+            await Bun.sleep(100);
+          }
+        };
+        await waitSeed(phoneSeen);
+        await waitSeed(computerSeen);
+        expect(statusesOf(phoneSeen.at(-1))).toEqual({ One: "todo", Two: "todo" });
+        expect(statusesOf(computerSeen.at(-1))).toEqual({ One: "todo", Two: "todo" });
+
+        const one = phoneSeen.at(-1)!.find((r) => r.title === "One");
+        const two = phoneSeen.at(-1)!.find((r) => r.title === "Two");
+        expect(one).toBeDefined();
+        expect(two).toBeDefined();
+
+        await Promise.all([
+          phoneRt.runPromise(
+            absorb(
+              phone.transact(function* (tx) {
+                yield* tx.add(one!.id, ReefIssue.status, "doing");
+                yield* tx.add(one!.id, ReefIssue.rank, 10);
+              }),
+            ),
+          ),
+          computerRt.runPromise(
+            absorb(
+              computer.transact(function* (tx) {
+                yield* tx.add(two!.id, ReefIssue.status, "done");
+                yield* tx.add(two!.id, ReefIssue.rank, 20);
+              }),
+            ),
+          ),
+        ]);
+
+        // Live only — do not `q()` here. A local overlay q can be current
+        // while the standing stream is stuck on a hole.
+        for (let i = 0; i < 90 && !(bothMoves(phoneSeen.at(-1)) && bothMoves(computerSeen.at(-1))); i++) {
+          await Bun.sleep(500);
+        }
+        await Effect.runPromise(Fiber.interrupt(phoneFiber));
+        await Effect.runPromise(Fiber.interrupt(computerFiber));
+
+        expect(statusesOf(phoneSeen.at(-1))).toEqual({ One: "doing", Two: "done" });
+        expect(statusesOf(computerSeen.at(-1))).toEqual({ One: "doing", Two: "done" });
+      } finally {
+        await phoneRt.dispose();
+        await computerRt.dispose();
       }
     },
     120_000,
