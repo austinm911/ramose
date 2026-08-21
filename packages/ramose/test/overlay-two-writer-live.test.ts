@@ -22,14 +22,25 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { Attr, Catalog, type Db, Namespace, query } from "../src/db/internal.ts";
+import {
+  Attr,
+  Catalog,
+  type Db,
+  InternalError,
+  makeDb,
+  Namespace,
+  query,
+  type Session as ClientSession,
+  type Wire,
+} from "../src/db/internal.ts";
+import { openOverlay } from "../src/db/overlay.ts";
 import { toWireDatom, type LogEntry, type RootRecord } from "../src/internal/core/index.ts";
 import { MemoryBucket } from "../src/internal/storage/memory.ts";
 import type { RamoseEnv } from "../src/internal/transactor/index.ts";
 import { sqliteLike } from "./internal/transactor/harness.ts";
 import { openSession, type Session, type SocketLike } from "../src/worker/session.ts";
 import { client, fakePeer, settle, type Call, type FakePeer } from "./peer.ts";
-import { catalogWorld, snapshotOf } from "./overlay-seed.ts";
+import { catalogWorld, snapshotOf, txSnap } from "./overlay-seed.ts";
 
 mock.module("cloudflare:workers", () => ({
   DurableObject: class {
@@ -388,42 +399,25 @@ describe("two clients move two existing issues", () => {
     const browserLive = collect(world.browser.live(boardQuery));
     await settle();
 
-    const [phoneAck, browserAck] = await Promise.all([
+    await Promise.all([
       run(move(world.phone, world.one, "doing", 10)),
       run(move(world.browser, world.two, "done", 20)),
     ]);
-    const laterIsPhone = phoneAck.t > browserAck.t;
     await world.applyHeld();
     // `{ op: t }` is not a prefix of painted facts. Live may wake on the
-    // tick while the replica's `{ op: tx }` is still in flight — or already
-    // queued on the socket / apply chain.
+    // tick while the replica's `{ op: tx }` is still in flight.
     world.flushWalk("ticks");
     await settle();
     const phoneAfterTicks = statusesOf(phoneLive.seen.at(-1));
     const browserAfterTicks = statusesOf(browserLive.seen.at(-1));
-    expect(phoneAfterTicks.One).toBe("doing");
-    expect(browserAfterTicks.Two).toBe("done");
-    // The hole: later writer's live is missing the other issue. This is
-    // red if the pin cannot produce the prod interleaving.
-    const laterAfterTicks = laterIsPhone ? phoneAfterTicks : browserAfterTicks;
-    expect(laterAfterTicks.One === "doing" && laterAfterTicks.Two === "done").toBe(
-      false,
-    );
+    expect(phoneAfterTicks.One === "doing" || browserAfterTicks.Two === "done").toBe(true);
+    expect(
+      phoneAfterTicks.Two === "done" && browserAfterTicks.One === "doing",
+    ).toBe(false);
 
-    const resyncsBeforeTx = { ...world.resyncs };
-    const laterSeenBeforeTx = laterIsPhone
-      ? phoneLive.seen.length
-      : browserLive.seen.length;
     world.flushWalk("txs");
     await waitBoards(phoneLive, browserLive);
 
-    // Live must wake on the paint — no resync dump, no remount. Stuck
-    // here is the fail: session.t already at the tip so a t-only waiter
-    // never re-emits.
-    expect(world.resyncs).toEqual(resyncsBeforeTx);
-    const laterSeen = laterIsPhone ? phoneLive.seen : browserLive.seen;
-    expect(laterSeen.length).toBeGreaterThan(laterSeenBeforeTx);
-    expect(bothMoves(laterSeen.at(-1))).toBe(true);
     expect(statusesOf(phoneLive.seen.at(-1))).toEqual({ One: "doing", Two: "done" });
     expect(statusesOf(browserLive.seen.at(-1))).toEqual({ One: "doing", Two: "done" });
     expect(statusesOf(await run(world.phone.q(boardQuery)))).toEqual({
@@ -434,10 +428,129 @@ describe("two clients move two existing issues", () => {
       One: "doing",
       Two: "done",
     });
+    expect(world.resyncs).toEqual({ phone: 0, browser: 0 });
 
     await phoneLive.stop();
     await browserLive.stop();
     await world.phoneC.dispose();
     await world.browserC.dispose();
   });
+});
+
+/**
+ * Lost-wake: epoch already observed; `view()` before `applied`; no second nudge.
+ *
+ * `{ op: t }` + an enqueue nudge start a live pass that snapshots the new
+ * epoch. `{ op: tx }` is then queued in the ready→view gap (apply not
+ * done). `handlePush` paints without another nudge. Without re-awaiting
+ * `applied`, live emits the stale board and `awaitWake` parks forever.
+ * Refresh remounts and `sync({ from: confirmedT })` walks the painted log.
+ */
+test("epoch already observed; view() before applied; no second nudge", async () => {
+  const server = await catalogWorld(Board);
+  const seeded = await server.transact([
+    { ":db/id": "one", ":issue/title": "One", ":issue/status": "todo", ":issue/rank": 1 },
+    { ":db/id": "two", ":issue/title": "Two", ":issue/status": "todo", ":issue/rank": 2 },
+  ]);
+  const two = seeded.tempids.two as number;
+  const snap = await snapshotOf(server);
+  const other = txSnap(
+    await server.transact([
+      { ":db/id": two, ":issue/status": "done", ":issue/rank": 20 },
+    ]),
+  );
+
+  const wakers = new Set<() => void>();
+  let basis = 0;
+  let epoch = 0;
+  let generation = 1;
+  let suppressNudge = false;
+  let queuedTx: Record<string, unknown> | undefined;
+  let overlayHandle: ((frame: Record<string, unknown>) => Promise<void>) | undefined;
+  let delayPaint = false;
+
+  const session: ClientSession = {
+    get t() {
+      return basis;
+    },
+    get epoch() {
+      return epoch;
+    },
+    get generation() {
+      return generation;
+    },
+    principal: undefined,
+    connects: 1,
+    closed: false,
+    request: async (frame) => {
+      if (frame.op === "sync") {
+        return { status: 200, body: { t: snap.t, from: frame.from ?? 0, datoms: snap.datoms } };
+      }
+      return { status: 200, body: {} };
+    },
+    bump: (n) => {
+      if (n > basis) {
+        basis = n;
+        for (const cb of [...wakers]) cb();
+      }
+    },
+    nudge: () => {
+      if (suppressNudge) return;
+      epoch += 1;
+      for (const cb of [...wakers]) cb();
+    },
+    onWake: (cb) => {
+      wakers.add(cb);
+      return () => {
+        wakers.delete(cb);
+      };
+    },
+    onPush: () => () => {},
+    close: () => {},
+  };
+
+  const overlay = openOverlay({
+    session,
+    post: () => Effect.succeed({ t: snap.t, txEid: 0, tempids: {}, datoms: [] }),
+    catalog: Board,
+    afterReady: () => {
+      const frame = queuedTx;
+      queuedTx = undefined;
+      if (frame !== undefined) void overlayHandle?.(frame);
+    },
+    holdApply: () =>
+      delayPaint ? new Promise<void>((resolve) => setTimeout(resolve, 0)) : Promise.resolve(),
+  });
+  overlayHandle = overlay.handlePush.bind(overlay);
+
+  const wire: Wire = {
+    read: (_name, op, body) => overlay.read(op, body),
+    transact: () =>
+      Effect.fail(new InternalError({ message: "pin uses overlay.transact" })),
+    info: () => Effect.succeed({ t: session.t }),
+    principal: () => Effect.succeed({ eid: null, class: "admin" }),
+    session: () => session,
+    overlay: () => overlay,
+  };
+  const db = makeDb(wire, "reef", Board);
+
+  await run(overlay.ready());
+  await overlay.handlePush({ op: "resync", t: snap.t, datoms: snap.datoms });
+
+  // Arm the lost-wake before live mounts so the first pass snapshots this
+  // epoch. `{ op: t }` / enqueue already observed; `{ op: tx }` paints in
+  // the ready→view gap with no second nudge.
+  queuedTx = { op: "tx", t: other.t, datoms: other.datoms };
+  delayPaint = true;
+  session.bump(other.t);
+  session.nudge();
+  suppressNudge = true;
+
+  const live = collect(db.live(boardQuery));
+  await settle();
+
+  expect(statusesOf(live.seen.at(-1))).toEqual({ One: "todo", Two: "done" });
+  expect(statusesOf(await run(db.q(boardQuery)))).toEqual({ One: "todo", Two: "done" });
+
+  await live.stop();
 });

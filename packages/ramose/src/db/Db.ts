@@ -508,9 +508,8 @@ const makeRead = <C extends AnyCatalog>(
 
   /**
    * The standing loop `live` and `livePull` share: run a pass, emit when the
-   * digest moved, sleep until overlay epoch (session client) or the session
-   * basis (HTTPS) moves. What varies is only the pass itself — a query for
-   * `live`, a pull for `livePull`.
+   * digest moved, sleep until the session's basis does. What varies is only
+   * the pass itself — a query for `live`, a pull for `livePull`.
    */
   const standing = <A, E extends { readonly _tag: string } = DbError>(
     runPass: (minT: number | undefined) => Effect.Effect<Pass<A>, E>,
@@ -532,11 +531,6 @@ const makeRead = <C extends AnyCatalog>(
           );
         }
 
-        // Overlay live: `{ op: t }` is a basis tick, not a painted-fact
-        // prefix. `session.t` / `pass.t` (follow cursor) looking caught-up
-        // must not park the loop — only overlay epoch (pending / ack /
-        // inbound tx) or a reconnect is news. HTTPS live still fences on `t`.
-        const overlayFollows = !pinned && wire.overlay?.(name) !== undefined;
         let last: string | undefined;
         for (;;) {
           const seen = session?.t ?? 0;
@@ -544,9 +538,7 @@ const makeRead = <C extends AnyCatalog>(
           const epoch = session?.epoch ?? 0;
           // one pass; the wire ladder retries its transient attempts, and
           // withBackoff only re-runs the pass once that ladder is spent
-          const pass = yield* withBackoff(
-            runPass(overlayFollows ? undefined : seen || undefined),
-          );
+          const pass = yield* withBackoff(runPass(seen || undefined));
           // a tick the pass's result did not notice is not news
           const digest = JSON.stringify(pass.raw) ?? "";
           if (digest !== last) {
@@ -554,17 +546,9 @@ const makeRead = <C extends AnyCatalog>(
             yield* Queue.offer(queue, pass.value);
           }
           if (pinned || session === undefined) break;
-          // Paint that landed during the pass already moved epoch — re-query
-          // rather than wait on a cursor we already observed.
-          if (
-            overlayFollows &&
-            (session.generation !== generation || session.epoch !== epoch)
-          ) {
-            continue;
-          }
           yield* awaitWake(
             session,
-            overlayFollows ? undefined : Math.max(seen, pass.t),
+            Math.max(seen, pass.t),
             generation,
             epoch,
           );
@@ -655,7 +639,7 @@ const makeRead = <C extends AnyCatalog>(
 /** Resolve when the session's basis moves past `seen`, the overlay applies, or the socket drops. */
 const awaitWake = (
   session: Session,
-  seen: number | undefined,
+  seen: number,
   generation: number,
   epoch: number,
 ): Effect.Effect<void> =>
@@ -667,9 +651,8 @@ const awaitWake = (
       off();
       resume(Effect.void);
     };
-    // `seen === undefined`: overlay live — `session.t` is not a fact prefix.
     const news = () =>
-      (seen !== undefined && session.t > seen) ||
+      session.t > seen ||
       session.generation !== generation ||
       session.epoch !== epoch;
     const off = session.onWake(() => {

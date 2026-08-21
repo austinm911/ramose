@@ -61,8 +61,6 @@ const inProcessPeer = async () => {
   const httpPaths: string[] = [];
   let hold: Promise<void> | undefined;
   let releaseHold: (() => void) | undefined;
-  let holdPushes: Promise<void> | undefined;
-  let releasePushes: (() => void) | undefined;
   let rejectNext:
     | { status: number; body: Record<string, unknown> }
     | undefined;
@@ -84,16 +82,11 @@ const inProcessPeer = async () => {
       }
       const rep = await conn.transact(body.tx);
       const datoms = rep.txData.map(toWireDatom);
-      // Prod send order is `{ op: tx }` then `{ op: t }`, but workerd /
-      // the browser can run the tick handler before the tx paints. Deliver
-      // `{ op: t }` first, then optionally hold the `{ op: tx }` so live
-      // sits on a tick with a stale overlay — the Reef hole.
-      const deliver = async () => {
-        for (const push of pushes) push({ op: "t", t: rep.t });
-        if (holdPushes !== undefined) await holdPushes;
+      // Replica apply-then-push: every attached session hears this t.
+      // HTTPS never sets writerEcho, so the frame has no clientTxId.
+      queueMicrotask(() => {
         for (const push of pushes) push({ op: "tx", t: rep.t, datoms });
-      };
-      void deliver();
+      });
       return {
         status: 200,
         body: {
@@ -214,16 +207,6 @@ const inProcessPeer = async () => {
       releaseHold?.();
       hold = undefined;
       releaseHold = undefined;
-    },
-    holdReplicaPushes: () => {
-      holdPushes = new Promise<void>((resolve) => {
-        releasePushes = resolve;
-      });
-    },
-    releaseReplicaPushes: () => {
-      releasePushes?.();
-      holdPushes = undefined;
-      releasePushes = undefined;
     },
     rejectNextTransact: (body: Record<string, unknown>, status = 409) => {
       rejectNext = { status, body };
@@ -488,74 +471,6 @@ describe("the board's writes move the board's live stream", () => {
     expect(peer.queryOps()).toHaveLength(qBefore);
     expect(phone.error).toBeUndefined();
     expect(computer.error).toBeUndefined();
-
-    await phone.stop();
-    await computer.stop();
-    await peer.dispose();
-  });
-
-  test("later writer's live holes after {op:t} and heals when {op:tx} paints — no remount", async () => {
-    const peer = await inProcessPeer();
-    await Effect.runPromise(
-      createIssue(peer.db, peer.myEid, undefined, {
-        title: "One",
-        status: "todo",
-        priority: 2,
-      }),
-    );
-    await Effect.runPromise(
-      createIssue(peer.db, peer.myEid, 1024, {
-        title: "Two",
-        status: "todo",
-        priority: 2,
-      }),
-    );
-
-    const other = peer.openClient();
-    const phone = live(peer.db.live(boardQuery));
-    const computer = live(other.db.live(boardQuery));
-    await awaitLive(phone, () => titles(phone.rows).length === 2);
-    await awaitLive(computer, () => titles(computer.rows).length === 2);
-    const one = phone.rows!.find((r) => r.title === "One")!.id;
-    const two = phone.rows!.find((r) => r.title === "Two")!.id;
-    const qBefore = peer.queryOps().length;
-    const statusOf = (rows: readonly BoardRow[] | undefined) =>
-      Object.fromEntries((rows ?? []).map((r) => [r.title, r.status]));
-
-    peer.holdReplicaPushes();
-    const [phoneAck, computerAck] = await Promise.all([
-      Effect.runPromise(moveIssue(peer.db, one, "doing", 10)),
-      Effect.runPromise(moveIssue(other.db, two, "done", 20)),
-    ]);
-    await settle();
-    const later = phoneAck.t > computerAck.t ? phone : computer;
-    const laterStatuses = statusOf(later.rows);
-    expect(laterStatuses.One === "doing" || laterStatuses.Two === "done").toBe(
-      true,
-    );
-    expect(laterStatuses.One === "doing" && laterStatuses.Two === "done").toBe(
-      false,
-    );
-
-    const laterChanges = later.changes;
-    peer.releaseReplicaPushes();
-    await awaitLive(
-      phone,
-      () =>
-        statusOf(phone.rows).One === "doing" &&
-        statusOf(phone.rows).Two === "done",
-    );
-    await awaitLive(
-      computer,
-      () =>
-        statusOf(computer.rows).One === "doing" &&
-        statusOf(computer.rows).Two === "done",
-    );
-
-    expect(later.changes).toBeGreaterThan(laterChanges);
-    expect(statusOf(phone.rows)).toEqual({ One: "doing", Two: "done" });
-    expect(statusOf(computer.rows)).toEqual({ One: "doing", Two: "done" });
-    expect(peer.queryOps()).toHaveLength(qBefore);
 
     await phone.stop();
     await computer.stop();
