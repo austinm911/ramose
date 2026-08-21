@@ -388,25 +388,42 @@ describe("two clients move two existing issues", () => {
     const browserLive = collect(world.browser.live(boardQuery));
     await settle();
 
-    await Promise.all([
+    const [phoneAck, browserAck] = await Promise.all([
       run(move(world.phone, world.one, "doing", 10)),
       run(move(world.browser, world.two, "done", 20)),
     ]);
+    const laterIsPhone = phoneAck.t > browserAck.t;
     await world.applyHeld();
     // `{ op: t }` is not a prefix of painted facts. Live may wake on the
-    // tick while the replica's `{ op: tx }` is still in flight.
+    // tick while the replica's `{ op: tx }` is still in flight — or already
+    // queued on the socket / apply chain.
     world.flushWalk("ticks");
     await settle();
     const phoneAfterTicks = statusesOf(phoneLive.seen.at(-1));
     const browserAfterTicks = statusesOf(browserLive.seen.at(-1));
-    expect(phoneAfterTicks.One === "doing" || browserAfterTicks.Two === "done").toBe(true);
-    expect(
-      phoneAfterTicks.Two === "done" && browserAfterTicks.One === "doing",
-    ).toBe(false);
+    expect(phoneAfterTicks.One).toBe("doing");
+    expect(browserAfterTicks.Two).toBe("done");
+    // The hole: later writer's live is missing the other issue. This is
+    // red if the pin cannot produce the prod interleaving.
+    const laterAfterTicks = laterIsPhone ? phoneAfterTicks : browserAfterTicks;
+    expect(laterAfterTicks.One === "doing" && laterAfterTicks.Two === "done").toBe(
+      false,
+    );
 
+    const resyncsBeforeTx = { ...world.resyncs };
+    const laterSeenBeforeTx = laterIsPhone
+      ? phoneLive.seen.length
+      : browserLive.seen.length;
     world.flushWalk("txs");
     await waitBoards(phoneLive, browserLive);
 
+    // Live must wake on the paint — no resync dump, no remount. Stuck
+    // here is the fail: session.t already at the tip so a t-only waiter
+    // never re-emits.
+    expect(world.resyncs).toEqual(resyncsBeforeTx);
+    const laterSeen = laterIsPhone ? phoneLive.seen : browserLive.seen;
+    expect(laterSeen.length).toBeGreaterThan(laterSeenBeforeTx);
+    expect(bothMoves(laterSeen.at(-1))).toBe(true);
     expect(statusesOf(phoneLive.seen.at(-1))).toEqual({ One: "doing", Two: "done" });
     expect(statusesOf(browserLive.seen.at(-1))).toEqual({ One: "doing", Two: "done" });
     expect(statusesOf(await run(world.phone.q(boardQuery)))).toEqual({
@@ -417,7 +434,6 @@ describe("two clients move two existing issues", () => {
       One: "doing",
       Two: "done",
     });
-    expect(world.resyncs).toEqual({ phone: 0, browser: 0 });
 
     await phoneLive.stop();
     await browserLive.stop();

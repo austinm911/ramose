@@ -163,6 +163,34 @@ describe("the basis is the wake", () => {
     await c.dispose();
   });
 
+  test("queued { op: tx } after a t-tick still wakes live (session.t already at the tip)", async () => {
+    const world = await users("Ada");
+    const peer = peerAt({ t: world.t, datoms: world.datoms });
+    const c = client(peer);
+    const live = collect(c.ramose.db("movies", Movies).live(names));
+    await settle();
+    expect(live.seen).toHaveLength(1);
+
+    const bob = txSnap(await world.conn.transact([{ ":user/name": "Bob" }]));
+    // Prod interleaving: the basis tick lands, live may re-query, then the
+    // tx is already on the socket. `session.t` does not move again.
+    peer.push({ op: "t", t: bob.t });
+    await settle();
+    expect(live.seen).toHaveLength(1);
+    expect(live.seen[0]).toEqual([{ name: "Ada" }]);
+
+    const syncs = peer.frameOps("sync").length;
+    peer.push({ op: "tx", t: bob.t, datoms: bob.datoms });
+    await settle();
+    expect(live.seen).toHaveLength(2);
+    expect(live.seen[1]).toEqual([{ name: "Ada" }, { name: "Bob" }]);
+    expect(peer.frameOps("q")).toEqual([]);
+    expect(peer.frameOps("sync")).toHaveLength(syncs);
+
+    await live.stop();
+    await c.dispose();
+  });
+
   test("a tick the rows did not notice is not an emission", async () => {
     const world = await users("Ada");
     const peer = peerAt({ t: world.t, datoms: world.datoms });
