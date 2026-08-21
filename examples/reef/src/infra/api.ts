@@ -37,7 +37,7 @@ import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import { compiledPolicy } from "../domain/policy.ts";
-import { REEF_DOMAIN, pinned } from "./domain.ts";
+import { REEF_DOMAIN, REEF_ORIGIN, pinned } from "./domain.ts";
 import { ac, roles } from "../domain/roles.ts";
 import {
   AUTH_BASE_PATH,
@@ -87,9 +87,11 @@ export const Api = Cloudflare.Worker(
     const auth = yield* BetterAuth({
       basePath: AUTH_BASE_PATH,
       emailAndPassword: { enabled: true },
-      // The Vite dev server proxies /api here, so browser-visible origins are
-      // the Vite origin (dev) and the Worker's own origin (deployed assets).
-      trustedOrigins: [DEV_UI_ORIGIN],
+      // Vite proxies /api in dev (cookies stay on :5173). Deployed, the
+      // Worker serves the SPA on REEF_ORIGIN. Better Auth also trusts its
+      // derived baseURL; the explicit list is so a Host-less or
+      // workers.dev request cannot lock the demo origin out.
+      trustedOrigins: [DEV_UI_ORIGIN, ...(REEF_ORIGIN ? [REEF_ORIGIN] : [])],
       // The demo ships no mailer, so accounts are auto-verified at creation —
       // otherwise the organization plugin's listUserInvitations 403s every
       // fresh account (EMAIL_VERIFICATION_REQUIRED_FOR_INVITATION, an
@@ -110,6 +112,15 @@ export const Api = Cloudflare.Worker(
           async sendInvitationEmail() {},
         }),
         jwt({
+          // Reef never reads `set-auth-jwt`. The jwt plugin's default
+          // /get-session after-hook signs an identity JWT on every session
+          // fetch, which decrypts the JWKS private key. That key is
+          // encrypted with BetterAuthSecret — Alchemy.Random, state-only,
+          // reminted on a cache miss — so a rotated secret turns
+          // `useSession` into a 500 and the SPA shows create-account
+          // after a successful sign-in. `ramoseToken` heals JWKS for mint;
+          // this flag keeps get-session off that path entirely.
+          disableSettingJwtHeader: true,
           jwt: {
             issuer: REEF_AUTH.issuer,
             audience: REEF_AUTH.audience,
