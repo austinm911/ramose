@@ -411,12 +411,19 @@ d("ramose session socket e2e", () => {
    *
    * Raw sockets on purpose: the client's reconnect-on-close would mask a
    * zombied session. They never send `{op:sync}`, so they seed
-   * `watermark = 0`. The first replica apply then hits `from < rootT` and
-   * fans out `{op:resync}` (not `{op:tx}`). After that dump, later writes
-   * fan out `{op:tx}`. Either unsolicited frame with `t >= write.t` is a
-   * live session; leftover `{op:t}` is gone. Under local miniflare both
-   * sockets share one isolate — the exact #28 shape; on real Cloudflare
-   * they may land apart, which only makes the test weaker, never wrongly red.
+   * `watermark = 0`.
+   *
+   * Not a flake and not a fan-out miss. Schema/catalog txs still walk as
+   * `{op:tx}` on the open e2e peer (no `RAMOSE_POLICY` → `decideSessionTx`
+   * returns `tx`). The first apply after an unsynced connect never reaches
+   * that walk: `from < rootT` dumps `{op:resync}`. Leftover `{op:t}` after
+   * that dump is what made `ticksOf` green. Waiting only for `{op:tx}` is
+   * the wrong frame. Either unsolicited frame with `t >= write.t` is a
+   * live session; both sockets must still answer `{op:info}`.
+   *
+   * Under local miniflare both sockets share one isolate — the exact #28
+   * shape; on real Cloudflare they may land apart, which only makes the
+   * test weaker, never wrongly red.
    */
   test(
     "two session sockets on one db both receive tx or resync on every write; both keep answering (#28)",
@@ -495,9 +502,9 @@ d("ramose session socket e2e", () => {
 
         const w1 = await http.transact([attrMap(":two/b", "string")]);
         expect(w1.t).toBeGreaterThan(t0);
-        // Unsynced sockets get {op:resync} on the first apply (from < rootT);
-        // a leftover {op:t} used to make this green. Either unsolicited
-        // frame is enough. Real CF adds edge lag.
+        // Schema still walks as {op:tx} once the cursor is at root. The
+        // first apply is {op:resync} (from < rootT), not a skipped catalog
+        // tick. Either unsolicited frame is enough. Real CF adds edge lag.
         expect(await until(() => pushesOf(s1).some((t) => t >= w1.t) && pushesOf(s2).some((t) => t >= w1.t), 20_000)).toBe(true);
 
         // the second write is the #28 regression: the old fan-out had killed one session by now

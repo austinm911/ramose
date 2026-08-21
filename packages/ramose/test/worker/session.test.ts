@@ -228,6 +228,28 @@ describe("follow cursor", () => {
     expect(s.watermark).toBe(9);
   });
 
+  test("unsynced apply behind rootT is resync; the next catalog apply is tx", async () => {
+    // The #28 e2e sockets never send {op:sync}. The first replica apply
+    // therefore hits from < rootT and dumps — it does not walk the schema
+    // entry as {op:tx}. After the dump, a catalog attr install still walks
+    // as {op:tx} (no leftover {op:t}).
+    const socket = new FakeSocket();
+    const { dispatch } = fakeDispatch();
+    const s = session(socket, {
+      dispatch,
+      snapshot: async () => ({ t: 9, datoms: [wire(9)] }),
+      filterEntry: async (e) => ({ kind: "tx", datoms: e.datoms }),
+    });
+    await s.applyEntry({ t: 9, datoms: [wire(9)] }, 1);
+    expect(socket.resyncs()).toEqual([{ op: "resync", t: 9, datoms: [wire(9)] }]);
+    expect(socket.txs()).toEqual([]);
+    expect(socket.frames.some((f) => f.op === "t")).toBe(false);
+    await s.applyEntry({ t: 10, datoms: [wire(10)] }, 9);
+    expect(socket.txs()).toEqual([{ op: "tx", t: 10, datoms: [wire(10)] }]);
+    expect(s.lastT).toBe(10);
+    expect(s.watermark).toBe(10);
+  });
+
   test("a failed write does not ack, and a read that answers with a t does not either", async () => {
     const socket = new FakeSocket();
     const { dispatch } = fakeDispatch((c) => (c.rest === "/transact" ? json({ error: "conflict" }, 409) : json({ t: 5, result: [] })));
@@ -811,6 +833,22 @@ describe("decideSessionTx: post-commit rule view", () => {
       cal: user("user_cal", rep.tempids.cal),
     };
   }
+
+  test("no policy: a catalog attr install is tx, not skip", async () => {
+    const conn = await Connection.create({ now: () => 1_700_000_000_000 });
+    const before = conn.db();
+    const rep = await conn.transact([
+      { ":db/ident": ":two/b", ":db/valueType": ":db.type/string", ":db/cardinality": ":db.cardinality/one" },
+    ]);
+    const decision = await decideSessionTx({
+      datoms: rep.txData,
+      ruleDbAfter: conn.db(),
+      ruleDbBefore: before,
+    });
+    expect(decision.kind).toBe("tx");
+    if (decision.kind !== "tx") throw new Error("expected tx");
+    expect(decision.datoms.length).toBeGreaterThan(0);
+  });
 
   test("a fully-filtered other-org write is skip (no t leak)", async () => {
     const { conn, ids, policy, ada } = await world();
