@@ -275,14 +275,37 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   let readyGen = -1;
   let opening: Promise<void> | undefined;
   let applied: Promise<void> = Promise.resolve();
-  let applyInflight = 0;
+  let applyQueued = 0;
   let outbox: Promise<unknown> = Promise.resolve();
   const listeners = new Set<() => void>();
 
+  /**
+   * Orderer only. An idle, sync `fn` (a `{ op: tx }` with a ready
+   * follower) runs before this returns — apply is the notify. A busy
+   * queue (in-flight resync) defers `fn` onto the tail.
+   */
   const enqueueApply = (fn: () => void | Promise<void>): Promise<void> => {
-    applyInflight += 1;
+    if (applyQueued === 0) {
+      applyQueued = 1;
+      try {
+        const result = fn();
+        if (result === undefined) {
+          applyQueued -= 1;
+          return Promise.resolve();
+        }
+        const done = Promise.resolve(result).finally(() => {
+          applyQueued -= 1;
+        });
+        applied = done.then(() => undefined, () => undefined);
+        return done;
+      } catch (err) {
+        applyQueued -= 1;
+        return Promise.reject(err);
+      }
+    }
+    applyQueued += 1;
     const next = applied.then(fn, fn).finally(() => {
-      applyInflight -= 1;
+      applyQueued -= 1;
     });
     applied = next.then(() => undefined, () => undefined);
     return next;
@@ -633,6 +656,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       ),
     );
 
+  /** The one tx apply: paint, then notify. */
   const applyTx = (frame: Record<string, unknown>): void => {
     const incoming = asWireDatoms(frame.datoms).map(fromWireDatom);
     applyConfirmed(incoming);
@@ -643,27 +667,24 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     notify();
   };
 
-  const handlePush = async (frame: Record<string, unknown>): Promise<void> => {
-    // Replica-side: applyDatoms is the notify. Same here: a `{ op: tx }`
-    // with a ready follower paints and notifies before this call returns
-    // (no detached `void` apply). Resync / a busy apply queue stay ordered.
-    if (frame.op === "tx" && conn !== undefined && applyInflight === 0) {
-      applyTx(frame);
-      return;
+  const applyFrame = (frame: Record<string, unknown>): void | Promise<void> => {
+    if (conn === undefined) {
+      return ensureConn().then(() => applyFrame(frame));
     }
-    await enqueueApply(async () => {
-      await ensureConn();
+    if (frame.op === "resync") {
+      pending.length = 0;
       const t = typeof frame.t === "number" ? frame.t : 0;
-      if (frame.op === "resync") {
-        pending.length = 0;
-        const datoms = asWireDatoms(frame.datoms).map(fromWireDatom);
-        await replaceConfirmed(datoms, t);
-        notify();
-        return;
-      }
-      if (frame.op === "tx") applyTx(frame);
-    });
+      return replaceConfirmed(asWireDatoms(frame.datoms).map(fromWireDatom), t).then(
+        () => {
+          notify();
+        },
+      );
+    }
+    if (frame.op === "tx") applyTx(frame);
   };
+
+  const handlePush = (frame: Record<string, unknown>): Promise<void> =>
+    enqueueApply(() => applyFrame(frame));
 
   options.session.onPush(handlePush);
 
