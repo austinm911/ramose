@@ -548,7 +548,7 @@ const makeRead = <C extends AnyCatalog>(
         const overlay = !pinned ? wire.overlay?.(name) : undefined;
         const overlaid = overlay !== undefined;
 
-        if (!pinned && session === undefined) {
+        if (!pinned && session === undefined && overlay === undefined) {
           return yield* Queue.failCause(
             queue,
             Cause.die(
@@ -577,7 +577,7 @@ const makeRead = <C extends AnyCatalog>(
             last = digest;
             yield* Queue.offer(queue, pass.value);
           }
-          if (pinned || session === undefined) break;
+          if (pinned || (session === undefined && overlay === undefined)) break;
           if (overlaid && overlay !== undefined) {
             yield* awaitOverlay(
               overlay,
@@ -585,10 +585,12 @@ const makeRead = <C extends AnyCatalog>(
               generation,
               pass.viewed ?? overlay.epoch,
             );
-          } else {
+          } else if (session !== undefined) {
             yield* awaitWake(session, generation, httpsEpoch, {
               minT: Math.max(seen, pass.t),
             });
+          } else {
+            break;
           }
         }
         return yield* Queue.end(queue);
@@ -686,7 +688,7 @@ const awaitOverlay = (
     readonly epoch: number;
     onChange(cb: () => void): () => void;
   },
-  session: Session,
+  session: Session | undefined,
   generation: number,
   viewed: number,
 ): Effect.Effect<void> =>
@@ -700,13 +702,17 @@ const awaitOverlay = (
       resume(Effect.void);
     };
     const news = () =>
-      overlay.epoch !== viewed || session.generation !== generation;
+      overlay.epoch !== viewed ||
+      (session !== undefined && session.generation !== generation);
     const offChange = overlay.onChange(() => {
       if (news()) settle();
     });
-    const offWake = session.onWake(() => {
-      if (news()) settle();
-    });
+    const offWake =
+      session === undefined
+        ? () => {}
+        : session.onWake(() => {
+            if (news()) settle();
+          });
     if (news()) settle();
     return Effect.sync(() => {
       done = true;

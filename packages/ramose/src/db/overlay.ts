@@ -12,7 +12,7 @@
 import { Connection } from "../internal/core/conn.ts";
 import { type Datom, Index, ValueTag } from "../internal/core/datom.ts";
 import { Db as EngineDb } from "../internal/core/db.ts";
-import { fromWireDatom, type WireDatom } from "../internal/core/log.ts";
+import { fromWireDatom, toWireDatom, type WireDatom } from "../internal/core/log.ts";
 import { Novelty } from "../internal/core/novelty.ts";
 import type { Schema } from "../internal/core/schema.ts";
 import {
@@ -40,6 +40,14 @@ import {
   TxRejected,
 } from "./Errors.ts";
 import { record, retryTransient } from "./http.ts";
+import {
+  type ByteStore,
+  loadSnap,
+  type OverlaySnap,
+  pendingFromSnap,
+  pendingToSnap,
+  saveSnap,
+} from "./persist.ts";
 import type { Session } from "./session.ts";
 
 export interface OverlayAck {
@@ -69,6 +77,13 @@ export interface Overlay {
   ): Effect.Effect<unknown, DbError>;
   transact(tx: readonly unknown[]): Effect.Effect<OverlayAck, DbError>;
   handlePush(frame: Record<string, unknown>): Promise<void>;
+  /** Confirmed current-view + pending layers — what persist writes. */
+  snapshot(): Promise<OverlaySnap>;
+  /**
+   * POST every pending layer that is still the outbox (offline transact).
+   * 409 / reject drops only that layer.
+   */
+  flush(): Promise<void>;
 }
 
 export interface OverlayOptions {
@@ -79,6 +94,22 @@ export interface OverlayOptions {
   ) => Effect.Effect<unknown, DbError>;
   /** Installs catalog attrs locally so processTx / q can resolve idents. */
   readonly catalog?: AnyCatalog | undefined;
+  /**
+   * Schema maps when the caller has no catalog object (a SharedWorker
+   * received `schemaTx` over the port). Same install as {@link catalog}.
+   */
+  readonly schema?: readonly unknown[] | undefined;
+  /** Hydrate Connection + pending from disk. Then `sync({ from: confirmedT })`. */
+  readonly snapshot?: OverlaySnap | undefined;
+  /**
+   * After facts are in `view()`, persist matches, then epoch/notify.
+   * Bytes, not a side cache of query rows.
+   */
+  readonly persist?: ((snap: OverlaySnap) => Promise<void>) | undefined;
+  /** Injected byte store. Hydrate on first `ready()`, persist after apply. */
+  readonly store?: ByteStore | undefined;
+  /** Persist key (`<db name>`). Required with {@link store}. */
+  readonly name?: string | undefined;
 }
 
 interface PendingLayer {
@@ -263,8 +294,23 @@ const overlayDb = (confirmed: EngineDb, extra: readonly Datom[]): EngineDb => {
   });
 };
 
+const installSchema = async (
+  next: Connection,
+  options: OverlayOptions,
+): Promise<void> => {
+  const tx =
+    options.catalog !== undefined
+      ? (schemaTx(options.catalog) as unknown[])
+      : options.schema !== undefined
+        ? [...options.schema]
+        : undefined;
+  if (tx !== undefined && tx.length > 0) await next.transact(tx);
+};
+
 export const openOverlay = (options: OverlayOptions): Overlay => {
   const pending: PendingLayer[] = [];
+  /** Layers whose POST has not succeeded — the outbox. Same array as pending. */
+  const unsent = new Set<string>();
   let conn: Connection | undefined;
   let confirmedT = 0;
   /** `t` values whose facts are already in the follower. Used so a late
@@ -311,11 +357,41 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     return next;
   };
 
-  /** Apply is the notify: epoch moves after the view already has the facts. */
+  const takeSnapshot = async (): Promise<OverlaySnap> => {
+    const confirmed: WireDatom[] = [];
+    if (conn !== undefined) {
+      for await (const chunk of conn.db().datoms(Index.EAVT, {})) {
+        for (const d of chunk) confirmed.push(toWireDatom(d));
+      }
+    }
+    return {
+      v: 1,
+      confirmedT,
+      confirmed,
+      pending: pending.map(pendingToSnap),
+    };
+  };
+
+  /** Apply is the notify: persist matches `view()`, then epoch moves. */
   const notify = (): void => {
     epoch += 1;
     options.session.nudge();
     for (const cb of [...listeners]) cb();
+  };
+
+  const persistThenNotify = (): void | Promise<void> => {
+    const needPersist =
+      options.persist !== undefined ||
+      (options.store !== undefined && options.name !== undefined);
+    if (!needPersist) {
+      notify();
+      return;
+    }
+    return takeSnapshot().then(async (snap) => {
+      if (options.persist !== undefined) await options.persist(snap);
+      else await saveSnap(options.store!, options.name!, snap);
+      notify();
+    });
   };
 
   const pendingDatoms = (): Datom[] => {
@@ -363,9 +439,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
 
   const replaceConfirmed = async (datoms: readonly Datom[], t: number): Promise<void> => {
     const next = await Connection.fromDatoms(datoms);
-    if (options.catalog !== undefined) {
-      await next.transact(schemaTx(options.catalog) as unknown[]);
-    }
+    await installSchema(next, options);
     conn = next;
     confirmedT = t;
     factTs.clear();
@@ -405,6 +479,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   const dropLayer = (clientTxId: string): PendingLayer | undefined => {
     const i = pending.findIndex((l) => l.clientTxId === clientTxId);
     if (i < 0) return undefined;
+    unsent.delete(clientTxId);
     return pending.splice(i, 1)[0];
   };
 
@@ -441,12 +516,35 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     if (layer !== undefined) remapDropped(layer, incoming);
   };
 
+  const hydrate = async (snap: OverlaySnap): Promise<void> => {
+    await replaceConfirmed(
+      snap.confirmed.map(fromWireDatom),
+      snap.confirmedT,
+    );
+    pending.length = 0;
+    unsent.clear();
+    for (const layer of snap.pending) {
+      const restored = pendingFromSnap(layer);
+      pending.push(restored);
+      unsent.add(restored.clientTxId);
+    }
+  };
+
   const ensureConn = async (): Promise<void> => {
     if (conn !== undefined) return;
-    conn = await Connection.create();
-    if (options.catalog !== undefined) {
-      await conn.transact(schemaTx(options.catalog) as unknown[]);
+    if (options.snapshot !== undefined) {
+      await hydrate(options.snapshot);
+      return;
     }
+    if (options.store !== undefined && options.name !== undefined) {
+      const snap = await loadSnap(options.store, options.name);
+      if (snap !== undefined) {
+        await hydrate(snap);
+        return;
+      }
+    }
+    conn = await Connection.create();
+    await installSchema(conn, options);
   };
 
   const requestSync = () =>
@@ -566,6 +664,103 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       ),
     );
 
+  const ackOf = (
+    body: unknown,
+    id: string,
+  ): OverlayAck => {
+    const ack = record(body);
+    const t = typeof ack.t === "number" ? ack.t : 0;
+    const raw = ack.datoms;
+    const datoms = Array.isArray(raw) ? (raw as WireDatom[]) : [];
+    return {
+      t,
+      txEid: typeof ack.txEid === "number" ? ack.txEid : 0,
+      tempids: asTempids(ack.tempids),
+      datoms,
+      datomCount:
+        datoms.length > 0
+          ? datoms.length
+          : typeof ack.datoms === "number"
+            ? ack.datoms
+            : 0,
+      clientTxId: typeof ack.clientTxId === "string" ? ack.clientTxId : id,
+    };
+  };
+
+  /**
+   * POST one pending layer. NetworkError keeps the layer (outbox). 409 /
+   * reject drops only that layer. Same apply path as inbound `{ op: tx }`.
+   */
+  const postLayer = (
+    id: string,
+    fallbackTx: unknown[],
+    resume?: (next: Effect.Effect<OverlayAck, DbError>) => void,
+  ): Promise<void> =>
+    Effect.runPromise(
+      options.post(
+        pending.find((l) => l.clientTxId === id)?.tx ?? fallbackTx,
+        id,
+      ),
+    )
+      .then(async (body) => {
+        const ack = ackOf(body, id);
+        await enqueueApply(() => {
+          unsent.delete(id);
+          const layer = dropLayer(id);
+          if (ack.datoms.length > 0) paintFacts(ack.datoms.map(fromWireDatom));
+          if (layer !== undefined) remapQueued(ack.tempids, layer.tempids);
+          return persistThenNotify();
+        });
+        resume?.(Effect.succeed(ack));
+      })
+      .catch(async (err) => {
+        const fail = isDatabaseError(err) ? err : classifyTx(err);
+        if (fail._tag === "NetworkError") {
+          // pending layer stays — flush() POSTs when the network is back
+          resume?.(Effect.succeed(localAck(id)));
+          return;
+        }
+        await enqueueApply(() => {
+          unsent.delete(id);
+          dropLayer(id);
+          return persistThenNotify();
+        });
+        resume?.(Effect.fail(fail));
+      });
+
+  const localAck = (id: string): OverlayAck => {
+    const layer = pending.find((l) => l.clientTxId === id);
+    return {
+      t: confirmedT,
+      txEid: 0,
+      tempids: layer?.tempids ?? {},
+      datoms: (layer?.datoms ?? []).map(toWireDatom),
+      datomCount: layer?.datoms.length ?? 0,
+      clientTxId: id,
+    };
+  };
+
+  const flush = async (): Promise<void> => {
+    const ids = pending.filter((l) => unsent.has(l.clientTxId)).map((l) => l.clientTxId);
+    for (const id of ids) {
+      const layer = pending.find((l) => l.clientTxId === id);
+      if (layer === undefined) continue;
+      await new Promise<void>((resolve) => {
+        const next = outbox.then(
+          () =>
+            postLayer(id, layer.tx, () => {
+              resolve();
+            }),
+          () =>
+            postLayer(id, layer.tx, () => {
+              resolve();
+            }),
+        );
+        outbox = next.catch(() => undefined);
+      });
+    }
+  };
+
   const transact: Overlay["transact"] = (tx) =>
     ready(false).pipe(
       Effect.flatMap(() =>
@@ -593,60 +788,11 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
             datoms: expansion.datoms,
             tempids: expansion.tempids,
           });
-          notify();
+          unsent.add(id);
+          yield* Effect.promise(() => Promise.resolve(persistThenNotify()));
 
           const posted = yield* Effect.callback<OverlayAck, DbError>((resume) => {
-            const run = () =>
-              Effect.runPromise(
-                options.post(
-                  pending.find((l) => l.clientTxId === id)?.tx ?? (tx as unknown[]),
-                  id,
-                ),
-              )
-                .then(async (body) => {
-                  const ack = record(body);
-                  const t = typeof ack.t === "number" ? ack.t : 0;
-                  const raw = ack.datoms;
-                  const datoms = Array.isArray(raw) ? (raw as WireDatom[]) : [];
-                  const tempids = asTempids(ack.tempids);
-                  // Drop + remap on the apply queue so covering stays ordered.
-                  // Do not stamp `confirmedT` — a later writer’s ack.t is not
-                  // a prefix. Own `{ op: "tx" }` paints and drops pending; it
-                  // does not claim the follow cursor either.
-                  // Paint a real WireDatom[] so dbAfter / live keep the write
-                  // (never local processTx; a number is datomCount only).
-                  await enqueueApply(() => {
-                    const layer = dropLayer(id);
-                    if (Array.isArray(raw)) paintFacts(datoms.map(fromWireDatom));
-                    if (layer !== undefined) remapQueued(tempids, layer.tempids);
-                    notify();
-                  });
-                  resume(
-                    Effect.succeed({
-                      t,
-                      txEid: typeof ack.txEid === "number" ? ack.txEid : 0,
-                      tempids,
-                      datoms,
-                      datomCount:
-                        datoms.length > 0
-                          ? datoms.length
-                          : typeof ack.datoms === "number"
-                            ? ack.datoms
-                            : 0,
-                      clientTxId:
-                        typeof ack.clientTxId === "string" ? ack.clientTxId : id,
-                    }),
-                  );
-                })
-                .catch(async (err) => {
-                  await enqueueApply(() => {
-                    dropLayer(id);
-                    notify();
-                  });
-                  resume(
-                    Effect.fail(isDatabaseError(err) ? err : classifyTx(err)),
-                  );
-                });
+            const run = () => postLayer(id, tx as unknown[], resume);
             const next = outbox.then(run, run);
             outbox = next.catch(() => undefined);
             return Effect.void;
@@ -657,14 +803,14 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     );
 
   /** The one tx apply: paint, then notify. */
-  const applyTx = (frame: Record<string, unknown>): void => {
+  const applyTx = (frame: Record<string, unknown>): void | Promise<void> => {
     const incoming = asWireDatoms(frame.datoms).map(fromWireDatom);
     applyConfirmed(incoming);
     dropCoveredPending(
       incoming,
       typeof frame.clientTxId === "string" ? frame.clientTxId : undefined,
     );
-    notify();
+    return persistThenNotify();
   };
 
   const applyFrame = (frame: Record<string, unknown>): void | Promise<void> => {
@@ -673,14 +819,13 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     }
     if (frame.op === "resync") {
       pending.length = 0;
+      unsent.clear();
       const t = typeof frame.t === "number" ? frame.t : 0;
       return replaceConfirmed(asWireDatoms(frame.datoms).map(fromWireDatom), t).then(
-        () => {
-          notify();
-        },
+        () => persistThenNotify(),
       );
     }
-    if (frame.op === "tx") applyTx(frame);
+    if (frame.op === "tx") return applyTx(frame);
   };
 
   const handlePush = (frame: Record<string, unknown>): Promise<void> =>
@@ -705,5 +850,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     read,
     transact,
     handlePush,
+    snapshot: takeSnapshot,
+    flush,
   };
 };

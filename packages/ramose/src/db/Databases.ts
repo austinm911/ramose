@@ -36,7 +36,16 @@ import {
   retryTransient,
   send,
 } from "./http.ts";
-import { openOverlay, type Overlay } from "./overlay.ts";
+import { schemaTx } from "./ensure.ts";
+import {
+  defaultStore,
+  followerWorkerUrl,
+  openFollower,
+  type Follower,
+} from "./follower.ts";
+import type { Overlay } from "./overlay.ts";
+import type { ByteStore } from "./persist.ts";
+import { connectSharedFollower, type PortClient } from "./port-client.ts";
 import {
   globalWebSocket,
   openSession,
@@ -80,6 +89,17 @@ export interface ClientOptions {
   readonly fetch?: typeof fetch | undefined;
   /** Injection seam — defaults to the ambient `WebSocket`. */
   readonly webSocket?: typeof WebSocket | undefined;
+  /**
+   * Overlay persist. Tests inject a byte store (memory / temp dir). A
+   * browser SharedWorker uses OPFS; the in-page fallback uses the same
+   * seam when this is omitted.
+   */
+  readonly persist?: ByteStore | undefined;
+  /**
+   * `auto` (default): SharedWorker when it exists and this is not a test
+   * fake. `page`: one in-page follower (no worker).
+   */
+  readonly follower?: "auto" | "page" | undefined;
 }
 
 // ── the internal factory ───────────────────────────────────────────────────
@@ -102,6 +122,8 @@ export interface DatabasesConfig {
   readonly webSocket?: SocketFactory | undefined;
   /** Extra headers on every HTTPS request (`x-ramose-replica-hint`, …). */
   readonly headers?: Record<string, string> | undefined;
+  readonly persist?: ByteStore | undefined;
+  readonly follower?: "auto" | "page" | undefined;
 }
 
 /** The credential as the wire wants it: a string, or nothing. */
@@ -148,8 +170,46 @@ export const makeDatabases = (
 ): { readonly databases: DatabasesShape; readonly close: () => void } => {
   const sessions = new Map<string, Session>();
   const overlays = new Map<string, Overlay>();
+  const followers = new Map<string, Follower>();
+  const ports = new Map<string, PortClient>();
   const catalogs = new Map<string, AnyCatalog>();
   let closed = false;
+  const pageStore: ByteStore = {
+    get: async (key) => (await resolvedStore()).get(key),
+    put: async (key, value) => (await resolvedStore()).put(key, value),
+    delete: async (key) => {
+      const s = await resolvedStore();
+      await s.delete?.(key);
+    },
+  };
+  let storeOnce: Promise<ByteStore> | undefined;
+  const resolvedStore = (): Promise<ByteStore> => {
+    if (config.persist !== undefined) return Promise.resolve(config.persist);
+    storeOnce ??= defaultStore();
+    return storeOnce;
+  };
+
+  const useShared =
+    config.follower !== "page" &&
+    config.webSocket === undefined &&
+    typeof SharedWorker === "function";
+
+  let workerPort: MessagePort | undefined;
+  const sharedPort = (): MessagePort | undefined => {
+    if (!useShared) return undefined;
+    if (workerPort !== undefined) return workerPort;
+    try {
+      const sw = new SharedWorker(followerWorkerUrl().href, {
+        type: "module",
+        name: "ramose",
+      });
+      sw.port.start();
+      workerPort = sw.port;
+      return workerPort;
+    } catch {
+      return undefined;
+    }
+  };
 
   // rejects with the typed DbError itself (not a FiberFailure), so the
   // session's caller can tell a thrown Unauthorized from a transport failure
@@ -163,6 +223,11 @@ export const makeDatabases = (
         );
 
   const session = (name: string): Session | undefined => {
+    // The SharedWorker owns the one session socket. Tabs do not open a
+    // second follower.
+    if (useShared && sharedPort() !== undefined) {
+      return ports.get(name)?.session;
+    }
     if (config.webSocket === undefined) return undefined;
     let existing = sessions.get(name);
     if (existing === undefined) {
@@ -180,16 +245,104 @@ export const makeDatabases = (
     return existing;
   };
 
+  const ensureShared = async (name: string): Promise<PortClient> => {
+    const hit = ports.get(name);
+    if (hit !== undefined) return hit;
+    const sw = sharedPort();
+    if (sw === undefined) {
+      throw new Error("ramose: SharedWorker is not available");
+    }
+    const url = await Effect.runPromise(config.url);
+    const tok =
+      config.token === undefined
+        ? undefined
+        : await token()
+            .then((t) => (t === undefined ? undefined : Redacted.value(t)))
+            .catch(() => undefined);
+    const catalog = catalogs.get(name);
+    const client = await connectSharedFollower(sw, {
+      name,
+      url,
+      schema: catalog !== undefined ? schemaTx(catalog) : undefined,
+      token: tok,
+    });
+    ports.set(name, client);
+    overlays.set(name, client.overlay);
+    return client;
+  };
+
+  const sharedOverlay = (name: string): Overlay => {
+    const existing = overlays.get(name);
+    if (existing !== undefined) return existing;
+    const wait = () => ensureShared(name);
+    const overlay: Overlay = {
+      get confirmedT() {
+        return ports.get(name)?.overlay.confirmedT ?? 0;
+      },
+      get epoch() {
+        return ports.get(name)?.overlay.epoch ?? 0;
+      },
+      onChange: (cb) => {
+        let off = (): void => {};
+        void wait().then((c) => {
+          off = c.overlay.onChange(cb);
+        });
+        return () => off();
+      },
+      ready: () =>
+        Effect.tryPromise({
+          try: async () => {
+            const c = await wait();
+            await Effect.runPromise(c.overlay.ready());
+          },
+          catch: (cause) =>
+            isDatabaseError(cause) ? cause : networkError(cause),
+        }),
+      read: (op, body) =>
+        Effect.tryPromise({
+          try: async () => {
+            const c = await wait();
+            return Effect.runPromise(c.overlay.read(op, body));
+          },
+          catch: (cause) =>
+            isDatabaseError(cause) ? cause : networkError(cause),
+        }),
+      transact: (tx) =>
+        Effect.tryPromise({
+          try: async () => {
+            const c = await wait();
+            return Effect.runPromise(c.overlay.transact(tx));
+          },
+          catch: (cause) =>
+            isDatabaseError(cause) ? cause : networkError(cause),
+        }),
+      handlePush: async () => {},
+      snapshot: () => wait().then((c) => c.overlay.snapshot()),
+      flush: () => wait().then((c) => c.overlay.flush()),
+    };
+    overlays.set(name, overlay);
+    return overlay;
+  };
+
   const overlayOf = (name: string): Overlay | undefined => {
+    if (useShared && sharedPort() !== undefined) {
+      return sharedOverlay(name);
+    }
     if (session(name) === undefined) return undefined;
     let existing = overlays.get(name);
     if (existing === undefined) {
       const socket = session(name)!;
-      existing = openOverlay({
+      const f = openFollower({
+        name,
         session: socket,
         post: (tx, clientTxId) => postTx(name, tx, clientTxId),
         catalog: catalogs.get(name),
+        store:
+          config.persist ??
+          (config.fetch === globalFetch ? pageStore : undefined),
       });
+      followers.set(name, f);
+      existing = f.overlay;
       overlays.set(name, existing);
     }
     return existing;
@@ -379,6 +532,8 @@ export const makeDatabases = (
     close: () => {
       closed = true;
       for (const s of sessions.values()) s.close();
+      for (const f of followers.values()) f.close();
+      for (const p of ports.values()) p.close();
     },
   };
 };
@@ -419,6 +574,8 @@ const configure = (
       fetch:
         options.fetch === undefined ? globalFetch : fromStandardFetch(chosen),
       webSocket: socket,
+      persist: options.persist,
+      follower: options.follower,
     });
   });
 
