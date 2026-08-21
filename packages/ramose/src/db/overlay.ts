@@ -575,20 +575,42 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
 
   const sync = async (retry = true): Promise<void> => {
     await ensureConn();
-    const reply = await Effect.runPromise(
-      retry
-        ? retryTransient(requestSync, { while: () => !options.session.closed })
-        : requestSync(),
-    );
-    readyGen = options.session.generation;
-    // Frames from this walk are queued on `applied`. Stamp the follow cursor
-    // only after they run, and only to the worker's walked `t` — not a log
-    // tip the worker jumped to. A resync dump already stamped via replaceConfirmed.
-    await applied;
-    const t = record(reply.body).t;
-    if (typeof t === "number" && t > confirmedT) {
-      confirmedT = t;
-      options.session.bump(t);
+    try {
+      // A hydrated view is already the database. One walk attempt, then
+      // offline-ready — do not sit on the retry ladder before notify.
+      const hydrated = confirmedT > 0 || pending.length > 0;
+      const reply = await Effect.runPromise(
+        retry && !hydrated
+          ? retryTransient(requestSync, { while: () => !options.session.closed })
+          : requestSync(),
+      );
+      readyGen = options.session.generation;
+      // Frames from this walk are queued on `applied`. Stamp the follow cursor
+      // only after they run, and only to the worker's walked `t` — not a log
+      // tip the worker jumped to. A resync dump already stamped via replaceConfirmed.
+      await applied;
+      const t = record(reply.body).t;
+      if (typeof t === "number" && t > confirmedT) {
+        confirmedT = t;
+        options.session.bump(t);
+      }
+    } catch (cause) {
+      const fail = isDatabaseError(cause)
+        ? cause
+        : new NetworkError({
+            message: cause instanceof Error ? cause.message : String(cause),
+            cause,
+          });
+      // Hydrated follower is the offline database. A walk that cannot
+      // reach the peer is not a failed boot — pending stays the outbox.
+      if (
+        fail._tag === "NetworkError" &&
+        (confirmedT > 0 || pending.length > 0)
+      ) {
+        readyGen = options.session.generation;
+        return;
+      }
+      throw fail;
     }
   };
 

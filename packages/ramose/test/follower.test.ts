@@ -236,6 +236,40 @@ describe("reload restores confirmed and pending", () => {
     expect(after.pending[0]!.clientTxId).toBe(before.pending[0]!.clientTxId);
     expect(after.confirmed).not.toBe(before.confirmed);
   });
+
+  test("hydrated ready survives a dead sync — no network dump", async () => {
+    const store = memoryStore();
+    const world = await schemaConn();
+    await world.transact([{ ":user/name": "Ada" }]);
+    const dump = await snapshotDatoms(world);
+    const live = openOverlay({
+      session: fakeSession(),
+      post: () => Effect.fail(new NetworkError({ message: "offline" })),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(live.ready());
+    await live.handlePush({ op: "resync", t: world.t, datoms: dump });
+    await run(live.transact([{ ":user/name": "Bea" }]));
+
+    const dead = fakeSession({
+      onSync: () => {
+        throw new NetworkError({ message: "offline" });
+      },
+    });
+    const reloaded = openOverlay({
+      session: dead,
+      post: () => Effect.fail(new NetworkError({ message: "offline" })),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(reloaded.ready());
+    expect(reloaded.confirmedT).toBe(world.t);
+    expect(await namesOf(reloaded)).toEqual(["Ada", "Bea"]);
+    expect(dead.syncs).toEqual([world.t]);
+  });
 });
 
 describe("offline transact / outbox", () => {
