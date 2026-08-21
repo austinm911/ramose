@@ -254,6 +254,23 @@ export const openFollowerHost = (defaults?: {
   const sessions = new Map<string, Session>();
   let closed = false;
   let tokenOf: string | undefined;
+  let unlockToken: ((value: string | undefined) => void) | undefined;
+  let tokenReady: Promise<string | undefined> | undefined;
+
+  const noteToken = (value: string | undefined): void => {
+    if (typeof value === "string") tokenOf = value;
+    unlockToken?.(tokenOf);
+    unlockToken = undefined;
+    tokenReady = Promise.resolve(tokenOf);
+  };
+
+  const waitToken = (): Promise<string | undefined> => {
+    if (tokenOf !== undefined) return Promise.resolve(tokenOf);
+    tokenReady ??= new Promise((resolve) => {
+      unlockToken = resolve;
+    });
+    return tokenReady;
+  };
 
   const followerOf = (open: HostOpen): Follower => {
     const existing = followers.get(open.name);
@@ -263,9 +280,14 @@ export const openFollowerHost = (defaults?: {
       open.connect ?? defaults?.connect ?? globalWebSocket() ?? ((url: string) => {
         throw new Error(`ramose: no WebSocket to follow ${open.name}`);
       });
+    // Token is for the socket and writes. Hydrate / first paint must
+    // not wait on it — `waitToken` parks only `session.request`.
     const token = (): Promise<Redacted.Redacted<string> | undefined> => {
-      const value = open.token ?? tokenOf;
-      return Promise.resolve(
+      const immediate = open.token ?? tokenOf;
+      if (immediate !== undefined && immediate.length > 0) {
+        return Promise.resolve(Redacted.make(immediate));
+      }
+      return waitToken().then((value) =>
         value === undefined || value.length === 0
           ? undefined
           : Redacted.make(value),
@@ -274,7 +296,7 @@ export const openFollowerHost = (defaults?: {
     const session = openSession({
       url: () => Promise.resolve(open.url.replace(/\/+$/, "")),
       name: open.name,
-      token: open.token !== undefined || tokenOf !== undefined ? token : undefined,
+      token,
       connect,
     });
     sessions.set(open.name, session);
@@ -311,7 +333,7 @@ export const openFollowerHost = (defaults?: {
       const req = asPortRequest(ev.data);
       if (req === undefined) return;
       if (req.op === "open") {
-        if (typeof req.token === "string") tokenOf = req.token;
+        if (typeof req.token === "string") noteToken(req.token);
         const f = followerOf(req);
         const child = ev.ports?.[0] as PortLike | undefined;
         f.attach(child ?? port);
@@ -328,7 +350,7 @@ export const openFollowerHost = (defaults?: {
         return;
       }
       if (req.op === "auth") {
-        tokenOf = req.token;
+        noteToken(req.token);
         try {
           port.postMessage({
             id: req.id,
@@ -350,6 +372,7 @@ export const openFollowerHost = (defaults?: {
     close: () => {
       if (closed) return;
       closed = true;
+      noteToken(tokenOf);
       for (const f of followers.values()) f.close();
       for (const s of sessions.values()) s.close();
       followers.clear();
@@ -363,17 +386,14 @@ export const defaultStore = async (): Promise<ByteStore> =>
   (await opfsStore()) ?? memoryStore();
 
 /**
- * Worker script beside this module. `tsc` emits `.js` and does not rewrite
- * string literals, so the specifier must follow `import.meta.url`'s
- * extension — `./follower-worker.ts` from dist 404s and the constructor
- * still succeeds.
+ * Worker script beside this module. The specifier is a string literal
+ * Vite/webpack rewrite — a computed extension is invisible to the
+ * bundler, the constructor succeeds on a 404, and every tab falls
+ * through to its own in-page overlay. `tsc` emits `.js` next to
+ * `follower.js` / `Databases.js`; from source Vite resolves the `.js`
+ * specifier to `follower-worker.ts`.
  */
-export const followerWorkerUrlBeside = (moduleUrl: string): URL => {
-  const ext = /\.ts(?:$|\?|#)/.test(moduleUrl) ? ".ts" : ".js";
-  return new URL(`./follower-worker${ext}`, moduleUrl);
-};
-
 export const followerWorkerUrl = (): URL =>
-  followerWorkerUrlBeside(import.meta.url);
+  new URL("./follower-worker.js", import.meta.url);
 
 export type { OverlayAck };
