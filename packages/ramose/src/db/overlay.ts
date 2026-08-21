@@ -618,11 +618,21 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       }
       if (frame.op === "tx") {
         const incoming = asWireDatoms(frame.datoms).map(fromWireDatom);
+        const beforeFacts = factTs.size;
         applyConfirmed(incoming);
         dropCoveredPending(
           incoming,
           typeof frame.clientTxId === "string" ? frame.clientTxId : undefined,
         );
+        console.debug("[ramose.live] handlePush tx", {
+          t,
+          incoming: incoming.length,
+          painted: factTs.size - beforeFacts,
+          confirmedT,
+          pending: pending.length,
+          epoch,
+          clientTxId: frame.clientTxId,
+        });
         wake();
       }
     });

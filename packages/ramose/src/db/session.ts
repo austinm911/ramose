@@ -238,6 +238,16 @@ export const openSession = (options: SessionOptions): Session => {
       });
       return;
     }
+    if (frame.op === "t" || frame.op === "tx" || frame.op === "resync") {
+      console.debug("[ramose.live] recv", {
+        op: frame.op,
+        t: frame.t,
+        datoms: Array.isArray(frame.datoms) ? frame.datoms.length : undefined,
+        clientTxId: frame.clientTxId,
+        basisT,
+        epoch,
+      });
+    }
     if (frame.op === "t") bump(frame.t);
     if (frame.op === "tx" || frame.op === "resync") pushFrame(frame);
   };

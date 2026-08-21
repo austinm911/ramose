@@ -656,7 +656,17 @@ const awaitWake = (
       session.generation !== generation ||
       session.epoch !== epoch;
     const off = session.onWake(() => {
-      if (news()) settle();
+      if (news()) {
+        console.debug("[ramose.live] awaitWake", {
+          seen,
+          t: session.t,
+          epochWas: epoch,
+          epoch: session.epoch,
+          generationWas: generation,
+          generation: session.generation,
+        });
+        settle();
+      }
     });
     if (news()) settle();
     return Effect.sync(() => {
