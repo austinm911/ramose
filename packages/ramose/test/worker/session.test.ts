@@ -225,8 +225,9 @@ describe("t frames", () => {
     expect(s.lastT).toBe(0);
     expect(s.watermark).toBe(0);
     await s.applyEntry({ t: 9, datoms: [wire(9)] }, 1);
-    expect(socket.txs()).toEqual([{ op: "tx", t: 9, datoms: [wire(9)] }]);
-    expect(socket.ticks()).toEqual([]); // visible tx already carried t
+    // from 0 < rootT 1 is a dump, not a leftover `{ op: t }`
+    expect(socket.resyncs()).toEqual([{ op: "resync", t: 9 }]);
+    expect(socket.ticks()).toEqual([]);
     expect(s.lastT).toBe(9);
     expect(s.watermark).toBe(9);
   });
