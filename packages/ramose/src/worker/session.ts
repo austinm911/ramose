@@ -278,21 +278,6 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
   const send = (frame: ReplyFrame | TickFrame | TxPushFrame | ResyncFrame | AuthAck) => {
     if (dead) return;
     try {
-      const op = "op" in frame ? frame.op : "reply";
-      if (op === "t" || op === "tx" || op === "resync") {
-        const t = "t" in frame ? frame.t : undefined;
-        const n =
-          op === "tx" && "datoms" in frame && Array.isArray(frame.datoms)
-            ? frame.datoms.length
-            : undefined;
-        console.debug("[ramose.live] send", {
-          op,
-          t,
-          datoms: n,
-          watermark,
-          lastT,
-        });
-      }
       socket.send(JSON.stringify(frame));
     } catch {
       // the socket went away between the check and the send, or the runtime
@@ -360,14 +345,6 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     const torn = async (): Promise<void> => {
       // replica apply is dense, so a hole here is a test / catch-up tear.
       // A snapshot dump is honest. Without one, hold the cursor.
-      console.debug("[ramose.live] consider torn", {
-        from,
-        cursor,
-        logT: log.t,
-        rootT: log.rootT,
-        pending: pending.map((e) => e.t),
-        hasSnapshot: !!options.snapshot,
-      });
       if (options.snapshot) await pushResync(log.t);
     };
     for (const e of pending) {
@@ -376,13 +353,6 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
         return;
       }
       const decision = await filter(e, principal);
-      console.debug("[ramose.live] consider", {
-        from,
-        cursor,
-        entryT: e.t,
-        kind: decision.kind,
-        datoms: decision.datoms?.length,
-      });
       if (decision.kind === "skip") {
         cursor = e.t;
         watermark = e.t;
@@ -433,18 +403,11 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     return run;
   };
 
-  const applyEntry = (entry: SessionLogEntry, rootT: number): Promise<void> => {
-    console.debug("[ramose.live] applyEntry enqueue", {
-      entryT: entry.t,
-      watermark,
-      lastT,
-      rootT,
-    });
-    return enqueueConsider({ t: entry.t, rootT, entries: [entry] }).catch((err) => {
+  const applyEntry = (entry: SessionLogEntry, rootT: number): Promise<void> =>
+    enqueueConsider({ t: entry.t, rootT, entries: [entry] }).catch((err) => {
       failSieve();
       throw err;
     });
-  };
 
   /** `{op:"auth", token}`: re-verify, then swap. A refusal keeps the old principal. */
   const refresh = async (f: Record<string, unknown>): Promise<void> => {

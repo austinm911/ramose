@@ -143,11 +143,6 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
    */
   private async applyDatoms(e: LogEntry): Promise<void> {
     this.appendEntry(e);
-    console.debug("[ramose.live] applyDatoms", {
-      db: this.dbName,
-      t: e.t,
-      sockets: (this.ctx.getWebSockets() as WebSocket[]).length,
-    });
     await this.notifySessions(e);
   }
 
