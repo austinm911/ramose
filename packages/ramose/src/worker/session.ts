@@ -135,7 +135,7 @@ export interface Session {
    * at enqueue — each job starts from the cursor as it is when it runs.
    */
   applyEntry(entry: SessionLogEntry, rootT: number): Promise<void>;
-  /** Send `{ op: "t", t }` if this is news to this socket. */
+  /** Send `{ op: "t", t }` if this is news. Visible tx / resync do not call this. */
   notifyT(t: number): void;
   close(): void;
   /** Highest `t` this socket has been told about (does not advance on a skipped empty). */
@@ -292,6 +292,11 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     }
   };
 
+  /** This socket has been told about `t` (a visible tx / resync). No `{ op: t }`. */
+  const seenT = (t: number): void => {
+    if (typeof t === "number" && Number.isFinite(t) && t > lastT) lastT = t;
+  };
+
   const notifyT = (t: number) => {
     if (dead || typeof t !== "number" || !Number.isFinite(t) || t <= lastT) return;
     lastT = t;
@@ -302,13 +307,13 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     if (options.snapshot) {
       const snap = await options.snapshot(principal);
       send({ op: "resync", t: snap.t, datoms: snap.datoms });
-      notifyT(snap.t);
+      seenT(snap.t);
       // dump in hand — the cursor may sit at the snapshot's t, not a guessed tip
       watermark = snap.t;
       return;
     }
     send({ op: "resync", t });
-    notifyT(t);
+    seenT(t);
     watermark = t;
   };
 
@@ -335,7 +340,7 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
         }
         watermark = e.t;
         send({ op: "tx", t: e.t, datoms: e.datoms });
-        notifyT(e.t);
+        seenT(e.t);
         from = e.t;
       }
       return;
@@ -376,7 +381,7 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
         datoms: decision.datoms,
         ...(echo !== undefined ? { clientTxId: echo } : {}),
       });
-      notifyT(e.t);
+      seenT(e.t);
     }
     if (cursor < log.t) await torn();
   };

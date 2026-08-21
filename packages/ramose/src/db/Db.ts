@@ -188,8 +188,10 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
   ): Effect.Effect<QueryRows<C, R>, QueryError<R, P>>;
 
   /**
-   * Stand a query up: re-run on every basis tick this session sees,
-   * and after a local `transact`. Requirements are `never` — teardown is fiber
+   * Stand a query up. On an overlay session, re-run after each paint
+   * (`{ op: "tx" }` / `{ op: "resync" }` / local `transact`) — not on a
+   * `{ op: "t" }` basis tick. HTTPS live (no overlay) still re-runs when
+   * the session's `t` moves. Requirements are `never` — teardown is fiber
    * interruption — and a pinned view (`asOf` / `history`) emits once and
    * completes. A pass that returns the rows already emitted is not emitted
    * again: a write this query does not see is not a re-render.
@@ -214,11 +216,12 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
   ): Effect.Effect<Pull<C, P> | null, DbError>;
 
   /**
-   * Stand a pull up: `live`'s exact contract over one entity. Re-runs on
-   * every basis tick this session sees and after a local `transact`,
-   * deduped by digest. `null` (entity gone, or a required field missing)
-   * is a legitimate emission — a retracted entity emits `null` and keeps
-   * standing. A pinned view (`asOf` / `history`) emits once and completes.
+   * Stand a pull up: `live`'s exact contract over one entity. Overlay
+   * re-runs on paint, not on a `{ op: "t" }` tick; HTTPS live still
+   * fences on `t`. Deduped by digest. `null` (entity gone, or a required
+   * field missing) is a legitimate emission — a retracted entity emits
+   * `null` and keeps standing. A pinned view (`asOf` / `history`) emits
+   * once and completes.
    */
   livePull<const P>(
     subject: Eid<C> | CatalogEid<C> | LookupRef<C>,
@@ -508,8 +511,9 @@ const makeRead = <C extends AnyCatalog>(
 
   /**
    * The standing loop `live` and `livePull` share: run a pass, emit when the
-   * digest moved, sleep until the session's basis does. What varies is only
-   * the pass itself — a query for `live`, a pull for `livePull`.
+   * digest moved, sleep until paint (overlay) or the session's basis
+   * (HTTPS). What varies is only the pass itself — a query for `live`, a
+   * pull for `livePull`.
    */
   const standing = <A, E extends { readonly _tag: string } = DbError>(
     runPass: (minT: number | undefined) => Effect.Effect<Pass<A>, E>,
@@ -519,6 +523,9 @@ const makeRead = <C extends AnyCatalog>(
         if (bad !== undefined) return yield* Queue.fail(queue, bad as unknown as E);
         const session = wire.session(name);
         const pinned = view.asOf !== undefined || view.history === true;
+        // pinned reads stay on the peer — do not construct an overlay just
+        // to decide the waiter. Overlay live waits on paint only.
+        const overlaid = !pinned && wire.overlay?.(name) !== undefined;
 
         if (!pinned && session === undefined) {
           return yield* Queue.failCause(
@@ -537,8 +544,11 @@ const makeRead = <C extends AnyCatalog>(
           const generation = session?.generation ?? 0;
           const epoch = session?.epoch ?? 0;
           // one pass; the wire ladder retries its transient attempts, and
-          // withBackoff only re-runs the pass once that ladder is spent
-          const pass = yield* withBackoff(runPass(seen || undefined));
+          // withBackoff only re-runs the pass once that ladder is spent.
+          // Overlay does not fence on session.t — `{ op: t }` is not a wake.
+          const pass = yield* withBackoff(
+            runPass(overlaid ? undefined : seen || undefined),
+          );
           // a tick the pass's result did not notice is not news
           const digest = JSON.stringify(pass.raw) ?? "";
           if (digest !== last) {
@@ -546,12 +556,9 @@ const makeRead = <C extends AnyCatalog>(
             yield* Queue.offer(queue, pass.value);
           }
           if (pinned || session === undefined) break;
-          yield* awaitWake(
-            session,
-            Math.max(seen, pass.t),
-            generation,
-            epoch,
-          );
+          yield* awaitWake(session, generation, epoch, {
+            minT: overlaid ? undefined : Math.max(seen, pass.t),
+          });
         }
         return yield* Queue.end(queue);
       }).pipe(
@@ -636,12 +643,17 @@ const makeRead = <C extends AnyCatalog>(
   return read;
 };
 
-/** Resolve when the session's basis moves past `seen`, the overlay applies, or the socket drops. */
+/**
+ * Resolve when the overlay paints (`epoch`), the socket drops
+ * (`generation`), or — HTTPS live only — the session's basis moves past
+ * `minT`. Overlay live must not treat `session.t` / `{ op: t }` as a wake:
+ * that tick can land before `handlePush` paints the matching `{ op: tx }`.
+ */
 const awaitWake = (
   session: Session,
-  seen: number,
   generation: number,
   epoch: number,
+  fence: { readonly minT?: number },
 ): Effect.Effect<void> =>
   Effect.callback<void>((resume) => {
     let done = false;
@@ -652,7 +664,7 @@ const awaitWake = (
       resume(Effect.void);
     };
     const news = () =>
-      session.t > seen ||
+      (fence.minT !== undefined && session.t > fence.minT) ||
       session.generation !== generation ||
       session.epoch !== epoch;
     const off = session.onWake(() => {

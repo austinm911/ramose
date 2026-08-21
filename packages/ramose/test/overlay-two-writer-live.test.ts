@@ -11,8 +11,10 @@
  * HTTPS `transact` is real `Connection.transact`. `{ op: tx }` comes from
  * QueryReplicaDO `applyDatoms` → `notifySessions` (no `clientTxId` — HTTPS
  * never sets writerEcho). A later writer's ack is `t+1` and must not drop
- * the other device's `t`. The test is a lie if it would pass while one
- * client's live row set is missing the other issue's new status.
+ * the other device's `t`. The pin delivers **only** `{ op: tx }` frames
+ * (no `{ op: t }`, no stubbed `nudge`). The test is a lie if it would pass
+ * while one client's **live** row set is missing the other issue's new
+ * status — `q()` after the fact is not the assertion.
  */
 
 import { describe, expect, mock, test } from "bun:test";
@@ -194,9 +196,10 @@ const move = (db: Db<typeof Board>, id: number, status: string, rank: number) =>
 /**
  * Shared transactor + QueryReplicaDO + two session overlays. HTTPS commits
  * are real. Replica apply-then-push is real. Overlay sockets receive the
- * frames the replica actually sent — including `{ op: t }` after each tx.
+ * frames the replica actually sent — `{ op: tx }` only. `{ op: t }` is
+ * leftover and is never required for live to catch up.
  */
-const twoBoards = async (opts: { walk: "on-commit" | "after-acks" | "ticks-then-txs" }) => {
+const twoBoards = async (opts: { walk: "on-commit" | "after-acks" }) => {
   const server = await catalogWorld(Board);
   const seeded = await server.transact([
     { ":db/id": "one", ":issue/title": "One", ":issue/status": "todo", ":issue/rank": 1 },
@@ -251,7 +254,7 @@ const twoBoards = async (opts: { walk: "on-commit" | "after-acks" | "ticks-then-
     const entry: LogEntry = { t: rep.t, txInstant: rep.t, datoms: [...rep.txData] };
     commits.push(entry);
     if (opts.walk === "on-commit") await applyCommit(entry);
-    else if (opts.walk !== "ticks-then-txs") {
+    else {
       // after-acks: apply on the replica now (sessions walk), overlay later
       await replica.applyDatoms(entry);
     }
@@ -300,8 +303,9 @@ const twoBoards = async (opts: { walk: "on-commit" | "after-acks" | "ticks-then-
     replicaPhone,
     replicaBrowser,
     flushWalk,
-    applyHeld: async () => {
-      for (const e of commits) await replica.applyDatoms(e);
+    tick: (t: number) => {
+      phonePeer.socket.push({ op: "t", t });
+      browserPeer.socket.push({ op: "t", t });
     },
     resyncs,
     phone,
@@ -312,7 +316,7 @@ const twoBoards = async (opts: { walk: "on-commit" | "after-acks" | "ticks-then-
 };
 
 describe("two clients move two existing issues", () => {
-  test("after simultaneous non-conflicting updates, both live boards show both moves (acks then replica walk)", async () => {
+  test("after simultaneous non-conflicting updates, both live boards show both moves from { op: tx } frames alone", async () => {
     const world = await twoBoards({ walk: "after-acks" });
     const phoneLive = collect(world.phone.live(boardQuery));
     const browserLive = collect(world.browser.live(boardQuery));
@@ -338,9 +342,12 @@ describe("two clients move two existing issues", () => {
       first,
       later,
     ]);
+    expect(world.replicaPhone.socket.frames.filter((f) => f.op === "t")).toEqual([]);
+    expect(world.replicaBrowser.socket.frames.filter((f) => f.op === "t")).toEqual([]);
 
     const resyncsBeforeWalk = { ...world.resyncs };
-    world.flushWalk("all");
+    // txs alone are enough; ticks are not required for live to catch up
+    world.flushWalk("txs");
     await waitBoards(phoneLive, browserLive);
 
     expect(world.resyncs).toEqual(resyncsBeforeWalk);
@@ -382,41 +389,40 @@ describe("two clients move two existing issues", () => {
     await world.browserC.dispose();
   });
 
-  test("later writer still sees the other device's t when { op: t } arrives before { op: tx }", async () => {
-    const world = await twoBoards({ walk: "ticks-then-txs" });
+  test("a lone { op: t } is not a live wake; both boards catch up from { op: tx } paints", async () => {
+    const world = await twoBoards({ walk: "after-acks" });
     const phoneLive = collect(world.phone.live(boardQuery));
     const browserLive = collect(world.browser.live(boardQuery));
     await settle();
 
-    await Promise.all([
+    const [phoneAck, browserAck] = await Promise.all([
       run(move(world.phone, world.one, "doing", 10)),
       run(move(world.browser, world.two, "done", 20)),
     ]);
-    await world.applyHeld();
-    // `{ op: t }` is not a prefix of painted facts. Live may wake on the
-    // tick while the replica's `{ op: tx }` is still in flight.
-    world.flushWalk("ticks");
+    const later = Math.max(phoneAck.t, browserAck.t);
+    const laterIsPhone = phoneAck.t > browserAck.t;
+    const resyncsBefore = { ...world.resyncs };
+
+    // Worker no longer sends `{ op: t }` after a visible tx. If a test still
+    // pushes one, overlay live must not start a pass — a stale emit here
+    // would park. No stubbed nudge: handlePush still wake()s after paint.
+    world.tick(later);
     await settle();
-    const phoneAfterTicks = statusesOf(phoneLive.seen.at(-1));
-    const browserAfterTicks = statusesOf(browserLive.seen.at(-1));
-    expect(phoneAfterTicks.One === "doing" || browserAfterTicks.Two === "done").toBe(true);
-    expect(
-      phoneAfterTicks.Two === "done" && browserAfterTicks.One === "doing",
-    ).toBe(false);
+    const laterAfterTick = statusesOf(
+      (laterIsPhone ? phoneLive : browserLive).seen.at(-1),
+    );
+    expect(laterAfterTick.One === "doing" && laterAfterTick.Two === "done").toBe(
+      false,
+    );
+    expect(bothMoves(phoneLive.seen.at(-1))).toBe(false);
+    expect(bothMoves(browserLive.seen.at(-1))).toBe(false);
 
     world.flushWalk("txs");
     await waitBoards(phoneLive, browserLive);
 
+    expect(world.resyncs).toEqual(resyncsBefore);
     expect(statusesOf(phoneLive.seen.at(-1))).toEqual({ One: "doing", Two: "done" });
     expect(statusesOf(browserLive.seen.at(-1))).toEqual({ One: "doing", Two: "done" });
-    expect(statusesOf(await run(world.phone.q(boardQuery)))).toEqual({
-      One: "doing",
-      Two: "done",
-    });
-    expect(statusesOf(await run(world.browser.q(boardQuery)))).toEqual({
-      One: "doing",
-      Two: "done",
-    });
     expect(world.resyncs).toEqual({ phone: 0, browser: 0 });
 
     await phoneLive.stop();

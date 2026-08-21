@@ -2,9 +2,9 @@
  * `db.live` — a standing `db.q` as a `Stream`.
  *
  * Session clients run the engine against the overlay. The stream wakes on
- * a pending apply, ack, `{ op: "tx" }`, or `{ op: "resync" }` — not a
- * `/query` refetch because `t` moved. Pinned `asOf` / `history` still emit
- * once from the peer.
+ * paint: a pending apply, ack, `{ op: "tx" }`, or `{ op: "resync" }`.
+ * `{ op: "t" }` is not a wake. Not a `/query` refetch because `t` moved.
+ * Pinned `asOf` / `history` still emit once from the peer.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -140,8 +140,8 @@ describe("q and live are two terminals over one query", () => {
   });
 });
 
-describe("the basis is the wake", () => {
-  test("a tx frame re-runs the query locally", async () => {
+describe("paint is the wake", () => {
+  test("a tx frame re-runs the query locally — no { op: t } required", async () => {
     const world = await users("Ada");
     const state = { t: world.t, datoms: world.datoms };
     const peer = peerAt(state);
@@ -163,7 +163,7 @@ describe("the basis is the wake", () => {
     await c.dispose();
   });
 
-  test("a tick the rows did not notice is not an emission", async () => {
+  test("a lone { op: t } is not a wake; live emits after the { op: tx } paint", async () => {
     const world = await users("Ada");
     const peer = peerAt({ t: world.t, datoms: world.datoms });
     const c = client(peer);
@@ -171,13 +171,15 @@ describe("the basis is the wake", () => {
     await settle();
     expect(live.seen).toHaveLength(1);
 
-    // a t-only tick does not change the overlay — digest-dedup
-    peer.push({ op: "t", t: world.t + 4 });
+    const bob = txSnap(await world.conn.transact([{ ":user/name": "Bob" }]));
+    // `{ op: t }` still bumps the basis if a test pushes one. Overlay live
+    // must not start a pass — a stale emit here would park until another t.
+    peer.push({ op: "t", t: bob.t });
     await settle();
     expect(peer.frameOps("q")).toEqual([]);
     expect(live.seen).toHaveLength(1);
+    expect(live.seen[0]).toEqual([{ name: "Ada" }]);
 
-    const bob = txSnap(await world.conn.transact([{ ":user/name": "Bob" }]));
     peer.push({ op: "tx", t: bob.t, datoms: bob.datoms });
     await settle();
     expect(live.seen).toHaveLength(2);

@@ -4,8 +4,10 @@
  * The client speaks exactly one socket route (`GET /db/:name/session`). The
  * Worker verifies the caller and upgrades onto the replica that session
  * already queries — no Durable Object is reachable or nameable from here.
- * Reads (`q`, `pull`) and the unsolicited `{ op: "t" }` basis ticks ride it;
- * writes never do (`transact` is HTTPS, so `processTx` is untouched).
+ * Reads (`q`, `pull`) and unsolicited `{ op: "tx" }` / `{ op: "resync" }`
+ * frames ride it (those frames already carry `t`). `{ op: "t" }` is leftover
+ * and only bumps the basis if a test still pushes one. Writes never ride
+ * the socket (`transact` is HTTPS, so `processTx` is untouched).
  *
  * Unlike the socket this replaces, a drop is **not** terminal. The socket is
  * opened lazily by the first read, and after a close / error the next request
@@ -88,7 +90,8 @@ export interface SessionOptions {
   readonly connect: SocketFactory;
   /**
    * Unsolicited `{ op: "tx" }` / `{ op: "resync" }` frames. The overlay
-   * applies them; `{ op: "t" }` still only bumps the basis.
+   * applies them. Those frames already carry `t` and bump the basis the
+   * same way a read reply does. `{ op: "t" }` still only bumps the basis.
    */
   readonly onPush?:
     | ((frame: Record<string, unknown>) => void | Promise<void>)
@@ -238,7 +241,12 @@ export const openSession = (options: SessionOptions): Session => {
       });
       return;
     }
-    if (frame.op === "t") bump(frame.t);
+    // `{ op: tx }` / `{ op: resync }` already carry `t` — bump from that
+    // frame, not a leftover `{ op: t }`. Overlay live waits on paint
+    // (`nudge` after apply), not on this bump.
+    if (frame.op === "t" || frame.op === "tx" || frame.op === "resync") {
+      bump(frame.t);
+    }
     if (frame.op === "tx" || frame.op === "resync") pushFrame(frame);
   };
 

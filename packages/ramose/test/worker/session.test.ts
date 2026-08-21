@@ -225,7 +225,8 @@ describe("t frames", () => {
     expect(s.lastT).toBe(0);
     expect(s.watermark).toBe(0);
     await s.applyEntry({ t: 9, datoms: [wire(9)] }, 1);
-    expect(socket.ticks()).toEqual([{ op: "t", t: 9 }]);
+    expect(socket.txs()).toEqual([{ op: "tx", t: 9, datoms: [wire(9)] }]);
+    expect(socket.ticks()).toEqual([]); // visible tx already carried t
     expect(s.lastT).toBe(9);
     expect(s.watermark).toBe(9);
   });
@@ -560,7 +561,7 @@ describe("filtered log walk", () => {
     });
     await s.applyEntry({ t: 6, datoms: [wire(6)] }, 1);
     expect(socket.resyncs()).toEqual([{ op: "resync", t: 6 }]);
-    expect(socket.ticks()).toEqual([{ op: "t", t: 6 }]); // existing clients still wake
+    expect(socket.ticks()).toEqual([]); // resync already carried t
     expect(socket.txs()).toEqual([]);
   });
 
@@ -578,7 +579,7 @@ describe("filtered log walk", () => {
     expect(socket.txs()).toEqual([]);
   });
 
-  test("a visible tx is { op: tx, t, datoms } and still ticks t for existing clients", async () => {
+  test("a visible tx is { op: tx, t, datoms } and does not also send { op: t }", async () => {
     const socket = new FakeSocket();
     const { dispatch } = fakeDispatch();
     const kept = [wire(6)];
@@ -589,7 +590,8 @@ describe("filtered log walk", () => {
     });
     await s.applyEntry({ t: 6, datoms: [wire(6), wire(6)] }, 1);
     expect(socket.txs()).toEqual([{ op: "tx", t: 6, datoms: kept }]);
-    expect(socket.ticks()).toEqual([{ op: "t", t: 6 }]);
+    expect(socket.ticks()).toEqual([]);
+    expect(s.lastT).toBe(6);
   });
 
   test("catch-up from skips empties; from < root.t is resync", async () => {
@@ -612,7 +614,7 @@ describe("filtered log walk", () => {
     });
     await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 4 }));
     expect(socket.txs().map((f) => f.t)).toEqual([6, 8]);
-    expect(socket.ticks().map((f) => f.t)).toEqual([6, 8]);
+    expect(socket.ticks()).toEqual([]);
     expect(socket.resyncs()).toEqual([]);
     expect(s.watermark).toBe(8);
     expect(socket.replies()).toEqual([{ id: 1, status: 200, body: { t: 8, from: 4 } }]);
@@ -1066,7 +1068,7 @@ describe("sieve security: openSession + decideSessionTx", () => {
     const adaS = session(adaSock, { dispatch, principal: ada, readLog: async () => adaLog, filterEntry: sieveOf(conn, policy) });
     await adaS.onMessage(JSON.stringify({ id: 1, op: "sync", from: seedT }));
     expect(adaSock.txs().map((f) => f.t)).toEqual([title.t, grant.t, created.t]);
-    expect(adaSock.ticks().map((f) => f.t)).toEqual([title.t, grant.t, created.t]);
+    expect(adaSock.ticks()).toEqual([]);
     expect(adaSock.resyncs()).toEqual([]);
     expect(JSON.stringify(adaSock.frames)).not.toContain("Cal only");
 

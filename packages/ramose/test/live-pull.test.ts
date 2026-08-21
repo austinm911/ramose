@@ -1,9 +1,10 @@
 /**
  * `db.livePull` — a standing `db.pull` as a `Stream`.
  *
- * Session clients pull against the overlay. Wake is overlay apply / ack /
- * `{ op: "tx" }` / `{ op: "resync" }`. `null` (entity retracted) is a
- * legitimate emission. Pinned views still emit once from the peer.
+ * Session clients pull against the overlay. Wake is overlay paint: apply /
+ * ack / `{ op: "tx" }` / `{ op: "resync" }`. `{ op: "t" }` is not a wake.
+ * `null` (entity retracted) is a legitimate emission. Pinned views still
+ * emit once from the peer.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -149,7 +150,7 @@ describe("the basis is the wake", () => {
     await c.dispose();
   });
 
-  test("a tick the projection did not notice is not an emission", async () => {
+  test("a lone { op: t } is not a wake; livePull emits after the { op: tx } paint", async () => {
     const world = await adaWorld();
     const peer = peerAt({ t: world.t, datoms: world.datoms });
     const c = client(peer);
@@ -158,14 +159,14 @@ describe("the basis is the wake", () => {
     await settle();
     expect(live.seen).toHaveLength(1);
 
-    peer.push({ op: "t", t: world.t + 4 });
+    const older = txSnap(
+      await world.conn.transact([{ ":db/id": world.eid, ":user/age": 40 }]),
+    );
+    peer.push({ op: "t", t: older.t });
     await settle();
     expect(peer.frameOps("pull")).toEqual([]);
     expect(live.seen).toHaveLength(1);
 
-    const older = txSnap(
-      await world.conn.transact([{ ":db/id": world.eid, ":user/age": 40 }]),
-    );
     peer.push({ op: "tx", t: older.t, datoms: older.datoms });
     await settle();
     expect(live.seen).toHaveLength(2);
