@@ -36,6 +36,7 @@ import {
 } from "../src/domain/queries.ts";
 import { Issue, Reef, User } from "../src/domain/schema.ts";
 import { createIssue, moveIssue, setTitle } from "../src/app/mutations.ts";
+import { bindSelf, openWorkspace } from "../src/app/ramose.ts";
 
 const settle = () => Bun.sleep(30);
 
@@ -54,11 +55,13 @@ const snapshotOf = async (conn: Connection) => {
   return { t: conn.t, datoms };
 };
 
-const inProcessPeer = async () => {
+const inProcessPeer = async (opts?: { seed?: boolean }) => {
   const conn = await Connection.create();
   const pushes: ((frame: unknown) => void)[] = [];
   const frames: { op: string; [k: string]: unknown }[] = [];
+  const resyncDumps: { t: number; datoms: number }[] = [];
   const httpPaths: string[] = [];
+  let sockets = 0;
   let hold: Promise<void> | undefined;
   let releaseHold: (() => void) | undefined;
   let rejectNext:
@@ -125,6 +128,7 @@ const inProcessPeer = async () => {
   }) as unknown as typeof fetch;
 
   function WebSocketImpl(this: unknown, _url: string) {
+    sockets += 1;
     const listeners = new Map<string, ((ev: any) => void)[]>();
     const emit = (type: string, ev: unknown) => {
       for (const cb of listeners.get(type) ?? []) cb(ev);
@@ -140,11 +144,16 @@ const inProcessPeer = async () => {
         frames.push(frame);
         void answer(frame.op, frame).then((reply) => {
           if (frame.op === "sync" && Array.isArray((reply.body as { datoms?: unknown }).datoms)) {
+            const datoms = (reply.body as { datoms: unknown[] }).datoms;
+            resyncDumps.push({
+              t: (reply.body as { t: number }).t,
+              datoms: datoms.length,
+            });
             emit("message", {
               data: JSON.stringify({
                 op: "resync",
                 t: (reply.body as { t: number }).t,
-                datoms: (reply.body as { datoms: unknown }).datoms,
+                datoms,
               }),
             });
           }
@@ -176,27 +185,45 @@ const inProcessPeer = async () => {
     return opened;
   };
 
-  const first = openClient();
-  const db = first.db;
-  await Effect.runPromise(db.install());
-  const seeded = await Effect.runPromise(
-    db.transact(function* (tx) {
-      const user = yield* tx.entity();
-      yield* user.add(User.sub, "ada");
-      yield* user.add(User.name, "Ada");
-      yield* user.add(User.email, "ada@reef.test");
-    }),
-  );
-  const people = await Effect.runPromise(seeded.dbAfter.q(peopleQuery));
-  const myEid = people[0]!.id;
+  let db: ReefDb | undefined;
+  let myEid: number | undefined;
+  if (opts?.seed !== false) {
+    const first = openClient();
+    db = first.db;
+    await Effect.runPromise(db.install());
+    const seeded = await Effect.runPromise(
+      db.transact(function* (tx) {
+        const user = yield* tx.entity();
+        yield* user.add(User.sub, "ada");
+        yield* user.add(User.name, "Ada");
+        yield* user.add(User.email, "ada@reef.test");
+      }),
+    );
+    const people = await Effect.runPromise(seeded.dbAfter.q(peopleQuery));
+    myEid = people[0]!.id;
+  }
 
   return {
     conn,
-    db,
-    myEid,
+    db: db as ReefDb,
+    myEid: myEid as number,
     openClient,
     frames,
     httpPaths,
+    fetch: fetchImpl,
+    webSocket: WebSocketImpl as unknown as typeof WebSocket,
+    sockets: () => sockets,
+    resyncDumps: () => resyncDumps,
+    closeClients: async () => {
+      for (const c of clients) await c.close();
+      clients.length = 0;
+    },
+    resetTraffic: () => {
+      frames.length = 0;
+      httpPaths.length = 0;
+      resyncDumps.length = 0;
+      sockets = 0;
+    },
     queryOps: () => frames.filter((f) => f.op === "q"),
     holdTransact: () => {
       hold = new Promise<void>((resolve) => {
@@ -559,5 +586,164 @@ describe("the board's writes move the board's live stream", () => {
     expect(labels).toEqual([]);
     expect(peer.queryOps()).toEqual([]);
     await peer.dispose();
+  });
+});
+
+const jwtOf = (claims: Record<string, unknown>): string => {
+  const b64url = (value: unknown) =>
+    Buffer.from(JSON.stringify(value)).toString("base64url");
+  return `${b64url({ alg: "none", typ: "JWT" })}.${b64url(claims)}.sig`;
+};
+
+const countingConnect = () => {
+  let connects = 0;
+  const connect: typeof Ramose.connect = (opts) => {
+    connects += 1;
+    return Ramose.connect(opts);
+  };
+  return {
+    connect,
+    get connects() {
+      return connects;
+    },
+  };
+};
+
+describe("refresh open is one session, not two", () => {
+  test("provision:false does not connect; the board client pays one resync dump", async () => {
+    const peer = await inProcessPeer();
+    await peer.closeClients();
+    peer.resetTraffic();
+
+    const user = { id: "ada", name: "Ada", email: "ada@reef.test" };
+    const token = Ramose.token.jwt(async () =>
+      jwtOf({ ramose: { db: "coral-team", class: "admin" } }),
+    );
+    const counted = countingConnect();
+    const opts = {
+      token,
+      url: "https://peer.local",
+      fetch: peer.fetch,
+      webSocket: peer.webSocket,
+      connect: counted.connect,
+    };
+
+    const ws = await openWorkspace("coral-team", user, false, opts);
+    expect(ws.cls).toBe("admin");
+    expect(counted.connects).toBe(0);
+    expect(peer.sockets()).toBe(0);
+    expect(peer.resyncDumps()).toEqual([]);
+
+    const live = counted.connect({
+      url: opts.url,
+      token: ws.token,
+      fetch: opts.fetch,
+      webSocket: opts.webSocket,
+    });
+    try {
+      const myEid = await Effect.runPromise(
+        bindSelf(live.db("coral-team", Reef), user, ws.cls),
+      );
+      expect(myEid).toBe(peer.myEid);
+      expect(counted.connects).toBe(1);
+      expect(peer.sockets()).toBe(1);
+      expect(peer.resyncDumps()).toHaveLength(1);
+      expect(peer.resyncDumps()[0]!.datoms).toBeGreaterThan(0);
+    } finally {
+      await live.close();
+      await peer.dispose();
+    }
+  });
+
+  test("a viewer open still uses one overlay and has no myEid", async () => {
+    const peer = await inProcessPeer();
+    await peer.closeClients();
+    peer.resetTraffic();
+
+    const user = { id: "ada", name: "Ada", email: "ada@reef.test" };
+    const token = Ramose.token.jwt(async () =>
+      jwtOf({ ramose: { db: "coral-team", class: "viewer" } }),
+    );
+    const counted = countingConnect();
+    const opts = {
+      token,
+      url: "https://peer.local",
+      fetch: peer.fetch,
+      webSocket: peer.webSocket,
+      connect: counted.connect,
+    };
+
+    const ws = await openWorkspace("coral-team", user, false, opts);
+    expect(ws.cls).toBe("viewer");
+    expect(counted.connects).toBe(0);
+
+    const live = counted.connect({
+      url: opts.url,
+      token: ws.token,
+      fetch: opts.fetch,
+      webSocket: opts.webSocket,
+    });
+    try {
+      const myEid = await Effect.runPromise(
+        bindSelf(live.db("coral-team", Reef), user, ws.cls),
+      );
+      expect(myEid).toBeUndefined();
+      expect(counted.connects).toBe(1);
+      expect(peer.sockets()).toBe(1);
+      expect(peer.resyncDumps()).toHaveLength(1);
+    } finally {
+      await live.close();
+      await peer.dispose();
+    }
+  });
+
+  test("provision still installs; the later board open is one new overlay", async () => {
+    const peer = await inProcessPeer({ seed: false });
+    const user = { id: "ada", name: "Ada", email: "ada@reef.test" };
+    const token = Ramose.token.jwt(async () =>
+      jwtOf({ ramose: { db: "coral-team", class: "admin" } }),
+    );
+    const counted = countingConnect();
+    const opts = {
+      token,
+      url: "https://peer.local",
+      fetch: peer.fetch,
+      webSocket: peer.webSocket,
+      connect: counted.connect,
+    };
+
+    await openWorkspace("coral-team", user, true, opts);
+    expect(counted.connects).toBe(1);
+    expect(peer.sockets()).toBe(1);
+    expect(peer.resyncDumps().length).toBeGreaterThanOrEqual(1);
+    expect(peer.resyncDumps()[0]!.datoms).toBeGreaterThan(0);
+
+    peer.resetTraffic();
+    const afterProvision = counted.connects;
+
+    const ws = await openWorkspace("coral-team", user, false, opts);
+    expect(counted.connects).toBe(afterProvision);
+    expect(peer.sockets()).toBe(0);
+    expect(peer.resyncDumps()).toEqual([]);
+
+    const live = counted.connect({
+      url: opts.url,
+      token: ws.token,
+      fetch: opts.fetch,
+      webSocket: opts.webSocket,
+    });
+    try {
+      const myEid = await Effect.runPromise(
+        bindSelf(live.db("coral-team", Reef), user, ws.cls),
+      );
+      expect(myEid).toBeGreaterThan(0);
+      expect(counted.connects).toBe(afterProvision + 1);
+      expect(peer.sockets()).toBe(1);
+      expect(peer.resyncDumps()).toHaveLength(1);
+      expect(peer.resyncDumps()[0]!.datoms).toBeGreaterThan(0);
+    } finally {
+      await live.close();
+      await peer.dispose();
+    }
   });
 });
