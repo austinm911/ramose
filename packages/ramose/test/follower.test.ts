@@ -24,6 +24,7 @@ import { NetworkError, TxRejected } from "../src/db/Errors.ts";
 import {
   followerWorkerUrl,
   openFollower,
+  openFollowerHost,
 } from "../src/db/follower.ts";
 import { fromStandardFetch } from "../src/db/http.ts";
 import { query } from "../src/db/NavQuery.ts";
@@ -970,6 +971,154 @@ describe("a dead SharedWorker is not a follower", () => {
       else g.SharedWorker = prevSW;
       g.WebSocket = prevWS;
     }
+  });
+});
+
+describe("host post waits for the token", () => {
+  const rpc = (port: MessagePort, msg: object) =>
+    new Promise<unknown>((resolve) => {
+      const id = Math.floor(Math.random() * 1e9);
+      const onMsg = (ev: MessageEvent) => {
+        const data = ev.data as PortEvent;
+        if (data.op === "reply" && data.id === id) {
+          port.removeEventListener("message", onMsg);
+          resolve(data);
+        }
+      };
+      port.addEventListener("message", onMsg);
+      port.postMessage({ id, ...msg });
+    });
+
+  const silentConnect = () => ({
+    send() {},
+    close() {},
+    addEventListener(type: string, cb: (ev: unknown) => void) {
+      if (type === "open") queueMicrotask(() => cb({}));
+    },
+  });
+
+  test("open with no token, transact, then auth — POST has the bearer, layer is not dropped", async () => {
+    const store = memoryStore();
+    const world = await schemaConn();
+    await world.transact([{ ":user/name": "Ada" }]);
+    const dump = await snapshotDatoms(world);
+    const seed = openOverlay({
+      session: fakeSession(),
+      post: () => Effect.fail(new NetworkError({ message: "offline" })),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(seed.ready());
+    await seed.handlePush({ op: "resync", t: world.t, datoms: dump });
+
+    const nameA = world.db().schema.requireAttr(":user/name").id;
+    const posts: string[] = [];
+    const host = openFollowerHost({
+      store,
+      fetch: async (_url, init) => {
+        posts.push(init.headers.authorization ?? "");
+        return new Response(
+          JSON.stringify({
+            t: world.t + 1,
+            txEid: 1,
+            tempids: {},
+            datoms: [
+              toWireDatom({
+                e: 4001,
+                a: nameA,
+                vt: ValueTag.Str,
+                v: "Bea",
+                t: world.t + 1,
+                op: true,
+              }),
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+      connect: silentConnect,
+    });
+    const chan = new MessageChannel();
+    host.attach(chan.port1);
+    chan.port2.start();
+    await rpc(chan.port2, {
+      op: "open",
+      name: "movies",
+      url: "https://peer.example.com",
+      schema: schemaTx(Movies),
+    });
+    const follower = host.follower("movies");
+    expect(follower).toBeDefined();
+
+    const painted = Date.now();
+    await follower!.ready();
+    expect(Date.now() - painted).toBeLessThan(1_000);
+    expect(await namesOf(follower!.overlay)).toEqual(["Ada"]);
+    expect(posts).toEqual([]);
+
+    const transactP = run(
+      follower!.overlay.transact([{ ":user/name": "Bea" }]),
+    );
+    let names: string[] = [];
+    for (let i = 0; i < 80; i++) {
+      names = await namesOf(follower!.overlay);
+      if (names.includes("Bea")) break;
+      await Bun.sleep(5);
+    }
+    expect(names).toEqual(["Ada", "Bea"]);
+    expect(posts).toEqual([]);
+    expect((await follower!.overlay.snapshot()).pending).toHaveLength(1);
+
+    await rpc(chan.port2, { op: "auth", token: "secret" });
+    await transactP;
+    expect(posts.length).toBeGreaterThan(0);
+    expect(posts.every((h) => h === "Bearer secret")).toBe(true);
+    expect(await namesOf(follower!.overlay)).toEqual(["Ada", "Bea"]);
+    host.close();
+  });
+
+  test("401 after a real token still drops the layer", async () => {
+    const store = memoryStore();
+    const world = await schemaConn();
+    await world.transact([{ ":user/name": "Ada" }]);
+    const dump = await snapshotDatoms(world);
+    const seed = openOverlay({
+      session: fakeSession(),
+      post: () => Effect.fail(new NetworkError({ message: "offline" })),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(seed.ready());
+    await seed.handlePush({ op: "resync", t: world.t, datoms: dump });
+
+    const host = openFollowerHost({
+      store,
+      fetch: async () =>
+        new Response(JSON.stringify({ error: "unauthorized" }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        }),
+      connect: silentConnect,
+    });
+    const chan = new MessageChannel();
+    host.attach(chan.port1);
+    chan.port2.start();
+    await rpc(chan.port2, {
+      op: "open",
+      name: "movies",
+      url: "https://peer.example.com",
+      schema: schemaTx(Movies),
+      token: "secret",
+    });
+    const follower = host.follower("movies")!;
+    await follower.ready();
+    await expect(
+      run(follower.overlay.transact([{ ":user/name": "Bea" }])),
+    ).rejects.toMatchObject({ _tag: "Unauthorized" });
+    expect((await follower.overlay.snapshot()).pending).toHaveLength(0);
+    host.close();
   });
 });
 

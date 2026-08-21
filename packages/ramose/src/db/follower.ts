@@ -281,7 +281,7 @@ export const openFollowerHost = (defaults?: {
         throw new Error(`ramose: no WebSocket to follow ${open.name}`);
       });
     // Token is for the socket and writes. Hydrate / first paint must
-    // not wait on it — `waitToken` parks only `session.request`.
+    // not wait on it — `waitToken` parks `session.request` and `post`.
     const token = (): Promise<Redacted.Redacted<string> | undefined> => {
       const immediate = open.token ?? tokenOf;
       if (immediate !== undefined && immediate.length > 0) {
@@ -305,12 +305,15 @@ export const openFollowerHost = (defaults?: {
       clientTxId: string,
     ): Effect.Effect<unknown, DbError> =>
       Effect.gen(function* () {
+        const tok = yield* Effect.promise(() =>
+          token().then((t) => (t === undefined ? undefined : Redacted.value(t))),
+        );
         const result = yield* send({
           fetch,
           url: open.url.replace(/\/+$/, ""),
           method: "POST",
           path: `/db/${encodeURIComponent(open.name)}/transact`,
-          token: open.token ?? tokenOf,
+          token: tok,
           body: { tx, clientTxId },
         });
         return result.body;
