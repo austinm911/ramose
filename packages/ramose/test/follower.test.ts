@@ -1012,30 +1012,12 @@ describe("host post waits for the token", () => {
     await run(seed.ready());
     await seed.handlePush({ op: "resync", t: world.t, datoms: dump });
 
-    const nameA = world.db().schema.requireAttr(":user/name").id;
     const posts: string[] = [];
     const host = openFollowerHost({
       store,
       fetch: async (_url, init) => {
         posts.push(init.headers.authorization ?? "");
-        return new Response(
-          JSON.stringify({
-            t: world.t + 1,
-            txEid: 1,
-            tempids: {},
-            datoms: [
-              toWireDatom({
-                e: 4001,
-                a: nameA,
-                vt: ValueTag.Str,
-                v: "Bea",
-                t: world.t + 1,
-                op: true,
-              }),
-            ],
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
+        throw new TypeError("offline");
       },
       connect: silentConnect,
     });
@@ -1075,8 +1057,9 @@ describe("host post waits for the token", () => {
     expect(posts.length).toBeGreaterThan(0);
     expect(posts.every((h) => h === "Bearer secret")).toBe(true);
     expect(await namesOf(follower!.overlay)).toEqual(["Ada", "Bea"]);
+    expect((await follower!.overlay.snapshot()).pending).toHaveLength(1);
     host.close();
-  });
+  }, 15_000);
 
   test("401 after a real token still drops the layer", async () => {
     const store = memoryStore();
