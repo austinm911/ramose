@@ -30,6 +30,7 @@
       "ramose/db/effect": ["./packages/ramose/src/db/effect.ts"],
       "ramose/worker": ["./packages/ramose/src/worker/index.ts"],
       "ramose/react": ["./packages/ramose/src/react/index.ts"],
+      "ramose/octane": ["./packages/ramose/src/octane/index.ts"],
       "ramose/better-auth": ["./packages/ramose/src/better-auth/index.ts"],
       "ramose/better-auth/client": ["./packages/ramose/src/better-auth/client.ts"],
       "ramose/effect": ["./packages/ramose/src/effect.ts"]
@@ -49,5 +50,10 @@
     "examples/**/*.ts",
     "examples/**/*.tsx"
   ],
-  "exclude": ["node_modules", ".alchemy", "dist"]
+  // `test/octane` (the `ramose/octane` suite, `bun run test:octane`) authors
+  // its component fixtures in TSRX and compiles them with Octane's own Vite
+  // plugin. Plain `tsc` cannot read a `.tsrx` file, so the suite stays out of
+  // the repo-wide pass; typechecking it needs Octane's `tsrx-tsc`, which this
+  // repo does not install.
+  "exclude": ["node_modules", ".alchemy", "dist", "test/octane"]
 }
