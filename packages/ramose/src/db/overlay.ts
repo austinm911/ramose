@@ -605,6 +605,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       // reach the peer is not a failed boot — pending stays the outbox.
       if (
         fail._tag === "NetworkError" &&
+        !options.session.closed &&
         (confirmedT > 0 || pending.length > 0)
       ) {
         readyGen = options.session.generation;
@@ -617,6 +618,9 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   const ready: Overlay["ready"] = (retry = true) =>
     Effect.tryPromise({
       try: async () => {
+        if (options.session.closed) {
+          throw new NetworkError({ message: "ramose: the client is closed" });
+        }
         if (readyGen !== options.session.generation || conn === undefined) {
           if (opening !== undefined) await opening;
           else {
