@@ -131,6 +131,8 @@ export interface DatabasesConfig {
    * was passed — an ambient `WebSocket` is not an injection.
    */
   readonly socketInjected?: boolean | undefined;
+  /** Handshake bound for the SharedWorker. Constructor success is not a follower. */
+  readonly workerReadyMs?: number | undefined;
 }
 
 /** The credential as the wire wants it: a string, or nothing. */
@@ -208,19 +210,34 @@ export const makeDatabases = (
     !socketInjected &&
     typeof SharedWorker === "function";
 
+  const workerReadyMs = config.workerReadyMs ?? 4_000;
   let workerPort: MessagePort | undefined;
+  let workerDead = false;
+  let workerFail: Promise<never> | undefined;
+  const abandonWorker = (): void => {
+    workerDead = true;
+    workerPort = undefined;
+    workerFail = undefined;
+  };
   const sharedPort = (): MessagePort | undefined => {
-    if (!useShared) return undefined;
+    if (!useShared || workerDead) return undefined;
     if (workerPort !== undefined) return workerPort;
     try {
       const sw = new SharedWorker(followerWorkerUrl().href, {
         type: "module",
         name: "ramose",
       });
+      workerFail = new Promise<never>((_, reject) => {
+        const fail = () =>
+          reject(new NetworkError({ message: "ramose: follower worker failed" }));
+        sw.addEventListener("error", fail);
+        (sw as unknown as { onerror: (ev: Event) => void }).onerror = fail;
+      });
       sw.port.start();
       workerPort = sw.port;
       return workerPort;
     } catch {
+      workerDead = true;
       return undefined;
     }
   };
@@ -259,13 +276,12 @@ export const makeDatabases = (
     return existing;
   };
 
-  const ensureShared = async (name: string): Promise<PortClient> => {
+  const ensureShared = async (name: string): Promise<PortClient | undefined> => {
     const hit = ports.get(name);
     if (hit !== undefined) return hit;
+    if (workerDead) return undefined;
     const sw = sharedPort();
-    if (sw === undefined) {
-      throw new Error("ramose: SharedWorker is not available");
-    }
+    if (sw === undefined) return undefined;
     const url = await Effect.runPromise(config.url);
     const tok =
       config.token === undefined
@@ -274,92 +290,114 @@ export const makeDatabases = (
             .then((t) => (t === undefined ? undefined : Redacted.value(t)))
             .catch(() => undefined);
     const catalog = catalogs.get(name);
-    const client = await connectSharedFollower(sw, {
-      name,
-      url,
-      schema: catalog !== undefined ? schemaTx(catalog) : undefined,
-      token: tok,
-    });
-    ports.set(name, client);
-    overlays.set(name, client.overlay);
-    return client;
+    const opened = connectSharedFollower(
+      sw,
+      {
+        name,
+        url,
+        schema: catalog !== undefined ? schemaTx(catalog) : undefined,
+        token: tok,
+      },
+      { timeoutMs: workerReadyMs },
+    );
+    try {
+      const client = await (workerFail === undefined
+        ? opened
+        : Promise.race([opened, workerFail]));
+      ports.set(name, client);
+      return client;
+    } catch {
+      abandonWorker();
+      return undefined;
+    }
   };
 
-  const sharedOverlay = (name: string): Overlay => {
-    const existing = overlays.get(name);
+  const pageOverlay = (name: string): Overlay | undefined => {
+    if (session(name) === undefined) return undefined;
+    let existing = overlays.get(name);
     if (existing !== undefined) return existing;
-    const wait = () => ensureShared(name);
+    const socket = session(name)!;
+    const f = openFollower({
+      name,
+      session: socket,
+      post: (tx, clientTxId) => postTx(name, tx, clientTxId),
+      catalog: catalogs.get(name),
+      store:
+        config.persist ??
+        (config.fetch === globalFetch ? pageStore : undefined),
+    });
+    followers.set(name, f);
+    existing = f.overlay;
+    overlays.set(name, existing);
+    return existing;
+  };
+
+  const sharedStubs = new Map<string, Overlay>();
+
+  const sharedOverlay = (name: string): Overlay => {
+    const stub = sharedStubs.get(name);
+    if (stub !== undefined) return stub;
+    const wait = async (): Promise<Overlay> => {
+      const client = await ensureShared(name);
+      if (client !== undefined) return client.overlay;
+      sharedStubs.delete(name);
+      const page = pageOverlay(name);
+      if (page === undefined) {
+        throw new NetworkError({
+          message: "ramose: follower worker did not answer",
+        });
+      }
+      return page;
+    };
     const overlay: Overlay = {
       get confirmedT() {
-        return ports.get(name)?.overlay.confirmedT ?? 0;
+        return ports.get(name)?.overlay.confirmedT ??
+          overlays.get(name)?.confirmedT ??
+          0;
       },
       get epoch() {
-        return ports.get(name)?.overlay.epoch ?? 0;
+        return ports.get(name)?.overlay.epoch ?? overlays.get(name)?.epoch ?? 0;
       },
       onChange: (cb) => {
         let off = (): void => {};
         void wait().then((c) => {
-          off = c.overlay.onChange(cb);
+          off = c.onChange(cb);
         });
         return () => off();
       },
       ready: () =>
         Effect.tryPromise({
           try: async () => {
-            const c = await wait();
-            await Effect.runPromise(c.overlay.ready());
+            await Effect.runPromise((await wait()).ready());
           },
           catch: (cause) =>
             isDatabaseError(cause) ? cause : networkError(cause),
         }),
       read: (op, body) =>
         Effect.tryPromise({
-          try: async () => {
-            const c = await wait();
-            return Effect.runPromise(c.overlay.read(op, body));
-          },
+          try: async () => Effect.runPromise((await wait()).read(op, body)),
           catch: (cause) =>
             isDatabaseError(cause) ? cause : networkError(cause),
         }),
       transact: (tx) =>
         Effect.tryPromise({
-          try: async () => {
-            const c = await wait();
-            return Effect.runPromise(c.overlay.transact(tx));
-          },
+          try: async () => Effect.runPromise((await wait()).transact(tx)),
           catch: (cause) =>
             isDatabaseError(cause) ? cause : networkError(cause),
         }),
       handlePush: async () => {},
-      snapshot: () => wait().then((c) => c.overlay.snapshot()),
-      flush: () => wait().then((c) => c.overlay.flush()),
+      snapshot: () => wait().then((c) => c.snapshot()),
+      flush: () => wait().then((c) => c.flush()),
     };
-    overlays.set(name, overlay);
+    sharedStubs.set(name, overlay);
     return overlay;
   };
 
   const overlayOf = (name: string): Overlay | undefined => {
-    if (useShared && sharedPort() !== undefined) {
+    if (useShared && !workerDead && sharedPort() !== undefined) {
       return sharedOverlay(name);
     }
-    if (session(name) === undefined) return undefined;
-    let existing = overlays.get(name);
-    if (existing === undefined) {
-      const socket = session(name)!;
-      const f = openFollower({
-        name,
-        session: socket,
-        post: (tx, clientTxId) => postTx(name, tx, clientTxId),
-        catalog: catalogs.get(name),
-        store:
-          config.persist ??
-          (config.fetch === globalFetch ? pageStore : undefined),
-      });
-      followers.set(name, f);
-      existing = f.overlay;
-      overlays.set(name, existing);
-    }
-    return existing;
+    return pageOverlay(name);
   };
 
   /**

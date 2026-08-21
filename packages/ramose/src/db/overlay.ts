@@ -99,13 +99,6 @@ export interface OverlayOptions {
    * received `schemaTx` over the port). Same install as {@link catalog}.
    */
   readonly schema?: readonly unknown[] | undefined;
-  /** Hydrate Connection + pending from disk. Then `sync({ from: confirmedT })`. */
-  readonly snapshot?: OverlaySnap | undefined;
-  /**
-   * After facts are in `view()`, persist matches, then epoch/notify.
-   * Bytes, not a side cache of query rows.
-   */
-  readonly persist?: ((snap: OverlaySnap) => Promise<void>) | undefined;
   /** Injected byte store. Hydrate on first `ready()`, persist after apply. */
   readonly store?: ByteStore | undefined;
   /** Persist key (`<db name>`). Required with {@link store}. */
@@ -380,16 +373,14 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   };
 
   const persistThenNotify = (): void | Promise<void> => {
-    const needPersist =
-      options.persist !== undefined ||
-      (options.store !== undefined && options.name !== undefined);
-    if (!needPersist) {
+    const store = options.store;
+    const name = options.name;
+    if (store === undefined || name === undefined) {
       notify();
       return;
     }
     return takeSnapshot().then(async (snap) => {
-      if (options.persist !== undefined) await options.persist(snap);
-      else await saveSnap(options.store!, options.name!, snap);
+      await saveSnap(store, name, snap);
       notify();
     });
   };
@@ -532,10 +523,6 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
 
   const ensureConn = async (): Promise<void> => {
     if (conn !== undefined) return;
-    if (options.snapshot !== undefined) {
-      await hydrate(options.snapshot);
-      return;
-    }
     if (options.store !== undefined && options.name !== undefined) {
       const snap = await loadSnap(options.store, options.name);
       if (snap !== undefined) {
@@ -594,6 +581,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
         confirmedT = t;
         options.session.bump(t);
       }
+      await flush();
     } catch (cause) {
       const fail = isDatabaseError(cause)
         ? cause

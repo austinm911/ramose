@@ -5,9 +5,11 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import * as Effect from "effect/Effect";
 import { Connection } from "../src/internal/core/conn.ts";
 import {
@@ -16,9 +18,16 @@ import {
   toWireDatom,
   type WireDatom,
 } from "../src/internal/core/index.ts";
+import { makeDatabases } from "../src/db/Databases.ts";
 import { schemaTx } from "../src/db/ensure.ts";
 import { NetworkError, TxRejected } from "../src/db/Errors.ts";
-import { openFollower } from "../src/db/follower.ts";
+import {
+  followerWorkerUrl,
+  followerWorkerUrlBeside,
+  openFollower,
+} from "../src/db/follower.ts";
+import { fromStandardFetch } from "../src/db/http.ts";
+import { query } from "../src/db/NavQuery.ts";
 import { openOverlay, type Overlay } from "../src/db/overlay.ts";
 import {
   type ByteStore,
@@ -28,7 +37,8 @@ import {
 } from "../src/db/persist.ts";
 import type { PortEvent } from "../src/db/port.ts";
 import type { Session } from "../src/db/session.ts";
-import { Movies } from "./db/fixture.ts";
+import { Movies, User } from "./db/fixture.ts";
+import { fakePeer } from "./peer.ts";
 
 const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
 
@@ -155,11 +165,9 @@ describe("hydrate then sync is a walk", () => {
     expect(snap.confirmed.length).toBeGreaterThan(0);
 
     const walks: number[] = [];
-    let dumps = 0;
     const second = fakeSession({
       onSync: (from) => {
         walks.push(from);
-        // a walk, not a dump: no datoms on the reply
         return { body: { t: rootT, from } };
       },
     });
@@ -173,7 +181,6 @@ describe("hydrate then sync is a walk", () => {
     expect(b).not.toBe(a);
     await run(b.ready());
     expect(walks).toEqual([rootT]);
-    expect(dumps).toBe(0);
     expect(b.confirmedT).toBe(rootT);
     expect(await namesOf(b)).toEqual(["Ada"]);
     const snapB = await b.snapshot();
@@ -501,5 +508,173 @@ describe("from < rootT resync persists the dump", () => {
     expect(disk.confirmedT).toBe(world.t);
     expect(disk.confirmed.some((d) => d[3] === "Ada")).toBe(true);
     expect(disk.confirmed.some((d) => d[3] === "Bea")).toBe(true);
+  });
+});
+
+describe("the worker specifier exists", () => {
+  test("follows this module's emit; dist looks for .js, not .ts", () => {
+    const url = followerWorkerUrl();
+    expect(url.pathname.endsWith("follower-worker.ts")).toBe(true);
+    expect(existsSync(fileURLToPath(url))).toBe(true);
+    expect(
+      followerWorkerUrlBeside("file:///pkg/dist/db/follower.js").pathname.endsWith(
+        "follower-worker.js",
+      ),
+    ).toBe(true);
+    expect(
+      followerWorkerUrlBeside("file:///pkg/src/db/follower.ts").pathname.endsWith(
+        "follower-worker.ts",
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("a dead SharedWorker is not a follower", () => {
+  const silentPort = () => ({
+    start() {},
+    postMessage() {},
+    addEventListener() {},
+    removeEventListener() {},
+    close() {},
+  });
+
+  test("constructor success + no reply falls through to the one in-page overlay", async () => {
+    let constructed = 0;
+    class SilentSharedWorker {
+      readonly port = silentPort();
+      constructor() {
+        constructed += 1;
+      }
+      addEventListener() {}
+    }
+    const peer = fakePeer({
+      answer: () => ({ body: { t: 0, result: [] } }),
+    });
+    const g = globalThis as {
+      SharedWorker?: unknown;
+      WebSocket: typeof WebSocket;
+    };
+    const prevSW = g.SharedWorker;
+    const prevWS = g.WebSocket;
+    g.SharedWorker = SilentSharedWorker;
+    g.WebSocket = peer.webSocket;
+    try {
+      const { databases, close } = makeDatabases({
+        url: Effect.succeed("https://peer.example.com"),
+        fetch: fromStandardFetch(peer.fetch),
+        webSocket: (url) => new peer.webSocket(url) as never,
+        socketInjected: false,
+        workerReadyMs: 40,
+      });
+      const rows = await run(
+        databases.db("movies", Movies).q(query(User).select({ name: User.name })),
+      );
+      expect(constructed).toBeGreaterThan(0);
+      expect(Array.isArray(rows)).toBe(true);
+      expect(peer.sockets.length).toBeGreaterThan(0);
+      close();
+    } finally {
+      if (prevSW === undefined) delete g.SharedWorker;
+      else g.SharedWorker = prevSW;
+      g.WebSocket = prevWS;
+    }
+  });
+
+  test("a worker error event falls through without sitting on the handshake", async () => {
+    class ErrorSharedWorker {
+      readonly port = silentPort();
+      onerror: ((ev: Event) => void) | null = null;
+      constructor() {
+        queueMicrotask(() => this.onerror?.(new Event("error")));
+      }
+      addEventListener(type: string, cb: (ev: Event) => void) {
+        if (type === "error") this.onerror = cb;
+      }
+    }
+    const peer = fakePeer({
+      answer: () => ({ body: { t: 0, result: [] } }),
+    });
+    const g = globalThis as {
+      SharedWorker?: unknown;
+      WebSocket: typeof WebSocket;
+    };
+    const prevSW = g.SharedWorker;
+    const prevWS = g.WebSocket;
+    g.SharedWorker = ErrorSharedWorker;
+    g.WebSocket = peer.webSocket;
+    try {
+      const { databases, close } = makeDatabases({
+        url: Effect.succeed("https://peer.example.com"),
+        fetch: fromStandardFetch(peer.fetch),
+        webSocket: (url) => new peer.webSocket(url) as never,
+        socketInjected: false,
+        workerReadyMs: 4_000,
+      });
+      const started = Date.now();
+      await run(
+        databases.db("movies", Movies).q(query(User).select({ name: User.name })),
+      );
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(peer.sockets.length).toBeGreaterThan(0);
+      close();
+    } finally {
+      if (prevSW === undefined) delete g.SharedWorker;
+      else g.SharedWorker = prevSW;
+      g.WebSocket = prevWS;
+    }
+  });
+});
+
+describe("outbox drains on a successful walk", () => {
+  test("hydrate with pending, sync succeeds, POST without flush()", async () => {
+    const store = memoryStore();
+    const world = await schemaConn();
+    await world.transact([{ ":user/name": "Ada" }]);
+    const dump = await snapshotDatoms(world);
+    const nameA = world.db().schema.requireAttr(":user/name").id;
+    const live = openOverlay({
+      session: fakeSession(),
+      post: () => Effect.fail(new NetworkError({ message: "offline" })),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(live.ready());
+    await live.handlePush({ op: "resync", t: world.t, datoms: dump });
+    await run(live.transact([{ ":user/name": "Bea" }]));
+    expect((await live.snapshot()).pending).toHaveLength(1);
+
+    const posted: string[] = [];
+    const online = openOverlay({
+      session: fakeSession({
+        onSync: (from) => ({ body: { t: from, from } }),
+      }),
+      post: (tx, id) => {
+        posted.push(id);
+        return Effect.succeed({
+          t: world.t + 1,
+          txEid: 1,
+          tempids: {},
+          datoms: [
+            toWireDatom({
+              e: 4001,
+              a: nameA,
+              vt: ValueTag.Str,
+              v: "Bea",
+              t: world.t + 1,
+              op: true,
+            }),
+          ],
+          clientTxId: id,
+        });
+      },
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    expect(online).not.toBe(live);
+    await run(online.ready());
+    expect(posted).toHaveLength(1);
+    expect((await online.snapshot()).pending).toHaveLength(0);
   });
 });

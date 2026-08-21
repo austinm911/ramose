@@ -40,19 +40,45 @@ export const connectSharedFollower = (
     readonly schema?: readonly unknown[];
     readonly token?: string;
   },
+  opts?: { readonly timeoutMs?: number },
 ): Promise<PortClient> => {
+  const timeoutMs = opts?.timeoutMs ?? 4_000;
   const channel = new MessageChannel();
   const client = openPortClient(channel.port2);
   return new Promise<PortClient>((resolve, reject) => {
     const id = 1;
+    let settled = false;
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      channel.port2.removeEventListener?.("message", onMsg);
+      fn();
+    };
+    const fail = (cause: unknown): void =>
+      finish(() =>
+        reject(
+          cause instanceof NetworkError
+            ? cause
+            : new NetworkError({
+                message: cause instanceof Error ? cause.message : String(cause),
+                cause,
+              }),
+        ),
+      );
+    const timer = setTimeout(() => {
+      fail(new NetworkError({ message: "ramose: follower worker did not answer" }));
+    }, timeoutMs);
     const onMsg = (ev: MessageEvent) => {
       const frame = asPortEvent(ev.data);
       if (frame === undefined || frame.op !== "reply" || frame.id !== id) return;
-      channel.port2.removeEventListener?.("message", onMsg);
-      if (frame.ok) resolve(client);
-      else reject(decodeError(frame.error));
+      if (frame.ok) finish(() => resolve(client));
+      else fail(decodeError(frame.error));
     };
     channel.port2.addEventListener("message", onMsg);
+    channel.port2.addEventListener?.("messageerror", () => {
+      fail(new NetworkError({ message: "ramose: follower worker failed" }));
+    });
     channel.port2.start?.();
     channel.port1.start?.();
     try {
@@ -72,12 +98,7 @@ export const connectSharedFollower = (
         [channel.port1],
       );
     } catch (cause) {
-      reject(
-        new NetworkError({
-          message: cause instanceof Error ? cause.message : String(cause),
-          cause,
-        }),
-      );
+      fail(cause);
     }
   });
 };

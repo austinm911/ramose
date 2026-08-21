@@ -11,7 +11,7 @@
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import type { AnyCatalog } from "./Catalog.ts";
-import { type DbError, isDatabaseError, NetworkError } from "./Errors.ts";
+import type { DbError } from "./Errors.ts";
 import { type FetchLike, globalFetch, send } from "./http.ts";
 import {
   type Overlay,
@@ -362,12 +362,18 @@ export const openFollowerHost = (defaults?: {
 export const defaultStore = async (): Promise<ByteStore> =>
   (await opfsStore()) ?? memoryStore();
 
+/**
+ * Worker script beside this module. `tsc` emits `.js` and does not rewrite
+ * string literals, so the specifier must follow `import.meta.url`'s
+ * extension — `./follower-worker.ts` from dist 404s and the constructor
+ * still succeeds.
+ */
+export const followerWorkerUrlBeside = (moduleUrl: string): URL => {
+  const ext = /\.ts(?:$|\?|#)/.test(moduleUrl) ? ".ts" : ".js";
+  return new URL(`./follower-worker${ext}`, moduleUrl);
+};
+
 export const followerWorkerUrl = (): URL =>
-  new URL("./follower-worker.ts", import.meta.url);
+  followerWorkerUrlBeside(import.meta.url);
 
 export type { OverlayAck };
-
-export const isOfflineError = (err: unknown): boolean =>
-  isDatabaseError(err)
-    ? err._tag === "NetworkError"
-    : err instanceof NetworkError;
