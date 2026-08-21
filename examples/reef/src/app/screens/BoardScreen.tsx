@@ -250,6 +250,15 @@ export const BoardScreen = ({
     onError: (error) => toast("error", errorMessage(error)),
   });
 
+  useEscape(
+    useCallback(() => {
+      setSelected(null);
+      setDraftStatus(null);
+      setInvite(false);
+    }, [setSelected]),
+  );
+
+  const liveRows = board.rows;
   // Dev-only: two-window same-ms moves. Same `run(moveIssue)` path as a drag.
   useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -285,16 +294,6 @@ export const BoardScreen = ({
       delete w.__reefMove;
     };
   }, [db, run, liveRows]);
-
-  useEscape(
-    useCallback(() => {
-      setSelected(null);
-      setDraftStatus(null);
-      setInvite(false);
-    }, [setSelected]),
-  );
-
-  const liveRows = board.rows;
   // `ticks` counts overlay emissions after the first — local apply, ack,
   // or an inbound filtered `tx` — and the pulse makes that visible.
   const ticks = board.ticks;
