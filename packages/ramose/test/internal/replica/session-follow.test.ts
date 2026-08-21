@@ -155,6 +155,22 @@ describe("QueryReplicaDO apply-then-notify", () => {
     expect(b.socket.resyncs()).toEqual([]);
   });
 
+  test("overlapping applyDatoms still walks t and t+1 on both sockets; no torn dump", async () => {
+    const { replica, attach } = await bootReplica(10);
+    const a = attach();
+    const b = attach();
+    // Group-commit / fillGap / two handleFrames can overlap notifySessions.
+    // Each applyEntry must not snapshot watermark at enqueue.
+    await Promise.all([replica.applyDatoms(entry(11)), replica.applyDatoms(entry(12))]);
+    expect(replica.basisT).toBe(12);
+    expect(a.socket.txs().map((f) => f.t)).toEqual([11, 12]);
+    expect(b.socket.txs().map((f) => f.t)).toEqual([11, 12]);
+    expect(a.socket.resyncs()).toEqual([]);
+    expect(b.socket.resyncs()).toEqual([]);
+    expect(a.session.watermark).toBe(12);
+    expect(b.session.watermark).toBe(12);
+  });
+
   test("handleFrame of t+2 while t+1 is unapplied does not stamp the tip or dump", async () => {
     const { replica, attach } = await bootReplica(10);
     const a = attach();
