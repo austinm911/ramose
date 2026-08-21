@@ -446,14 +446,15 @@ describe("failures arrive tagged, not thrown", () => {
     "a transport failure is NetworkError and keeps its cause",
     async () => {
       const boom = new Error("connect ECONNREFUSED");
-      const peer = fakePeer();
-      const c = client(peer, {
+      // HTTPS-only: no overlay outbox. A session client treats NetworkError
+      // as offline (pending layer stays); the tagged-cause pin is the POST.
+      const { databases, close } = httpsClient({
         fetch: (() => Promise.reject(boom)) as unknown as typeof fetch,
       });
-      const e = await runFail(c.ramose.db("movies", Movies).install());
+      const e = await runFail(databases.db("movies", Movies).install());
       expect(e._tag).toBe("NetworkError");
       if (e._tag === "NetworkError") expect(e.cause).toBe(boom);
-      await c.dispose();
+      close();
     },
     RETRY_LADDER_MS,
   );
