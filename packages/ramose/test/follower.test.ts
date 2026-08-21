@@ -11,6 +11,7 @@ import { join } from "node:path";
 import * as Effect from "effect/Effect";
 import { Connection } from "../src/internal/core/conn.ts";
 import {
+  Index,
   ValueTag,
   toWireDatom,
   type WireDatom,
