@@ -406,16 +406,20 @@ d("ramose session socket e2e", () => {
    * Regression for #28: two session sockets on one db. The shared basis
    * watcher used to run in the first session's request context; the fan-out to
    * the second socket was illegal cross-context I/O in workerd, so the second
-   * session zombied after the first write (no `{ op: tx }`, frames dropped
-   * with no reply, socket never closed).
+   * session zombied after the first write (no unsolicited frame, frames
+   * dropped with no reply, socket never closed).
    *
    * Raw sockets on purpose: the client's reconnect-on-close would mask a
-   * zombied session. Under local miniflare both sockets share one isolate —
-   * the exact #28 shape; on real Cloudflare they may land apart, which only
-   * makes the test weaker, never wrongly red.
+   * zombied session. They never send `{op:sync}`, so they seed
+   * `watermark = 0`. The first replica apply then hits `from < rootT` and
+   * fans out `{op:resync}` (not `{op:tx}`). After that dump, later writes
+   * fan out `{op:tx}`. Either unsolicited frame with `t >= write.t` is a
+   * live session; leftover `{op:t}` is gone. Under local miniflare both
+   * sockets share one isolate — the exact #28 shape; on real Cloudflare
+   * they may land apart, which only makes the test weaker, never wrongly red.
    */
   test(
-    "two session sockets on one db both receive {op:tx} on every write; both keep answering (#28)",
+    "two session sockets on one db both receive tx or resync on every write; both keep answering (#28)",
     async () => {
       const twoDb = `${dbName}-two-socks`;
       const http = new Peer(url, { token, retryTransientMs: 30_000 }).db(twoDb);
@@ -470,7 +474,8 @@ d("ramose session socket e2e", () => {
         while (!cond() && Date.now() - t0 < ms) await Bun.sleep(100);
         return cond();
       };
-      const txsOf = (s: RawSock): number[] => s.frames.filter((f) => f.op === "tx").map((f) => f.t as number);
+      const pushesOf = (s: RawSock): number[] =>
+        s.frames.filter((f) => f.op === "tx" || f.op === "resync").map((f) => f.t as number);
       /** send one `info` frame; resolve to its reply (a zombie never answers) */
       const answers = async (s: RawSock): Promise<boolean> => {
         const id = s.next++;
@@ -490,12 +495,14 @@ d("ramose session socket e2e", () => {
 
         const w1 = await http.transact([attrMap(":two/b", "string")]);
         expect(w1.t).toBeGreaterThan(t0);
-        // the non-polling session reads the shared basis one interval later; real CF adds edge lag
-        expect(await until(() => txsOf(s1).some((t) => t >= w1.t) && txsOf(s2).some((t) => t >= w1.t), 20_000)).toBe(true);
+        // Unsynced sockets get {op:resync} on the first apply (from < rootT);
+        // a leftover {op:t} used to make this green. Either unsolicited
+        // frame is enough. Real CF adds edge lag.
+        expect(await until(() => pushesOf(s1).some((t) => t >= w1.t) && pushesOf(s2).some((t) => t >= w1.t), 20_000)).toBe(true);
 
         // the second write is the #28 regression: the old fan-out had killed one session by now
         const w2 = await http.transact([attrMap(":two/c", "string")]);
-        expect(await until(() => txsOf(s1).some((t) => t >= w2.t) && txsOf(s2).some((t) => t >= w2.t), 20_000)).toBe(true);
+        expect(await until(() => pushesOf(s1).some((t) => t >= w2.t) && pushesOf(s2).some((t) => t >= w2.t), 20_000)).toBe(true);
 
         expect(await answers(s1)).toBe(true);
         expect(await answers(s2)).toBe(true);
