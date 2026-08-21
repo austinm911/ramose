@@ -252,6 +252,83 @@ describe("optimistic transact", () => {
     await c.dispose();
   });
 
+  test("a 409 drops only that pending layer; live reverts without remount", async () => {
+    const server = await moviesWorld();
+    await server.transact([{ ":user/name": "Ada" }]);
+    let releaseFail!: () => void;
+    let releaseKeep!: () => void;
+    const failGate = new Promise<void>((r) => {
+      releaseFail = r;
+    });
+    const keepGate = new Promise<void>((r) => {
+      releaseKeep = r;
+    });
+    let posts = 0;
+    const peer = fakePeer({
+      http: async (call) => {
+        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
+        posts += 1;
+        if (posts === 1) {
+          await failGate;
+          return {
+            status: 409,
+            body: { error: "denied", tag: "TxRejected", code: "tx/unique-conflict" },
+          };
+        }
+        await keepGate;
+        const rep = await server.transact(call.body.tx);
+        return {
+          body: {
+            t: rep.t,
+            txEid: rep.txEid,
+            tempids: rep.tempids,
+            datoms: rep.txData.map(toWireDatom),
+            clientTxId: call.body.clientTxId,
+          },
+        };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    await seedClient(peer, db, server);
+
+    const live = collect(db.live(names));
+    await settle();
+    const namesOf = (rows: readonly { name: string }[] | undefined) =>
+      (rows ?? []).map((r) => r.name).sort();
+    expect(namesOf(live.seen.at(-1))).toEqual(["Ada"]);
+
+    const denied = runFail(
+      db.transact(function* (tx) {
+        const e = yield* tx.entity();
+        yield* e.add(User.name, "Bob");
+      }),
+    );
+    const kept = run(
+      db.transact(function* (tx) {
+        const e = yield* tx.entity();
+        yield* e.add(User.name, "Cy");
+      }),
+    );
+    await settle();
+    expect(namesOf(live.seen.at(-1))).toEqual(["Ada", "Bob", "Cy"]);
+
+    releaseFail();
+    const err = await denied;
+    await settle();
+    expect(err._tag).toBe("TxRejected");
+    expect(namesOf(live.seen.at(-1))).toEqual(["Ada", "Cy"]);
+    expect(live.error).toBeUndefined();
+
+    releaseKeep();
+    await kept;
+    await settle();
+    expect(namesOf(live.seen.at(-1))).toEqual(["Ada", "Cy"]);
+
+    await live.stop();
+    await c.dispose();
+  });
+
   test("local unique conflict does not POST", async () => {
     const server = await moviesWorld();
     await server.transact([
