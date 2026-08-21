@@ -131,7 +131,8 @@ export interface Session {
   /**
    * Replica apply: walk this one applied frame. The follow cursor is the
    * walked `t` (and the replica's `basisT` after apply). Never stamps a tip
-   * that was not applied.
+   * that was not applied. Overlapping calls must not snapshot `watermark`
+   * at enqueue — each job starts from the cursor as it is when it runs.
    */
   applyEntry(entry: SessionLogEntry, rootT: number): Promise<void>;
   /** Send `{ op: "t", t }` if this is news to this socket. */
@@ -391,15 +392,19 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
   };
 
   let considering: Promise<void> = Promise.resolve();
-  /** Walk the log. A filter/snapshot throw rejects — callers must not treat it as silence. */
-  const enqueueConsider = (log: SessionLog, from: number): Promise<void> => {
-    const run = considering.then(() => consider(log, from));
+  /**
+   * Walk the log from the cursor as it is when this job *runs*. Capturing
+   * `watermark` at enqueue lets two overlapping `applyEntry`s share the
+   * same `from`; the later `t` then looks torn and never sends `{ op: tx }`.
+   */
+  const enqueueConsider = (log: SessionLog): Promise<void> => {
+    const run = considering.then(() => consider(log, watermark));
     considering = run.catch(() => undefined);
     return run;
   };
 
   const applyEntry = (entry: SessionLogEntry, rootT: number): Promise<void> =>
-    enqueueConsider({ t: entry.t, rootT, entries: [entry] }, watermark).catch((err) => {
+    enqueueConsider({ t: entry.t, rootT, entries: [entry] }).catch((err) => {
       failSieve();
       throw err;
     });
@@ -452,7 +457,7 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
       try {
         const log = await options.readLog();
         watermark = from;
-        await enqueueConsider(log, from);
+        await enqueueConsider(log);
         // walk cursor, not log tip — a torn window must not claim log.t
         send({ id, status: 200, body: { t: watermark, from } });
       } catch (err) {
