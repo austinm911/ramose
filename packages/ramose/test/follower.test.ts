@@ -23,7 +23,6 @@ import { schemaTx } from "../src/db/ensure.ts";
 import { NetworkError, TxRejected } from "../src/db/Errors.ts";
 import {
   followerWorkerUrl,
-  followerWorkerUrlBeside,
   openFollower,
 } from "../src/db/follower.ts";
 import { fromStandardFetch } from "../src/db/http.ts";
@@ -635,6 +634,62 @@ describe("two ports, one follower", () => {
   });
 });
 
+describe("resync rebases pending, it does not wipe", () => {
+  test("hydrate/move pending Bea, dump of Ada — Bea stays on view / live", async () => {
+    const store = memoryStore();
+    const world = await schemaConn();
+    await world.transact([{ ":user/name": "Ada" }]);
+    const dump = await snapshotDatoms(world);
+
+    const live = openOverlay({
+      session: fakeSession(),
+      post: () => Effect.fail(new NetworkError({ message: "offline" })),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    await run(live.ready());
+    await live.handlePush({ op: "resync", t: world.t, datoms: dump });
+    await run(live.transact([{ ":user/name": "Bea" }]));
+    expect(await namesOf(live)).toEqual(["Ada", "Bea"]);
+    const before = await live.snapshot();
+    expect(before.pending).toHaveLength(1);
+    const beaId = before.pending[0]!.clientTxId;
+
+    const ticks: number[] = [];
+    const liveNames: string[][] = [];
+    live.onChange(() => {
+      ticks.push(live.epoch);
+      void namesOf(live).then((n) => liveNames.push(n));
+    });
+
+    await live.handlePush({ op: "resync", t: world.t, datoms: dump });
+    expect(await namesOf(live)).toEqual(["Ada", "Bea"]);
+    await until(() => liveNames.some((n) => n.includes("Bea")));
+    expect(liveNames.at(-1)).toEqual(["Ada", "Bea"]);
+    const after = await live.snapshot();
+    expect(after.pending).toHaveLength(1);
+    expect(after.pending[0]!.clientTxId).toBe(beaId);
+    expect(after.confirmed.some((d) => d[3] === "Ada")).toBe(true);
+    expect(after.confirmed.some((d) => d[3] === "Bea")).toBe(false);
+    expect(ticks.length).toBeGreaterThan(0);
+
+    const reloaded = openOverlay({
+      session: fakeSession({
+        onSync: (from) => ({ body: { t: from, from } }),
+      }),
+      post: () => Effect.fail(new NetworkError({ message: "still offline" })),
+      catalog: Movies,
+      store,
+      name: "movies",
+    });
+    expect(reloaded).not.toBe(live);
+    await run(reloaded.ready());
+    expect(await namesOf(reloaded)).toEqual(["Ada", "Bea"]);
+    expect((await reloaded.snapshot()).pending[0]!.clientTxId).toBe(beaId);
+  });
+});
+
 describe("from < rootT resync persists the dump", () => {
   test("cursor-only snap is first paint; the dump is the next epoch", async () => {
     const store = memoryStore();
@@ -705,20 +760,55 @@ describe("from < rootT resync persists the dump", () => {
 });
 
 describe("the worker specifier exists", () => {
-  test("follows this module's emit; dist looks for .js, not .ts", () => {
+  test("is bundler-static .js beside this module; not a computed extension", async () => {
+    const followerSrc = await readFile(
+      new URL("../src/db/follower.ts", import.meta.url),
+      "utf8",
+    );
+    const databasesSrc = await readFile(
+      new URL("../src/db/Databases.ts", import.meta.url),
+      "utf8",
+    );
+    const staticUrl = /new URL\(\s*["']\.\/follower-worker\.js["']\s*,\s*import\.meta\.url\s*\)/;
+    expect(followerSrc).toMatch(staticUrl);
+    expect(databasesSrc).toMatch(staticUrl);
+    expect(followerSrc).not.toMatch(/follower-worker\$\{/);
+    expect(databasesSrc).not.toMatch(/follower-worker\$\{/);
+
     const url = followerWorkerUrl();
-    expect(url.pathname.endsWith("follower-worker.ts")).toBe(true);
-    expect(existsSync(fileURLToPath(url))).toBe(true);
+    expect(url.pathname.endsWith("follower-worker.js")).toBe(true);
+
+    const srcWorker = fileURLToPath(
+      new URL("../src/db/follower-worker.ts", import.meta.url),
+    );
+    expect(existsSync(srcWorker)).toBe(true);
     expect(
-      followerWorkerUrlBeside("file:///pkg/dist/db/follower.js").pathname.endsWith(
-        "follower-worker.js",
+      existsSync(
+        fileURLToPath(new URL("../src/db/follower.ts", import.meta.url)),
       ),
     ).toBe(true);
     expect(
-      followerWorkerUrlBeside("file:///pkg/src/db/follower.ts").pathname.endsWith(
-        "follower-worker.ts",
+      existsSync(
+        fileURLToPath(new URL("../src/db/Databases.ts", import.meta.url)),
       ),
     ).toBe(true);
+
+    const pkg = JSON.parse(
+      await readFile(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { exports: { "./follower-worker": { default: string } } };
+    expect(pkg.exports["./follower-worker"].default).toBe(
+      "./dist/db/follower-worker.js",
+    );
+
+    const distWorker = fileURLToPath(
+      new URL("../dist/db/follower-worker.js", import.meta.url),
+    );
+    const distFollower = fileURLToPath(
+      new URL("../dist/db/follower.js", import.meta.url),
+    );
+    if (existsSync(distFollower)) {
+      expect(existsSync(distWorker)).toBe(true);
+    }
   });
 });
 
