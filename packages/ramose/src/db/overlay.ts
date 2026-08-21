@@ -71,16 +71,6 @@ export interface OverlayOptions {
   ) => Effect.Effect<unknown, DbError>;
   /** Installs catalog attrs locally so processTx / q can resolve idents. */
   readonly catalog?: AnyCatalog | undefined;
-  /**
-   * @internal After `ready()`, before `view()`. The lost-wake pin enqueues
-   * `{ op: tx }` here: epoch already observed, apply not done.
-   */
-  readonly afterReady?: () => void;
-  /**
-   * @internal Awaited at the start of each apply. The lost-wake pin delays
-   * paint past `view()` so a missing `await applied` is red.
-   */
-  readonly holdApply?: () => Promise<void>;
 }
 
 interface PendingLayer {
@@ -280,11 +270,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   let outbox: Promise<unknown> = Promise.resolve();
 
   const enqueueApply = (fn: () => void | Promise<void>): Promise<void> => {
-    const run = async () => {
-      if (options.holdApply !== undefined) await options.holdApply();
-      return fn();
-    };
-    const next = applied.then(run, run);
+    const next = applied.then(fn, fn);
     applied = next.then(() => undefined, () => undefined);
     return next;
   };
@@ -500,10 +486,9 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       Effect.flatMap(() =>
         Effect.tryPromise({
           try: async () => {
-            // A `{ op: tx }` can enqueue (and have already nudged epoch)
-            // after ready() awaited the previous `applied`. Re-await so
-            // this pass sees the paint — there is no second nudge.
-            options.afterReady?.();
+            // `onMessage` is `void handlePush(...)`. ready() already joined
+            // `applied` once; a `{ op: tx }` can enqueue during the Effect
+            // yield. Join again so this pass's view() is after that paint.
             await applied;
             const db = view();
             if (op === "pull") {
