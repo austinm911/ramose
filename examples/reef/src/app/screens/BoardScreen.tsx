@@ -17,6 +17,7 @@ import {
   useTransact,
 } from "ramose/react";
 import * as stylex from "@stylexjs/stylex";
+import * as Effect from "effect/Effect";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   boardQuery,
@@ -38,7 +39,7 @@ import { Board, COLUMN_TINTS } from "../components/Board.tsx";
 import { IssueDetail } from "../components/IssueDetail.tsx";
 import { TimeTravelBar } from "../components/TimeTravel.tsx";
 import { createIssue, moveIssue, seedSampleIssues, type NewIssue } from "../mutations.ts";
-import type { Workspace } from "../ramose.ts";
+import { bindSelf, type Workspace } from "../ramose.ts";
 import { useBoardSelection } from "../route.tsx";
 import { INVITABLE_ROLES } from "../../domain/roles.ts";
 import { colors, radii, space, type } from "../theme/tokens.stylex";
@@ -229,9 +230,35 @@ export const BoardScreen = ({
   user: SessionUser;
   onLeave: () => void;
 }) => {
-  const { cls, slug, myEid } = workspace;
+  const { cls, slug } = workspace;
   const toast = useToast();
   const db = useDb(slug, Reef);
+  const [myEid, setMyEid] = useState<number | undefined>(undefined);
+  const [selfReady, setSelfReady] = useState(false);
+
+  const userId = user.id;
+  const userName = user.name;
+  const userEmail = user.email;
+  useEffect(() => {
+    let cancelled = false;
+    void Effect.runPromise(
+      bindSelf(db, { id: userId, name: userName, email: userEmail }, cls),
+    ).then(
+      (eid) => {
+        if (cancelled) return;
+        setMyEid(eid);
+        setSelfReady(true);
+      },
+      (err) => {
+        if (cancelled) return;
+        toast("error", errorMessage(err));
+        setSelfReady(true);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [db, userId, userName, userEmail, cls, toast]);
 
   const board = useLive(db, boardQuery);
   const people = useLive(db, peopleQuery);
@@ -299,7 +326,9 @@ export const BoardScreen = ({
       </div>
     );
   }
-  if (liveRows === undefined) return <Loading text={`opening ${slug}…`} />;
+  if (!selfReady || liveRows === undefined) {
+    return <Loading text={`opening ${slug}…`} />;
+  }
 
   return (
     <div {...stylex.props(styles.screen)}>
