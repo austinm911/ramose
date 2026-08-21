@@ -2,7 +2,7 @@
  * `useBasis` — where the basis is:
  *
  * - a live view asks the peer (`GET /db/:name/info`) once on mount and again
- *   on every session tick;
+ *   on every `{ op: "tx" }` / resync;
  * - an `asOf(t)` view answers `t` on the first render, with no request and
  *   no socket;
  * - switching views re-answers, still without a request when pinned.
@@ -22,7 +22,7 @@ const infoCalls = (calls: readonly Call[]) =>
   calls.filter((c) => c.url.includes("/info"));
 
 describe("useBasis", () => {
-  test("a live view asks the peer, then re-asks on every tick", async () => {
+  test("a live view asks the peer, then re-asks on every { op: tx }", async () => {
     const state = { t: 7 };
     const peer = fakePeer({
       http: (call) =>
@@ -34,7 +34,7 @@ describe("useBasis", () => {
     const { result } = renderHook(
       () => {
         const db = useDb("todos", Todos);
-        // one read, so the session socket the ticks ride is open
+        // one read, so the session socket unsolicited frames ride is open
         useEffect(() => {
           Effect.runPromise(db.q(titles)).catch(() => {});
         }, [db]);
@@ -48,7 +48,7 @@ describe("useBasis", () => {
     expect(infoCalls(peer.calls).length).toBeGreaterThan(0);
 
     state.t = 9;
-    peer.push({ op: "t", t: 9 });
+    peer.push({ op: "tx", t: 9, datoms: [] });
     await waitFor(() => expect(result.current).toBe(9));
   });
 

@@ -2,9 +2,9 @@
  * `db.live` — a standing `db.q` as a `Stream`.
  *
  * Session clients run the engine against the overlay. The stream wakes on
- * a pending apply, ack, `{ op: "tx" }`, or `{ op: "resync" }` — not a
- * `/query` refetch because `t` moved. Pinned `asOf` / `history` still emit
- * once from the peer.
+ * paint: a pending apply, ack, `{ op: "tx" }`, or `{ op: "resync" }`.
+ * Not a `/query` refetch because `t` moved. Pinned `asOf` / `history`
+ * still emit once from the peer.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -140,8 +140,8 @@ describe("q and live are two terminals over one query", () => {
   });
 });
 
-describe("the basis is the wake", () => {
-  test("a tx frame re-runs the query locally", async () => {
+describe("paint is the wake", () => {
+  test("a tx frame re-runs the query locally — no { op: t } required", async () => {
     const world = await users("Ada");
     const state = { t: world.t, datoms: world.datoms };
     const peer = peerAt(state);
@@ -158,30 +158,6 @@ describe("the basis is the wake", () => {
     expect(live.seen).toHaveLength(2);
     expect(live.seen[1]).toEqual([{ name: "Ada" }, { name: "Bob" }]);
     expect(peer.frameOps("q")).toEqual([]);
-
-    await live.stop();
-    await c.dispose();
-  });
-
-  test("a tick the rows did not notice is not an emission", async () => {
-    const world = await users("Ada");
-    const peer = peerAt({ t: world.t, datoms: world.datoms });
-    const c = client(peer);
-    const live = collect(c.ramose.db("movies", Movies).live(names));
-    await settle();
-    expect(live.seen).toHaveLength(1);
-
-    // a t-only tick does not change the overlay — digest-dedup
-    peer.push({ op: "t", t: world.t + 4 });
-    await settle();
-    expect(peer.frameOps("q")).toEqual([]);
-    expect(live.seen).toHaveLength(1);
-
-    const bob = txSnap(await world.conn.transact([{ ":user/name": "Bob" }]));
-    peer.push({ op: "tx", t: bob.t, datoms: bob.datoms });
-    await settle();
-    expect(live.seen).toHaveLength(2);
-    expect(live.seen[1]).toEqual([{ name: "Ada" }, { name: "Bob" }]);
 
     await live.stop();
     await c.dispose();
@@ -361,7 +337,7 @@ describe("a pinned view has no news", () => {
     expect(live.done).toBe(true);
     expect(peer.frameOps("q")[0].asOf).toBe(3);
 
-    peer.push({ op: "t", t: 99 });
+    peer.push({ op: "tx", t: 99, datoms: [] });
     await settle();
     expect(live.seen).toHaveLength(1);
     await c.dispose();

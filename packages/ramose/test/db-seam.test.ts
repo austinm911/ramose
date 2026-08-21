@@ -74,7 +74,7 @@ describe("the pinned coordinate", () => {
 });
 
 describe("the wake", () => {
-  test("a basis tick calls the subscriber; unsubscribe stops it", async () => {
+  test("a { op: tx } frame calls the subscriber; unsubscribe stops it", async () => {
     const peer = fakePeer();
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
@@ -85,9 +85,9 @@ describe("the wake", () => {
     });
     expect(off).toBeDefined();
 
-    // ticks ride the session socket, which a first read opens
+    // unsolicited frames ride the session socket, which a first read opens
     await Effect.runPromise(db.q(query(User)).pipe(Effect.ignore));
-    peer.push({ op: "t", t: 9 });
+    peer.push({ op: "tx", t: 9, datoms: [] });
     await settle();
     expect(wakes).toBeGreaterThan(0);
 
@@ -97,7 +97,7 @@ describe("the wake", () => {
 
     const seen = wakes;
     off!();
-    peer.push({ op: "t", t: 12 });
+    peer.push({ op: "tx", t: 12, datoms: [] });
     await settle();
     expect(wakes).toBe(seen);
     await c.dispose();

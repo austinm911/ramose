@@ -124,9 +124,6 @@ const inProcessPeer = async () => {
   return {
     conn,
     db,
-    tick: () => {
-      for (const push of pushes) push({ op: "t", t: conn.t });
-    },
     pushTx: (datoms: readonly { e: number; a: number; vt: number; v: unknown; t: number; op: boolean }[]) => {
       const wire = datoms.map((d) => toWireDatom(d as never));
       for (const push of pushes) push({ op: "tx", t: conn.t, datoms: wire });
@@ -256,7 +253,7 @@ describe("the app's writes move the app's live stream", () => {
 
     await todos.stop();
     await Effect.runPromise(addTodo(peer.db, "invisible"));
-    peer.tick();
+    peer.pushTx([]);
     await settle();
 
     expect(todos.changes).toBe(seen);

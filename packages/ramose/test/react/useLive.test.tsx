@@ -193,9 +193,9 @@ describe("useLive (query form)", () => {
       await waitFor(() => expect(result.current.rows).toEqual(ids(3)));
       expect((qFrames()[0]!.asOf as number)).toBe(5);
 
-      // the pinned stream has completed; a later tick is nobody's news
+      // the pinned stream has completed; a later tx is nobody's news
       await settle();
-      peer.push({ op: "t", t: 9 });
+      peer.push({ op: "tx", t: 9, datoms: [] });
       await settle();
       expect(qFrames().length).toBe(1);
       expect(result.current.rows).toEqual(ids(3));

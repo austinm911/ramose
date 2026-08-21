@@ -52,7 +52,7 @@ export interface OverlayAck {
 export interface Overlay {
   /** Follow cursor: last walked `t` or snapshot dump `t`. Not max applied `t`. */
   readonly confirmedT: number;
-  /** Bumped on overlay apply / ack / inbound tx / resync — live wakes on it. */
+  /** Bumped on overlay apply / ack / inbound tx / resync — painted facts, not `{ op: t }`. */
   readonly epoch: number;
   ready(retry?: boolean): Effect.Effect<void, DbError>;
   read(
@@ -486,6 +486,10 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       Effect.flatMap(() =>
         Effect.tryPromise({
           try: async () => {
+            // `onMessage` is `void handlePush(...)`. ready() already joined
+            // `applied` once; a `{ op: tx }` can enqueue during the Effect
+            // yield. Join again so this pass's view() is after that paint.
+            await applied;
             const db = view();
             if (op === "pull") {
               const pattern = normalizePullPattern(body.pattern);

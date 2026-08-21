@@ -1,10 +1,10 @@
 /**
  * `useBasis` — where the database's basis is: `db.basis()` on mount, then
- * again on every wake of the db's session (a tick, a local `transact`, a
- * reconnect) — one `GET /db/:name/info` each. An `asOf(t)` view answers `t`
- * synchronously on the first render, with no request; an HTTPS-only client
- * has no session to tick, so the read is one-shot. `undefined` until the
- * first answer lands.
+ * again on every wake of the db's session (a `{ op: "tx" }` / resync, a
+ * local `transact`, a reconnect) — one `GET /db/:name/info` each. An
+ * `asOf(t)` view answers `t` synchronously on the first render, with no
+ * request; an HTTPS-only client has no session to wake, so the read is
+ * one-shot. `undefined` until the first answer lands.
  */
 
 import type { Catalog, ReadDb } from "../db/index.ts";
