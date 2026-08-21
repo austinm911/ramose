@@ -69,10 +69,18 @@ const makeAuth = (options?: {
     ],
   });
 
-type Auth = ReturnType<typeof makeAuth>;
-
 /** Sign a user up and return their id plus a `cookie` header for calls. */
-const signUp = async (auth: Auth, email: string) => {
+const signUp = async (
+  auth: {
+    api: {
+      signUpEmail: (input: {
+        body: { email: string; password: string; name: string };
+        returnHeaders: true;
+      }) => Promise<{ headers: Headers; response: { user: { id: string } } }>;
+    };
+  },
+  email: string,
+) => {
   const { headers, response } = await auth.api.signUpEmail({
     body: { email, password: "password-1234", name: email },
     returnHeaders: true,
@@ -252,7 +260,10 @@ const cookieFrom = (headers: Headers) =>
     .map((c) => c.split(";")[0])
     .join("; ");
 
-const getSession = (auth: { handler: Auth["handler"] }, cookie: string) =>
+const getSession = (
+  auth: { handler: (request: Request) => Response | Promise<Response> },
+  cookie: string,
+) =>
   auth.handler(
     new Request("http://localhost:3000/api/auth/get-session", {
       headers: { cookie },
