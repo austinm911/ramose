@@ -1,10 +1,11 @@
 /**
- * The kanban board. Rows come straight from one `useLive(db, boardQuery)`
- * read (already rank-sorted) against the session overlay. A drag writes
- * exactly two datoms (status + rank); the overlay applies them locally
- * and the standing query re-runs. Until that apply is in `rows`, a
- * just-dropped card is pinned at the insert point so clearing drag
- * state does not flash it back in its old column.
+ * The kanban board. Rows come from one `useLive(db, boardQuery)` against
+ * the session overlay — that live stream is the source of truth. A drag
+ * writes two datoms; overlay pending + apply=notify re-runs the query.
+ * `applyPendingMove` is paint-before-the-next-frame only: clearing drag
+ * chrome in the same event would flash the card in its old column until
+ * React commits the live emission. It is not a second optimistic store
+ * and is not what the two-writer live pins scrape.
  *
  * Desktop uses HTML5 drag-and-drop. Phones never fire those events, so a
  * hold-still then move on a `pointerType: "touch" | "pen"` pointer does

@@ -468,6 +468,7 @@ describe("the board's writes move the board's live stream", () => {
 
     const statusOf = (rows: readonly BoardRow[] | undefined) =>
       Object.fromEntries((rows ?? []).map((r) => [r.title, r.status]));
+    // live rows, not applyPendingMove
     expect(statusOf(phone.rows)).toEqual({ One: "doing", Two: "done" });
     expect(statusOf(computer.rows)).toEqual({ One: "doing", Two: "done" });
     expect(phone.changes).toBeGreaterThan(phoneEmissions);

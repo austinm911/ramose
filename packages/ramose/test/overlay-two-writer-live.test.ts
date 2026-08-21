@@ -14,6 +14,7 @@
  * QueryReplicaDO `applyDatoms` → `notifySessions` (no `clientTxId` — HTTPS
  * never sets writerEcho). A later writer's ack is `t+1` and must not drop
  * the other device's `t`. The pin delivers **only** `{ op: tx }` frames.
+ * Reef `applyPendingMove` is paint-before-the-next-frame, not this scrape.
  */
 
 import { describe, expect, mock, test } from "bun:test";
