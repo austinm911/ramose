@@ -10,7 +10,6 @@ import type { Overlay, OverlayAck } from "./overlay.ts";
 import {
   type PortEvent,
   type PortLike,
-  type PortRequest,
   asPortEvent,
   decodeError,
 } from "./port.ts";
