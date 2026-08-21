@@ -243,6 +243,138 @@ describe("ramoseToken", () => {
   });
 });
 
+const SECRET_A = "a-test-secret-of-at-least-32-characters!";
+const SECRET_B = "a-rotated-secret-of-at-least-32-chars!!";
+
+const cookieFrom = (headers: Headers) =>
+  headers
+    .getSetCookie()
+    .map((c) => c.split(";")[0])
+    .join("; ");
+
+const getSession = (auth: { handler: Auth["handler"] }, cookie: string) =>
+  auth.handler(
+    new Request("http://localhost:3000/api/auth/get-session", {
+      headers: { cookie },
+    }),
+  );
+
+describe("JWKS secret rotation", () => {
+  test("get-session 500s after the signing secret rotates (jwt set-auth-jwt hook)", async () => {
+    const db = memoryDb();
+    const jwtOnly = (secret: string, disableSettingJwtHeader?: boolean) =>
+      betterAuth({
+        database: memoryAdapter(db),
+        secret,
+        baseURL: "http://localhost:3000",
+        emailAndPassword: { enabled: true },
+        plugins: [
+          jwt({
+            ...(disableSettingJwtHeader === undefined
+              ? {}
+              : { disableSettingJwtHeader }),
+            jwt: {
+              issuer: AUTH.issuer,
+              audience: AUTH.audience,
+              expirationTime: `${AUTH.ttl}s`,
+            },
+          }),
+        ],
+      });
+
+    const authA = jwtOnly(SECRET_A);
+    await signUp(authA, "owner@acme.test");
+    // Encrypt a JWKS private key with secret A — /jwks creates the first row.
+    await authA.api.getJwks();
+
+    const authB = jwtOnly(SECRET_B);
+    const signedIn = await authB.api.signInEmail({
+      body: { email: "owner@acme.test", password: "password-1234" },
+      returnHeaders: true,
+    });
+    const cookie = cookieFrom(signedIn.headers);
+    const broken = await getSession(authB, cookie);
+    expect(broken.status).toBe(500);
+
+    // Same cookie, same secret, but the get-session hook does not sign.
+    const authBOff = jwtOnly(SECRET_B, true);
+    const ok = await getSession(authBOff, cookie);
+    expect(ok.status).toBe(200);
+    const body = (await ok.json()) as { user: { email: string } };
+    expect(body.user.email).toBe("owner@acme.test");
+  });
+
+  test("ramoseToken heals JWKS so get-session and mint survive a rotated secret", async () => {
+    const db = memoryDb();
+    const withMint = (secret: string) =>
+      betterAuth({
+        database: memoryAdapter(db),
+        secret,
+        baseURL: "http://localhost:3000",
+        emailAndPassword: { enabled: true },
+        plugins: [
+          organization(),
+          jwt({
+            jwt: {
+              issuer: AUTH.issuer,
+              audience: AUTH.audience,
+              expirationTime: `${AUTH.ttl}s`,
+            },
+          }),
+          ramoseToken({ auth: AUTH, policy: POLICY, classOf: orgClassOf() }),
+        ],
+      });
+
+    const authA = withMint(SECRET_A);
+    const owner = await signUp(authA, "owner@acme.test");
+    await authA.api.createOrganization({
+      body: { name: "Acme", slug: "acme" },
+      headers: owner.headers,
+    });
+    const first = await authA.api.ramoseToken({
+      body: { db: "acme" },
+      headers: owner.headers,
+    });
+    const keysBefore = (await authA.api.getJwks()).keys;
+    expect(keysBefore.length).toBe(1);
+
+    const authB = withMint(SECRET_B);
+    const signedIn = await authB.api.signInEmail({
+      body: { email: "owner@acme.test", password: "password-1234" },
+      returnHeaders: true,
+    });
+    const cookie = cookieFrom(signedIn.headers);
+    const session = await getSession(authB, cookie);
+    expect(session.status).toBe(200);
+    const sessionBody = (await session.json()) as { user: { email: string } };
+    expect(sessionBody.user.email).toBe("owner@acme.test");
+
+    const minted = await authB.api.ramoseToken({
+      body: { db: "acme" },
+      headers: new Headers({ cookie }),
+    });
+    expect(minted.class).toBe("admin");
+    const keysAfter = (await authB.api.getJwks()).keys;
+    expect(keysAfter.length).toBe(2);
+    expect(keysAfter.map((k) => k.kid).sort()).not.toEqual(
+      keysBefore.map((k) => k.kid).sort(),
+    );
+
+    const jwks = createLocalJWKSet(await authB.api.getJwks());
+    const { payload } = await jwtVerify(minted.token, jwks, {
+      issuer: AUTH.issuer,
+      audience: AUTH.audience,
+    });
+    expect(payload.ramose).toEqual({ db: "acme", class: "admin" });
+    // The token minted under secret A still verifies — old public key stayed.
+    const old = await jwtVerify(first.token, jwks, {
+      issuer: AUTH.issuer,
+      audience: AUTH.audience,
+    });
+    expect(old.payload.ramose).toEqual({ db: "acme", class: "admin" });
+  });
+});
+
 describe("classOfRole", () => {
   test("owner and admin map to admin; member to member; the rest to viewer", () => {
     expect(classOfRole("owner")).toBe("admin");
