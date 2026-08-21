@@ -304,6 +304,9 @@ describe("optimistic transact", () => {
         yield* e.add(User.name, "Bob");
       }),
     );
+    await settle();
+    expect(namesOf(live.seen.at(-1))).toEqual(["Ada", "Bob"]);
+
     const kept = run(
       db.transact(function* (tx) {
         const e = yield* tx.entity();
