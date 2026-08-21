@@ -3,8 +3,8 @@
  *
  * Session clients run the engine against the overlay. The stream wakes on
  * paint: a pending apply, ack, `{ op: "tx" }`, or `{ op: "resync" }`.
- * `{ op: "t" }` is not a wake. Not a `/query` refetch because `t` moved.
- * Pinned `asOf` / `history` still emit once from the peer.
+ * Not a `/query` refetch because `t` moved. Pinned `asOf` / `history`
+ * still emit once from the peer.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -158,32 +158,6 @@ describe("paint is the wake", () => {
     expect(live.seen).toHaveLength(2);
     expect(live.seen[1]).toEqual([{ name: "Ada" }, { name: "Bob" }]);
     expect(peer.frameOps("q")).toEqual([]);
-
-    await live.stop();
-    await c.dispose();
-  });
-
-  test("a lone { op: t } is not a wake; live emits after the { op: tx } paint", async () => {
-    const world = await users("Ada");
-    const peer = peerAt({ t: world.t, datoms: world.datoms });
-    const c = client(peer);
-    const live = collect(c.ramose.db("movies", Movies).live(names));
-    await settle();
-    expect(live.seen).toHaveLength(1);
-
-    const bob = txSnap(await world.conn.transact([{ ":user/name": "Bob" }]));
-    // `{ op: t }` still bumps the basis if a test pushes one. Overlay live
-    // must not start a pass — a stale emit here would park until another t.
-    peer.push({ op: "t", t: bob.t });
-    await settle();
-    expect(peer.frameOps("q")).toEqual([]);
-    expect(live.seen).toHaveLength(1);
-    expect(live.seen[0]).toEqual([{ name: "Ada" }]);
-
-    peer.push({ op: "tx", t: bob.t, datoms: bob.datoms });
-    await settle();
-    expect(live.seen).toHaveLength(2);
-    expect(live.seen[1]).toEqual([{ name: "Ada" }, { name: "Bob" }]);
 
     await live.stop();
     await c.dispose();
@@ -363,7 +337,7 @@ describe("a pinned view has no news", () => {
     expect(live.done).toBe(true);
     expect(peer.frameOps("q")[0].asOf).toBe(3);
 
-    peer.push({ op: "t", t: 99 });
+    peer.push({ op: "tx", t: 99, datoms: [] });
     await settle();
     expect(live.seen).toHaveLength(1);
     await c.dispose();

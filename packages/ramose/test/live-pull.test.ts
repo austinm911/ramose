@@ -2,9 +2,8 @@
  * `db.livePull` — a standing `db.pull` as a `Stream`.
  *
  * Session clients pull against the overlay. Wake is overlay paint: apply /
- * ack / `{ op: "tx" }` / `{ op: "resync" }`. `{ op: "t" }` is not a wake.
- * `null` (entity retracted) is a legitimate emission. Pinned views still
- * emit once from the peer.
+ * ack / `{ op: "tx" }` / `{ op: "resync" }`. `null` (entity retracted) is
+ * a legitimate emission. Pinned views still emit once from the peer.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -150,32 +149,6 @@ describe("the basis is the wake", () => {
     await c.dispose();
   });
 
-  test("a lone { op: t } is not a wake; livePull emits after the { op: tx } paint", async () => {
-    const world = await adaWorld();
-    const peer = peerAt({ t: world.t, datoms: world.datoms });
-    const c = client(peer);
-    const ada = { id: world.eid };
-    const live = collect(c.ramose.db("movies", Movies).livePull(ada, shape));
-    await settle();
-    expect(live.seen).toHaveLength(1);
-
-    const older = txSnap(
-      await world.conn.transact([{ ":db/id": world.eid, ":user/age": 40 }]),
-    );
-    peer.push({ op: "t", t: older.t });
-    await settle();
-    expect(peer.frameOps("pull")).toEqual([]);
-    expect(live.seen).toHaveLength(1);
-
-    peer.push({ op: "tx", t: older.t, datoms: older.datoms });
-    await settle();
-    expect(live.seen).toHaveLength(2);
-    expect(live.seen[1]).toEqual({ name: "Ada", age: 40 });
-
-    await live.stop();
-    await c.dispose();
-  });
-
   test("retractEntity on the same connection emits null, and the stream keeps standing", async () => {
     const world = await adaWorld();
     const state = { t: world.t, datoms: world.datoms, ackT: 30, conn: world.conn };
@@ -300,7 +273,7 @@ describe("a pinned view has no news", () => {
     expect(live.done).toBe(true);
     expect(peer.frameOps("pull")[0].asOf).toBe(3);
 
-    peer.push({ op: "t", t: 99 });
+    peer.push({ op: "tx", t: 99, datoms: [] });
     await settle();
     expect(live.seen).toHaveLength(1);
     await c.dispose();

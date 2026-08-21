@@ -30,7 +30,7 @@ POST /db/:name/admin/index | /admin/gc | /admin/replica/reconnect   (admin only 
 | `/query`, `/pull` | reads at the current version, or at `asOf` / with `history`. `t` is the version read at; `/query` also returns `root`, the newest snapshot behind it, and `explain: true` adds the plan (admin only) |
 | `/entity` | every field of one record, at the current version or at `?asOf=`. There is no `history` on this route |
 | `/info` | `t` and `principal` for everyone; admins also get writer, read-copy and Worker internals |
-| `/session` | the WebSocket connection ([glossary](/concepts/glossary/#connection)) behind `Ramose.connect`: reads travel on it. The server still pushes `{ op: "t", t }` when a write this caller can read lands, so existing clients keep working. It also pushes `{ op: "tx", t, datoms }` with the facts they may read, or `{ op: "resync", t }` when their access changes. A write they cannot read does not appear on the socket at all. A client may send `{ op: "sync", from }` to catch up. Writes are always HTTPS |
+| `/session` | the WebSocket connection ([glossary](/concepts/glossary/#connection)) behind `Ramose.connect`: reads travel on it. A visible commit is one frame: `{ op: "tx", t, datoms }` — that `t` is the basis bump. `{ op: "resync", t }` when their access changes. A write they cannot read does not appear on the socket at all. A client may send `{ op: "sync", from }` to catch up. Writes are always HTTPS |
 | `/admin/*` | index now, sweep storage, force a read copy to reconnect |
 
 **Errors on the wire** — see [Errors](/reference/errors/) for the client view.

@@ -12,7 +12,7 @@
  * QueryReplicaDO `applyDatoms` → `notifySessions` (no `clientTxId` — HTTPS
  * never sets writerEcho). A later writer's ack is `t+1` and must not drop
  * the other device's `t`. The pin delivers **only** `{ op: tx }` frames
- * (no `{ op: t }`, no stubbed `nudge`). The test is a lie if it would pass
+ * (no leftover tick, no stubbed `nudge`). The test is a lie if it would pass
  * while one client's **live** row set is missing the other issue's new
  * status — `q()` after the fact is not the assertion.
  */
@@ -196,8 +196,8 @@ const move = (db: Db<typeof Board>, id: number, status: string, rank: number) =>
 /**
  * Shared transactor + QueryReplicaDO + two session overlays. HTTPS commits
  * are real. Replica apply-then-push is real. Overlay sockets receive the
- * frames the replica actually sent — `{ op: tx }` only. `{ op: t }` is
- * leftover and is never required for live to catch up.
+ * frames the replica actually sent — `{ op: tx }` only. A visible commit
+ * is one frame; there is no leftover tick.
  */
 const twoBoards = async (opts: { walk: "on-commit" | "after-acks" }) => {
   const server = await catalogWorld(Board);
@@ -224,7 +224,7 @@ const twoBoards = async (opts: { walk: "on-commit" | "after-acks" }) => {
     browser: new Set<number>(),
   };
 
-  const flushWalk = (mode: "all" | "ticks" | "txs" = "all") => {
+  const flushWalk = () => {
     const pushSide = (
       sock: ReplicaSocket,
       peer: FakePeer,
@@ -232,9 +232,7 @@ const twoBoards = async (opts: { walk: "on-commit" | "after-acks" }) => {
     ) => {
       sock.frames.forEach((frame, i) => {
         if (sent[side].has(i)) return;
-        const op = frame.op;
-        if (mode === "ticks" && op !== "t") return;
-        if (mode === "txs" && op !== "tx") return;
+        if (frame.op !== "tx") return;
         sent[side].add(i);
         peer.socket.push(frame);
       });
@@ -245,7 +243,7 @@ const twoBoards = async (opts: { walk: "on-commit" | "after-acks" }) => {
 
   const applyCommit = async (e: LogEntry) => {
     await replica.applyDatoms(e);
-    if (opts.walk === "on-commit") flushWalk("all");
+    if (opts.walk === "on-commit") flushWalk();
   };
 
   const http = async (call: Call) => {
@@ -303,10 +301,6 @@ const twoBoards = async (opts: { walk: "on-commit" | "after-acks" }) => {
     replicaPhone,
     replicaBrowser,
     flushWalk,
-    tick: (t: number) => {
-      phonePeer.socket.push({ op: "t", t });
-      browserPeer.socket.push({ op: "t", t });
-    },
     resyncs,
     phone,
     browser,
@@ -342,12 +336,11 @@ describe("two clients move two existing issues", () => {
       first,
       later,
     ]);
-    expect(world.replicaPhone.socket.frames.filter((f) => f.op === "t")).toEqual([]);
-    expect(world.replicaBrowser.socket.frames.filter((f) => f.op === "t")).toEqual([]);
+    expect(world.replicaPhone.socket.frames.some((f) => f.op === "t")).toBe(false);
+    expect(world.replicaBrowser.socket.frames.some((f) => f.op === "t")).toBe(false);
 
     const resyncsBeforeWalk = { ...world.resyncs };
-    // txs alone are enough; ticks are not required for live to catch up
-    world.flushWalk("txs");
+    world.flushWalk();
     await waitBoards(phoneLive, browserLive);
 
     expect(world.resyncs).toEqual(resyncsBeforeWalk);
@@ -389,45 +382,4 @@ describe("two clients move two existing issues", () => {
     await world.browserC.dispose();
   });
 
-  test("a lone { op: t } is not a live wake; both boards catch up from { op: tx } paints", async () => {
-    const world = await twoBoards({ walk: "after-acks" });
-    const phoneLive = collect(world.phone.live(boardQuery));
-    const browserLive = collect(world.browser.live(boardQuery));
-    await settle();
-
-    const [phoneAck, browserAck] = await Promise.all([
-      run(move(world.phone, world.one, "doing", 10)),
-      run(move(world.browser, world.two, "done", 20)),
-    ]);
-    const later = Math.max(phoneAck.t, browserAck.t);
-    const laterIsPhone = phoneAck.t > browserAck.t;
-    const resyncsBefore = { ...world.resyncs };
-
-    // Worker no longer sends `{ op: t }` after a visible tx. If a test still
-    // pushes one, overlay live must not start a pass — a stale emit here
-    // would park. No stubbed nudge: handlePush still wake()s after paint.
-    world.tick(later);
-    await settle();
-    const laterAfterTick = statusesOf(
-      (laterIsPhone ? phoneLive : browserLive).seen.at(-1),
-    );
-    expect(laterAfterTick.One === "doing" && laterAfterTick.Two === "done").toBe(
-      false,
-    );
-    expect(bothMoves(phoneLive.seen.at(-1))).toBe(false);
-    expect(bothMoves(browserLive.seen.at(-1))).toBe(false);
-
-    world.flushWalk("txs");
-    await waitBoards(phoneLive, browserLive);
-
-    expect(world.resyncs).toEqual(resyncsBefore);
-    expect(statusesOf(phoneLive.seen.at(-1))).toEqual({ One: "doing", Two: "done" });
-    expect(statusesOf(browserLive.seen.at(-1))).toEqual({ One: "doing", Two: "done" });
-    expect(world.resyncs).toEqual({ phone: 0, browser: 0 });
-
-    await phoneLive.stop();
-    await browserLive.stop();
-    await world.phoneC.dispose();
-    await world.browserC.dispose();
-  });
 });

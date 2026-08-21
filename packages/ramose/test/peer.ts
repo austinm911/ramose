@@ -54,7 +54,7 @@ export interface FakeSocket {
   readonly url: string;
   /** `true` once the client closed it (or it dropped). */
   readonly closed: boolean;
-  /** Push an unsolicited server frame (`{ op: "t", t }`). */
+  /** Push an unsolicited server frame (`{ op: "tx", t, datoms }`). */
   push(frame: unknown): void;
   /** The isolate died. */
   drop(): void;

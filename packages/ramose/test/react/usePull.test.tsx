@@ -132,7 +132,7 @@ describe("usePull", () => {
     await waitFor(() => expect(result.current.rows).toEqual({ title: "then" }));
 
     rerender();
-    peer.push({ op: "t", t: 99 });
+    peer.push({ op: "tx", t: 99, datoms: [] });
     await sleep(20);
     expect(result.current.rows).toEqual({ title: "then" });
     expect(result.current.error).toBeUndefined();

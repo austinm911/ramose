@@ -189,13 +189,12 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
 
   /**
    * Stand a query up. On an overlay session, re-run after each paint
-   * (`{ op: "tx" }` / `{ op: "resync" }` / local `transact`) — not on a
-   * `{ op: "t" }` basis tick. HTTPS live (no overlay) still re-runs when
-   * the session's `t` moves. Requirements are `never` — teardown is fiber
-   * interruption — and a pinned view (`asOf` / `history`) emits once and
-   * completes. A pass that returns the rows already emitted is not emitted
-   * again: a write this query does not see is not a re-render.
-   * Bind params as the second argument.
+   * (`{ op: "tx" }` / `{ op: "resync" }` / local `transact`). HTTPS live
+   * (no overlay) still re-runs when the session's `t` moves. Requirements
+   * are `never` — teardown is fiber interruption — and a pinned view
+   * (`asOf` / `history`) emits once and completes. A pass that returns the
+   * rows already emitted is not emitted again: a write this query does not
+   * see is not a re-render. Bind params as the second argument.
    */
   live<R>(
     input: NavQuery<R, never> | NavQueryBuilder<AnyNamespace, R, never>,
@@ -217,11 +216,10 @@ export interface ReadDb<C extends AnyCatalog = AnyCatalog> {
 
   /**
    * Stand a pull up: `live`'s exact contract over one entity. Overlay
-   * re-runs on paint, not on a `{ op: "t" }` tick; HTTPS live still
-   * fences on `t`. Deduped by digest. `null` (entity gone, or a required
-   * field missing) is a legitimate emission — a retracted entity emits
-   * `null` and keeps standing. A pinned view (`asOf` / `history`) emits
-   * once and completes.
+   * re-runs on paint; HTTPS live still fences on `t`. Deduped by digest.
+   * `null` (entity gone, or a required field missing) is a legitimate
+   * emission — a retracted entity emits `null` and keeps standing. A
+   * pinned view (`asOf` / `history`) emits once and completes.
    */
   livePull<const P>(
     subject: Eid<C> | CatalogEid<C> | LookupRef<C>,
@@ -285,7 +283,7 @@ interface View {
  * `db.asOf(t)` built inline in a render compares equal across renders
  * instead of re-subscribing — or looping — on every one), the pinned
  * coordinate (so `useBasis` answers an `asOf` view with no request), and the
- * session's wake (so `useBasis` re-reads the basis on every tick).
+ * session's wake (so `useBasis` re-reads the basis on every paint).
  *
  * It rides a registry symbol rather than an export so the public barrel
  * stays exactly what `db-portable.test.ts` asserts. The reader lives in
@@ -297,7 +295,7 @@ export interface DbSeam {
   /** `asOf(t)`'s `t`; `undefined` on a live (or history) view. */
   readonly asOf: number | undefined;
   /**
-   * Subscribe to the session's wakes (basis ticks, local writes, drops).
+   * Subscribe to the session's wakes (tx/resync, local writes, drops).
    * Returns the unsubscribe, or `undefined` on an HTTPS-only client, where
    * there is nothing to wake on.
    */
@@ -545,7 +543,7 @@ const makeRead = <C extends AnyCatalog>(
           const epoch = session?.epoch ?? 0;
           // one pass; the wire ladder retries its transient attempts, and
           // withBackoff only re-runs the pass once that ladder is spent.
-          // Overlay does not fence on session.t — `{ op: t }` is not a wake.
+          // Overlay does not fence on session.t — live waits on paint.
           const pass = yield* withBackoff(
             runPass(overlaid ? undefined : seen || undefined),
           );
@@ -646,8 +644,8 @@ const makeRead = <C extends AnyCatalog>(
 /**
  * Resolve when the overlay paints (`epoch`), the socket drops
  * (`generation`), or — HTTPS live only — the session's basis moves past
- * `minT`. Overlay live must not treat `session.t` / `{ op: t }` as a wake:
- * that tick can land before `handlePush` paints the matching `{ op: tx }`.
+ * `minT`. Overlay live must not treat `session.t` as a wake: the bump
+ * from `{ op: tx }.t` lands before `handlePush` paints.
  */
 const awaitWake = (
   session: Session,

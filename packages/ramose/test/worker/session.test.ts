@@ -34,9 +34,6 @@ class FakeSocket implements SocketLike {
   message(frame: unknown): void {
     this.emit("message", { data: typeof frame === "string" ? frame : JSON.stringify(frame) });
   }
-  ticks() {
-    return this.frames.filter((f) => f.op === "t");
-  }
   txs() {
     return this.frames.filter((f) => f.op === "tx");
   }
@@ -212,7 +209,7 @@ describe("frame dispatch", () => {
   });
 });
 
-describe("t frames", () => {
+describe("follow cursor", () => {
   test("HTTP ack does not move the follow cursor; applyEntry does", async () => {
     const socket = new FakeSocket();
     const { dispatch } = fakeDispatch(() => json({ t: 9, txEid: 1, tempids: {}, datoms: [] }));
@@ -221,13 +218,12 @@ describe("t frames", () => {
       filterEntry: async (e) => ({ kind: "tx", datoms: e.datoms }),
     });
     await s.onMessage(JSON.stringify({ id: 1, op: "transact", tx: [] }));
-    expect(socket.frames.map((f) => (f.op === "t" ? `t:${f.t}` : `reply:${f.id}`))).toEqual(["reply:1"]);
+    expect(socket.frames.map((f) => (f.op === undefined ? `reply:${f.id}` : f.op))).toEqual(["reply:1"]);
     expect(s.lastT).toBe(0);
     expect(s.watermark).toBe(0);
     await s.applyEntry({ t: 9, datoms: [wire(9)] }, 1);
-    // from 0 < rootT 1 is a dump, not a leftover `{ op: t }`
+    // from 0 < rootT 1 is a dump — one `{ op: resync, t }`
     expect(socket.resyncs()).toEqual([{ op: "resync", t: 9 }]);
-    expect(socket.ticks()).toEqual([]);
     expect(s.lastT).toBe(9);
     expect(s.watermark).toBe(9);
   });
@@ -238,7 +234,8 @@ describe("t frames", () => {
     const s = session(socket, { dispatch });
     await s.onMessage(JSON.stringify({ id: 1, op: "transact", tx: [] }));
     await s.onMessage(JSON.stringify({ id: 2, op: "q", query: "[:find ?e]" }));
-    expect(socket.ticks()).toEqual([]);
+    expect(socket.txs()).toEqual([]);
+    expect(socket.resyncs()).toEqual([]);
     expect(s.lastT).toBe(0);
   });
 });
@@ -485,7 +482,6 @@ describe("apply-then-push", () => {
     const { socket, s } = attached((t) => (t === 11 ? { kind: "skip" } : { kind: "tx", datoms: [wire(t)] }));
     await s.applyEntry({ t: 11, datoms: [wire(11)] }, 10);
     expect(socket.txs()).toEqual([]);
-    expect(socket.ticks()).toEqual([]);
     expect(socket.resyncs()).toEqual([]);
     expect(s.lastT).toBe(0);
     expect(s.watermark).toBe(11);
@@ -545,7 +541,6 @@ describe("filtered log walk", () => {
     expect(s.lastT).toBe(0);
     expect(s.watermark).toBe(5);
     await s.applyEntry({ t: 6, datoms: [wire(6)] }, 1);
-    expect(socket.ticks()).toEqual([]);
     expect(socket.txs()).toEqual([]);
     expect(socket.resyncs()).toEqual([]);
     expect(s.lastT).toBe(0); // skip must not leak t
@@ -562,7 +557,6 @@ describe("filtered log walk", () => {
     });
     await s.applyEntry({ t: 6, datoms: [wire(6)] }, 1);
     expect(socket.resyncs()).toEqual([{ op: "resync", t: 6 }]);
-    expect(socket.ticks()).toEqual([]); // resync already carried t
     expect(socket.txs()).toEqual([]);
   });
 
@@ -580,7 +574,7 @@ describe("filtered log walk", () => {
     expect(socket.txs()).toEqual([]);
   });
 
-  test("a visible tx is { op: tx, t, datoms } and does not also send { op: t }", async () => {
+  test("a visible tx is one { op: tx, t, datoms } frame", async () => {
     const socket = new FakeSocket();
     const { dispatch } = fakeDispatch();
     const kept = [wire(6)];
@@ -591,7 +585,7 @@ describe("filtered log walk", () => {
     });
     await s.applyEntry({ t: 6, datoms: [wire(6), wire(6)] }, 1);
     expect(socket.txs()).toEqual([{ op: "tx", t: 6, datoms: kept }]);
-    expect(socket.ticks()).toEqual([]);
+    expect(socket.frames.filter((f) => f.op === "t")).toEqual([]);
     expect(s.lastT).toBe(6);
   });
 
@@ -615,7 +609,6 @@ describe("filtered log walk", () => {
     });
     await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: 4 }));
     expect(socket.txs().map((f) => f.t)).toEqual([6, 8]);
-    expect(socket.ticks()).toEqual([]);
     expect(socket.resyncs()).toEqual([]);
     expect(s.watermark).toBe(8);
     expect(socket.replies()).toEqual([{ id: 1, status: 200, body: { t: 8, from: 4 } }]);
@@ -661,7 +654,6 @@ describe("filtered log walk", () => {
     });
     await s.applyEntry({ t: 6, datoms: [wire(6)] }, 1).catch(() => undefined);
     expect(socket.txs()).toEqual([]);
-    expect(socket.ticks()).toEqual([]);
     expect(s.lastT).toBe(0);
     expect(socket.closed).toBe(true);
     expect(socket.closeCode).toBe(1011);
@@ -734,7 +726,6 @@ describe("filtered log walk", () => {
     });
     await s.applyEntry({ t: 11, datoms: [wire(11)] }, 10);
     expect(socket.txs()).toEqual([]);
-    expect(socket.ticks()).toEqual([]);
     expect(socket.resyncs()).toEqual([]);
     expect(s.lastT).toBe(0);
     expect(s.watermark).toBe(11);
@@ -961,14 +952,13 @@ describe("sieve security: openSession + decideSessionTx", () => {
       principal: ada,
       readLog: async () => log,
       filterEntry: sieveOf(conn, policy),
+      seed: { lastT: seedT, watermark: 0 },
     });
-    s.notifyT(seedT);
     expect(s.lastT).toBe(seedT);
     const rep = await conn.transact([{ ":db/id": "secret", ":doc/title": "Cal only", ":doc/owner": ids.cal, ":doc/project": ids.other }]);
     entries.push({ t: rep.t, datoms: rep.txData.map(toWireDatom) });
     log = { t: conn.t, rootT: 1, entries: [...entries] };
     await s.onMessage(JSON.stringify({ id: 1, op: "sync", from: seedT }));
-    expect(socket.ticks()).toEqual([{ op: "t", t: seedT }]);
     expect(socket.txs()).toEqual([]);
     expect(socket.resyncs()).toEqual([]);
     expect(s.lastT).toBe(seedT);
@@ -988,7 +978,6 @@ describe("sieve security: openSession + decideSessionTx", () => {
       filterEntry: sieveOf(conn, policy),
       snapshot: snapshotOf(conn, policy),
     });
-    s.notifyT(seedT);
     const rep = await conn.transact([[":db/retract", ids.org, ":org/members", ids.bea]]);
     entries.push({ t: rep.t, datoms: rep.txData.map(toWireDatom) });
     log = { t: conn.t, rootT: 1, entries: [...entries] };
@@ -1021,10 +1010,6 @@ describe("sieve security: openSession + decideSessionTx", () => {
     const grantS = session(grantSock, { ...opts, principal: cal });
     const adaS = session(createAda, { ...opts, principal: ada });
     const beaS = session(createBea, { ...opts, principal: bea });
-    grantS.notifyT(seedT);
-    adaS.notifyT(seedT);
-    beaS.notifyT(seedT);
-
     const grant = await conn.transact([[":db/add", ids.org, ":org/members", ids.cal]]);
     entries.push({ t: grant.t, datoms: grant.txData.map(toWireDatom) });
     log = { t: conn.t, rootT: 1, entries: [...entries] };
@@ -1069,7 +1054,6 @@ describe("sieve security: openSession + decideSessionTx", () => {
     const adaS = session(adaSock, { dispatch, principal: ada, readLog: async () => adaLog, filterEntry: sieveOf(conn, policy) });
     await adaS.onMessage(JSON.stringify({ id: 1, op: "sync", from: seedT }));
     expect(adaSock.txs().map((f) => f.t)).toEqual([title.t, grant.t, created.t]);
-    expect(adaSock.ticks()).toEqual([]);
     expect(adaSock.resyncs()).toEqual([]);
     expect(JSON.stringify(adaSock.frames)).not.toContain("Cal only");
 

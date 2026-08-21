@@ -3,8 +3,7 @@
  *
  * `GET /db/:name/session` is the only socket the client speaks, and it
  * terminates in the peer Worker's isolate. Reads become correlated frames on
- * it, unsolicited `{ op: "tx" }` frames arrive (and leftover `{ op: "t" }`
- * still bumps the basis), and — unlike the socket this
+ * it, unsolicited `{ op: "tx" }` frames arrive, and — unlike the socket this
  * replaces — a drop is not terminal: the next read opens a fresh socket, with
  * the token re-read. A 401/403 is handled in place with `{ op: "auth" }`.
  */

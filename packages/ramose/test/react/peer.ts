@@ -4,8 +4,9 @@
  * a recording `fetch`. Just enough of the session protocol for the hooks:
  * an `answer` decides each frame's reply (`{ id, body: { t, root, result } }`
  * by default, `undefined` to hold it, `delay` to answer late), `push`
- * delivers an unsolicited server frame — `{ op: "t", t }` is how a test
- * moves the basis — and `http` answers HTTPS (`GET /db/:name/info` included).
+ * delivers an unsolicited server frame — `{ op: "tx", t, datoms }` is how
+ * a test moves the basis — and `http` answers HTTPS (`GET /db/:name/info`
+ * included).
  *
  * The full-protocol fake lives in `packages/ramose/test/peer.ts`; this one
  * stays local so the react package's tests do not reach into another
@@ -44,7 +45,7 @@ export interface FakeSocket {
   readonly closed: boolean;
   /** Every frame this socket received, oldest first. */
   readonly sent: Frame[];
-  /** Deliver a server frame (`{ op: "t", t }`, or a held frame's reply). */
+  /** Deliver a server frame (`{ op: "tx", t, datoms }`, or a held frame's reply). */
   push(frame: unknown): void;
   drop(): void;
 }

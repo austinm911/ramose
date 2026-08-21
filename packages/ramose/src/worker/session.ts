@@ -38,12 +38,6 @@ export interface AuthAck {
   principal?: WirePrincipal;
 }
 
-/** Unsolicited: the basis this session reads from has moved to `t`. */
-export interface TickFrame {
-  op: "t";
-  t: number;
-}
-
 /** Unsolicited: facts this principal may read from one committed tx. */
 export interface TxPushFrame {
   op: "tx";
@@ -135,8 +129,6 @@ export interface Session {
    * at enqueue — each job starts from the cursor as it is when it runs.
    */
   applyEntry(entry: SessionLogEntry, rootT: number): Promise<void>;
-  /** Send `{ op: "t", t }` if this is news. Visible tx / resync do not call this. */
-  notifyT(t: number): void;
   close(): void;
   /** Highest `t` this socket has been told about (does not advance on a skipped empty). */
   readonly lastT: number;
@@ -275,7 +267,7 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     if (!wasDead) socket.close(1008, "unauthorized");
   };
 
-  const send = (frame: ReplyFrame | TickFrame | TxPushFrame | ResyncFrame | AuthAck) => {
+  const send = (frame: ReplyFrame | TxPushFrame | ResyncFrame | AuthAck) => {
     if (dead) return;
     try {
       socket.send(JSON.stringify(frame));
@@ -292,15 +284,9 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
     }
   };
 
-  /** This socket has been told about `t` (a visible tx / resync). No `{ op: t }`. */
+  /** This socket has been told about `t` (a visible tx / resync). Skips stay silence. */
   const seenT = (t: number): void => {
     if (typeof t === "number" && Number.isFinite(t) && t > lastT) lastT = t;
-  };
-
-  const notifyT = (t: number) => {
-    if (dead || typeof t !== "number" || !Number.isFinite(t) || t <= lastT) return;
-    lastT = t;
-    send({ op: "t", t });
   };
 
   const pushResync = async (t: number): Promise<void> => {
@@ -539,7 +525,6 @@ export function openSession(socket: SocketLike, options: SessionOptions): Sessio
   return {
     onMessage,
     applyEntry,
-    notifyT,
     close() {
       const wasDead = dead;
       die();

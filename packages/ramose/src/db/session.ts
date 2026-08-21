@@ -5,8 +5,8 @@
  * Worker verifies the caller and upgrades onto the replica that session
  * already queries — no Durable Object is reachable or nameable from here.
  * Reads (`q`, `pull`) and unsolicited `{ op: "tx" }` / `{ op: "resync" }`
- * frames ride it (those frames already carry `t`). `{ op: "t" }` is leftover
- * and only bumps the basis if a test still pushes one. Writes never ride
+ * frames ride it. A visible commit is one frame: `{ op: "tx", t, datoms }`
+ * — that `t` is the basis bump, same as a read reply. Writes never ride
  * the socket (`transact` is HTTPS, so `processTx` is untouched).
  *
  * Unlike the socket this replaces, a drop is **not** terminal. The socket is
@@ -14,8 +14,8 @@
  * opens a fresh one — re-reading the token, because a token is
  * `Effect<Redacted<string>>` and is re-read on every (re)connect. A standing
  * `db.live` therefore survives the network: it is woken by
- * {@link Session.onWake} on both a basis tick and a drop, and its next pass
- * reconnects.
+ * {@link Session.onWake} on paint (`nudge`) and on a drop, and its next
+ * pass reconnects.
  *
  * `Unauthorized` is handled in place: the frame's 401/403 makes the session
  * re-read the token, send `{ op: "auth", token }` on the *same* socket, and
@@ -91,7 +91,7 @@ export interface SessionOptions {
   /**
    * Unsolicited `{ op: "tx" }` / `{ op: "resync" }` frames. The overlay
    * applies them. Those frames already carry `t` and bump the basis the
-   * same way a read reply does. `{ op: "t" }` still only bumps the basis.
+   * same way a read reply does.
    */
   readonly onPush?:
     | ((frame: Record<string, unknown>) => void | Promise<void>)
@@ -101,7 +101,7 @@ export interface SessionOptions {
 export interface Session {
   /** One correlated frame out, its reply back. Reconnects and re-auths as needed. */
   request(frame: Record<string, unknown>): Promise<Reply>;
-  /** Highest transaction `t` this session has seen — ticks, read replies, local writes. */
+  /** Highest transaction `t` this session has seen — tx/resync frames, read replies, local writes. */
   readonly t: number;
   /** Bumped on every (re)connect, so a waiter can tell a reconnect from a tick. */
   readonly generation: number;
@@ -120,9 +120,9 @@ export interface Session {
    * that replaced a layer at the same confirmed basis.
    */
   nudge(): void;
-  /** Bumped by {@link nudge} (and never by a basis tick alone). */
+  /** Bumped by {@link nudge} (paint), not by a basis bump alone. */
   readonly epoch: number;
-  /** Called on a basis tick *and* on a dropped socket. Returns the unsubscribe. */
+  /** Called on a basis bump, a paint nudge, and a dropped socket. Returns the unsubscribe. */
   onWake(cb: () => void): () => void;
   /** Overlay registers for `{ op: "tx" }` / `{ op: "resync" }`. */
   onPush(cb: (frame: Record<string, unknown>) => void | Promise<void>): () => void;
@@ -241,13 +241,13 @@ export const openSession = (options: SessionOptions): Session => {
       });
       return;
     }
-    // `{ op: tx }` / `{ op: resync }` already carry `t` — bump from that
-    // frame, not a leftover `{ op: t }`. Overlay live waits on paint
-    // (`nudge` after apply), not on this bump.
-    if (frame.op === "t" || frame.op === "tx" || frame.op === "resync") {
+    // One unsolicited op per visible commit: `{ op: tx, t, datoms }` bumps
+    // the basis and paints. Overlay live waits on paint (`nudge` after
+    // apply), not on this bump.
+    if (frame.op === "tx" || frame.op === "resync") {
       bump(frame.t);
+      pushFrame(frame);
     }
-    if (frame.op === "tx" || frame.op === "resync") pushFrame(frame);
   };
 
   const connect = (): Promise<void> => {
