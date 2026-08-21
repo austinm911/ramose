@@ -38,6 +38,7 @@ import { Board, COLUMN_TINTS } from "../components/Board.tsx";
 import { IssueDetail } from "../components/IssueDetail.tsx";
 import { TimeTravelBar } from "../components/TimeTravel.tsx";
 import { createIssue, moveIssue, seedSampleIssues, type NewIssue } from "../mutations.ts";
+import { rankAfter } from "../../domain/rank.ts";
 import type { Workspace } from "../ramose.ts";
 import { useBoardSelection } from "../route.tsx";
 import { INVITABLE_ROLES } from "../../domain/roles.ts";
@@ -248,6 +249,42 @@ export const BoardScreen = ({
   const { run } = useTransact({
     onError: (error) => toast("error", errorMessage(error)),
   });
+
+  // Dev-only: two-window same-ms moves. Same `run(moveIssue)` path as a drag.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    type ReefProbe = {
+      __reefBoard?: () => readonly {
+        id: number;
+        status: string;
+        title: string;
+        rank: number;
+      }[];
+      __reefMove?: (
+        id: number,
+        status: Status,
+        rank?: number,
+      ) => Promise<unknown>;
+    };
+    const w = window as Window & ReefProbe;
+    w.__reefBoard = () =>
+      (liveRows ?? []).map((r) => ({
+        id: r.id,
+        status: r.status,
+        title: r.title,
+        rank: r.rank,
+      }));
+    w.__reefMove = (id, status, rank) => {
+      const rows = liveRows ?? [];
+      const dest = rows.filter((r) => r.status === status && r.id !== id);
+      const at = rank ?? rankAfter(dest[dest.length - 1]?.rank);
+      return run(moveIssue(db, id, status, at));
+    };
+    return () => {
+      delete w.__reefBoard;
+      delete w.__reefMove;
+    };
+  }, [db, run, liveRows]);
 
   useEscape(
     useCallback(() => {
