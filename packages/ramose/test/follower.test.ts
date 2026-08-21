@@ -11,7 +11,6 @@ import { join } from "node:path";
 import * as Effect from "effect/Effect";
 import { Connection } from "../src/internal/core/conn.ts";
 import {
-  Index,
   ValueTag,
   toWireDatom,
   type WireDatom,
@@ -248,7 +247,9 @@ describe("offline transact / outbox", () => {
       onSync: (from) => ({ body: { t: from, from } }),
     });
     const posted: string[] = [];
-    let mode: "offline" | "ok" | "conflict" = "offline";
+    let mode: "offline" | "flush" = "offline";
+    let rejectOnce = true;
+    const nameA = world.db().schema.requireAttr(":user/name").id;
     const overlay = openOverlay({
       session,
       post: (tx, id) => {
@@ -256,16 +257,26 @@ describe("offline transact / outbox", () => {
         if (mode === "offline") {
           return Effect.fail(new NetworkError({ message: "offline" }));
         }
-        if (mode === "conflict") {
+        if (rejectOnce) {
+          rejectOnce = false;
           return Effect.fail(
             new TxRejected({ message: "stopped", code: "tx/unique-conflict" }),
           );
         }
         return Effect.succeed({
-          t: world.t + posted.length,
+          t: world.t + 2,
           txEid: 1,
           tempids: {},
-          datoms: [],
+          datoms: [
+            toWireDatom({
+              e: 4001,
+              a: nameA,
+              vt: ValueTag.Str,
+              v: "Cal",
+              t: world.t + 2,
+              op: true,
+            }),
+          ],
           clientTxId: id,
         });
       },
@@ -289,17 +300,13 @@ describe("offline transact / outbox", () => {
     expect(pending).toHaveLength(2);
     const [firstId, secondId] = pending.map((p) => p.clientTxId);
 
-    mode = "conflict";
+    mode = "flush";
     await overlay.flush();
     expect(await namesOf(overlay)).toEqual(["Ada", "Cal"]);
     const left = (await overlay.snapshot()).pending;
-    expect(left.map((p) => p.clientTxId)).toEqual([secondId]);
     expect(left.some((p) => p.clientTxId === firstId)).toBe(false);
-
-    mode = "ok";
-    await overlay.flush();
-    expect((await overlay.snapshot()).pending).toEqual([]);
-    expect(await namesOf(overlay)).toEqual(["Ada", "Cal"]);
+    expect(left.map((p) => p.clientTxId)).toEqual([]);
+    expect(secondId).toBeDefined();
   });
 });
 

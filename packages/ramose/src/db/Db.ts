@@ -338,7 +338,14 @@ const attachSeam = (
       `?asOf=${view.asOf ?? ""}&history=${view.history === true}` +
       `&minT=${view.minT ?? ""}`,
     asOf: view.asOf,
-    onWake: (cb) => wire.session(name)?.onWake(cb),
+    onWake: (cb) => {
+      // SharedWorker tabs have no local session until the port is open.
+      // Overlay apply is the notify — subscribe there when the socket
+      // is owned by the worker.
+      const socket = wire.session(name);
+      if (socket !== undefined) return socket.onWake(cb);
+      return wire.overlay?.(name)?.onChange(cb);
+    },
     t: () => wire.session(name)?.t,
   };
   (db as Record<symbol, unknown>)[DB_SEAM] = seam;

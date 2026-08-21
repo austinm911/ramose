@@ -124,6 +124,13 @@ export interface DatabasesConfig {
   readonly headers?: Record<string, string> | undefined;
   readonly persist?: ByteStore | undefined;
   readonly follower?: "auto" | "page" | undefined;
+  /**
+   * True when the caller injected a socket factory (tests, a custom
+   * `webSocket`). SharedWorker stays off so the fake peer still owns the
+   * session. `connect` / `layer` set this only when `options.webSocket`
+   * was passed — an ambient `WebSocket` is not an injection.
+   */
+  readonly socketInjected?: boolean | undefined;
 }
 
 /** The credential as the wire wants it: a string, or nothing. */
@@ -189,9 +196,16 @@ export const makeDatabases = (
     return storeOnce;
   };
 
+  // SharedWorker is the one follower per origin. An injected socket is a
+  // test (or custom) transport — stay in-page so the fake peer owns the
+  // session. `configure` fills an ambient WebSocket as the *fallback*
+  // factory; that is not an injection. `follower: "page"` is the documented
+  // no-worker path.
+  const socketInjected =
+    config.socketInjected ?? config.webSocket !== undefined;
   const useShared =
     config.follower !== "page" &&
-    config.webSocket === undefined &&
+    !socketInjected &&
     typeof SharedWorker === "function";
 
   let workerPort: MessagePort | undefined;
@@ -576,6 +590,7 @@ const configure = (
       webSocket: socket,
       persist: options.persist,
       follower: options.follower,
+      socketInjected: options.webSocket !== undefined,
     });
   });
 
