@@ -1,10 +1,10 @@
 /**
  * `db.live` — a standing `db.q` as a `Stream`.
  *
- * Session clients run the engine against the overlay. The stream wakes on
- * paint: a pending apply, ack, `{ op: "tx" }`, or `{ op: "resync" }`.
- * Not a `/query` refetch because `t` moved. Pinned `asOf` / `history`
- * still emit once from the peer.
+ * Session clients run the engine against the overlay. The stream re-runs
+ * when that overlay mutates: apply is the notify (pending, ack,
+ * `{ op: "tx" }`, `{ op: "resync" }`). Not a `/query` refetch because `t`
+ * moved. Pinned `asOf` / `history` still emit once from the peer.
  */
 
 import { describe, expect, test } from "bun:test";

@@ -252,6 +252,86 @@ describe("optimistic transact", () => {
     await c.dispose();
   });
 
+  test("a 409 drops only that pending layer; live reverts without remount", async () => {
+    const server = await moviesWorld();
+    await server.transact([{ ":user/name": "Ada" }]);
+    let releaseFail!: () => void;
+    let releaseKeep!: () => void;
+    const failGate = new Promise<void>((r) => {
+      releaseFail = r;
+    });
+    const keepGate = new Promise<void>((r) => {
+      releaseKeep = r;
+    });
+    let posts = 0;
+    const peer = fakePeer({
+      http: async (call) => {
+        if (!call.url.endsWith("/transact")) return { body: { t: server.t } };
+        posts += 1;
+        if (posts === 1) {
+          await failGate;
+          return {
+            status: 409,
+            body: { error: "denied", tag: "TxRejected", code: "tx/unique-conflict" },
+          };
+        }
+        await keepGate;
+        const rep = await server.transact(call.body.tx);
+        return {
+          body: {
+            t: rep.t,
+            txEid: rep.txEid,
+            tempids: rep.tempids,
+            datoms: rep.txData.map(toWireDatom),
+            clientTxId: call.body.clientTxId,
+          },
+        };
+      },
+    });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    await seedClient(peer, db, server);
+
+    const live = collect(db.live(names));
+    await settle();
+    const namesOf = (rows: readonly { name: string }[] | undefined) =>
+      (rows ?? []).map((r) => r.name).sort();
+    expect(namesOf(live.seen.at(-1))).toEqual(["Ada"]);
+
+    const denied = runFail(
+      db.transact(function* (tx) {
+        const e = yield* tx.entity();
+        yield* e.add(User.name, "Bob");
+      }),
+    );
+    await settle();
+    expect(namesOf(live.seen.at(-1))).toEqual(["Ada", "Bob"]);
+
+    const kept = run(
+      db.transact(function* (tx) {
+        const e = yield* tx.entity();
+        yield* e.add(User.name, "Cy");
+      }),
+    );
+    await settle();
+    expect(namesOf(live.seen.at(-1))).toEqual(["Ada", "Bob", "Cy"]);
+
+    releaseFail();
+    const err = await denied;
+    await settle();
+    expect(err._tag).toBe("TxRejected");
+    expect(namesOf(live.seen.at(-1))).toEqual(["Ada", "Cy"]);
+    expect(live.error).toBeUndefined();
+
+    releaseKeep();
+    await kept;
+    await settle();
+    expect(namesOf(live.seen.at(-1))).toEqual(["Ada", "Cy"]);
+
+    await live.stop();
+    await c.dispose();
+  });
+
   test("local unique conflict does not POST", async () => {
     const server = await moviesWorld();
     await server.transact([
@@ -1144,6 +1224,77 @@ describe("filtered tx frames (#112 sieve)", () => {
     await calTitles.stop();
     await adaC.dispose();
     await calC.dispose();
+  });
+});
+
+describe("apply is the notify", () => {
+  test("a { op: tx } paints and notifies before handlePush returns", async () => {
+    const schemaConn = await Connection.create();
+    await schemaConn.transact(schemaTx(Movies) as unknown[]);
+    const nameA = schemaConn.db().schema.requireAttr(":user/name").id;
+    const ada = toWireDatom({
+      e: 2001,
+      a: nameA,
+      vt: ValueTag.Str,
+      v: "Ada",
+      t: 40,
+      op: true,
+    });
+
+    let basis = 0;
+    let sessionEpoch = 0;
+    const session: Session = {
+      get t() {
+        return basis;
+      },
+      generation: 1,
+      principal: undefined,
+      connects: 1,
+      closed: false,
+      get epoch() {
+        return sessionEpoch;
+      },
+      request: async (frame) => {
+        if (frame.op === "sync") return { status: 200, body: { t: 39, from: frame.from ?? 0 } };
+        return { status: 200, body: {} };
+      },
+      bump: (n) => {
+        if (n > basis) basis = n;
+      },
+      nudge: () => {
+        sessionEpoch += 1;
+      },
+      onWake: () => () => {},
+      onPush: () => () => {},
+      close: () => {},
+    };
+
+    const overlay = openOverlay({
+      session,
+      post: () => Effect.succeed({}),
+      catalog: Movies,
+    });
+    await run(overlay.ready());
+
+    let notified = 0;
+    overlay.onChange(() => {
+      notified += 1;
+    });
+    const before = overlay.epoch;
+    const pending = overlay.handlePush({ op: "tx", t: 40, datoms: [ada] });
+    expect(notified).toBe(1);
+    expect(overlay.epoch).toBe(before + 1);
+    const body = (await run(
+      overlay.read("q", {
+        query: {
+          find: ["?n"],
+          where: [["?e", ":user/name", "?n"]],
+        },
+      }),
+    )) as { result: [string][]; epoch: number };
+    expect(body.result).toEqual([["Ada"]]);
+    expect(body.epoch).toBe(overlay.epoch);
+    await pending;
   });
 });
 

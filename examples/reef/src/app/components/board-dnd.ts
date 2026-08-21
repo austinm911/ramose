@@ -102,8 +102,9 @@ export const pendingMoveSettled = (
 };
 
 /**
- * Keep a just-dropped card at its insert point until `useLive` catches up.
- * Clearing drag state first would flash the card back in its old column.
+ * Paint-before-the-next-frame: pin a just-dropped card at the insert
+ * point until the overlay live emission lands in React. Not a second
+ * store — `useLive` is the board; this only covers the render before it.
  */
 export const applyPendingMove = <T extends { id: number; status: string; rank: number }>(
   rows: readonly T[],

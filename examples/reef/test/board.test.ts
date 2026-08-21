@@ -442,6 +442,8 @@ describe("the board's writes move the board's live stream", () => {
     const one = phone.rows!.find((r) => r.title === "One")!.id;
     const two = phone.rows!.find((r) => r.title === "Two")!.id;
     const qBefore = peer.queryOps().length;
+    const phoneEmissions = phone.changes;
+    const computerEmissions = computer.changes;
 
     await Promise.all([
       Effect.runPromise(moveIssue(peer.db, one, "doing", 10)),
@@ -466,11 +468,83 @@ describe("the board's writes move the board's live stream", () => {
 
     const statusOf = (rows: readonly BoardRow[] | undefined) =>
       Object.fromEntries((rows ?? []).map((r) => [r.title, r.status]));
+    // live rows, not applyPendingMove
     expect(statusOf(phone.rows)).toEqual({ One: "doing", Two: "done" });
     expect(statusOf(computer.rows)).toEqual({ One: "doing", Two: "done" });
+    expect(phone.changes).toBeGreaterThan(phoneEmissions);
+    expect(computer.changes).toBeGreaterThan(computerEmissions);
     expect(peer.queryOps()).toHaveLength(qBefore);
     expect(phone.error).toBeUndefined();
     expect(computer.error).toBeUndefined();
+
+    await phone.stop();
+    await computer.stop();
+    await peer.dispose();
+  });
+
+  test("two inbound { op: tx } frames (no local pending): both live boards show both moves", async () => {
+    const peer = await inProcessPeer();
+    await Effect.runPromise(
+      createIssue(peer.db, peer.myEid, undefined, {
+        title: "One",
+        status: "todo",
+        priority: 2,
+      }),
+    );
+    await Effect.runPromise(
+      createIssue(peer.db, peer.myEid, 1024, {
+        title: "Two",
+        status: "todo",
+        priority: 2,
+      }),
+    );
+
+    const other = peer.openClient();
+    const phone = live(peer.db.live(boardQuery));
+    const computer = live(other.db.live(boardQuery));
+    await awaitLive(phone, () => titles(phone.rows).length === 2);
+    await awaitLive(computer, () => titles(computer.rows).length === 2);
+    const one = phone.rows!.find((r) => r.title === "One")!.id;
+    const two = phone.rows!.find((r) => r.title === "Two")!.id;
+    const qBefore = peer.queryOps().length;
+    const phoneEmissions = phone.changes;
+    const computerEmissions = computer.changes;
+
+    const first = await peer.conn.transact([
+      [":db/add", one, ":issue/status", "doing"],
+      [":db/add", one, ":issue/rank", 10],
+    ]);
+    peer.pushTx(first.txData.map(toWireDatom));
+    const later = await peer.conn.transact([
+      [":db/add", two, ":issue/status", "done"],
+      [":db/add", two, ":issue/rank", 20],
+    ]);
+    peer.pushTx(later.txData.map(toWireDatom));
+
+    await awaitLive(
+      phone,
+      () =>
+        phone.rows?.some((r) => r.title === "One" && r.status === "doing") ===
+          true &&
+        phone.rows?.some((r) => r.title === "Two" && r.status === "done") ===
+          true,
+    );
+    await awaitLive(
+      computer,
+      () =>
+        computer.rows?.some((r) => r.title === "One" && r.status === "doing") ===
+          true &&
+        computer.rows?.some((r) => r.title === "Two" && r.status === "done") ===
+          true,
+    );
+
+    const statusOf = (rows: readonly BoardRow[] | undefined) =>
+      Object.fromEntries((rows ?? []).map((r) => [r.title, r.status]));
+    expect(statusOf(phone.rows)).toEqual({ One: "doing", Two: "done" });
+    expect(statusOf(computer.rows)).toEqual({ One: "doing", Two: "done" });
+    expect(phone.changes).toBeGreaterThan(phoneEmissions);
+    expect(computer.changes).toBeGreaterThan(computerEmissions);
+    expect(peer.queryOps()).toHaveLength(qBefore);
 
     await phone.stop();
     await computer.stop();

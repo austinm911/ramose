@@ -2,9 +2,11 @@
  * Session-client overlay: a confirmed log follower plus pending novelty
  * layers. HTTPS-only clients never construct one.
  *
- * Inbound confirmed datoms are already assigned (`t`, eids) — `applyDatoms`,
- * never `processTx`. Pending layers stay off the confirmed log and are never
- * sent to other sessions.
+ * The overlay view is the current-view store. Applying datoms (pending,
+ * ack, inbound `{ op: tx }`, resync) is the notify — same step, after the
+ * facts are visible to `view()`. Inbound confirmed datoms are already
+ * assigned (`t`, eids) — `applyDatoms`, never `processTx`. Pending layers
+ * stay off the confirmed log and are never sent to other sessions.
  */
 
 import { Connection } from "../internal/core/conn.ts";
@@ -52,8 +54,14 @@ export interface OverlayAck {
 export interface Overlay {
   /** Follow cursor: last walked `t` or snapshot dump `t`. Not max applied `t`. */
   readonly confirmedT: number;
-  /** Bumped on overlay apply / ack / inbound tx / resync — painted facts, not `{ op: t }`. */
+  /**
+   * Bumped in the same step as a view-visible mutation (pending, ack,
+   * inbound `{ op: tx }`, resync). Live waits on this, not on a session
+   * epoch snapshotted before `view()`.
+   */
   readonly epoch: number;
+  /** Fired after {@link epoch} moves — apply is the notify. */
+  onChange(cb: () => void): () => void;
   ready(retry?: boolean): Effect.Effect<void, DbError>;
   read(
     op: "q" | "pull",
@@ -267,17 +275,47 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
   let readyGen = -1;
   let opening: Promise<void> | undefined;
   let applied: Promise<void> = Promise.resolve();
+  let applyQueued = 0;
   let outbox: Promise<unknown> = Promise.resolve();
+  const listeners = new Set<() => void>();
 
+  /**
+   * Orderer only. An idle, sync `fn` (a `{ op: tx }` with a ready
+   * follower) runs before this returns — apply is the notify. A busy
+   * queue (in-flight resync) defers `fn` onto the tail.
+   */
   const enqueueApply = (fn: () => void | Promise<void>): Promise<void> => {
-    const next = applied.then(fn, fn);
+    if (applyQueued === 0) {
+      applyQueued = 1;
+      try {
+        const result = fn();
+        if (result === undefined) {
+          applyQueued -= 1;
+          return Promise.resolve();
+        }
+        const done = Promise.resolve(result).finally(() => {
+          applyQueued -= 1;
+        });
+        applied = done.then(() => undefined, () => undefined);
+        return done;
+      } catch (err) {
+        applyQueued -= 1;
+        return Promise.reject(err);
+      }
+    }
+    applyQueued += 1;
+    const next = applied.then(fn, fn).finally(() => {
+      applyQueued -= 1;
+    });
     applied = next.then(() => undefined, () => undefined);
     return next;
   };
 
-  const wake = (): void => {
+  /** Apply is the notify: epoch moves after the view already has the facts. */
+  const notify = (): void => {
     epoch += 1;
     options.session.nudge();
+    for (const cb of [...listeners]) cb();
   };
 
   const pendingDatoms = (): Datom[] => {
@@ -486,11 +524,14 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       Effect.flatMap(() =>
         Effect.tryPromise({
           try: async () => {
-            // `onMessage` is `void handlePush(...)`. ready() already joined
-            // `applied` once; a `{ op: tx }` can enqueue during the Effect
-            // yield. Join again so this pass's view() is after that paint.
+            // Join the apply queue (resync / ack). Inbound `{ op: tx }`
+            // applies in the message turn when the queue is idle.
             await applied;
             const db = view();
+            // Same turn as view() — a waiter that can observe a newer epoch
+            // than this view must not exist. Live parks on `epoch`, not on a
+            // session snapshot taken before the pass.
+            const viewed = epoch;
             if (op === "pull") {
               const pattern = normalizePullPattern(body.pattern);
               const unknown = unknownPullAttrs(db, pattern as { kind: string; attr?: string }[]);
@@ -504,15 +545,21 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                 typeof subject === "number"
                   ? subject
                   : await db.entid(subject as number | string | [string, unknown]);
-              if (eid === undefined) return { t: confirmedT, result: null };
-              return { t: confirmedT, result: await enginePull(db, eid, pattern) };
+              if (eid === undefined) {
+                return { t: confirmedT, result: null, epoch: viewed };
+              }
+              return {
+                t: confirmedT,
+                result: await enginePull(db, eid, pattern),
+                epoch: viewed,
+              };
             }
             const result = await engineQuery(
               db,
               body.query as object,
               Array.isArray(body.inputs) ? body.inputs : [],
             );
-            return { t: confirmedT, root: confirmedT, result };
+            return { t: confirmedT, root: confirmedT, result, epoch: viewed };
           },
           catch: classifyQuery,
         }),
@@ -546,7 +593,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
             datoms: expansion.datoms,
             tempids: expansion.tempids,
           });
-          wake();
+          notify();
 
           const posted = yield* Effect.callback<OverlayAck, DbError>((resume) => {
             const run = () =>
@@ -572,7 +619,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                     const layer = dropLayer(id);
                     if (Array.isArray(raw)) paintFacts(datoms.map(fromWireDatom));
                     if (layer !== undefined) remapQueued(tempids, layer.tempids);
-                    wake();
+                    notify();
                   });
                   resume(
                     Effect.succeed({
@@ -594,7 +641,7 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
                 .catch(async (err) => {
                   await enqueueApply(() => {
                     dropLayer(id);
-                    wake();
+                    notify();
                   });
                   resume(
                     Effect.fail(isDatabaseError(err) ? err : classifyTx(err)),
@@ -609,28 +656,35 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
       ),
     );
 
-  const handlePush = async (frame: Record<string, unknown>): Promise<void> => {
-    await enqueueApply(async () => {
-      await ensureConn();
-      const t = typeof frame.t === "number" ? frame.t : 0;
-      if (frame.op === "resync") {
-        pending.length = 0;
-        const datoms = asWireDatoms(frame.datoms).map(fromWireDatom);
-        await replaceConfirmed(datoms, t);
-        wake();
-        return;
-      }
-      if (frame.op === "tx") {
-        const incoming = asWireDatoms(frame.datoms).map(fromWireDatom);
-        applyConfirmed(incoming);
-        dropCoveredPending(
-          incoming,
-          typeof frame.clientTxId === "string" ? frame.clientTxId : undefined,
-        );
-        wake();
-      }
-    });
+  /** The one tx apply: paint, then notify. */
+  const applyTx = (frame: Record<string, unknown>): void => {
+    const incoming = asWireDatoms(frame.datoms).map(fromWireDatom);
+    applyConfirmed(incoming);
+    dropCoveredPending(
+      incoming,
+      typeof frame.clientTxId === "string" ? frame.clientTxId : undefined,
+    );
+    notify();
   };
+
+  const applyFrame = (frame: Record<string, unknown>): void | Promise<void> => {
+    if (conn === undefined) {
+      return ensureConn().then(() => applyFrame(frame));
+    }
+    if (frame.op === "resync") {
+      pending.length = 0;
+      const t = typeof frame.t === "number" ? frame.t : 0;
+      return replaceConfirmed(asWireDatoms(frame.datoms).map(fromWireDatom), t).then(
+        () => {
+          notify();
+        },
+      );
+    }
+    if (frame.op === "tx") applyTx(frame);
+  };
+
+  const handlePush = (frame: Record<string, unknown>): Promise<void> =>
+    enqueueApply(() => applyFrame(frame));
 
   options.session.onPush(handlePush);
 
@@ -640,6 +694,12 @@ export const openOverlay = (options: OverlayOptions): Overlay => {
     },
     get epoch() {
       return epoch;
+    },
+    onChange: (cb) => {
+      listeners.add(cb);
+      return () => {
+        listeners.delete(cb);
+      };
     },
     ready,
     read,

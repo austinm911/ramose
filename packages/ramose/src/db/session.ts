@@ -242,8 +242,8 @@ export const openSession = (options: SessionOptions): Session => {
       return;
     }
     // One unsolicited op per visible commit: `{ op: tx, t, datoms }` bumps
-    // the basis and paints. Overlay live waits on paint (`nudge` after
-    // apply), not on this bump.
+    // the basis. Overlay apply is the notify (`handlePush` paints then
+    // `onChange`); live does not treat this bump as a wake.
     if (frame.op === "tx" || frame.op === "resync") {
       bump(frame.t);
       pushFrame(frame);
