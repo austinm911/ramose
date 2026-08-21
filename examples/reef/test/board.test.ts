@@ -644,7 +644,7 @@ describe("refresh open is one session, not two", () => {
       const myEid = await Effect.runPromise(
         bindSelf(live.db("coral-team", Reef), user, ws.cls),
       );
-      expect(myEid).toBe(peer.myEid);
+      expect(myEid as number | undefined).toBe(peer.myEid);
       expect(counted.connects).toBe(1);
       expect(peer.sockets()).toBe(1);
       expect(peer.resyncDumps()).toHaveLength(1);
@@ -660,7 +660,7 @@ describe("refresh open is one session, not two", () => {
     await peer.closeClients();
     peer.resetTraffic();
 
-    const user = { id: "ada", name: "Ada", email: "ada@reef.test" };
+    const user = { id: "vie", name: "Vie", email: "vie@reef.test" };
     const token = Ramose.token.jwt(async () =>
       jwtOf({ ramose: { db: "coral-team", class: "viewer" } }),
     );

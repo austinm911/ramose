@@ -31,8 +31,9 @@ export interface Workspace {
  */
 export type OpenWorkspaceOptions = Pick<
   Ramose.ClientOptions,
-  "url" | "fetch" | "webSocket" | "token"
+  "url" | "fetch" | "webSocket"
 > & {
+  readonly token?: Ramose.TokenSource;
   readonly connect?: typeof Ramose.connect;
 };
 
