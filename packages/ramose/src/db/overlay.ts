@@ -247,6 +247,7 @@ const classifyQuery = (err: unknown): DbError => {
       clause: err.clause,
       cells: err.cells,
       limit: err.limit,
+      spentBy: err.spentBy,
     });
   }
   if (
