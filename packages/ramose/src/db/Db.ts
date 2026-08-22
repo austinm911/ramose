@@ -40,9 +40,11 @@ import {
 } from "./query/index.ts";
 import type { SessionPrincipal } from "./session.ts";
 import {
+  bindPullParams,
   type IdentPullPattern,
   lowerPullPattern,
   type Pull,
+  rejectPullParams,
   reshapePullResult,
   type ValidatePull,
 } from "./Pull.ts";
@@ -448,7 +450,7 @@ const makeRead = <C extends AnyCatalog>(
         "pull",
         compact({
           eid: lowerSubject(subject),
-          pattern: lowerPullPattern(pattern),
+          pattern: bindPullParams(lowerPullPattern(pattern), rejectPullParams),
           asOf: view.asOf,
           history: view.history === true ? true : undefined,
         }),
