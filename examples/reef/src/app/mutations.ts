@@ -7,22 +7,9 @@
  */
 
 import * as Effect from "effect/Effect";
-import { pipe } from "effect/Function";
-import * as Ramose from "ramose/db";
 import type { ReefDb } from "../domain/queries.ts";
 import { rankAfter } from "../domain/rank.ts";
-import { Comment, Issue, Label, User, type Status } from "../domain/schema.ts";
-
-const { Query } = Ramose;
-
-/** The caller's own `user` row, by the sub their JWT carries. */
-const mineQuery = Query.q({ sub: User.sub }, (p) =>
-  pipe(
-    Query.entities(User),
-    Query.is(User.sub, p.sub),
-    Query.select({ id: User.id }),
-  ),
-);
+import { Comment, Issue, Label, type Status } from "../domain/schema.ts";
 
 /** The labels every new workspace starts with. */
 export const SEED_LABELS: readonly { name: string; color: string }[] = [
@@ -34,54 +21,21 @@ export const SEED_LABELS: readonly { name: string; color: string }[] = [
 
 /**
  * Workspace provisioning, from the browser, under the creator's admin-class
- * JWT: install the catalog on the fresh name, then seed labels and the
- * creator's own `user` row. This *is* the multi-tenancy demo — no resource,
- * no deploy, one `install()` and one transaction.
+ * JWT: install the catalog on the fresh name, then seed labels. The peer
+ * upserts the creator's `user` row (`sub`, `role`, and `ramose.attrs`) at
+ * session establishment. This *is* the multi-tenancy demo — no resource, no
+ * deploy, one `install()` and one transaction.
  */
-export const provisionWorkspace = (
-  db: ReefDb,
-  me: { id: string; name: string; email: string },
-) =>
+export const provisionWorkspace = (db: ReefDb) =>
   Effect.gen(function* () {
     yield* db.install();
     yield* db.transact(function* (tx) {
-      const user = yield* tx.entity();
-      yield* user.add(User.sub, me.id);
-      yield* user.add(User.name, me.name);
-      yield* user.add(User.email, me.email);
       for (const seed of SEED_LABELS) {
         const label = yield* tx.entity();
         yield* label.add(Label.name, seed.name);
         yield* label.add(Label.color, seed.color);
       }
     });
-  });
-
-/**
- * First entry by a member: write your own `user` row if it is not there.
- * `:user/sub` is a preset attribute, so supplying your own sub is a no-op
- * check and supplying anyone else's is `Unauthorized`. Viewers skip the
- * write — they never need an entity (reads are class-scoped).
- *
- * Returns the caller's user eid, or `undefined` for a viewer who has none.
- */
-export const ensureSelf = (
-  db: ReefDb,
-  me: { id: string; name: string; email: string },
-  canWrite: boolean,
-) =>
-  Effect.gen(function* () {
-    const existing = yield* db.q(mineQuery, { sub: me.id });
-    if (existing.length > 0) return existing[0]!.id;
-    if (!canWrite) return undefined;
-    const report = yield* db.transact(function* (tx) {
-      const user = yield* tx.entity();
-      yield* user.add(User.sub, me.id);
-      yield* user.add(User.name, me.name);
-      yield* user.add(User.email, me.email);
-    });
-    const after = yield* report.dbAfter.q(mineQuery, { sub: me.id });
-    return after[0]?.id;
   });
 
 export interface NewIssue {
