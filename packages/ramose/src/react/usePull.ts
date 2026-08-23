@@ -7,13 +7,13 @@
  *
  * Two rules for callers: the view and the `subject` are structural —
  * `db.asOf(t)` and `{ id: 17 }` written inline are fine — while `pattern`
- * is identity, so hoist it exactly as you hoist a query.
+ * is identity, so hoist it exactly as you hoist a query. Changing the
+ * subject blanks `rows` until the new pull lands.
  */
 
 import type {
   Catalog,
   CatalogEid,
-  DbError,
   Eid,
   IdentPullPattern,
   LookupRef,
@@ -21,9 +21,7 @@ import type {
   ReadDb,
   ValidatePull,
 } from "../db/index.ts";
-import type * as Stream from "effect/Stream";
-import { useMemo } from "react";
-import { type Live, useLive } from "./useLive.ts";
+import { type Live, useLiveSubscription } from "./useLive.ts";
 import { viewDep } from "./seam.ts";
 
 /** The pattern a subject accepts — the same rule as `db.pull` / `db.livePull`. */
@@ -55,12 +53,12 @@ export const usePull = <C extends Catalog.Any, const P>(
 ): Live<Pull<C, P> | null> => {
   const view = viewDep(db);
   const key = subjectKey(subject);
-  const stream: Stream.Stream<Pull<C, P> | null, DbError> = useMemo(
-    () => db.livePull<P>(subject, pattern),
-    // `db` and `subject` enter through their structural stand-ins: a fresh
-    // but equal view or `{ id }` literal must not tear the subscription down
+  return useLiveSubscription(
+    () => ({
+      sub: db.livePull<P>(subject, pattern),
+      owned: true,
+    }),
+    [view, key, pattern],
     [view, key, pattern],
   );
-  // `useLive`'s stream form is the package's one subscription engine
-  return useLive(stream);
 };

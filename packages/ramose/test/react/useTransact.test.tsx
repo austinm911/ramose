@@ -1,12 +1,10 @@
 /**
  * The useTransact contract:
  *
- * - a successful `run` resolves `Exit.succeed`, and `pending` flips
+ * - a successful `run` resolves the value, and `pending` flips
  *   true → false around it;
- * - a failing `run` calls `onError` with the failure's error (the
- *   `Unauthorized` instance itself, not a cause wrapper) and lands the same
- *   value on `error`;
- * - a defect lands the squashed defect itself, not a Cause wrapper;
+ * - a failing `run` calls `onError` with the tagged error and lands the
+ *   same value on `error`;
  * - `error` clears on the next successful run, and on `clearError`;
  * - concurrent runs settle independently: the last settler wins `error`;
  * - an unmounted component touches no state when a late run settles, but
@@ -17,8 +15,6 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, describe, expect, test } from "bun:test";
 import { Unauthorized } from "../../src/db/index.ts";
-import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import { act, renderHook } from "@testing-library/react";
 import { errorMessage, useTransact } from "../../src/react/index.ts";
 
@@ -29,27 +25,29 @@ afterAll(() => GlobalRegistrator.unregister());
 /** A promise the test settles by hand, so `pending` can be observed mid-run. */
 const gate = <A,>() => {
   let resolve!: (value: A) => void;
-  const promise = new Promise<A>((r) => {
-    resolve = r;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<A>((res, rej) => {
+    resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 };
 
 describe("useTransact", () => {
-  test("success resolves Exit.succeed and pending flips true → false", async () => {
+  test("success resolves the value and pending flips true → false", async () => {
     const { result } = renderHook(() => useTransact());
     expect(result.current.pending).toBe(false);
 
     const g = gate<number>();
-    let outcome!: Promise<Exit.Exit<number, never>>;
+    let outcome!: Promise<number | undefined>;
     act(() => {
-      outcome = result.current.run(Effect.promise(() => g.promise));
+      outcome = result.current.run(g.promise);
     });
     expect(result.current.pending).toBe(true);
 
     g.resolve(42);
-    const exit = await act(() => outcome);
-    expect(exit).toEqual(Exit.succeed(42));
+    const value = await act(() => outcome);
+    expect(value).toBe(42);
     expect(result.current.pending).toBe(false);
     expect(result.current.error).toBeUndefined();
   });
@@ -59,17 +57,17 @@ describe("useTransact", () => {
 
     const a = gate<void>();
     const b = gate<void>();
-    let ranA!: Promise<Exit.Exit<void, never>>;
-    let ranB!: Promise<Exit.Exit<void, never>>;
+    let ranA!: Promise<void>;
+    let ranB!: Promise<void>;
     act(() => {
-      ranA = result.current.run(Effect.promise(() => a.promise));
-      ranB = result.current.run(Effect.promise(() => b.promise));
+      ranA = result.current.run(a.promise);
+      ranB = result.current.run(b.promise);
     });
     expect(result.current.pending).toBe(true);
 
     a.resolve();
     await act(() => ranA);
-    expect(result.current.pending).toBe(true); // b still in flight
+    expect(result.current.pending).toBe(true);
 
     b.resolve();
     await act(() => ranB);
@@ -87,32 +85,59 @@ describe("useTransact", () => {
       useTransact({ onError: (e) => seen.push(e) }),
     );
 
-    let exit!: Exit.Exit<never, Unauthorized>;
+    let outcome: unknown;
     await act(async () => {
-      exit = await result.current.run(Effect.fail(denied));
+      outcome = await result.current.run(Promise.reject(denied));
     });
 
-    expect(Exit.isFailure(exit)).toBe(true);
+    expect(outcome).toBeUndefined();
     expect(seen).toEqual([denied]);
-    expect(seen[0]).toBe(denied); // the instance itself, not a cause wrapper
     expect(result.current.error).toBe(denied);
     expect(result.current.pending).toBe(false);
   });
 
-  test("a defect lands the squashed defect on error and onError", async () => {
-    const seen: unknown[] = [];
-    const { result } = renderHook(() =>
-      useTransact({ onError: (e) => seen.push(e) }),
-    );
+  test("void run(rejected) does not become unhandledrejection", async () => {
+    const denied = new Unauthorized({ message: "no" });
+    const rejections: unknown[] = [];
+    const onWindow = (event: PromiseRejectionEvent) => {
+      rejections.push(event.reason);
+      event.preventDefault();
+    };
+    const onProcess = (reason: unknown) => {
+      rejections.push(reason);
+    };
+    window.addEventListener("unhandledrejection", onWindow);
+    process.on("unhandledRejection", onProcess);
+    const { result } = renderHook(() => useTransact());
+    try {
+      await act(async () => {
+        void result.current.run(Promise.reject(denied));
+      });
+      await Bun.sleep(20);
+      expect(result.current.error).toBe(denied);
+      expect(rejections).toEqual([]);
+    } finally {
+      window.removeEventListener("unhandledrejection", onWindow);
+      process.off("unhandledRejection", onProcess);
+    }
+  });
 
-    let exit!: Exit.Exit<never, never>;
+  test("run(() => Promise) thunk form resolves and records error", async () => {
+    const denied = new Unauthorized({ message: "thunk" });
+    const { result } = renderHook(() => useTransact());
+
+    let value: unknown;
     await act(async () => {
-      exit = await result.current.run(Effect.die("boom"));
+      value = await result.current.run(() => Promise.resolve(7));
     });
+    expect(value).toBe(7);
+    expect(result.current.error).toBeUndefined();
 
-    expect(Exit.isFailure(exit)).toBe(true);
-    expect(seen).toEqual(["boom"]); // the defect itself, not a Cause wrapper
-    expect(result.current.error).toBe("boom");
+    await act(async () => {
+      value = await result.current.run(() => Promise.reject(denied));
+    });
+    expect(value).toBeUndefined();
+    expect(result.current.error).toBe(denied);
   });
 
   test("error clears on the next successful run, and on clearError", async () => {
@@ -120,17 +145,17 @@ describe("useTransact", () => {
     const { result } = renderHook(() => useTransact());
 
     await act(async () => {
-      await result.current.run(Effect.fail(denied));
+      await result.current.run(Promise.reject(denied));
     });
     expect(result.current.error).toBe(denied);
 
     await act(async () => {
-      await result.current.run(Effect.succeed("ok"));
+      await result.current.run(Promise.resolve("ok"));
     });
     expect(result.current.error).toBeUndefined();
 
     await act(async () => {
-      await result.current.run(Effect.fail(denied));
+      await result.current.run(Promise.reject(denied));
     });
     expect(result.current.error).toBe(denied);
     act(() => result.current.clearError());
@@ -141,26 +166,23 @@ describe("useTransact", () => {
     const denied = new Unauthorized({ message: "late denial" });
     const { result } = renderHook(() => useTransact());
 
-    // run A starts first and will fail — but only when the gate opens
     const g = gate<void>();
-    let ranA!: Promise<Exit.Exit<void, Unauthorized>>;
+    let ranA!: Promise<void>;
     act(() => {
       ranA = result.current.run(
-        Effect.promise(() => g.promise).pipe(
-          Effect.andThen(Effect.fail(denied)),
-        ),
+        g.promise.then(() => Promise.reject(denied)),
       );
     });
 
-    // run B starts later, settles first, and clears error
     await act(async () => {
-      await result.current.run(Effect.succeed("ok"));
+      await result.current.run(Promise.resolve("ok"));
     });
     expect(result.current.error).toBeUndefined();
 
-    // A settles last: its failure wins, start order notwithstanding
     g.resolve();
-    await act(() => ranA);
+    await act(async () => {
+      await ranA;
+    });
     expect(result.current.error).toBe(denied);
     expect(result.current.pending).toBe(false);
   });
@@ -169,21 +191,18 @@ describe("useTransact", () => {
     const { result, unmount } = renderHook(() => useTransact());
 
     const g = gate<string>();
-    let outcome!: Promise<Exit.Exit<string, never>>;
+    let outcome!: Promise<string | undefined>;
     act(() => {
-      outcome = result.current.run(Effect.promise(() => g.promise));
+      outcome = result.current.run(g.promise);
     });
     unmount();
 
-    // any setState against the unmounted hook would surface here — as a
-    // React warning through console.error, or as a thrown act() violation
     const noisy = console.error;
     const complaints: unknown[] = [];
     console.error = (...args: unknown[]) => complaints.push(args);
     try {
       g.resolve("late");
-      const exit = await outcome;
-      expect(exit).toEqual(Exit.succeed("late")); // the caller still gets the outcome
+      expect(await outcome).toBe("late");
     } finally {
       console.error = noisy;
     }
@@ -198,13 +217,9 @@ describe("useTransact", () => {
     );
 
     const g = gate<void>();
-    let outcome!: Promise<Exit.Exit<void, Unauthorized>>;
+    let outcome!: Promise<void>;
     act(() => {
-      outcome = result.current.run(
-        Effect.promise(() => g.promise).pipe(
-          Effect.andThen(Effect.fail(denied)),
-        ),
-      );
+      outcome = result.current.run(g.promise.then(() => Promise.reject(denied)));
     });
     unmount();
 
@@ -213,12 +228,11 @@ describe("useTransact", () => {
     console.error = (...args: unknown[]) => complaints.push(args);
     try {
       g.resolve();
-      const exit = await outcome;
-      expect(Exit.isFailure(exit)).toBe(true);
+      await outcome;
     } finally {
       console.error = noisy;
     }
-    expect(seen).toEqual([denied]); // the toast still happens
+    expect(seen).toEqual([denied]);
     expect(complaints).toEqual([]);
   });
 });
@@ -232,7 +246,9 @@ describe("errorMessage", () => {
   });
 
   test("a _tag-only error falls back to the tag", () => {
-    expect(errorMessage({ _tag: "TxRejected" })).toBe("TxRejected");
+    expect(errorMessage({ _tag: "OperationRejected" })).toBe(
+      "OperationRejected",
+    );
   });
 
   test("anything else goes through String", () => {

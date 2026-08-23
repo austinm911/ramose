@@ -17,7 +17,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import { pipe } from "effect/Function";
-import { Query, type Tx } from "../src/db/index.ts";
+import { Query } from "../src/db/index.ts";
+import type { Tx } from "../src/db/Tx.ts";
 import { ReadDatabases } from "../src/ReadDatabases.ts";
 import { ReadWriteDatabases } from "../src/ReadWriteDatabases.ts";
 import type { Server } from "../src/Server.ts";
@@ -108,7 +109,7 @@ describe("ReadWriteDatabases under ServerBinding", () => {
         const ramose = yield* ReadWriteDatabases(server("s3cret"));
         // pure: naming a database costs no request
         expect(calls).toEqual([]);
-        return yield* ramose.db("movies", Movies).transact(write);
+        return yield* ramose.db("movies", Movies).effect.transact(write);
       }).pipe(
         Effect.provide(ServerBinding),
         Effect.provide(
@@ -132,7 +133,7 @@ describe("ReadWriteDatabases under ServerBinding", () => {
     const outcome = await Effect.runPromise(
       Effect.gen(function* () {
         const ramose = yield* ReadWriteDatabases(server());
-        return yield* ramose.db("movies", Movies).transact(write);
+        return yield* ramose.db("movies", Movies).effect.transact(write);
       }).pipe(
         Effect.provide(ServerBinding),
         Effect.provide(
@@ -165,7 +166,7 @@ describe("ReadWriteDatabases under ServerHttp", () => {
     const report = await Effect.runPromise(
       Effect.gen(function* () {
         const ramose = yield* ReadWriteDatabases(server("s3cret"));
-        return yield* ramose.db("movies", Movies).transact(write);
+        return yield* ramose.db("movies", Movies).effect.transact(write);
       }).pipe(Effect.provide(ServerHttp), Effect.provide(runtimeLayer())),
     );
 
@@ -237,7 +238,7 @@ describe("ReadDatabases", () => {
         const ramose = yield* ReadDatabases(server());
         return yield* ramose
           .db("movies", Movies)
-          .q(Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name }))));
+          .effect.q(Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name }))));
       }).pipe(Effect.provide(ServerHttp), Effect.provide(runtimeLayer())),
     );
 

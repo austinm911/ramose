@@ -19,6 +19,7 @@ import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import type { AnyCatalog } from "./Catalog.ts";
+import type { ClientOptions } from "./connect.ts";
 import { type Db, makeDb, type Wire } from "./Db.ts";
 import {
   type DbError,
@@ -45,7 +46,11 @@ import {
   type SessionPrincipal,
   type SocketFactory,
 } from "./session.ts";
-import type { TokenSource } from "./token.ts";
+import {
+  isTokenSource,
+  type TokenInput,
+  wrapTokenCause,
+} from "./token.ts";
 
 /** One method, because a database is a name. */
 export interface DatabasesShape {
@@ -63,25 +68,6 @@ export interface DatabasesShape {
 export class Databases extends Context.Service<Databases, DatabasesShape>()(
   "Ramose.Databases",
 ) {}
-
-export interface ClientOptions {
-  /** Peer base URL (trailing slashes are trimmed). */
-  readonly url: string;
-  /**
-   * The bearer credential. It is re-read on every (re)connect and every
-   * `/transact`, so a refresh needs no API of its own. Static:
-   * `Effect.succeed(Redacted.make(t))` or `token.static(t)`; a refreshing
-   * JWT: `token.jwt(mint)` — a {@link TokenSource} is read via its `.token`.
-   */
-  readonly token?:
-    | Effect.Effect<Redacted.Redacted<string>, DbError>
-    | TokenSource
-    | undefined;
-  /** Injection seam — defaults to the ambient `fetch`. */
-  readonly fetch?: typeof fetch | undefined;
-  /** Injection seam — defaults to the ambient `WebSocket`. */
-  readonly webSocket?: typeof WebSocket | undefined;
-}
 
 // ── the internal factory ───────────────────────────────────────────────────
 
@@ -408,9 +394,45 @@ export const makeDatabases = (
   };
 };
 
+/**
+ * Token the hatch / Worker transports still accept — a plain
+ * {@link TokenInput} or an Effect of a redacted string.
+ */
+export type EffectToken =
+  | TokenInput
+  | Effect.Effect<Redacted.Redacted<string>, DbError>;
+
+/** Options for {@link layer} — `ClientOptions` plus an Effect-valued token. */
+export interface EffectClientOptions extends Omit<ClientOptions, "token"> {
+  readonly token?: EffectToken;
+}
+
+const resolveClientToken = (
+  token: EffectToken | undefined,
+): Effect.Effect<Redacted.Redacted<string>, DbError> | undefined => {
+  if (token === undefined) return undefined;
+  if (typeof token === "string") return Effect.succeed(Redacted.make(token));
+  if (typeof token === "function") {
+    return Effect.tryPromise({
+      try: async () => Redacted.make(await token()),
+      catch: wrapTokenCause,
+    });
+  }
+  if (Effect.isEffect(token)) return token;
+  if (isTokenSource(token)) {
+    return Effect.tryPromise({
+      try: async () => Redacted.make(await token.token()),
+      catch: wrapTokenCause,
+    });
+  }
+  throw new Error(
+    "ramose: token must be a string, TokenSource, () => string | Promise<string>, or an Effect",
+  );
+};
+
 /** A malformed URL, or no `fetch` at all, is a provisioning mistake: a defect. */
 const configure = (
-  options: ClientOptions,
+  options: EffectClientOptions,
 ): Effect.Effect<DatabasesConfig> =>
   Effect.suspend(() => {
     try {
@@ -433,11 +455,7 @@ const configure = (
       options.webSocket === undefined
         ? globalWebSocket()
         : (url) => new options.webSocket!(url) as never;
-    // a TokenSource is its `.token` Effect; the layer never sees the rest
-    const token =
-      options.token === undefined || Effect.isEffect(options.token)
-        ? options.token
-        : options.token.token;
+    const token = resolveClientToken(options.token);
     return Effect.succeed({
       url: Effect.succeed(options.url.replace(/\/+$/, "")),
       token,
@@ -452,7 +470,7 @@ const configure = (
  * the layer's scope closes (a `ManagedRuntime` disposed with the page, a
  * `Layer.launch`, a test).
  */
-export const layer = (options: ClientOptions): Layer.Layer<Databases> =>
+export const layer = (options: EffectClientOptions): Layer.Layer<Databases> =>
   Layer.effect(
     Databases,
     Effect.gen(function* () {
@@ -463,41 +481,11 @@ export const layer = (options: ClientOptions): Layer.Layer<Databases> =>
   );
 
 /**
- * The handle {@link connect} returns: the same pure `db` as {@link Databases},
- * plus the close `layer` performs as its finalizer — and nothing else. In
- * particular no `run`: every `Db` method has `R = never`, so
- * `Effect.runPromise(db.q(…))` is how its Effects run.
+ * @internal The factory {@link connect} wraps. Stays next to `layer` so
+ * the promise handle and the hatch share one `makeDatabases` call.
  */
-export interface Client {
-  /** Pure — the same call as `Databases.db`: no network, no ensure, no socket. */
-  db<C extends AnyCatalog>(name: string, catalog: C): Db<C>;
-  /**
-   * Close every session socket this client opened; resolves once they are.
-   * Idempotent, and after `close` reads fail rather than silently changing
-   * transport (they do not fall back to POST).
-   */
-  close(): Promise<void>;
-}
-
-/**
- * A `Client` for non-Effect callers — a browser app, a script — so nothing
- * outside Effect land needs a `ManagedRuntime` just to build the client and
- * close its sockets. A thin wrapper over the factory `layer` uses, not a
- * second client; `layer` stays the Effect-native entry.
- *
- * A provisioning mistake (malformed URL, no `fetch`) throws synchronously:
- * the same defects `layer` dies with.
- */
-export const connect = (options: ClientOptions): Client => {
+export const openConnected = (
+  options: ClientOptions,
+): { readonly databases: DatabasesShape; readonly close: () => void } =>
   // `configure` is synchronous — suspend + succeed/die — so `runSync` is honest
-  const { databases, close } = makeDatabases(
-    Effect.runSync(configure(options)),
-  );
-  return {
-    db: (name, catalog) => databases.db(name, catalog),
-    close: () => {
-      close();
-      return Promise.resolve();
-    },
-  };
-};
+  makeDatabases(Effect.runSync(configure(options)));

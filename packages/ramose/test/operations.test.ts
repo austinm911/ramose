@@ -12,18 +12,32 @@ import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import { pipe } from "effect/Function";
+import * as Data from "effect/Data";
 import {
+  InternalError,
   Operation,
   Operations,
   OperationRejected,
+  PrefixHalt,
   Query,
+  Unauthorized,
+  txBuilder,
 } from "../src/db/internal.ts";
+import { asPromiseOp, buildOp, runBody } from "../src/db/op-handle.ts";
 import { client, fakePeer, settle, type Call } from "./peer.ts";
 import { Movies, User } from "./db/fixture.ts";
 
-const run = <A, E>(eff: Effect.Effect<A, E>) => Effect.runPromise(eff);
-const runFail = <A, E>(eff: Effect.Effect<A, E>) =>
-  Effect.runPromise(Effect.flip(eff));
+const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
+  Effect.isEffect(value) ? Effect.runPromise(value) : value;
+const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<unknown> => {
+  if (Effect.isEffect(value)) return Effect.runPromise(Effect.flip(value));
+  try {
+    await value;
+    throw new Error("expected failure");
+  } catch (error) {
+    return error;
+  }
+};
 
 const names = Query.q(() =>
   pipe(Query.entities(User), Query.select({ name: User.name })),
@@ -35,15 +49,14 @@ const createUser = Operation(
     input: Schema.Struct({ name: Schema.String }),
     output: Schema.Struct({}),
   },
-  (op, input) =>
-    Effect.gen(function* () {
-      const e = yield* op.entity();
-      yield* e.add(User.name, input.name);
-      yield* op.effect("audit", () => Effect.succeed("logged"));
-      const extra = yield* op.entity();
-      yield* extra.add(User.name, "AFTER");
-      return {};
-    }),
+  async (op, input) => {
+    const e = op.entity();
+    e.add(User.name, input.name);
+    await op.effect("audit", () => "logged");
+    const extra = op.entity();
+    extra.add(User.name, "AFTER");
+    return {};
+  },
 );
 
 const setName = Operation(
@@ -53,11 +66,10 @@ const setName = Operation(
     input: Schema.Struct({ name: Schema.String }),
     output: Schema.Struct({}),
   },
-  (op, input) =>
-    Effect.gen(function* () {
-      yield* op.add(op.self, User.name, input.name);
-      return {};
-    }),
+  (op, input) => {
+    op.add(op.self, User.name, input.name);
+    return {};
+  },
 );
 
 const collect = <A, E>(stream: Stream.Stream<A, E>) => {
@@ -117,10 +129,10 @@ const moviesWorld = async () => {
 
 const seedClient = async (
   peer: { socket: { push: (f: unknown) => void } },
-  db: { q: (q: typeof names) => Effect.Effect<unknown, unknown> },
+  db: { q: (q: typeof names) => Effect.Effect<unknown, unknown> | Promise<unknown> },
   conn: Connection,
 ) => {
-  await run(db.q(names));
+  await db.q(names);
   const snap = await snapshotOf(conn);
   peer.socket.push({ op: "resync", t: snap.t, datoms: snap.datoms });
   await settle();
@@ -179,11 +191,11 @@ describe("optimistic prefix", () => {
     const db = c.ramose.db("movies", Movies);
     await seedClient(peer, db, server);
 
-    const live = collect(db.live(names));
+    const live = collect(db.effect.live(names));
     await settle();
     expect(live.seen.at(-1)).toEqual([]);
 
-    const pending = Effect.runPromise(db.run(createUser, { name: "Ada" }));
+    const pending = db.run(createUser, { name: "Ada" });
     await settle();
     expect(live.seen.at(-1)).toEqual([{ name: "Ada" }]);
     expect(live.seen.at(-1)).not.toEqual(
@@ -198,7 +210,7 @@ describe("optimistic prefix", () => {
     const report = await pending;
     expect(report.output).toEqual({});
     expect(ack?.t).toBe(report.t);
-    expect(await run(db.q(names))).toEqual([{ name: "Ada" }]);
+    expect(await db.q(names)).toEqual([{ name: "Ada" }]);
 
     await live.stop();
     await c.dispose();
@@ -231,7 +243,7 @@ describe("optimistic prefix", () => {
     const db = c.ramose.db("movies", Movies);
     await seedClient(peer, db, server);
 
-    const live = collect(db.live(names));
+    const live = collect(db.effect.live(names));
     await settle();
 
     const pending = runFail(db.run(createUser, { name: "Ada" }));
@@ -244,7 +256,7 @@ describe("optimistic prefix", () => {
     expect((err as OperationRejected)._tag).toBe("OperationRejected");
     await settle();
     expect(live.seen.at(-1)).toEqual([]);
-    expect(await run(db.q(names))).toEqual([]);
+    expect(await db.q(names)).toEqual([]);
 
     await live.stop();
     await c.dispose();
@@ -298,13 +310,13 @@ describe("optimistic prefix", () => {
     await seedClient(peer, db, server);
 
     const first = Effect.runPromise(
-      db.transact(function* (tx) {
+      db.effect.transact(function* (tx) {
         const e = yield* tx.entity("new");
         yield* e.add(User.name, "Ada");
       }),
     );
     await settle();
-    const second = Effect.runPromise(db.run(setName, "new", { name: "Ada Lovelace" }));
+    const second = db.run(setName, "new", { name: "Ada Lovelace" });
     await settle();
     expect(opBodies).toHaveLength(0);
 
@@ -316,9 +328,93 @@ describe("optimistic prefix", () => {
     expect(typeof opBodies[0]!.entity).toBe("number");
     expect(opBodies[0]!.entity).not.toBe("new");
     expect(created.t).toBeLessThanOrEqual(renamed.t);
-    expect(await run(db.q(names))).toEqual([{ name: "Ada Lovelace" }]);
+    expect(await db.q(names)).toEqual([{ name: "Ada Lovelace" }]);
 
     await c.dispose();
+  });
+});
+
+const stubOp = (effects: "halt" | "run") =>
+  buildOp({
+    catalog: Movies,
+    db: "movies",
+    principal: { eid: null, class: "admin", claims: {} },
+    effects,
+    q: () => Effect.succeed([]),
+    pull: () => Effect.succeed(null),
+  });
+
+describe("PrefixHalt is out-of-band", () => {
+  test("a swallowed PrefixHalt still stops the optimistic prefix", async () => {
+    const built = stubOp("halt");
+    const swallow = {
+      body: async (op: {
+        entity: () => {
+          add: (attr: unknown, value: unknown) => void;
+        };
+        effect: (name: string, run: () => unknown) => Promise<unknown>;
+      }) => {
+        const e = op.entity();
+        e.add(User.name, "Ada");
+        try {
+          await op.effect("charge", () => "nope");
+        } catch {
+          const extra = op.entity();
+          extra.add(User.name, "AFTER");
+        }
+        return { ok: true };
+      },
+    };
+    const result = await Effect.runPromise(runBody(swallow, built.op, {}));
+    expect(result.halted).toBe(true);
+    expect(result.output).toBeUndefined();
+    expect(built.ops()).toEqual([[":db/add", "tmp-1", ":user/name", "Ada"]]);
+  });
+
+  test("PrefixHalt is exported so a caller can rethrow", () => {
+    const err = new PrefixHalt();
+    expect(err).toBeInstanceOf(PrefixHalt);
+    expect(err._tag).toBe("ramose/PrefixHalt");
+  });
+});
+
+describe("op.effect thunk rejections", () => {
+  class PaymentDeclined extends Data.TaggedError("PaymentDeclined")<{
+    readonly message: string;
+  }> {}
+
+  test("a tagged / _tag cause passes through; unknown wraps InternalError", async () => {
+    const built = stubOp("run");
+    const op = asPromiseOp(built.op);
+
+    try {
+      await op.effect("charge", async () => {
+        throw new PaymentDeclined({ message: "card" });
+      });
+      throw new Error("expected failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(PaymentDeclined);
+      expect((error as PaymentDeclined)._tag).toBe("PaymentDeclined");
+    }
+
+    try {
+      await op.effect("deny", async () => {
+        throw new Unauthorized({ message: "no" });
+      });
+      throw new Error("expected failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Unauthorized);
+    }
+
+    try {
+      await op.effect("boom", async () => {
+        throw new Error("plain");
+      });
+      throw new Error("expected failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(InternalError);
+      expect((error as InternalError).message).toBe("plain");
+    }
   });
 });
 
@@ -330,5 +426,20 @@ describe("db.run wire", () => {
     const err = await runFail(db.run(setName, undefined, { name: "x" }));
     expect((err as { _tag: string })._tag).toBe("InvalidRequest");
     await c.dispose();
+  });
+});
+
+describe("optional add", () => {
+  test("add(undefined | null) is encoded as a nil datom — the transactor rejects it", () => {
+    const tx = txBuilder(Movies);
+    const e = Effect.runSync(tx.entity());
+    Effect.runSync(e.add(User.name, "Ada"));
+    Effect.runSync(e.add(User.age, undefined as never));
+    Effect.runSync(e.add(User.age, null as never));
+    expect(tx.spec.ops).toEqual([
+      [":db/add", "tmp-1", ":user/name", "Ada"],
+      [":db/add", "tmp-1", ":user/age", undefined],
+      [":db/add", "tmp-1", ":user/age", null],
+    ]);
   });
 });

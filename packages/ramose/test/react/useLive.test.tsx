@@ -1,16 +1,13 @@
 /**
  * The `useLive` contract. Session current-view reads run on the overlay;
- * pinned `asOf` still rides the peer. The stream form needs no db at all.
+ * pinned `asOf` still rides the peer. The subscription form needs no db.
  */
 
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { afterAll, describe, expect, test } from "bun:test";
 import * as Ramose from "../../src/db/index.ts";
-import * as Cause from "effect/Cause";
 import { pipe } from "effect/Function";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
 import { type ReactNode, StrictMode } from "react";
 import { renderHook, waitFor } from "@testing-library/react";
 import { type Answer, fakePeer } from "./peer.ts";
@@ -258,9 +255,7 @@ describe("useLive (query form)", () => {
       peer.drop();
       await waitFor(() => expect(result.current.error).toBeDefined());
 
-      const failure = Cause.findErrorOption(result.current.error!);
-      expect(Option.isSome(failure)).toBe(true);
-      expect((Option.getOrThrow(failure) as { _tag: string })._tag).toBe(
+      expect((result.current.error as { _tag: string })._tag).toBe(
         "Unauthorized",
       );
       expect(result.current.rows).toEqual(ids(...world.eids));
@@ -282,6 +277,27 @@ describe("useLive (query form)", () => {
       peer.push({ op: "tx", t: world.t + 1, datoms: [] });
       await settle();
       expect(peer.frames.length).toBe(before);
+    } finally {
+      await close();
+    }
+  });
+
+  test("explicit unmount/remount of the query form still receives updates", async () => {
+    const world = await todoWorld(1);
+    const { db, peer, close } = overlaySetup(world);
+    try {
+      const first = renderHook(() => useLive(db, allTodos));
+      await waitFor(() => expect(first.result.current.rows).toEqual(ids(...world.eids)));
+      first.unmount();
+
+      const { result } = renderHook(() => useLive(db, allTodos));
+      await waitFor(() => expect(result.current.rows).toEqual(ids(...world.eids)));
+
+      const two = txSnap(await world.conn.transact([{ ":db/id": "t1", ":todo/title": "t1" }]));
+      peer.push({ op: "tx", t: two.t, datoms: two.datoms });
+      await waitFor(() =>
+        expect(result.current.rows).toEqual(ids(world.eids[0]!, two.tempids.t1)),
+      );
     } finally {
       await close();
     }
@@ -336,37 +352,87 @@ describe("useLive (query form)", () => {
   });
 });
 
-describe("useLive (stream form)", () => {
-  test("drains any stream — no db, no provider", async () => {
-    const stream = Stream.make("a", "b", "c");
-    const { result } = renderHook(() => useLive(stream));
+const immediate = <A,>(values: readonly A[]): Ramose.Subscription<A> => ({
+  subscribe(onValue) {
+    for (const value of values) onValue(value);
+    return () => {};
+  },
+  async *[Symbol.asyncIterator]() {
+    yield* values;
+  },
+  close() {},
+});
+
+describe("useLive (subscription form)", () => {
+  test("drains any subscription — no db, no provider", async () => {
+    const sub = immediate(["a", "b", "c"]);
+    const { result } = renderHook(() => useLive(sub));
     await waitFor(() => expect(result.current.rows).toBe("c"));
-    // three emissions: two after the first
     expect(result.current.ticks).toBe(2);
     expect(result.current.error).toBeUndefined();
   });
 
-  test("an interrupt cause is teardown, not news — error stays undefined", async () => {
-    // `catchCause` in Effect 4 recovers from interruption too; the hook must
-    // not surface an Interrupt as a terminal failure
-    const stream: Stream.Stream<number> = Stream.failCause(Cause.interrupt());
-    const { result } = renderHook(() => useLive(stream));
-    await settle();
-    expect(result.current.error).toBeUndefined();
-    expect(result.current.rows).toBeUndefined();
-  });
-
-  test("re-subscribes when the stream identity changes", async () => {
-    const first: Stream.Stream<number> = Stream.make(1);
-    const second: Stream.Stream<number> = Stream.make(2);
+  test("re-subscribes when the subscription identity changes", async () => {
+    const first = immediate([1]);
+    const second = immediate([2]);
     const { result, rerender } = renderHook(
-      ({ stream }: { stream: Stream.Stream<number> }) => useLive(stream),
-      { initialProps: { stream: first } },
+      ({ sub }: { sub: Ramose.Subscription<number> }) => useLive(sub),
+      { initialProps: { sub: first } },
     );
     await waitFor(() => expect(result.current.rows).toBe(1));
 
-    rerender({ stream: second });
+    rerender({ sub: second });
     await waitFor(() => expect(result.current.rows).toBe(2));
     expect(result.current.ticks).toBe(0);
+  });
+
+  test("switching subscription identity blanks rows before the next emission", async () => {
+    const first = immediate(["A"]);
+    const later: ((value: string) => void)[] = [];
+    const second: Ramose.Subscription<string> = {
+      subscribe(onValue) {
+        later.push(onValue);
+        return () => {};
+      },
+      async *[Symbol.asyncIterator]() {},
+      close() {},
+    };
+    const { result, rerender } = renderHook(
+      ({ sub }: { sub: Ramose.Subscription<string> }) => useLive(sub),
+      { initialProps: { sub: first } },
+    );
+    await waitFor(() => expect(result.current.rows).toBe("A"));
+
+    rerender({ sub: second });
+    expect(result.current.rows).toBeUndefined();
+    expect(result.current.ticks).toBe(0);
+
+    later[0]?.("B");
+    await waitFor(() => expect(result.current.rows).toBe("B"));
+  });
+
+  test("unmount/remount of an external handle never close()s it", async () => {
+    let closed = 0;
+    const sub: Ramose.Subscription<string> = {
+      subscribe(onValue) {
+        onValue("a");
+        return () => {};
+      },
+      async *[Symbol.asyncIterator]() {
+        yield "a";
+      },
+      close() {
+        closed += 1;
+      },
+    };
+    const first = renderHook(() => useLive(sub));
+    await waitFor(() => expect(first.result.current.rows).toBe("a"));
+    first.unmount();
+    expect(closed).toBe(0);
+
+    const second = renderHook(() => useLive(sub));
+    await waitFor(() => expect(second.result.current.rows).toBe("a"));
+    second.unmount();
+    expect(closed).toBe(0);
   });
 });
