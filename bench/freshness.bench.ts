@@ -32,7 +32,7 @@ console.log(`variant: hint=${process.env.RAMOSE_REPLICA_HINT ?? "(default)"} cac
 
 const name = `fresh-${Date.now().toString(36)}`;
 const writer = new Peer(url, { token: process.env.RAMOSE_TOKEN, headers }).db(name);
-await writer.transact([attrMap(":k/name", "string", { unique: "identity" }), attrMap(":k/v", "long")]);
+await writer.transact([attrMap(":k/name", "string", { unique: "upsert" }), attrMap(":k/v", "long")]);
 const { tempids } = await writer.transact([{ ":db/id": "c", ":k/name": "counter", ":k/v": 0 }]);
 const eid = tempids.c;
 
@@ -49,7 +49,7 @@ for (let round = 1; round <= rounds; round++) {
   const ack = await writer.transact([[":db/add", eid, ":k/v", round]]);
   const t0 = performance.now();
   // first read from every reader immediately after the write ack
-  const first = await Promise.all(readerClients.map((r) => r.query<number>(`[:find ?v . :in $ ?e :where [?e :k/v ?v]]`, [eid], fence ? { minT: ack.t } : {})));
+  const first = await Promise.all(readerClients.map((r) => r.queryEnvelope<number>(`[:find ?v . :in $ ?e :where [?e :k/v ?v]]`, [eid], fence ? { minT: ack.t } : {})));
   for (const f of first) {
     totalFirst++;
     if (f.result !== round) staleFirst++;

@@ -134,3 +134,31 @@ describe("Peer — Cloudflare platform retries", () => {
     }
   });
 });
+
+/**
+ * M7 on PR #218 called the envelope method then `toBeGreaterThan(0)`.
+ * `queryEnvelope` is the HTTP envelope; `q` unwraps the find scalar.
+ */
+const FIND_COUNT = `[:find (count ?e) . :where [?e :user/email]]`;
+
+describe("PeerDb EDN query shapes", () => {
+  test("queryEnvelope is the envelope; q is the find scalar", async () => {
+    const peer = new Peer("http://peer.test", {
+      fetch: (async () =>
+        new Response(JSON.stringify({ t: 42, root: 7, result: 67 }), {
+          status: 200,
+          headers: { "content-type": "application/json", "x-ramose-ms": "3" },
+        })) as unknown as typeof fetch,
+    });
+    const db = peer.db("e2e");
+
+    const envelope = await db.queryEnvelope<number>(FIND_COUNT);
+    expect(envelope).toMatchObject({ t: 42, root: 7, result: 67 });
+    expect(typeof envelope).toBe("object");
+    expect(typeof envelope.result).toBe("number");
+
+    const scalar = await db.q<number>(FIND_COUNT);
+    expect(scalar).toBe(67);
+    expect(scalar).toBeGreaterThan(0);
+  });
+});

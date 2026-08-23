@@ -32,7 +32,7 @@ const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.autho
 
 export const policy = Ramose.policy(
   {
-    catalog: Reef,
+    schema: Reef,
     principal: User.sub,
     classes: CLASSES,
     claims: Schema.Struct({
@@ -53,21 +53,21 @@ export const policy = Ramose.policy(
     issue: {
       read: true,
       create: P.class("member"),
-      add: { class: "member", rule: ownIssue },
-      retract: { class: "member", rule: ownIssue },
-      retractEntity: { class: "member", rule: ownIssue },
+      set: { class: "member", rule: ownIssue },
+      remove: { class: "member", rule: ownIssue },
+      delete: { class: "member", rule: ownIssue },
       preset: [P.preset(Issue.creator, P.principal)],
       attrs: [
         // Narrows the namespace `read`: members and viewers never see this
         // datom — pulls must ask for it as `.optional` (compile() checks).
-        P.attr(Issue.privateNote, { read: P.class("admin") }),
+        P.field(Issue.privateNote, { read: P.class("admin") }),
       ],
     },
     comment: {
       read: true,
       create: P.class("member"),
-      retract: { class: "member", rule: ownComment },
-      retractEntity: { class: "member", rule: ownComment },
+      remove: { class: "member", rule: ownComment },
+      delete: { class: "member", rule: ownComment },
       preset: [P.preset(Comment.author, P.principal)],
     },
   },

@@ -27,8 +27,8 @@ export interface Claims {
   readonly exp?: number;
   readonly iat?: number;
   readonly ramose?: {
-    readonly db: string;
-    readonly class: string;
+    readonly db?: string;
+    readonly class?: string;
     readonly attrs?: Record<string, unknown>;
   };
   readonly [claim: string]: unknown;

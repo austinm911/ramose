@@ -185,7 +185,7 @@ export const ramoseToken = (options: RamoseTokenOptions) => {
       if (!(ctx.options.plugins ?? []).some((plugin) => plugin.id === "jwt")) {
         throw new BetterAuthError(
           "ramose: the ramoseToken plugin requires Better Auth's jwt plugin — " +
-            "it signs with the same JWKS the peer's RAMOSE_JWKS_URL reads. " +
+            "it signs with the same JWKS the server's RAMOSE_JWKS_URL reads. " +
             "Add jwt() to the plugins array.",
         );
       }
@@ -289,7 +289,7 @@ export const ramoseToken = (options: RamoseTokenOptions) => {
           // a named interface is not assignable to.
           const token = await signJWT(ctx, {
             options: jwtOptions,
-            payload: { ...payload },
+            payload: { ...payload } as Record<string, unknown>,
           });
           return ctx.json({ token, class: grant.class, exp: payload.exp });
         },

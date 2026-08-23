@@ -186,23 +186,28 @@ export class PeerDb {
     return this.client.request<Ack>("POST", this.path("/transact"), { tx });
   }
 
-  /** `minT`: read fence — the server refetches its basis if its cached one is older than `t` (e.g. the t of your last transact). */
+  /**
+   * Unwrap the find result. EDN string queries are ops-harness only — not
+   * `ramose/db` (`db.query(QueryObject)`). `q` is the scalar / rows the
+   * server's `:find` produced; `queryEnvelope` is the HTTP envelope around them.
+   */
   async q<T = any>(query: string | object, inputs: unknown[] = [], opts: { explain?: boolean; minT?: number } = {}): Promise<T> {
-    const r = await this.query<T>(query, inputs, opts);
+    const r = await this.queryEnvelope<T>(query, inputs, opts);
     return r.result;
   }
 
-  query<T = any>(query: string | object, inputs: unknown[] = [], opts: { explain?: boolean; minT?: number } = {}): Promise<QueryReply<T>> {
+  /** Envelope (`t`, `root`, `result`, `meta`). Use {@link q} for the find scalar. */
+  queryEnvelope<T = any>(query: string | object, inputs: unknown[] = [], opts: { explain?: boolean; minT?: number } = {}): Promise<QueryReply<T>> {
     return this.client.request<QueryReply<T>>("POST", this.path("/query"), compact({ query, inputs, asOf: this.asOfT, history: this.hist || undefined, explain: opts.explain }), minTHeader(opts));
   }
 
-  /** `minT`: read fence, same as `q` / `query`. */
+  /** `minT`: read fence, same as `q` / `queryEnvelope`. */
   async pull<T = Record<string, unknown> | null>(eid: number | string | [string, unknown], pattern: string | unknown[], opts: { minT?: number } = {}): Promise<T> {
     const r = await this.client.request<{ result: T }>("POST", this.path("/pull"), compact({ eid, pattern, asOf: this.asOfT, history: this.hist || undefined }), minTHeader(opts));
     return r.result;
   }
 
-  /** `minT`: read fence, same as `q` / `query`. */
+  /** `minT`: read fence, same as `q` / `queryEnvelope`. */
   async entity(eid: number, opts: { minT?: number } = {}): Promise<Record<string, unknown> | undefined> {
     const r = await this.client.request<{ entity: Record<string, unknown> | null }>("GET", this.path(`/entity/${eid}${this.asOfT !== undefined ? `?asOf=${this.asOfT}` : ""}`), undefined, minTHeader(opts));
     return r.entity ?? undefined;
@@ -226,15 +231,23 @@ export class PeerDb {
 }
 
 /** Convenience for raw schema installs (the untyped twin of `db.install()`). */
-export function attrMap(ident: string, valueType: string, opts: { cardinality?: "one" | "many"; unique?: "identity" | "value"; index?: boolean; isComponent?: boolean; doc?: string } = {}) {
+export function attrMap(ident: string, valueType: string, opts: { cardinality?: "one" | "many"; unique?: "upsert" | "strict" | "identity" | "value"; index?: boolean; owned?: boolean; doc?: string } = {}) {
   const m: Record<string, unknown> = {
     ":db/ident": ident,
     ":db/valueType": valueType.startsWith(":") ? valueType : `:db.type/${valueType}`,
     ":db/cardinality": `:db.cardinality/${opts.cardinality ?? "one"}`,
   };
-  if (opts.unique) m[":db/unique"] = `:db.unique/${opts.unique}`;
+  if (opts.unique) {
+    const uniqueWire = {
+      upsert: "identity",
+      strict: "value",
+      identity: "identity",
+      value: "value",
+    } as const;
+    m[":db/unique"] = `:db.unique/${uniqueWire[opts.unique]}`;
+  }
   if (opts.index) m[":db/index"] = true;
-  if (opts.isComponent) m[":db/isComponent"] = true;
+  if (opts.owned) m[":db/isComponent"] = true;
   if (opts.doc) m[":db/doc"] = opts.doc;
   return m;
 }

@@ -11,7 +11,7 @@ Your own Worker gets a typed client bound to the Ramose server — no URL, no to
 
 ## The smallest Worker
 
-You declare what the Worker may do — a **capability** ([glossary](/concepts/glossary/#capability)) — and, separately, how the call travels. The **Ramose server** is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the *peer*. The `examples/kv-style` Worker binds it once at start-up:
+You declare what the Worker may do — a **capability** ([glossary](/concepts/glossary/#capability)) — and, separately, how the call travels. The **Ramose server** is the one Cloudflare Worker that serves all your databases. The `examples/kv-style` Worker binds it once at start-up:
 
 ```ts title="examples/kv-style/app.ts:28-33 · app.ts:146"
 export const App = Cloudflare.Worker(
@@ -31,15 +31,15 @@ Inside, a request handler names a database, writes, and reads its own write back
 
         const { t, dbAfter } = yield* tenant.transact(function* (tx) {
           const ada = yield* tx.entity();
-          yield* ada.add(User.name, "Ada");
+          yield* ada.set(User.name, "Ada");
         });
         // `dbAfter` carries the min-`t` floor, so this reads its own write
-        const names = yield* dbAfter.q(
+        const names = yield* dbAfter.query(
           Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name }))),
         );
 ```
 
-`ramose.db(name, catalog)` costs nothing per request; creating a customer's database at sign-up is on [One database per customer](/guides/workspaces/#from-a-worker). The file's `effect/unstable/http` imports are Effect 4's HTTP module — the name is Effect's, not a warning about Ramose.
+`ramose.db(name, schema)` costs nothing per request; creating a customer's database at sign-up is on [One database per customer](/guides/workspaces/#from-a-worker). The file's `effect/unstable/http` imports are Effect 4's HTTP module — the name is Effect's, not a warning about Ramose.
 
 ## What the Worker can do
 

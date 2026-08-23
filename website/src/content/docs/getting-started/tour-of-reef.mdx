@@ -78,8 +78,8 @@ A **workspace** is one customer's isolated data — one database ([glossary](/co
     yield* db.transact(function* (tx) {
       for (const seed of SEED_LABELS) {
         const label = yield* tx.entity();
-        yield* label.add(Label.name, seed.name);
-        yield* label.add(Label.color, seed.color);
+        yield* label.set(Label.name, seed.name);
+        yield* label.set(Label.color, seed.color);
 ```
 
 Opening one goes to `/:slug` and mounts a provider keyed by its name; switching swaps the connection:
@@ -132,7 +132,7 @@ A `GET /issues` endpoint, a fetch-and-cache layer, a refetch after each write �
 
 <Shot src="/reef/live-sync.gif" alt="Two Reef windows stacked; a card dragged in the top one moves in the bottom one" caption="One drag, two facts written — the card moves here at once, and every other window follows within about a second." code="examples/reef/src/app/screens/BoardScreen.tsx:377-378" />
 
-A drag is one **write** of two facts: new status, new position. The old status is replaced automatically. (A write is one all-or-nothing change — Ramose calls it a transaction; [glossary](/concepts/glossary/#write).) On a phone HTML5 drag-and-drop never fires — hold a card still, then move it; a flicked scroll still pans the board.
+A drag is one **write** of two facts: new status, new position. The old status is replaced automatically. (A write is one all-or-nothing change — [glossary](/concepts/glossary/#write).) On a phone HTML5 drag-and-drop never fires — hold a card still, then move it; a flicked scroll still pans the board.
 
 ```ts title="examples/reef/src/app/mutations.ts:77-86"
 export const moveIssue = (
@@ -142,12 +142,12 @@ export const moveIssue = (
   rank: number,
 ) =>
   db.transact(function* (tx) {
-    yield* tx.add(issueId, Issue.status, status);
-    yield* tx.add(issueId, Issue.rank, rank);
+    yield* tx.set(issueId, Issue.status, status);
+    yield* tx.set(issueId, Issue.rank, rank);
   });
 ```
 
-The card moves on the local overlay before the POST returns. Then the write reaches **the Ramose server**, which checks the caller's role against the rules and commits. Other open tabs receive a filtered transaction and re-run locally. A denial drops the pending layer and the card snaps back. Nothing in Reef subscribed to anything. (The server is the one Cloudflare Worker that serves all your databases; Ramose's code calls it the peer — [glossary](/concepts/glossary/#server).)
+The card moves on the local overlay before the POST returns. Then the write reaches **the Ramose server**, which checks the caller's role against the rules and commits. Other open tabs receive a filtered transaction and re-run locally. A denial drops the pending layer and the card snaps back. Nothing in Reef subscribed to anything. (The server is the one Cloudflare Worker that serves all your databases — [glossary](/concepts/glossary/#server).)
 
 :::tip[What you didn't write]
 `PATCH /issues/:id`, a reorder endpoint, conflict handling between tabs, WebSocket broadcast of the move.
@@ -207,7 +207,7 @@ const ownIssue = (me: Ramose.Policy.Me<typeof User>) => Query.is(Issue.creator, 
 const ownComment = (me: Ramose.Policy.Me<typeof User>) => Query.is(Comment.author, me);
 ```
 
-<Shot src="/reef/denied-toast.png" alt="A viewer's board with a red toast reading retract denied on :issue/status" caption="A viewer dragged a card. The overlay painted it, the server refused, the card snapped back; the toast is all the UI does." code="examples/reef/src/app/screens/BoardScreen.tsx:248-250" />
+<Shot src="/reef/denied-toast.png" alt="A viewer's board with a red toast reading remove denied on :issue/status" caption="A viewer dragged a card. The overlay painted it, the server refused, the card snapped back; the toast is all the UI does." code="examples/reef/src/app/screens/BoardScreen.tsx:248-250" />
 
 ```ts title="examples/reef/src/app/screens/BoardScreen.tsx:248-250"
   const { run } = useTransact({
