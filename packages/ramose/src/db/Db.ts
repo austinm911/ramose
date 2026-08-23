@@ -29,6 +29,7 @@ import type {
   OperationInvocation,
 } from "./Operation.ts";
 import { asPromise, fromStream } from "./promise.ts";
+import { shareEqualDeep } from "./shareEqualDeep.ts";
 import { runOperation } from "./run.ts";
 import { compact, record } from "./http.ts";
 import type { LookupRef } from "./idents.ts";
@@ -309,7 +310,11 @@ interface View {
  * `packages/ramose/src/react/seam.ts` and must stay shape-compatible with this.
  */
 export interface DbSeam {
-  /** Equal iff two views read the same coordinates over the same client. */
+  /**
+   * Equal iff two views read the same coordinates over the same client.
+   * This is the view half of a live subscription key:
+   * `(viewKey, astKey[, paramsKey])`.
+   */
   readonly key: string;
   /** `asOf(t)`'s `t`; `undefined` on a live (or history) view. */
   readonly asOf: number | undefined;
@@ -358,14 +363,12 @@ const attachSeam = (
 };
 
 /**
- * One pass of a standing read: the emission, the raw wire result it is
- * digested from, the basis `t` the peer answered at (HTTPS wake fence),
- * and — on an overlay — the overlay epoch captured in the same turn as
- * `view()`.
+ * One pass of a standing read: the emission, the basis `t` the peer
+ * answered at (HTTPS wake fence), and — on an overlay — the overlay epoch
+ * captured in the same turn as `view()`.
  */
 interface Pass<A> {
   readonly value: A;
-  readonly raw: unknown;
   readonly t: number;
   readonly viewed?: number;
 }
@@ -454,7 +457,6 @@ const makeRead = <C extends AnySchema>(
           const rec = record(body);
           return {
             value: reshapePullResult(pattern, rec.result),
-            raw: rec.result,
             t: typeof rec.t === "number" ? rec.t : 0,
             viewed: typeof rec.epoch === "number" ? rec.epoch : undefined,
           };
@@ -469,7 +471,6 @@ const makeRead = <C extends AnySchema>(
     {
       readonly rows: unknown;
       readonly t: number;
-      readonly raw: unknown;
       readonly viewed?: number;
     },
     DbError | NotOne | ParamError
@@ -502,7 +503,6 @@ const makeRead = <C extends AnySchema>(
       return {
         rows,
         t: typeof reply.t === "number" ? reply.t : 0,
-        raw: reply.result,
         viewed: typeof reply.epoch === "number" ? reply.epoch : undefined,
       };
     });
@@ -531,9 +531,10 @@ const makeRead = <C extends AnySchema>(
 
   /**
    * The standing loop `live` and `livePull` share: run a pass, emit when the
-   * digest moved, sleep until the overlay mutates (or the session's basis
-   * on HTTPS). What varies is only the pass itself — a query for `live`, a
-   * pull for `livePull`.
+   * shared value is not `Object.is` the previous emission, sleep until the
+   * overlay mutates (or the session's basis on HTTPS). Unchanged rows keep
+   * their previous object identity (`shareEqualDeep`). What varies is only
+   * the pass itself — a query for `live`, a pull for `livePull`.
    */
   const standing = <A, E extends { readonly _tag: string } = DbError>(
     runPass: (minT: number | undefined) => Effect.Effect<Pass<A>, E>,
@@ -559,7 +560,8 @@ const makeRead = <C extends AnySchema>(
           );
         }
 
-        let last: string | undefined;
+        const none: unique symbol = Symbol("none");
+        let last: A | typeof none = none;
         for (;;) {
           const seen = session?.t ?? 0;
           const generation = session?.generation ?? 0;
@@ -571,11 +573,13 @@ const makeRead = <C extends AnySchema>(
           const pass = yield* withBackoff(
             runPass(overlaid ? undefined : seen || undefined),
           );
-          // a tick the pass's result did not notice is not news
-          const digest = JSON.stringify(pass.raw) ?? "";
-          if (digest !== last) {
-            last = digest;
-            yield* Queue.offer(queue, pass.value);
+          // reuse previous row objects when deep-equal; skip the tick when
+          // the shared root is the previous emission
+          const shared: A =
+            last === none ? pass.value : shareEqualDeep(last, pass.value);
+          if (last === none || shared !== last) {
+            last = shared;
+            yield* Queue.offer(queue, shared);
           }
           if (pinned || session === undefined) break;
           if (overlaid && overlay !== undefined) {
@@ -621,7 +625,6 @@ const makeRead = <C extends AnySchema>(
         runQuery(input, minT, bindings).pipe(
           Effect.map((pass) => ({
             value: pass.rows,
-            raw: pass.raw,
             t: pass.t,
             viewed: pass.viewed,
           })),
