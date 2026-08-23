@@ -71,8 +71,13 @@ export {
   isRuleValue,
   lowerQueryObject,
   type AnyQueryObject,
+  type EntityRow,
+  type FluentQuery,
+  type RefIdCell,
   type LoweredKernelQuery,
   type QueryObject,
+  type Row,
+  type Rows,
   type RuleValue,
 } from "./query/index.ts";
 export * from "./session.ts";

@@ -131,7 +131,8 @@ export type PipeStage =
       readonly empty: OrderEmpty;
     }
   | { readonly kind: "limit"; readonly n: number | AnyParam }
-  | { readonly kind: "offset"; readonly n: number | AnyParam };
+  | { readonly kind: "offset"; readonly n: number | AnyParam }
+  | { readonly kind: "ids" };
 
 /**
  * The pipe surface's incremental builder for the same `(params, body)`
@@ -337,6 +338,7 @@ const assemblePipeline = (pipe: Pipeline, ctx: BuildCtx, stripCursor: boolean): 
   let focus: AnyVar = root;
   let select: Shape | undefined;
   let selectFocus: AnyVar = root;
+  let projectIds = false;
   const order: BuiltOrder[] = [];
   let limit: number | AnyParam | undefined;
   let offset: number | AnyParam | undefined;
@@ -355,6 +357,10 @@ const assemblePipeline = (pipe: Pipeline, ctx: BuildCtx, stripCursor: boolean): 
       case "select":
         select = st.shape;
         selectFocus = focus;
+        projectIds = false;
+        break;
+      case "ids":
+        projectIds = true;
         break;
       case "orderBy":
         order.push(resolveOrderKey(st, select));
@@ -374,8 +380,11 @@ const assemblePipeline = (pipe: Pipeline, ctx: BuildCtx, stripCursor: boolean): 
   }
   return {
     clauses: ctx.clauses,
-    proj: select !== undefined ? { _tag: "pullSpec", focus: selectFocus, shape: select } : { _tag: "idsSpec", v: focus },
-    focus: select !== undefined ? selectFocus : focus,
+    proj:
+      select !== undefined && !projectIds
+        ? { _tag: "pullSpec", focus: selectFocus, shape: select }
+        : { _tag: "idsSpec", v: focus },
+    focus: select !== undefined && !projectIds ? selectFocus : focus,
     order,
     limit,
     offset,
@@ -392,9 +401,18 @@ const resolveOrderKey = (
     if (select === undefined) {
       throw new Error(`ramose/query: orderBy("${st.key}") names a selected column — select(...) first, or pass the attribute itself`);
     }
-    const field = (select as Record<string, unknown>)[st.key];
+    let field = (select as Record<string, unknown>)[st.key];
     if (field === undefined) {
       throw new Error(`ramose/query: orderBy("${st.key}") — the select shape has no column "${st.key}"`);
+    }
+    while (
+      typeof field === "object" &&
+      field !== null &&
+      ((field as { _tag?: unknown })._tag === "optional" ||
+        (field as { _tag?: unknown })._tag === "default") &&
+      "field" in field
+    ) {
+      field = (field as { field: unknown }).field;
     }
     if (typeof field !== "object" || field === null || typeof (field as { ident?: unknown }).ident !== "string") {
       throw new Error(`ramose/query: orderBy("${st.key}") — a sort key is a direct attribute column`);
@@ -427,7 +445,7 @@ type RowFromBody<B> = B extends (p: never) => infer Out
       : never
   : never;
 
-const makeQueryObject = <Row, PB>(
+export const makeQueryObject = <Row, PB>(
   paramsSpec: ParamsSpec | undefined,
   paramSet: AnyParamSet | undefined,
   body: (p: never) => unknown,
@@ -597,7 +615,7 @@ const openCommand = <Row>(qv: AnyQueryObject, args: Record<string, unknown> | un
     _tag: "splice",
     splice: (ctx) => {
       const p: Record<string, unknown> = {};
-      for (const key of Object.keys(qv.paramsSpec ?? {})) {
+      for (const key of Object.keys(qv.paramSet ?? qv.paramsSpec ?? {})) {
         const supplied = args?.[key];
         if (supplied === undefined) {
           throw new Error(
