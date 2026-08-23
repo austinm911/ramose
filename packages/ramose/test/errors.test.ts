@@ -18,6 +18,10 @@ import {
   Unauthorized,
   OperationRejected,
 } from "../src/db/Errors.ts";
+import {
+  isDatabaseError as isDatabaseErrorFromBarrel,
+  PolicyError,
+} from "../src/db/index.ts";
 
 const headers = (h: Record<string, string> = {}) => ({
   get: (name: string) => h[name.toLowerCase()] ?? null,
@@ -108,18 +112,28 @@ describe("fromResponse — the peer's own errors (no tag)", () => {
 });
 
 describe("fromResponse — DO errors passed through (tagged)", () => {
-  test("409 OperationRejected keeps name / reason", () => {
+  test("409 OperationRejected keeps operation / reason", () => {
     const e = fromResponse(409, {
       error: "OperationRejected",
       tag: "OperationRejected",
       message: "entity 1 does not exist",
-      name: "issue/close",
+      operation: "issue/close",
       reason: "dangling",
     }) as OperationRejected;
     expect(e._tag).toBe("OperationRejected");
-    expect(e.name).toBe("issue/close");
+    expect(e.operation).toBe("issue/close");
+    expect(e.name).toBe("OperationRejected");
     expect(e.reason).toBe("dangling");
     expect(e.message).toBe("entity 1 does not exist");
+  });
+
+  test("409 OperationRejected still reads a legacy `name` body field", () => {
+    const e = fromResponse(409, {
+      error: "OperationRejected",
+      tag: "OperationRejected",
+      name: "issue/close",
+    }) as OperationRejected;
+    expect(e.operation).toBe("issue/close");
   });
 
   test("409 TxRejected keeps the TxError code", () => {
@@ -186,6 +200,20 @@ describe("fromResponse — DO errors passed through (tagged)", () => {
   });
 });
 
+describe("fromResponse — TxRejected attr", () => {
+  test("409 TxRejected keeps a policy attr", () => {
+    const e = fromResponse(409, {
+      error: "set denied on :doc/owner",
+      tag: "TxRejected",
+      code: "policy",
+      attr: ":doc/owner",
+    }) as TxRejected;
+    expect(e).toBeInstanceOf(TxRejected);
+    expect(e.code).toBe("policy");
+    expect(e.attr).toBe(":doc/owner");
+  });
+});
+
 describe("isDatabaseError", () => {
   test("accepts every member of the union", () => {
     const all = [
@@ -197,7 +225,7 @@ describe("isDatabaseError", () => {
       new QueryBudgetExceeded({ message: "", code: "", clause: "", cells: 0, limit: 0 }),
       new InternalError({ message: "" }),
       new NetworkError({ message: "" }),
-      new OperationRejected({ message: "", name: "x" }),
+      new OperationRejected({ message: "", operation: "x" }),
     ];
     for (const e of all) expect(isDatabaseError(e)).toBe(true);
   });
@@ -207,5 +235,11 @@ describe("isDatabaseError", () => {
     expect(isDatabaseError({ _tag: "SomethingElse" })).toBe(false);
     expect(isDatabaseError(null)).toBe(false);
     expect(isDatabaseError("TxRejected")).toBe(false);
+  });
+
+  test("isDatabaseError and PolicyError are on the ramose/db barrel", () => {
+    expect(isDatabaseErrorFromBarrel).toBe(isDatabaseError);
+    expect(new PolicyError({ message: "bad rule" })._tag).toBe("PolicyError");
+    expect(isDatabaseError(new PolicyError({ message: "bad rule" }))).toBe(false);
   });
 });
