@@ -3,7 +3,8 @@
  *
  * Thin wrappers over the existing immutable pipeline AST. Stage functions
  * stay one tier down for the generator/kernel path; this chain is the
- * hoistable, serializable value `db.query` / `useLive` run.
+ * serializable value `db.query` / `useLive` run. Changing values go in
+ * `.where` as literals.
  */
 
 import type { Eid } from "../Eid.ts";
@@ -233,14 +234,35 @@ const adoptValue = (
   return next;
 };
 
+/**
+ * Equality clauses `applyEq` just appended — used to peel a trailing run of
+ * them so chained `.where({ done }).where({ rank })` re-sorts with the new
+ * keys. A fragment in between is left in place.
+ */
+const EQ_CLAUSE = new WeakMap<object, { readonly key: string; readonly value: unknown }>();
+
 const applyEq = (pipe: Pipeline, ns: AnyEntity, eq: Record<string, unknown>): Pipeline => {
-  let next = pipe;
-  for (const [key, value] of Object.entries(eq)) {
+  const kept = [...pipe.stages];
+  const prior: { key: string; value: unknown }[] = [];
+  while (kept.length > 0) {
+    const last = kept[kept.length - 1]!;
+    const clause = EQ_CLAUSE.get(last);
+    if (clause === undefined) break;
+    kept.pop();
+    prior.unshift(clause);
+  }
+  const added = Object.keys(eq).map((key) => ({ key, value: eq[key] }));
+  const all = [...prior, ...added].sort((a, b) =>
+    a.key < b.key ? -1 : a.key > b.key ? 1 : 0,
+  );
+  let next: Pipeline = kept.length === pipe.stages.length ? pipe : { ...pipe, stages: kept };
+  for (const { key, value } of all) {
     const attr = key === "id" ? entityId(ns) : ns.fields[key];
     if (attr === undefined) {
       throw new Error(`ramose/query: where({ ${key} }) — "${ns.ns}" has no field "${key}"`);
     }
     next = is(attr, value as never)(next);
+    EQ_CLAUSE.set(next.stages[next.stages.length - 1]!, { key, value });
   }
   return next;
 };
@@ -369,7 +391,8 @@ const makeFluent = <N extends AnyEntity, Row, PB>(
 /**
  * Start a fluent query at an entity. Select-less, the row is the full
  * entity (friendly keys); `.select` narrows, `.ids` keeps today's id-only
- * cheap subscription. Hoist the result at module scope.
+ * cheap subscription. Put changing values in `.where` — two independently
+ * built queries with the same literals share a live subscription.
  */
 export const from = <N extends AnyEntity>(ns: N): FluentQuery<N, EntityRow<N>, never> => {
   if (typeof ns !== "object" || ns === null || (ns as { _tag?: unknown })._tag !== "Entity") {
