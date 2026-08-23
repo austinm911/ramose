@@ -9,40 +9,13 @@
  * That is what `"octane": { "hookSlots": { "manual": [...] } }` in
  * `package.json` declares: this directory slots itself.
  *
- * Ported from `packages/livestore/src/internal.ts` in the octane monorepo.
+ * `subSlot` is octane's own shared binding helper (`createSubSlot`, public
+ * since 0.1.44); the slotless prefix keeps an uncompiled caller's tag-only
+ * slots off every other binding's symbols.
  */
+import { createSubSlot } from "octane";
 
-/** `slot → tag → child slot`; slots are module constants, so this is bounded. */
-const children = new Map<symbol, Map<string, symbol>>();
-/** `tag → slot` for calls that arrive without one (an uncompiled caller). */
-const bare = new Map<string, symbol>();
-
-/**
- * A stable child slot of `slot`, namespaced by `tag`.
- *
- * `Symbol.for` keeps the identity byte-identical across HMR re-evaluations and
- * duplicate copies of this module. Memoised because this runs on every hook
- * call of every render, and the naive form pays a concat plus a global
- * registry lookup each time.
- *
- * Without a slot — an uncompiled caller, or a plain-`.ts` component, which
- * gets no injected slots but does get its own per-instance scope — the tag
- * alone is the slot: distinct per hook, stable per component instance.
- */
-export const subSlot = (slot: symbol | undefined, tag: string): symbol => {
-  if (slot === undefined) {
-    let own = bare.get(tag);
-    if (own === undefined) bare.set(tag, (own = Symbol.for(`ramose/octane:${tag}`)));
-    return own;
-  }
-  let byTag = children.get(slot);
-  if (byTag === undefined) children.set(slot, (byTag = new Map()));
-  let child = byTag.get(tag);
-  if (child === undefined) {
-    byTag.set(tag, (child = Symbol.for(`${slot.description ?? ""}:${tag}`)));
-  }
-  return child;
-};
+export const subSlot = createSubSlot({ slotlessPrefix: "ramose/octane:" });
 
 /**
  * Split the compiler-appended trailing slot off a hook's arguments.
