@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Schema value shorthands (part of #207, tracker #205)
+
+App schemas use `Ramose.string()`, `boolean()`, `int()`, `float()`,
+`timestamp()`, `uuid()`, `bytes()`, `Enum([...])`, and `Ref(Entity)` —
+no `effect/Schema` import. Shorthands take the field option bag and
+compose with `Field.many` / `Field.unique`. A raw Effect Schema remains
+the advanced form (`Field(schema)`); inference is fail-closed (unknown
+AST shapes do not become the wrong `valueType`).
+
+**Breaking:** `Field(Ramose.Uuid)` row types are now `string`, aligning
+the TypeScript type with runtime — server reads already materialized
+plain strings. The `{ vt: 6, v }` / `$uuid` tagged form stays
+wire-internal.
+
+`Long`, `Instant`, `Uuid`, and `Bytes` are branded schemas the
+shorthands wrap (the advanced-form vocabulary). `UuidString` is a
+deprecated alias of `Uuid` for one release.
+
 ### Split the Effect hatch out of the connect module (part of #219, tracker #205)
 
 `connect` / `Client` / `ClientOptions` stay on `ramose/db`. Hatch types
