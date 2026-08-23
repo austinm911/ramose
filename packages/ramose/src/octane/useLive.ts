@@ -20,7 +20,7 @@ import type {
   Catalog,
   DbError,
   QueryError,
-  QueryInput,
+  QueryObject,
   ReadDb,
 } from "../db/index.ts";
 import { paramsKey } from "../db/Params.ts";
@@ -56,7 +56,7 @@ const INITIAL: Live<never, never> = {
 /** Query form: `db.live(query, params)`, memoised on the view, `query`, and params. */
 export function useLive<C extends Catalog.Any, R, P = never>(
   db: ReadDb<C>,
-  query: QueryInput<R, P>,
+  query: QueryObject<R, P>,
   ...params: ParamArgs<P>
 ): Live<R, QueryError<R, P>>;
 /** Stream form: a stream built elsewhere; re-subscribes when its identity changes. */
@@ -74,7 +74,7 @@ export function useLive(
   ...rest: unknown[]
 ): Live<unknown, unknown> {
   const [args, slot] = splitSlot(rest);
-  const query = args[0] as QueryInput<unknown, unknown> | undefined;
+  const query = args[0] as QueryObject<unknown, unknown> | undefined;
   const params = args[1];
 
   // Both overloads funnel into one stream, so the hook order never varies:
@@ -91,9 +91,9 @@ export function useLive(
       query === undefined
         ? (source as Stream.Stream<unknown, unknown>)
         : params === undefined
-          ? (source as ReadDb).live(query as QueryInput<unknown>)
+          ? (source as ReadDb).live(query as QueryObject<unknown>)
           : (source as ReadDb).live(
-              query as QueryInput<unknown, Record<string, unknown>>,
+              query as QueryObject<unknown, Record<string, unknown>>,
               params as Record<string, unknown>,
             ),
     [sourceDep, query, pKey],

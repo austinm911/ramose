@@ -48,7 +48,7 @@ const CLIENT = subSlot(undefined, "provider:client");
 const LIFECYCLE = subSlot(undefined, "provider:lifecycle");
 
 export const RamoseProvider = (props: RamoseProviderProps): OctaneNode => {
-  const { url, token, fetch, webSocket, persist, follower, children } = props;
+  const { url, token, fetch, webSocket, children } = props;
   const [generation, setGeneration] = useState(0, GENERATION);
   /** The client the last cleanup closed — identity, not a flag on the memo. */
   const closed = useRef<Client | null>(null, CLOSED);
@@ -56,8 +56,8 @@ export const RamoseProvider = (props: RamoseProviderProps): OctaneNode => {
   // a client a double render discards is harmless: `connect` opens no sockets
   // until a first read, so there is nothing to close
   const client = useMemo(
-    () => connect({ url, token, fetch, webSocket, persist, follower }),
-    [url, token, fetch, webSocket, persist, follower, generation],
+    () => connect({ url, token, fetch, webSocket }),
+    [url, token, fetch, webSocket, generation],
     CLIENT,
   );
 

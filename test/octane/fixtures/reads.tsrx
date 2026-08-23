@@ -11,7 +11,7 @@
 import * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 import { useEffect } from "octane";
-import type { Eid, QueryInput, ReadDb } from "ramose/db";
+import type { Eid, QueryObject, ReadDb } from "ramose/db";
 import {
 	type Async,
 	type Live,
@@ -23,7 +23,7 @@ import {
 import { shape, titles, Todos } from "../support/world.ts";
 
 type Todos = ReadDb<typeof Todos>;
-type Rows = QueryInput<readonly Eid[]>;
+type Rows = QueryObject<readonly Eid[]>;
 type Reported = (live: Live<unknown, unknown>) => void;
 
 const text = (value: unknown): string => JSON.stringify(value ?? null);
@@ -50,7 +50,7 @@ export function LiveAsOf(props: {
 /** `useLive` with params bound inline — a params-only change must not blank rows. */
 export function LiveParams(props: {
 	db: Todos;
-	query: QueryInput<readonly Eid[], { n: number }>;
+	query: QueryObject<readonly Eid[], { n: number }>;
 	n: number;
 	report: Reported;
 }) @{

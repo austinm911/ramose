@@ -9,6 +9,7 @@
 
 import { render, waitFor } from "@octanejs/testing-library";
 import * as Cause from "effect/Cause";
+import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -160,8 +161,9 @@ describe("useLive (query form)", () => {
   });
 
   test("a params-only change re-runs without blanking rows", async () => {
-    const P = Ramose.params({ n: Schema.Number });
-    const limited = Ramose.query(Todo, P).limit(P.n);
+    const limited = Ramose.Query.q({ n: Schema.Number }, (p) =>
+      pipe(Ramose.Query.entities(Todo), Ramose.Query.limit(p.n)),
+    );
 
     const world = await todoWorld(2);
     const { db, close } = overlay(world);

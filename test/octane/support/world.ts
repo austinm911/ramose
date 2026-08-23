@@ -10,6 +10,7 @@
  */
 
 import * as Schema from "effect/Schema";
+import { pipe } from "effect/Function";
 import * as Ramose from "ramose/db";
 import {
   catalogWorld,
@@ -35,9 +36,10 @@ export const Todo = Ramose.Namespace("todo", {
 export const Todos = Ramose.Catalog({ todo: Todo });
 
 /** Hoisted, as every consumer must hoist them: `query` is an identity dep. */
-export const titles = Ramose.query(Todo).select({ title: Todo.title });
-export const allTodos = Ramose.query(Todo);
-export const oneTodo = Ramose.query(Todo).limit(1);
+const Q = Ramose.Query;
+export const titles = Q.q(() => pipe(Q.entities(Todo), Q.select({ title: Todo.title })));
+export const allTodos = Q.q(() => pipe(Q.entities(Todo)));
+export const oneTodo = Q.q(() => pipe(Q.entities(Todo), Q.limit(1)));
 export const shape = { title: Todo.title };
 
 /** Every pass is a handful of microtasks; a beat is plenty. */

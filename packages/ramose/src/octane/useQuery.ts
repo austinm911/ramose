@@ -11,7 +11,7 @@
  *   by issue order, not by resolution order.
  */
 
-import type { Catalog, DbError, QueryError, QueryInput, ReadDb } from "../db/index.ts";
+import type { Catalog, DbError, QueryError, QueryObject, ReadDb } from "../db/index.ts";
 import { paramsKey, type ParamArgs } from "../db/Params.ts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -32,12 +32,12 @@ export interface Async<A, E = DbError> {
 
 export function useQuery<C extends Catalog.Any, R, P = never>(
   db: ReadDb<C>,
-  query: QueryInput<R, P>,
+  query: QueryObject<R, P>,
   ...params: ParamArgs<P>
 ): Async<R, QueryError<R, P>>;
 export function useQuery<C extends Catalog.Any, R, P = never>(
   db: ReadDb<C>,
-  query: QueryInput<R, P>,
+  query: QueryObject<R, P>,
   ...rest: [...params: ParamArgs<P>, slot?: symbol]
 ): Async<R, QueryError<R, P>> {
   const [args, slot] = splitSlot(rest);
