@@ -39,13 +39,15 @@ import { TransactorDO } from "../internal/transactor/transactor-do.ts";
 import { QueryReplicaDO } from "../internal/replica/index.ts";
 import * as Effect from "effect/Effect";
 import { Analytics, type Route, bindingOf, fromBinding, httpPoint, routeOf } from "./analytics.ts";
-import { allowedOrigin, authState, cachedProvision, checkWrite, describePrincipal, isTokenOnly, principalOf, rememberProvisioned, shouldProvision, viewDb } from "./auth.ts";
+import { allowedOrigin, allowsRawTransact, authState, cachedProvision, checkWrite, describePrincipal, isTokenOnly, principalOf, rememberProvisioned, shouldProvision, viewDb } from "./auth.ts";
 import { isDatabaseName } from "../db/DatabaseName.ts";
 import { BadRequest, type Internal, NotFound, OperationRejected, type QueryBudgetExceeded, type RamoseError, Unauthorized, UpstreamError, fromThrown, toHttp } from "./errors.ts";
 import { type ServerOptions, prepareOperation } from "./operations.ts";
 export type { ServerOptions } from "./operations.ts";
 import { basisHeaders, coloHeader, fetchBasisWithStats, hintOf, invalidateBasis, nearestReplica, regionOf, replicaId, segmentSource } from "./peer.ts";
 import { PRINCIPAL_HEADER } from "./session.ts";
+import { WRITES_HEADER, isUnrecognizedWrites, resolveWrites } from "../writes.ts";
+export { resolveWrites } from "../writes.ts";
 import { DEMO_HTML } from "./demo.ts";
 
 export { TransactorDO, QueryReplicaDO };
@@ -65,6 +67,50 @@ const peerMetrics = {
   aeWrites: 0,
 };
 let levelApplied = false;
+const writesWarned = new Set<string>();
+const unrecognizedWritesWarned = new Set<string>();
+
+/** Test hook: forget the policy + writes: "all" / unrecognized-env warnings. */
+export const clearWritesWarning = (): void => {
+  writesWarned.clear();
+  unrecognizedWritesWarned.clear();
+};
+
+const WRITES_ALL_POLICY_EVENT = "writes.all-with-policy";
+const WRITES_UNRECOGNIZED_EVENT = "writes.unrecognized";
+
+function warnWritesAll(env: RamoseEnv, writes: "all" | "operations"): void {
+  if (writes !== "all" || !authState(env).configured) return;
+  const key = env.RAMOSE_POLICY ?? "";
+  if (writesWarned.has(key)) return;
+  writesWarned.add(key);
+  plog.warn(WRITES_ALL_POLICY_EVENT, {
+    message:
+      'writes is "all" while a policy is installed — raw /transact stays open for app-class tokens',
+  });
+}
+
+function warnUnrecognizedWrites(envWrites: string | undefined): void {
+  if (!isUnrecognizedWrites(envWrites)) return;
+  const key = String(envWrites);
+  if (unrecognizedWritesWarned.has(key)) return;
+  unrecognizedWritesWarned.add(key);
+  plog.warn(WRITES_UNRECOGNIZED_EVENT, {
+    value: key,
+    using: "operations",
+    message: `RAMOSE_WRITES=${JSON.stringify(key)} is not "all" or "operations"; using "operations"`,
+  });
+}
+
+/** `tx` from a `/transact` body; parse failure is not schema. */
+function txOf(body: string | undefined): unknown {
+  if (body === undefined || body === "") return undefined;
+  try {
+    return (JSON.parse(body) as { tx?: unknown }).tx;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Every attribute a pull pattern names that this database's schema does not
@@ -251,20 +297,19 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
   const adminOnly = () => {
     if (policy !== undefined && !isAdmin(principal)) throw new Unauthorized({ status: 403, message: "admin only", code: "policy" });
   };
-  const writes =
-    peer.writes ??
-    (env.RAMOSE_WRITES === "operations" ? "operations" : "all");
-  if (
-    writes === "operations" &&
-    rest === "/transact" &&
-    request.method === "POST" &&
-    !isAdmin(principal)
-  ) {
-    throw new Unauthorized({
-      status: 403,
-      message: "raw transact is disabled; use operations",
-      code: "operations",
-    });
+  const writes = resolveWrites(peer.writes, env.RAMOSE_WRITES);
+  warnWritesAll(env, writes);
+  warnUnrecognizedWrites(env.RAMOSE_WRITES);
+  let transactBody: string | undefined;
+  if (rest === "/transact" && request.method === "POST") {
+    transactBody = await request.text();
+    if (!allowsRawTransact(writes, principal, txOf(transactBody))) {
+      throw new Unauthorized({
+        status: 403,
+        message: "raw transact is disabled; use operations",
+        code: "operations",
+      });
+    }
   }
 
   // ---- writes → Transactor DO
@@ -364,7 +409,7 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
     return json({ ...ack, output: ack.output ?? prepared.output, ...(clientOpId !== undefined ? { clientOpId } : {}) }, 200, headers);
   }
   if (rest === "/transact" && request.method === "POST") {
-    let body = await request.text();
+    let body = transactBody ?? "";
     if (policy !== undefined) {
       const sent = await ingress(request, env, db, principal, body, t0);
       if (sent.done !== undefined) return sent.done;
@@ -490,6 +535,7 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
     const hint = hintOf(request, env);
     if (hint) headers.set("x-ramose-replica-hint", hint);
     headers.set(PRINCIPAL_HEADER, JSON.stringify(principal));
+    headers.set(WRITES_HEADER, writes);
     const res = await nearestReplica(env, db, request).fetch(`https://replica/session?db=${encodeURIComponent(db)}`, { headers });
     if (!res.webSocket) {
       const headersOut = { "content-type": "application/json", ...CORS };
@@ -561,7 +607,9 @@ const runFetch = (
 
 /**
  * Build a peer Worker over a bundled operations registry.
- * `writes: "operations"` rejects raw `/transact` for non-admin tokens.
+ * Raw `/transact` is closed for app-class tokens by default (`writes:
+ * "operations"` / unset `RAMOSE_WRITES`). `"all"` is the explicit opt-out.
+ * Admin and the seed token (`$token`) keep `/transact`.
  */
 export const createServer = (options: ServerOptions = {}) => ({
   async fetch(request: Request, env: RamoseEnv, _ctx?: ExecutionContext): Promise<Response> {

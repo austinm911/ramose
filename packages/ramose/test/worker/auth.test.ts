@@ -351,8 +351,12 @@ describe("reads are a filtered Db", () => {
 });
 
 describe("writes", () => {
+  // Policy on raw `/transact` — specifically `writes: "all"`. Under the
+  // default a member data write is 403 `code: "operations"` before checkWrite.
+  const raw = () => fixture({ RAMOSE_WRITES: "all" });
+
   test("a denied write fails at ingress with 403 { code: policy } and no values", async () => {
-    const { peer, eids } = await fixture();
+    const { peer, eids } = await raw();
     const carol = await token("acme", "member", "user_carol");
     const { status, body } = await peer.json("/db/acme/transact", post({ tx: [[":db/add", eids.doc, ":doc/title", "hacked"]] }, carol));
     expect(status).toBe(403);
@@ -364,7 +368,7 @@ describe("writes", () => {
   });
 
   test("the owner may write, and `create` injects the preset owner", async () => {
-    const { peer, eids } = await fixture();
+    const { peer, eids } = await raw();
     const ada = await token("acme", "member", "user_ada");
     expect((await peer.json("/db/acme/transact", post({ tx: [[":db/add", eids.doc, ":doc/title", "Roadmap v2"]] }, ada))).status).toBe(200);
     expect(await titles(peer, ada)).toEqual(["Roadmap v2"]);
@@ -387,7 +391,7 @@ describe("writes", () => {
   });
 
   test("a client-supplied preset value that is not the peer's is denied", async () => {
-    const { peer, eids } = await fixture();
+    const { peer, eids } = await raw();
     const ada = await token("acme", "member", "user_ada");
     const res = await peer.json("/db/acme/transact", post({ tx: [{ ":doc/title": "Spec", ":doc/project": eids.proj, ":doc/owner": eids.bob }] }, ada));
     expect(res.status).toBe(403);
@@ -396,14 +400,14 @@ describe("writes", () => {
   });
 
   test("`create` outside the principal's org is denied", async () => {
-    const { peer, eids } = await fixture();
+    const { peer, eids } = await raw();
     const carol = await token("acme", "member", "user_carol");
     expect((await peer.json("/db/acme/transact", post({ tx: [{ ":doc/title": "Spec", ":doc/project": eids.proj }] }, carol))).status).toBe(403);
     peer.close();
   });
 
   test("admin bypasses the check entirely", async () => {
-    const { peer, eids } = await fixture();
+    const { peer, eids } = await raw();
     const admin = await token("acme", "admin", "user_ops");
     expect((await peer.json("/db/acme/transact", post({ tx: [[":db/add", eids.solo, ":doc/title", "renamed"]] }, admin))).status).toBe(200);
     peer.close();
@@ -419,9 +423,11 @@ describe("ensure and privileged surfaces", () => {
       const res = await peer.json("/db/acme/transact", post(subset, tok));
       expect(res.status).toBe(200);
       expect(res.body.datoms).toEqual([]);
+      expect(res.body.code).not.toBe("operations");
     }
     const fresh = await peer.json("/db/acme/transact", post({ tx: [attr(":doc/secret", "string")] }, member));
     expect(fresh.status).toBe(403);
+    expect(fresh.body.code).toBe("policy");
     expect(fresh.body.attr).toBe(":doc/secret");
     // …and an admin actually installs it
     expect((await peer.json("/db/acme/transact", post({ tx: [attr(":doc/secret", "string")] }, await token("acme", "admin")))).status).toBe(200);

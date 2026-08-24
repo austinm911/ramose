@@ -8,7 +8,7 @@
  *
  * The explicit `worker:` form is the escape hatch (extra bindings, a
  * user-owned entry). It is validated at deploy: binding names, DO classes,
- * `main` resolution, and `auth` / `token` against the Worker env.
+ * `main` resolution, and `auth` / `token` / `writes` against the Worker env.
  *
  * @resource
  * @product Ramose
@@ -57,6 +57,9 @@ import {
 } from "./peer.ts";
 import type { Providers } from "./Providers.ts";
 import type { RamoseEnv } from "./RamoseEnv.ts";
+import { type WritesMode, WRITES_ENV_KEY, resolveWrites } from "./writes.ts";
+export type { WritesMode } from "./writes.ts";
+export { resolveWrites, WRITES_ENV_KEY } from "./writes.ts";
 
 /** @internal */
 export const isServer = (value: unknown): value is Server =>
@@ -210,12 +213,15 @@ export type ServerProps = {
    */
   auth?: ServerAuth;
   /**
-   * Bundled operations registry. The owned Worker still needs a `main` that
-   * calls `createServer({ operations })` — wiring that is #172.
+   * Who may POST raw `/transact`. `"operations"` (the peer default) rejects
+   * it for app-class tokens; admin, the seed token, and schema-only txs
+   * keep it. `"all"` is the explicit opt-out. Owned form binds
+   * `RAMOSE_WRITES`; hatch form compares the effective mode (unset Worker
+   * key means `"operations"`) and fails the deploy on a real mismatch. A
+   * typed-but-ignored `operations` registry prop is gone — injecting a
+   * registry into the default `ramose/worker` entry is #172.
    */
-  operations?: unknown;
-  /** `"operations"` rejects raw `/transact` for app-class tokens. */
-  writes?: "all" | "operations";
+  writes?: WritesMode;
   /**
    * Liveness probe before anything binds to the URL; `false` skips it.
    */
@@ -356,6 +362,26 @@ export const ownedAuthEnv = (
   ...tokenEnv(token),
 });
 
+/**
+ * @internal `RAMOSE_WRITES` from `Server({ writes })`. Owned form binds
+ * it; hatch form compares it. Unset emits no key — the Worker default is
+ * `"operations"`.
+ */
+export const writesEnv = (writes: WritesMode | undefined): Record<string, WritesMode> =>
+  writes === undefined ? {} : { [WRITES_ENV_KEY]: writes };
+
+/**
+ * @internal What the owned Worker receives: auth, token, and writes.
+ */
+export const ownedPeerEnv = (
+  peerAuth: ServerAuth | undefined,
+  token: Redacted.Redacted<string> | string | undefined,
+  writes: WritesMode | undefined,
+): Record<string, unknown> => ({
+  ...ownedAuthEnv(peerAuth, token),
+  ...writesEnv(writes),
+});
+
 /** @internal Completeness: policy implies jwksUrl + issuers + aud. */
 export const checkAuth = (peerAuth: ServerAuth | undefined): string | undefined => {
   if (peerAuth === undefined || !isBound(peerAuth.policy)) {
@@ -455,6 +481,71 @@ export const compareAuthToWorker = (
   return `ramose: Server auth and the Worker env diverge on ${diverged.join(", ")} — Server({ auth, token }) is the source of truth`;
 };
 
+/**
+ * @internal Hatch form: if `writes` is passed, the Worker must carry the
+ * same effective mode. Unset `RAMOSE_WRITES` means `"operations"` — the
+ * peer default — so `Server({ writes: "operations" })` against a Worker
+ * with no key matches. `writes: "all"` against an unset/mismatched key
+ * fails: that opt-out would not take effect. URL workers have no env
+ * and are skipped.
+ */
+export const compareWritesToWorker = (
+  writes: WritesMode | undefined,
+  worker: unknown,
+): string | undefined => {
+  if (writes === undefined) return undefined;
+  if (typeof worker === "string") return undefined;
+  const env = workerEnvOf(worker);
+  if (env === undefined) return undefined;
+  const got = env[WRITES_ENV_KEY];
+  const workerMode = resolveWrites(undefined, isBound(got) ? got : undefined);
+  if (resolveWrites(writes, undefined) === workerMode) return undefined;
+  if (!isBound(got)) {
+    return `ramose: Server writes is "all" but the Worker has no RAMOSE_WRITES — unset means "operations", so raw /transact would stay closed`;
+  }
+  return `ramose: Server writes and the Worker env diverge on RAMOSE_WRITES — Server({ writes }) is ${JSON.stringify(writes)}, the Worker has ${JSON.stringify(got)}`;
+};
+
+/** @internal The pairing the issue asks to warn on, not fail the deploy. */
+export const WRITES_ALL_POLICY_WARNING =
+  'ramose: writes is "all" while a policy is installed — raw /transact stays open for app-class tokens. Set writes: "operations" (the default) or RAMOSE_WRITES=operations to close it; "all" is the explicit opt-out for admin/seed tooling.';
+
+const workerWritesOf = (worker: unknown): unknown => {
+  if (typeof worker === "string") return undefined;
+  return workerEnvOf(worker)?.[WRITES_ENV_KEY];
+};
+
+const workerPolicyOf = (worker: unknown): unknown => {
+  if (typeof worker === "string") return undefined;
+  return workerEnvOf(worker)?.[AUTH_ENV_KEYS.policy];
+};
+
+/**
+ * @internal Warning (not a deploy error) when a policy is installed and
+ * raw `/transact` is still open for app-class tokens.
+ */
+export const writesAllPolicyWarning = (
+  writes: WritesMode | undefined,
+  peerAuth: ServerAuth | undefined,
+  worker: unknown,
+): string | undefined => {
+  const policy = isBound(peerAuth?.policy) ? peerAuth?.policy : workerPolicyOf(worker);
+  if (!isBound(policy)) return undefined;
+  if (resolveWrites(writes, workerWritesOf(worker)) !== "all") return undefined;
+  return WRITES_ALL_POLICY_WARNING;
+};
+
+/** @internal Emit {@link writesAllPolicyWarning} at deploy. */
+export const warnWritesAllPolicy = (
+  writes: WritesMode | undefined,
+  peerAuth: ServerAuth | undefined,
+  worker: unknown,
+): string | undefined => {
+  const message = writesAllPolicyWarning(writes, peerAuth, worker);
+  if (message !== undefined) console.warn(message);
+  return message;
+};
+
 export type Server = Resource<
   "Ramose.Server",
   ServerProps,
@@ -486,9 +577,9 @@ const ServerResource = Resource<Server>("Ramose.Server");
  *
  * Without `worker`, Server declares the peer (R2, both DO classes, the
  * Worker, {@link import("./peer.ts").PEER_COMPAT}, fixed bindings) and
- * applies `auth` / `token` onto its env. With `worker`, that form is
- * validated — bindings, DO classes, `main`, and `auth` / `token` against
- * the Worker env — and kept as the escape hatch.
+ * applies `auth` / `token` / `writes` onto its env. With `worker`, that
+ * form is validated — bindings, DO classes, `main`, and `auth` / `token`
+ * / `writes` against the Worker env — and kept as the escape hatch.
  */
 const ownedPeers = new WeakSet<object>();
 
@@ -520,9 +611,10 @@ export const Server = Object.assign(
           dev: props.dev as { readonly port?: number } | undefined,
           peer: props.peer as string | undefined,
           routes: props.routes as PeerRoute[] | undefined,
-          authEnv: ownedAuthEnv(
+          authEnv: ownedPeerEnv(
             props.auth as ServerAuth | undefined,
             props.token as Redacted.Redacted<string> | string | undefined,
+            props.writes as WritesMode | undefined,
           ),
           durableObjects,
         });
@@ -664,7 +756,12 @@ const attributes = Effect.fn(function* (
       if (badMatch !== undefined) {
         return yield* Effect.fail(new InvalidRequest({ message: badMatch }));
       }
+      const badWrites = compareWritesToWorker(props.writes, props.worker);
+      if (badWrites !== undefined) {
+        return yield* Effect.fail(new InvalidRequest({ message: badWrites }));
+      }
     }
+    warnWritesAllPolicy(props.writes, props.auth, props.worker);
   }
   const worker = resolveWorker(props.worker as ServerWorker);
   const chosen = props.url ?? worker.url;
