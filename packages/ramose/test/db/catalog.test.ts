@@ -93,6 +93,65 @@ describe("transaction builder", () => {
     ]);
     expect(tx.schema).toBe(Movies);
   });
+
+  test("put lowers to map form; undefined is omitted; many is an array", () => {
+    const tx = txBuilder(Movies);
+    Effect.runSync(
+      Effect.gen(function* () {
+        const bea = yield* tx.entity();
+        yield* bea.set(User.name, "Bea");
+        const ada = yield* tx.put(User, {
+          name: "Ada",
+          age: undefined,
+          friends: [1002, bea],
+        });
+        yield* tx.put(User, ada, { age: 36 });
+        yield* tx.put(User, { name: "Ada" });
+      }),
+    );
+    expect(tx.spec.ops).toEqual([
+      [":db/add", "tmp-1", ":user/name", "Bea"],
+      {
+        ":db/id": "tmp-2",
+        ":user/name": "Ada",
+        ":user/friends": [1002, "tmp-1"],
+      },
+      { ":db/id": "tmp-2", ":user/age": 36 },
+      { ":db/id": "tmp-3", ":user/name": "Ada" },
+    ]);
+  });
+
+  test("put expands a card-many ident-shaped string pair to :db/add", () => {
+    const Doc = Entity("doc", {
+      tags: Field.many(Schema.String),
+    });
+    const Docs = DbSchema({ doc: Doc });
+    const tx = txBuilder(Docs);
+    Effect.runSync(tx.put(Doc, { tags: [":alpha", "beta"] }));
+    expect(tx.spec.ops).toEqual([
+      { ":db/id": "tmp-1" },
+      [":db/add", "tmp-1", ":doc/tags", ":alpha"],
+      [":db/add", "tmp-1", ":doc/tags", "beta"],
+    ]);
+  });
+
+  test("put unwraps {id} rows and op.principal in ref slots", () => {
+    const tx = txBuilder(Movies);
+    Effect.runSync(
+      Effect.gen(function* () {
+        yield* tx.put(User, { name: "Ada", bestFriend: { id: 1002 } });
+        yield* tx.put(User, { name: "Bea", bestFriend: { eid: 1003, class: "user" } });
+        yield* tx.put(User, { name: "Cam", bestFriend: { eid: null, class: "user" } });
+        yield* tx.put(User, 1001, { age: 36 });
+      }),
+    );
+    expect(tx.spec.ops).toEqual([
+      { ":db/id": "tmp-1", ":user/name": "Ada", ":user/bestFriend": 1002 },
+      { ":db/id": "tmp-2", ":user/name": "Bea", ":user/bestFriend": 1003 },
+      { ":db/id": "tmp-3", ":user/name": "Cam" },
+      { ":db/id": 1001, ":user/age": 36 },
+    ]);
+  });
 });
 
 

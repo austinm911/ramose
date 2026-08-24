@@ -31,25 +31,21 @@ The handle from `tx.entity()` carries the same three verbs without the first arg
 
 Reef's "New issue" dialog is one write; everything inside lands together or not at all:
 
-```ts title="examples/reef/src/app/mutations.ts#create-issue"
-export const createIssue = (
-  db: ReefDb,
-  myEid: number,
-  lastRankInColumn: number | undefined,
-  draft: NewIssue,
-) =>
-  db.run(createIssueOp, {
-    title: draft.title,
-    ...(draft.description != null && draft.description !== ""
-      ? { description: draft.description }
-      : {}),
-    status: draft.status,
-    priority: draft.priority,
-    rank: rankAfter(lastRankInColumn),
-    creatorId: myEid,
-    ...(draft.assigneeId != null ? { assigneeId: draft.assigneeId } : {}),
-    ...(draft.labelIds !== undefined ? { labelIds: draft.labelIds } : {}),
-  });
+```ts title="examples/reef/src/app/mutations.ts#create-issue-put"
+    op.put(Issue, {
+      title: input.title,
+      description:
+        input.description != null && input.description !== ""
+          ? input.description
+          : undefined,
+      status: input.status,
+      priority: input.priority,
+      rank: input.rank,
+      createdAt: new Date(),
+      creator: input.creatorId,
+      assignee: input.assigneeId,
+      labels: input.labelIds ?? [],
+    });
 ```
 
 A **reference** field takes the other record's id as a number: `issue.set(Issue.creator, myEid)` ([glossary](/concepts/glossary/#reference)).
@@ -107,6 +103,18 @@ The first argument of `tx.set` names the record. It can be:
 - **an id as a number.** A query that selects `id: Issue.id` gives you `row.id` as a `number` — pass it straight in (that is `issueId` above). A query with no `.select` returns `{ id }` objects — pass `row.id` then too.
 - **a handle** from `tx.entity()` in the same write.
 - **a lookup by unique key** — `[User.sub, "user_ada"]` names the user whose `sub` is that value, no id in hand ([glossary](/concepts/glossary/#lookup)).
+
+## Upserts
+
+Including a `unique: "upsert"` field in the map makes `put` ensure-this-row-exists — the engine unifies with the existing row. `op.put(User, { sub, name })` is insert-or-update; `op.put(User, { sub })` is enough when you only have the key. A lookup by unique key that misses is still a hard rejection; put with the unique field is the path that creates when missing.
+
+`put(Entity, id, …)` with a nonexistent id mints that id (same as `set` — not "update only"). A two-element array that starts with an ident is a lookup on a ref field; on a many-valued string field, `tags: [":alpha", "beta"]` writes both strings.
+
+```ts title="examples/reef/src/app/mutations.ts#seed-labels"
+    for (const seed of SEED_LABELS) {
+      op.put(Label, { name: seed.name, color: seed.color });
+    }
+```
 
 ## What a write returns
 

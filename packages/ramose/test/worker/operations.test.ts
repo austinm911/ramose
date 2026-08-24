@@ -69,7 +69,26 @@ const setName = Operation(
   },
 );
 
-const operations = Operations({ setTitle, ping, createNamed, setName });
+const createByPut = Operation(
+  "user/create-put",
+  {
+    schema: Movies,
+    input: Schema.Struct({ name: Schema.String }),
+    output: Schema.Struct({}),
+  },
+  (op, input) => {
+    op.put(User, { name: input.name });
+    return {};
+  },
+);
+
+const operations = Operations({
+  setTitle,
+  ping,
+  createNamed,
+  setName,
+  createByPut,
+});
 
 const titles = async (peer: Peer, tok?: string) => {
   const { body } = await peer.json(
@@ -258,6 +277,35 @@ describe("POST /db/:name/op", () => {
       post({ query: { find: ["?n"], where: [["?e", ":user/name", "?n"]] } }),
     );
     expect((body.result as string[][]).map((r) => r[0])).toEqual(["Ada"]);
+    peer.close();
+  });
+
+  test("put with a unique field unifies a second write onto the same row", async () => {
+    const peer = makePeer("movies", { operations });
+    await peer.seed(schemaTx(Movies) as unknown[]);
+    const created = await peer.json(
+      "/db/movies/op",
+      post({
+        name: "user/create-put",
+        input: { name: "Ada" },
+        clientOpId: "op-put",
+      }),
+    );
+    expect(created.status).toBe(200);
+    const again = await peer.json(
+      "/db/movies/op",
+      post({
+        name: "user/create-put",
+        input: { name: "Ada" },
+        clientOpId: "op-put-again",
+      }),
+    );
+    expect(again.status).toBe(200);
+    const { body } = await peer.json(
+      "/db/movies/query",
+      post({ query: { find: ["?e"], where: [["?e", ":user/name", "Ada"]] } }),
+    );
+    expect((body.result as unknown[][]).length).toBe(1);
     peer.close();
   });
 

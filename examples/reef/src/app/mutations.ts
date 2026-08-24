@@ -75,11 +75,11 @@ export const provisionWorkspaceOp = Op(
         });
       }
     });
+    // docs:seed-labels
     for (const seed of SEED_LABELS) {
-      const label = op.entity();
-      label.set(Label.name, seed.name);
-      label.set(Label.color, seed.color);
+      op.put(Label, { name: seed.name, color: seed.color });
     }
+    // enddocs:seed-labels
     return { ready: true };
   },
 );
@@ -162,22 +162,22 @@ export const createIssueOp = Op(
     output: Schema.Struct({}),
   },
   (op, input) => {
-    const issue = op.entity();
-    issue.set(Issue.title, input.title);
-    if (input.description != null && input.description !== "") {
-      issue.set(Issue.description, input.description);
-    }
-    issue.set(Issue.status, input.status);
-    issue.set(Issue.priority, input.priority);
-    issue.set(Issue.rank, input.rank);
-    issue.set(Issue.createdAt, new Date());
-    issue.set(Issue.creator, input.creatorId);
-    if (input.assigneeId != null) {
-      issue.set(Issue.assignee, input.assigneeId);
-    }
-    for (const labelId of input.labelIds ?? []) {
-      issue.set(Issue.labels, labelId);
-    }
+    // docs:create-issue-put
+    op.put(Issue, {
+      title: input.title,
+      description:
+        input.description != null && input.description !== ""
+          ? input.description
+          : undefined,
+      status: input.status,
+      priority: input.priority,
+      rank: input.rank,
+      createdAt: new Date(),
+      creator: input.creatorId,
+      assignee: input.assigneeId,
+      labels: input.labelIds ?? [],
+    });
+    // enddocs:create-issue-put
     return {};
   },
 );
@@ -294,21 +294,20 @@ export const seedSampleIssuesOp = Op(
     for (const sample of SAMPLE_ISSUES) {
       const rank = rankAfter(nextRank[sample.status]);
       nextRank[sample.status] = rank;
-      const issue = op.entity();
-      issue.set(Issue.title, sample.title);
-      if (sample.description !== undefined) {
-        issue.set(Issue.description, sample.description);
-      }
-      issue.set(Issue.status, sample.status);
-      issue.set(Issue.priority, sample.priority);
-      issue.set(Issue.rank, rank);
-      issue.set(Issue.createdAt, new Date());
-      issue.set(Issue.creator, input.creatorId);
-      if (sample.assign) issue.set(Issue.assignee, input.creatorId);
-      for (const name of sample.labels) {
-        const id = labelIds.get(name);
-        if (id !== undefined) issue.set(Issue.labels, id);
-      }
+      op.put(Issue, {
+        title: sample.title,
+        description: sample.description,
+        status: sample.status,
+        priority: sample.priority,
+        rank,
+        createdAt: new Date(),
+        creator: input.creatorId,
+        assignee: sample.assign ? input.creatorId : undefined,
+        labels: sample.labels.flatMap((name) => {
+          const id = labelIds.get(name);
+          return id === undefined ? [] : [id];
+        }),
+      });
     }
     return {};
   },

@@ -209,6 +209,12 @@ export const asPromiseOp = (op: RuntimeOp): Op<any, any> => {
     delete: (e) => {
       Effect.runSync(op.delete(e));
     },
+    put: ((entity: unknown, a: unknown, b?: unknown) =>
+      promiseEntity(
+        Effect.runSync(
+          b === undefined ? op.put(entity, a) : op.put(entity, a, b),
+        ),
+      )) as Op<any, any>["put"],
     query: ((input: AnyQueryObject) =>
       asPromise(op.query(input))) as Op["query"],
     pull: (subject, pattern) => asPromise(op.pull(subject, pattern)),

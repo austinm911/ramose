@@ -22,9 +22,12 @@ import type { AttrAtIdent, EntityRef, LookupRef } from "./idents.ts";
 import type { AnyQueryObject, QueryObject } from "./query/index.ts";
 import {
   isTxHandle,
+  type PutAttrs,
+  type PutSubject,
   type TxEntity,
   type TxField,
   type TxHandle,
+  type TxKnownEntity,
   type TxValue,
 } from "./Tx.ts";
 
@@ -36,6 +39,15 @@ import {
 type ConcreteCatalog<C extends AnySchema> = string extends keyof C["entities"]
   ? false
   : true;
+
+type OpKnownEntity<C extends AnySchema> = [ConcreteCatalog<C>] extends [true]
+  ? TxKnownEntity<C>
+  : AnyEntity;
+
+type OpPutAttrs<C extends AnySchema, E extends AnyEntity> =
+  [ConcreteCatalog<C>] extends [true]
+    ? PutAttrs<C, E, TxHandle<C> | OpHandle<C>>
+    : Record<string, unknown>;
 
 /**
  * Field slot on the op handle. Same union as {@link TxField} once the
@@ -92,6 +104,11 @@ export type OpValue<C extends AnySchema, A> = [ConcreteCatalog<C>] extends [true
  * promise {@link OpHandle}.
  */
 export type OpEntity<C extends AnySchema> = TxEntity<C> | OpHandle<C>;
+
+type OpPutSubject<C extends AnySchema, E extends AnyEntity> =
+  [ConcreteCatalog<C>] extends [true]
+    ? PutSubject<C, E, TxHandle<C> | OpHandle<C>>
+    : OpEntity<C>;
 
 type OnIdent<N extends AnyEntity> = `:${N["ns"]}/${string}`;
 
@@ -245,6 +262,37 @@ export interface Op<
   ): void;
   delete(e: OpEntity<C>): void;
 
+  /**
+   * Entity-level write. Lowers to map form. `undefined` fields are
+   * omitted; cardinality-many takes an array. No subject allocates a
+   * new record. A subject names the record: an existing id, or a new
+   * id if that number has never been used (same as `set` — not
+   * "update only").
+   *
+   * ### Upserts
+   *
+   * Including a `unique: "upsert"` field in the map makes `put`
+   * ensure-this-row-exists: the engine unifies the new record with the
+   * existing row. `op.put(User, { sub, name })` is insert-or-update;
+   * `op.put(User, { sub })` is enough when you only have the key. A
+   * lookup that misses is still a hard rejection — put with the unique
+   * field is the path that creates when missing.
+   *
+   * A two-element array whose first value is an ident (`":…"`) is a
+   * lookup on a ref field. On a cardinality-many scalar field, that
+   * shape is expanded to one value per element so `tags: [":a", "b"]`
+   * writes two strings.
+   */
+  put<E extends OpKnownEntity<C>>(
+    entity: E,
+    attrs: OpPutAttrs<C, E>,
+  ): OpHandle<C>;
+  put<E extends OpKnownEntity<C>>(
+    entity: E,
+    id: OpPutSubject<C, E>,
+    attrs: OpPutAttrs<C, E>,
+  ): OpHandle<C>;
+
   query<Row, Out = readonly Row[]>(
     input: QueryObject<Row, Out>,
   ): Promise<Out>;
@@ -305,6 +353,8 @@ export interface RuntimeOp {
   set(e: unknown, field: unknown, value: unknown): Effect.Effect<void>;
   remove(e: unknown, field: unknown, value?: unknown): Effect.Effect<void>;
   delete(e: unknown): Effect.Effect<void>;
+  put(entity: unknown, attrs: unknown): Effect.Effect<RuntimeOpHandle>;
+  put(entity: unknown, id: unknown, attrs: unknown): Effect.Effect<RuntimeOpHandle>;
   query(input: AnyQueryObject): Effect.Effect<unknown, DbError>;
   pull(subject: unknown, pattern: unknown): Effect.Effect<unknown, DbError>;
   effect<A, E = never>(

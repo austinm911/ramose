@@ -16,7 +16,10 @@ import * as Data from "effect/Data";
 import {
   InternalError,
   InvalidRequest,
+  Entity,
+  Field,
   Operation,
+  Schema as DbSchema,
   Operations,
   OperationRejected,
   PrefixHalt,
@@ -696,5 +699,166 @@ describe("optional add", () => {
       [":db/add", "tmp-1", ":user/age", undefined],
       [":db/add", "tmp-1", ":user/age", null],
     ]);
+  });
+});
+
+describe("put", () => {
+  const createByPut = Operation(
+    "user/create-put",
+    {
+      schema: Movies,
+      input: Schema.Struct({
+        name: Schema.String,
+        age: Schema.optional(Schema.Number),
+      }),
+      output: Schema.Struct({}),
+    },
+    (op, input) => {
+      op.put(User, { name: input.name, age: input.age });
+      return {};
+    },
+  );
+
+  test("op.put lowers to map form and omits undefined; set/remove stay the escape hatch", () => {
+    const built = stubOp("run");
+    const op = asPromiseOp(built.op);
+    const bea = op.entity();
+    bea.set(User.name, "Bea");
+    op.put(User, {
+      name: "Ada",
+      age: undefined,
+      friends: [bea],
+    });
+    op.put(User, 1001, { age: 36 });
+    expect(built.ops()).toEqual([
+      [":db/add", "tmp-1", ":user/name", "Bea"],
+      {
+        ":db/id": "tmp-2",
+        ":user/name": "Ada",
+        ":user/friends": ["tmp-1"],
+      },
+      { ":db/id": 1001, ":user/age": 36 },
+    ]);
+  });
+
+  test("processTx: put with a unique field unifies on identity", async () => {
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Movies) as unknown[]);
+
+    const create = txBuilder(Movies);
+    Effect.runSync(create.put(User, { name: "Ada", age: 36 }));
+    const first = await conn.transact([...create.spec.ops]);
+    const ada = first.tempids["tmp-1"];
+    expect(typeof ada).toBe("number");
+    expect((await conn.db().entity(ada!))?.[":user/age"]).toBe(36);
+
+    const again = txBuilder(Movies);
+    Effect.runSync(again.put(User, { name: "Ada", age: 37 }));
+    const second = await conn.transact([...again.spec.ops]);
+    expect(second.tempids["tmp-1"]).toBe(ada);
+    expect((await conn.db().entity(ada!))?.[":user/age"]).toBe(37);
+
+    await expect(
+      conn.transact([[":db/add", [":user/name", "Missing"], ":user/age", 1]]),
+    ).rejects.toThrow(/lookup ref/);
+  });
+
+  test("processTx: card-many string pair that looks like a lookup writes two values", async () => {
+    const Doc = Entity("doc", {
+      tags: Field.many(Schema.String),
+    });
+    const Docs = DbSchema({ doc: Doc });
+    const conn = await Connection.create();
+    await conn.transact(schemaTx(Docs) as unknown[]);
+
+    const tx = txBuilder(Docs);
+    Effect.runSync(tx.put(Doc, { tags: [":alpha", "beta"] }));
+    const rep = await conn.transact([...tx.spec.ops]);
+    const eid = rep.tempids["tmp-1"];
+    expect(typeof eid).toBe("number");
+    const row = await conn.db().entity(eid!);
+    const tags = row?.[":doc/tags"];
+    expect(Array.isArray(tags) ? [...tags].sort() : tags).toEqual([":alpha", "beta"]);
+  });
+
+  test("db.run(put) paints the overlay before POST /op", async () => {
+    const server = await moviesWorld();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const http = async (call: Call) => {
+      if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
+      if (!call.url.endsWith("/op")) return { body: { t: server.t } };
+      await gate;
+      const rep = await server.transact([{ ":user/name": call.body.input.name }]);
+      return {
+        body: {
+          t: rep.t,
+          txEid: rep.txEid,
+          tempids: rep.tempids,
+          datoms: rep.txData.map(toWireDatom),
+          clientOpId: call.body.clientOpId,
+          output: {},
+        },
+      };
+    };
+    const peer = fakePeer({ http });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    await seedClient(peer, db, server);
+    const live = collect(db.effect.live(names));
+    await until(() => live.seen.length >= 1);
+
+    const pending = db.run(createByPut, { name: "Ada" });
+    await until(
+      () =>
+        (live.seen.at(-1) as readonly { name: string }[] | undefined)?.some(
+          (r) => r.name === "Ada",
+        ) === true,
+    );
+    release();
+    await pending;
+    expect(await db.query(names)).toEqual([{ name: "Ada" }]);
+    await live.stop();
+    await c.dispose();
+  });
+
+  test("db.run(put) with a unique field unifies a second write onto the same row", async () => {
+    const server = await moviesWorld();
+    const http = async (call: Call) => {
+      if (call.url.endsWith("/info")) return { body: infoBody(server.t) };
+      if (!call.url.endsWith("/op")) return { body: { t: server.t } };
+      const rep = await server.transact([
+        { ":user/name": call.body.input.name, ":user/age": call.body.input.age },
+      ]);
+      return {
+        body: {
+          t: rep.t,
+          txEid: rep.txEid,
+          tempids: rep.tempids,
+          datoms: rep.txData.map(toWireDatom),
+          clientOpId: call.body.clientOpId,
+          output: {},
+        },
+      };
+    };
+    const peer = fakePeer({ http });
+    const c = client(peer);
+    const db = c.ramose.db("movies", Movies);
+    await seedClient(peer, db, server);
+
+    await db.run(createByPut, { name: "Ada", age: 36 });
+    await db.run(createByPut, { name: "Ada", age: 37 });
+    const rows = await db.query(
+      Query.q(() =>
+        pipe(
+          Query.entities(User),
+          Query.select({ name: User.name, age: User.age }),
+        ),
+      ),
+    );
+    expect(rows).toEqual([{ name: "Ada", age: 37 }]);
+    await c.dispose();
   });
 });
