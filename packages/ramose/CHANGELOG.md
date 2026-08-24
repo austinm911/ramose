@@ -34,6 +34,27 @@ Type must match the value type. Composition bags already rejected
 **Breaking:** `UuidString` is deleted. Use `Uuid`. No deprecation
 window (tracker #205).
 
+### Shared live cache applies finalize per subscriber (part of #241, tracker #205)
+
+`useLive` shares the raw wire result of a standing query, keyed on the
+post-binding lowered AST. `one()` / `oneOrFail()` and `.limit(1)` /
+`.limit(2)` lower to the same AST, so they share one subscription; each
+hook applies its own take-unwrap. A params spelling and its inline
+equivalent share an entry when the bound forms match. Dev-mode warns on
+sustained key churn (not the first legitimate `issueId` A → B change)
+and double-lowers at subscribe to catch an impure generator body. A
+params-bound query whose lowering throws keys stably on the holed AST
+plus the bindings, so a `ParamError` does not tear the subscription
+down every render.
+
+### Shared subscriptions and stable row identity (part of #227, tracker #205)
+
+`useLive(db, q)` keys on the lowered AST: two components that build the
+same query share one refcounted subscription. Unchanged rows keep object
+identity across ticks (`shareEqualDeep` replaces the `JSON.stringify`
+digest), so a single-row change re-renders only that row's `key={row.id}`
+child.
+
 ### `writes: "operations"` is the peer default (part of #173, tracker #205)
 
 Raw `POST /db/:name/transact` — HTTPS and the live-session
