@@ -44,12 +44,25 @@ throws at runtime.
 ### A bound verifier without a policy fails closed (#242)
 
 `checkAuth` and the Worker's auth `build` now treat verifier fields
-(`jwksUrl` / `jwksService` / `issuers` / `aud`, or the Worker env
-equivalents including `RAMOSE_JWKS_JSON`) as implying a policy. The
-docs' deploy sample — `jwt` + `jwksUrl` next to
-`policy: process.env.RAMOSE_POLICY` — no longer ships a silently open
-database when that variable is missing. Binding nothing still stays
-open. Partial verifiers still 401 `/db/*` with `/health` 200 (#238).
+(`jwksUrl` / `jwksJson` / `jwksService` / `issuers` / `aud`, or the
+Worker env equivalents) as implying a policy. The docs' deploy sample
+— `jwt` + `jwksUrl` next to `policy: process.env.RAMOSE_POLICY` — no
+longer ships a silently open database when that variable is missing.
+Binding nothing still stays open. Partial verifiers still 401 `/db/*`
+with `/health` 200 (#238).
+
+`ServerAuth.jwksJson` lowers onto `RAMOSE_JWKS_JSON`, so a hatch that
+carries the offline/test key set matches when Server has the same
+`auth.jwksJson`. A hatch with `RAMOSE_JWKS_JSON` and no matching
+`auth.jwksJson` fails the deploy as divergence, same as the other
+verifier vars. Policy plus `jwksJson` (no `jwksUrl`) is a complete
+verifier.
+
+A deploy that previously succeeded with `jwksUrl` / `jwt` and no
+policy now fails — drop the verifier fields to stay open, or supply
+the policy.
+
+The demo `/` page now 404s in the broken-auth state (previously 200).
 
 An unrecognized `RAMOSE_WRITES` (`ALL`, typos) still fails closed to
 `"operations"`, and now warns at deploy with the same wording as the
