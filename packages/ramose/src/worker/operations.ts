@@ -24,7 +24,6 @@ import {
   InvalidRequest,
   isDatabaseError,
   NotOne,
-  ParamError,
   type DbError,
 } from "../db/Errors.ts";
 import { buildOp, entityRefOf, runBody } from "../db/op-handle.ts";
@@ -36,7 +35,7 @@ import {
   materializeOutput,
 } from "../db/Operation.ts";
 import { lowerPullPattern } from "../db/Pull.ts";
-import { lowerQueryObject } from "../db/query/index.ts";
+import { tryLowerQueryObject } from "../db/query/index.ts";
 import { checkWrite, viewDb } from "./auth.ts";
 import type { WritesMode } from "../writes.ts";
 import { BadRequest, OperationRejected } from "./errors.ts";
@@ -62,7 +61,7 @@ const tagOf = (err: unknown): string | undefined =>
 
 const asQueryFailure = (cause: unknown): DbError => {
   if (isDatabaseError(cause)) return cause;
-  if (cause instanceof NotOne || cause instanceof ParamError) {
+  if (cause instanceof NotOne) {
     return new InvalidRequest({ message: cause.message });
   }
   return new InternalError({
@@ -242,14 +241,14 @@ export async function prepareOperation(args: ExecuteArgs): Promise<ExecuteReady>
           installOn(args.env, name ?? args.db, catalog, args.principal),
       },
     },
-    q: (input, params) =>
+    q: (input) =>
       Effect.tryPromise({
         try: async () => {
-          const lowered = lowerQueryObject(input, params);
+          const lowered = tryLowerQueryObject(input);
           const db = await withOps(dbv, collected());
           const result = await engineQuery(db, lowered.query, []);
           const rows = lowered.finalize(result);
-          if (rows instanceof NotOne || rows instanceof ParamError) throw rows;
+          if (rows instanceof NotOne) throw rows;
           return rows;
         },
         catch: asQueryFailure,

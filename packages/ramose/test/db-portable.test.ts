@@ -217,14 +217,11 @@ describe("the `/db` barrel's public names", () => {
         "Ref",
         "Long",
         "Bytes",
-        // shapes and params
+        // shapes
         "all",
         "again",
         "pick",
         "values",
-        "params",
-        "optional",
-        "EidOf",
         // the query language (kernel + pipe surface; issue #149)
         "Q",
         "Query",
@@ -253,7 +250,6 @@ describe("the `/db` barrel's public names", () => {
         // `.oneOrFail()` cardinality — not a DbError (the peer succeeded)
         "NotOne",
         "OperationRejected",
-        "ParamError",
       ].sort(),
     );
   });

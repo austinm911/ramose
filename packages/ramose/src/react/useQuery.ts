@@ -10,7 +10,7 @@
  *   serialization of the lowered AST), the same key `useLive` uses. Put
  *   changing values in the query (`where({ issue: issueId })`). A
  *   render-fresh factory with the same literals does not re-run. The
- *   leftover bindings argument is still accepted.
+ *   leftover bindings argument is gone — put values in the query.
  * - The in-flight state is `loading: true` over the *previous* `data` (no
  *   flash to `undefined` on scrub); stale answers are dropped last-write-wins
  *   by issue order, not by resolution order.
@@ -18,7 +18,6 @@
 
 import type { Schema, DbError, QueryError, QueryObject, ReadDb } from "../db/index.ts";
 import { queryAstKey } from "../db/astKey.ts";
-import type { ParamArgs } from "../db/Params.ts";
 import { useEffect, useRef, useState } from "react";
 import { viewDep } from "./seam.ts";
 
@@ -32,14 +31,12 @@ export interface Async<A, E = DbError> {
   readonly loading: boolean;
 }
 
-export const useQuery = <C extends Schema.Any, R, P = never, Out = readonly R[]>(
+export const useQuery = <C extends Schema.Any, R, Out = readonly R[]>(
   db: ReadDb<C>,
-  query: QueryObject<R, P, Out>,
-  ...params: ParamArgs<P>
-): Async<Out, QueryError<Out, P>> => {
-  const bindings = params[0];
-  const astKey = queryAstKey(query, bindings);
-  const [state, set] = useState<Async<Out, QueryError<Out, P>>>({
+  query: QueryObject<R, Out>,
+): Async<Out, QueryError<Out>> => {
+  const astKey = queryAstKey(query);
+  const [state, set] = useState<Async<Out, QueryError<Out>>>({
     data: undefined,
     error: undefined,
     loading: true,
@@ -52,7 +49,7 @@ export const useQuery = <C extends Schema.Any, R, P = never, Out = readonly R[]>
     let disposed = false;
     /** Land this run's outcome unless a later-issued run already landed. */
     const land = (
-      next: (prev: Async<Out, QueryError<Out, P>>) => Async<Out, QueryError<Out, P>>,
+      next: (prev: Async<Out, QueryError<Out>>) => Async<Out, QueryError<Out>>,
     ): void => {
       if (disposed || seq < runs.current.applied) return;
       runs.current.applied = seq;
@@ -66,11 +63,11 @@ export const useQuery = <C extends Schema.Any, R, P = never, Out = readonly R[]>
     );
 
     void db
-      .query(query, ...(params as ParamArgs<P>))
+      .query(query)
       .then((rows) => {
         land(() => ({ data: rows as Out, error: undefined, loading: false }));
       })
-      .catch((error: QueryError<Out, P>) => {
+      .catch((error: QueryError<Out>) => {
         if (disposed) return;
         land((prev) => ({ data: prev.data, error, loading: false }));
       });
@@ -78,9 +75,9 @@ export const useQuery = <C extends Schema.Any, R, P = never, Out = readonly R[]>
     return () => {
       disposed = true;
     };
-    // view + query + params are all structural: `db.asOf(t)` and a
-    // render-fresh factory query (`commentsQuery(id)`) re-run only when
-    // the lowered AST or bindings change, not on object identity.
+    // view + query are structural: `db.asOf(t)` and a render-fresh
+    // factory query (`commentsQuery(id)`) re-run only when the lowered
+    // AST changes, not on object identity.
   }, [viewDep(db), astKey]);
 
   return state;

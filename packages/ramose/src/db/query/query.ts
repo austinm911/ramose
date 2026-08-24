@@ -1,29 +1,24 @@
 /**
- * `Query.q(params?, body)` — one constructor, one kind of object.
+ * `Query.q(body)` — one constructor, one kind of object.
  *
- * A query is a rule: a head (its declared params) plus a body (its clauses
- * and its projection). The body is a generator of kernel clauses that
- * returns the projection, or a function returning a closed pipeline — two
- * spellings of the same `(head, body)` value, so escalating from pipe to
- * generator is un-sugaring, never rewriting.
+ * A query is a rule: a body of kernel clauses plus a projection. The body
+ * is a generator that returns the projection, or a function returning a
+ * closed pipeline — two spellings of the same value, so escalating from
+ * pipe to generator is un-sugaring, never rewriting.
  *
- * Inputs are declared, output is inferred: the params record is the query's
- * binding type (collisions are compile errors at the merge site, the
- * interface moves only when the head moves), while the output is the type
- * of one return expression — nothing merges there, so inference is sound.
- *
- * Queries compose one way — generator delegation — at three altitudes:
- * `yield* frag(handle)` (build-inlined fragment), `yield* q.open(p)` (a
- * whole closed query as a subquery), and `Query.rule` (engine-expanded,
- * which is what makes recursion work). Effect appears nowhere here: a
- * built query is inert data — hashable for live identity, stable as a
- * hook dependency — and computation starts at `db.query`.
+ * Output is inferred: the type of one return expression. Queries compose
+ * one way — generator delegation — at three altitudes: `yield* frag(handle)`
+ * (build-inlined fragment), `yield* q.open()` (a whole closed query as a
+ * subquery), and `Query.rule` (engine-expanded, which is what makes
+ * recursion work). Effect appears nowhere here: a built query is inert
+ * data — hashable for live identity, stable as a hook dependency — and
+ * computation starts at `db.query`.
  */
 
 import { PREDICATES, vkey } from "../../internal/core/query/builtins.ts";
 import { TX_BASE } from "../../internal/core/schema.ts";
 import { makeEid } from "../Eid.ts";
-import { NotOne } from "../Errors.ts";
+import { InvalidRequest, NotOne } from "../Errors.ts";
 import type { AnyEntity } from "../Entity.ts";
 import {
   lowerOrderPath,
@@ -38,20 +33,7 @@ import {
   pathOf,
   revsOf,
 } from "../shapes.ts";
-import {
-  bindParams,
-  holesBinder,
-  isParam,
-  isParamHole,
-  params as makeParams,
-  type AnyParam,
-  type AnyParamSet,
-  type ParamBinder,
-  type ParamBindings,
-  type ParamsOf,
-  type ParamsSpec,
-} from "../Params.ts";
-import { bindPullParams, lowerPullPattern, reshapePullResult } from "../Pull.ts";
+import { lowerPullPattern, reshapePullResult } from "../Pull.ts";
 import {
   Q,
   isPullSpec,
@@ -132,13 +114,13 @@ export type PipeStage =
       readonly dir: OrderDir;
       readonly empty: OrderEmpty;
     }
-  | { readonly kind: "limit"; readonly n: number | AnyParam }
-  | { readonly kind: "offset"; readonly n: number | AnyParam }
+  | { readonly kind: "limit"; readonly n: number }
+  | { readonly kind: "offset"; readonly n: number }
   | { readonly kind: "ids" };
 
 /**
- * The pipe surface's incremental builder for the same `(params, body)`
- * value `Query.q` writes directly. `Row` is a phantom: the row the
+ * The pipe surface's incremental builder for the same body value
+ * `Query.q` writes directly. `Row` is a phantom: the row the
  * pipeline's terminals have shaped so far. In a generator body the same
  * value is a clause source: `yield* entities(Issue)` mints the branded
  * focus var and contributes membership.
@@ -174,31 +156,23 @@ export interface OpenResult<Row = unknown> {
   readonly _row?: Row;
 }
 
-/** The arguments `open` rebinds the opened query's params from: an outer
- * param token to forward, a bound handle to correlate on, or a literal. */
-export type OpenArgs<PB> = { readonly [K in keyof PB]: Var<any> | AnyParam | PB[K] };
-
 interface OpenCommand<Row> extends SpliceCommand {
   readonly _row?: Row;
   [Symbol.iterator](): Iterator<never, OpenResult<Row>, any>;
 }
 
 /**
- * A closed query value: `(params, body)`, runnable by `db.query` / `db.live`
- * and delegable into other builds via {@link QueryObject.open}. `Row` is
- * the inferred row; `PB` the declared bindings record; `Out` is what a
- * terminal resolves to — the rows array by default, one row (or `null`)
- * after {@link QueryObject.one} / {@link QueryObject.oneOrFail}, a
- * {@link Page} after {@link QueryObject.after}.
+ * A closed query value: a body, runnable by `db.query` / `db.live` and
+ * delegable into other builds via {@link QueryObject.open}. `Row` is the
+ * inferred row; `Out` is what a terminal resolves to — the rows array by
+ * default, one row (or `null`) after {@link QueryObject.one} /
+ * {@link QueryObject.oneOrFail}, a {@link Page} after
+ * {@link QueryObject.after}.
  */
-export interface QueryObject<Row = unknown, PB = never, Out = readonly Row[]> {
+export interface QueryObject<Row = unknown, Out = readonly Row[]> {
   readonly _tag: "Query";
-  /** The declared head, if any. */
-  readonly paramsSpec: ParamsSpec | undefined;
-  /** @internal the token set the body was built against */
-  readonly paramSet: AnyParamSet | undefined;
   /** @internal provenance: re-run per inclusion, so vars stay hygienic */
-  readonly body: (p: never) => unknown;
+  readonly body: () => unknown;
   /** @internal `logic()` strips cursor stages instead of failing `open` */
   readonly stripCursor: boolean;
   /** @internal `one()` / `oneOrFail()` — forced `limit 1`/`2`, unwrapped. */
@@ -208,31 +182,26 @@ export interface QueryObject<Row = unknown, PB = never, Out = readonly Row[]> {
 
   /**
    * Delegate this whole query into an enclosing build: its clauses inline,
-   * its declared params rebind from `args` — an inner need satisfied by a
-   * local handle stays internal; one forwarded from an outer param is a
-   * visible choice — and it answers `{ focus, cols }` to keep constraining.
-   * Cursor terminals don't delegate: extend then order, or strip with
-   * {@link QueryObject.logic}.
+   * and it answers `{ focus, cols }` to keep constraining. Cursor terminals
+   * don't delegate: extend then order, or strip with {@link QueryObject.logic}.
    */
-  open(
-    ...args: [PB] extends [never] ? [] : [args: OpenArgs<PB>]
-  ): OpenCommand<Row>;
+  open(): OpenCommand<Row>;
 
   /** This query without its cursor (orderBy/limit/offset/one/after) — the
    * logic composes; the cursor was post-processing for the outermost query. */
-  logic(): QueryObject<Row, PB>;
+  logic(): QueryObject<Row>;
 
   /**
    * At most one row. Lowering forces `limit 1`; the result is that row or
    * `null`, the same absence `db.pull` uses. Extra matches are not fetched.
    */
-  one(): QueryObject<Row, PB, Row | null>;
+  one(): QueryObject<Row, Row | null>;
   /**
    * Exactly one row. Lowering forces `limit 2` so a second match is
    * witnessed without pulling a whole page, and `db.query` fails with `NotOne`
    * when the peer answers zero or two.
    */
-  oneOrFail(): QueryObject<Row, PB, Row>;
+  oneOrFail(): QueryObject<Row, Row>;
   /**
    * Keyset-page a sorted query: the result becomes a {@link Page}, whose
    * `cursor` is where it ended — pass `null` for the first page and the
@@ -242,17 +211,15 @@ export interface QueryObject<Row = unknown, PB = never, Out = readonly Row[]> {
    * the peer's: `limit(n)` is n rows *past* the cursor, and unlike `offset`
    * the walk does not shift when rows are inserted before it.
    */
-  after(cursor: Cursor | null): QueryObject<Row, PB, Page<Row>>;
+  after(cursor: Cursor | null): QueryObject<Row, Page<Row>>;
 
   /** Phantom — the inferred row. Never present at runtime. */
   readonly _row?: Row;
-  /** Phantom — the declared bindings record. Never present at runtime. */
-  readonly _params?: PB;
   /** Phantom — what a terminal resolves to. Never present at runtime. */
   readonly _out?: Out;
 }
 
-export type AnyQueryObject = QueryObject<any, any, any>;
+export type AnyQueryObject = QueryObject<any, any>;
 
 /**
  * The row type a query yields — so an app names it once, from the query,
@@ -264,7 +231,7 @@ export type AnyQueryObject = QueryObject<any, any, any>;
  * type BoardRows = Ramose.Rows<typeof boardQuery>; // the readonly array
  * ```
  */
-export type Row<Q> = Q extends QueryObject<infer R, any, any> ? R : never;
+export type Row<Q> = Q extends QueryObject<infer R, any> ? R : never;
 
 /** The readonly array of {@link Row} — what `db.query` resolves an unpaged,
  * untaken query to. */
@@ -281,21 +248,20 @@ interface Built {
    * cursor's sort paths walk from. */
   readonly focus: AnyVar | undefined;
   readonly order: readonly BuiltOrder[];
-  readonly limit: number | AnyParam | undefined;
-  readonly offset: number | AnyParam | undefined;
+  readonly limit: number | undefined;
+  readonly offset: number | undefined;
 }
 
 const isGen = (x: unknown): x is QueryGen<unknown> =>
   typeof x === "object" && x !== null && typeof (x as Iterator<unknown>).next === "function";
 
-/** Run the body once against `p`, collecting into `ctx`. */
+/** Run the body once, collecting into `ctx`. */
 const runInto = (
   qv: AnyQueryObject,
-  p: unknown,
   ctx: BuildCtx,
   stripCursor: boolean,
 ): Built => {
-  const out = (qv.body as (p: unknown) => unknown)(p);
+  const out = qv.body();
   if (isPipeline(out)) return assemblePipeline(out, ctx, stripCursor);
   if (isGen(out)) {
     const proj = runBody(out, ctx);
@@ -342,8 +308,8 @@ const assemblePipeline = (pipe: Pipeline, ctx: BuildCtx, stripCursor: boolean): 
   let selectFocus: AnyVar = root;
   let projectIds = false;
   const order: BuiltOrder[] = [];
-  let limit: number | AnyParam | undefined;
-  let offset: number | AnyParam | undefined;
+  let limit: number | undefined;
+  let offset: number | undefined;
   for (const st of pipe.stages) {
     switch (st.kind) {
       case "frag": {
@@ -437,7 +403,7 @@ const resolveOrderKey = (
 /** What a body may produce. */
 export type QueryBody<P, Prj> = (p: P) => QueryGen<Prj> | Pipeline<any>;
 
-type RowFromBody<B> = B extends (p: never) => infer Out
+type RowFromBody<B> = B extends () => infer Out
   ? Out extends QueryGen<infer Prj>
     ? Prj extends AnyVar
       ? { readonly id: number }
@@ -447,31 +413,27 @@ type RowFromBody<B> = B extends (p: never) => infer Out
       : never
   : never;
 
-export const makeQueryObject = <Row, PB>(
-  paramsSpec: ParamsSpec | undefined,
-  paramSet: AnyParamSet | undefined,
-  body: (p: never) => unknown,
+export const makeQueryObject = <Row>(
+  body: () => unknown,
   stripCursor: boolean,
   take?: "one" | "oneOrFail",
   seek?: Cursor | null,
-): QueryObject<Row, PB> => {
-  const self: QueryObject<Row, PB> = {
+): QueryObject<Row> => {
+  const self: QueryObject<Row> = {
     _tag: "Query",
-    paramsSpec,
-    paramSet,
     body,
     stripCursor,
     take,
     seek,
-    open: ((args?: Record<string, unknown>) => openCommand(self, args)) as QueryObject<Row, PB>["open"],
-    logic: () => makeQueryObject<Row, PB>(paramsSpec, paramSet, body, true),
+    open: (() => openCommand(self)) as QueryObject<Row>["open"],
+    logic: () => makeQueryObject<Row>(body, true),
     one: () => {
       if (seek !== undefined) {
         throw new Error(
           "ramose/query: one() unwraps a single row, and after(...) pages many — a paged query keeps its rows",
         );
       }
-      return makeQueryObject(paramsSpec, paramSet, body, stripCursor, "one") as never;
+      return makeQueryObject(body, stripCursor, "one") as never;
     },
     oneOrFail: () => {
       if (seek !== undefined) {
@@ -479,7 +441,7 @@ export const makeQueryObject = <Row, PB>(
           "ramose/query: oneOrFail() unwraps a single row, and after(...) pages many — a paged query keeps its rows",
         );
       }
-      return makeQueryObject(paramsSpec, paramSet, body, stripCursor, "oneOrFail") as never;
+      return makeQueryObject(body, stripCursor, "oneOrFail") as never;
     },
     after: (cursor) => {
       if (take !== undefined) {
@@ -492,37 +454,24 @@ export const makeQueryObject = <Row, PB>(
           "ramose/query: after(...) takes the previous page's cursor, or null for the first page",
         );
       }
-      return makeQueryObject(paramsSpec, paramSet, body, stripCursor, undefined, cursor) as never;
+      return makeQueryObject(body, stripCursor, undefined, cursor) as never;
     },
   };
   return self;
 };
 
 /**
- * Build a query. `Query.q(body)` for a paramless one;
- * `Query.q({ me: Ramose.EidOf(User), … }, body)` declares the head. The
- * body receives the param tokens and returns the projection; both the pipe
- * and generator spellings denote the same value.
+ * Build a query. The body returns the projection; both the pipe and
+ * generator spellings denote the same value. Put changing values in the
+ * body as literals — `Query.q` takes one argument.
  */
-export function q<B extends (p: never) => QueryGen<any> | Pipeline<any>>(
+export function q<B extends () => QueryGen<any> | Pipeline<any>>(
   body: B,
-): QueryObject<RowFromBody<B>, never>;
-export function q<
-  const Spec extends ParamsSpec,
-  B extends (p: ParamsOf<Spec>) => QueryGen<any> | Pipeline<any>,
->(spec: Spec, body: B): QueryObject<RowFromBody<B>, ParamBindings<Spec>>;
-export function q(
-  specOrBody: ParamsSpec | ((p: never) => unknown),
-  body?: (p: never) => unknown,
-): AnyQueryObject {
-  if (typeof specOrBody === "function") {
-    return makeQueryObject(undefined, undefined, specOrBody, false);
-  }
+): QueryObject<RowFromBody<B>> {
   if (typeof body !== "function") {
-    throw new Error("ramose/query: Query.q(params, body) takes the body as its second argument");
+    throw new Error("ramose/query: Query.q(body) takes a generator or a function returning a pipeline");
   }
-  const set = makeParams(specOrBody);
-  return makeQueryObject(specOrBody, set as AnyParamSet, body, false);
+  return makeQueryObject(body, false);
 }
 
 // ── named rules ─────────────────────────────────────────────────────────────
@@ -612,21 +561,11 @@ export function rule(name: string, body: (...vars: never[]) => QueryGen<unknown>
 
 // ── open (whole-query delegation) ───────────────────────────────────────────
 
-const openCommand = <Row>(qv: AnyQueryObject, args: Record<string, unknown> | undefined): OpenCommand<Row> => {
+const openCommand = <Row>(qv: AnyQueryObject): OpenCommand<Row> => {
   const cmd: OpenCommand<Row> = {
     _tag: "splice",
     splice: (ctx) => {
-      const p: Record<string, unknown> = {};
-      for (const key of Object.keys(qv.paramSet ?? qv.paramsSpec ?? {})) {
-        const supplied = args?.[key];
-        if (supplied === undefined) {
-          throw new Error(
-            `ramose/query: q.open(...) must supply "${key}" — pass a bound handle, an outer param token, or a literal`,
-          );
-        }
-        p[key] = supplied;
-      }
-      const built = runInto(qv, p, ctx, qv.stripCursor);
+      const built = runInto(qv, ctx, qv.stripCursor);
       if (built.order.length > 0 || built.limit !== undefined || built.offset !== undefined || qv.take !== undefined || qv.seek !== undefined) {
         throw new Error(
           "ramose/query: a query with a cursor (orderBy/limit/offset/one/after) does not delegate — the cursor is post-processing for the outermost query; extend then order, or strip it explicitly with q.logic()",
@@ -664,12 +603,10 @@ const openCommand = <Row>(qv: AnyQueryObject, args: Record<string, unknown> | un
  */
 export const enrich =
   <Extra extends CellRecord>(body: (e: Var<EidCell>) => QueryGen<Extra>) =>
-  <Row, PB>(qv: QueryObject<Row, PB>): QueryObject<Row & RowOfProjection<Extra>, PB> =>
+  <Row>(qv: QueryObject<Row>): QueryObject<Row & RowOfProjection<Extra>> =>
     makeQueryObject(
-      qv.paramsSpec,
-      qv.paramSet,
-      function* (p: Record<string, unknown>) {
-        const { focus, cols } = (yield* openCommand(qv, p)) as OpenResult;
+      function* () {
+        const { focus, cols } = (yield* openCommand(qv)) as OpenResult;
         const extra = yield* body(focus);
         return Q.row(cols, extra);
       } as never,
@@ -679,12 +616,10 @@ export const enrich =
 /** Shape-preserving sibling of {@link enrich}: extra constraints, same row. */
 export const refine =
   (frag: Fragment<Var<EidCell>, unknown>) =>
-  <Row, PB>(qv: QueryObject<Row, PB>): QueryObject<Row, PB> =>
+  <Row>(qv: QueryObject<Row>): QueryObject<Row> =>
     makeQueryObject(
-      qv.paramsSpec,
-      qv.paramSet,
-      function* (p: Record<string, unknown>) {
-        const { focus, cols } = (yield* openCommand(qv, p)) as OpenResult;
+      function* () {
+        const { focus, cols } = (yield* openCommand(qv)) as OpenResult;
         yield* frag(focus);
         return cols;
       } as never,
@@ -739,25 +674,30 @@ const regexSource = (re: RegExp | string): string => {
   return re.source;
 };
 
-/**
- * The lowered wire AST with param holes left as `{ $param: key }` instead
- * of bound values. Reset / churn watch this structure key so a params-only
- * change does not look like a new query. Live cache identity is the
- * post-binding AST (`queryAstKey`), not this holed form plus `paramsKey`.
- */
+/** The lowered wire AST — the same JSON `db.query` sends. */
 export const lowerQueryAst = (qv: AnyQueryObject): Record<string, unknown> =>
-  lowerQueryObject(qv, undefined, { holes: true }).query;
+  lowerQueryObject(qv).query;
 
-export const lowerQueryObject = (
-  qv: AnyQueryObject,
-  bindings?: Readonly<Record<string, unknown>>,
-  opts?: { readonly holes?: boolean },
-): LoweredKernelQuery => {
+/**
+ * Lower, or throw {@link InvalidRequest}. `db.query` / `db.live` / an
+ * operation's `q` handle share this so a query that cannot lower is a
+ * 400 everywhere, not a 500 on the op path.
+ */
+export const tryLowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
+  try {
+    return lowerQueryObject(qv);
+  } catch (e) {
+    if (e instanceof InvalidRequest) throw e;
+    throw new InvalidRequest({
+      message: e instanceof Error ? e.message : String(e),
+    });
+  }
+};
+
+export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   resetGensym();
-  const binder =
-    opts?.holes === true ? holesBinder() : bindParams(qv.paramSet, bindings);
   const ctx: BuildCtx = { clauses: [] };
-  const built = runInto(qv, qv.paramSet ?? {}, ctx, qv.stripCursor);
+  const built = runInto(qv, ctx, qv.stripCursor);
 
   const names = new Map<number, string>();
   let seq = 0;
@@ -849,7 +789,6 @@ export const lowerQueryObject = (
           c.branches.forEach((b) => clauseListVars(b, into));
           break;
         case "notGroup":
-        case "whenGroup":
           clauseListVars(c.clauses, into);
           break;
       }
@@ -858,10 +797,7 @@ export const lowerQueryObject = (
   };
 
   // ── positions ────────────────────────────────────────────────────────────
-  const lowerConst = (v: unknown, use: string): unknown => {
-    if (isParam(v)) return unwrapEidLike(binder.resolve(v, use));
-    return unwrapEidLike(v);
-  };
+  const lowerConst = (v: unknown, _use: string): unknown => unwrapEidLike(v);
 
   /** e/v/tx/op position of a fact: a var name, a constant, or "_". */
   const lowerPos = (v: unknown, use: string): unknown => {
@@ -956,12 +892,6 @@ export const lowerQueryObject = (
           out.push(["not-join", join.map((id) => names.get(id) ?? nameOf(findVar(c, id))), ...lowered]);
           break;
         }
-        case "whenGroup":
-          // top-level groups were resolved before lowering; one that survives
-          // is inside a branch whose truth an off gate would corrupt
-          throw new Error(
-            "ramose/query: Q.when(...) cannot appear inside Q.or / Q.not or a rule body — an off gate lowers to no clauses, which under `or` would make the branch vacuously true. Gate at the query's top level",
-          );
       }
     }
     return out;
@@ -997,7 +927,6 @@ export const lowerQueryObject = (
             c.branches.forEach(scan);
             break;
           case "notGroup":
-          case "whenGroup":
             scan(c.clauses);
             break;
         }
@@ -1071,8 +1000,6 @@ export const lowerQueryObject = (
       }
       if (isVar(a)) return nameOf(a);
       let v: unknown = a;
-      if (isParam(a)) v = binder.resolve(a, `${op}(...)`);
-      if (isParamHole(v)) return v;
       if (op === "re-find?") return regexSource(v as RegExp | string);
       if (op === "in") {
         if (!Array.isArray(v)) throw new Error(`ramose/query: Q.in takes an array of values, got ${String(v)}`);
@@ -1104,7 +1031,7 @@ export const lowerQueryObject = (
   // equals filtering rows by that value) stays an ordinary clause. Resolved
   // before the projection lowers, because a referenced aggregate cell needs
   // an `(as … ?alias)` name in `:find`.
-  const clauses = resolveWhens(built.clauses, binder);
+  const clauses = built.clauses;
   const havingCmps: CmpCommand[] = [];
   const rowClauses: BClause[] = [];
   for (const c of clauses) {
@@ -1177,7 +1104,7 @@ export const lowerQueryObject = (
       where.push(...requiredClauses(focus, map));
       flats.push({
         path,
-        elem: ["pull", focus, bindPullParams(lowerPullPattern(map), binder.resolve)],
+        elem: ["pull", focus, lowerPullPattern(map)],
         read: (c) => reshapePullResult(map, c),
       });
       return;
@@ -1201,7 +1128,7 @@ export const lowerQueryObject = (
     const map = shapeToPullMap(proj.shape);
     const focus = nameOf(proj.focus);
     where.push(...requiredClauses(focus, map));
-    find.push(["pull", focus, bindPullParams(lowerPullPattern(map), binder.resolve)]);
+    find.push(["pull", focus, lowerPullPattern(map)]);
     finalizeRows = (tuples) => tuples.map((t) => reshapePullResult(map, t[0]));
   } else {
     const cells = isRowsSpec(proj) ? proj.cells : proj;
@@ -1279,14 +1206,12 @@ export const lowerQueryObject = (
       if (isVar(a)) {
         if (!plainCellVars.has(a.id)) {
           throw new Error(
-            "ramose/query: a post-group comparison sees the group's row, so a var beside the aggregate cell must be a projected cell of it — project the var, or compare against a literal or param",
+            "ramose/query: a post-group comparison sees the group's row, so a var beside the aggregate cell must be a projected cell of it — project the var, or compare against a literal",
           );
         }
         return nameOf(a);
       }
       let v: unknown = a;
-      if (isParam(a)) v = binder.resolve(a, `${c.op}(...)`);
-      if (isParamHole(v)) return v;
       if (c.op === "re-find?") return regexSource(v as RegExp | string);
       if (c.op === "in") {
         if (!Array.isArray(v)) throw new Error(`ramose/query: Q.in takes an array of values, got ${String(v)}`);
@@ -1326,8 +1251,7 @@ export const lowerQueryObject = (
   // its root the same way). An e-var already in the projection is grouping,
   // not multiplicity, and stays out.
   // Top-level facts only: a var bound solely inside an or/not group is not
-  // bound at the query's top level, so it cannot ride `:with` (and gated
-  // groups were already spliced inline by resolveWhens).
+  // bound at the query's top level, so it cannot ride `:with`.
   const withVars: string[] = [];
   if (aggValueVars.size > 0) {
     const seen = new Set<number>();
@@ -1360,17 +1284,12 @@ export const lowerQueryObject = (
     }
   }
 
-  const boundCount = (
-    n: number | AnyParam | undefined,
-    what: string,
-  ): number | { readonly $param: string } | undefined => {
+  const boundCount = (n: number | undefined, what: string): number | undefined => {
     if (n === undefined) return undefined;
-    const v = isParam(n) ? binder.resolve(n, what) : n;
-    if (isParamHole(v)) return v;
-    if (typeof v !== "number" || !Number.isInteger(v) || v < 0) {
-      throw new Error(`ramose/query: ${what} takes a non-negative integer, got ${String(v)}`);
+    if (!Number.isInteger(n) || n < 0) {
+      throw new Error(`ramose/query: ${what} takes a non-negative integer, got ${String(n)}`);
     }
-    return v;
+    return n;
   };
   const take = qv.stripCursor ? undefined : qv.take;
   const seek = qv.stripCursor ? undefined : qv.seek;
@@ -1457,23 +1376,4 @@ export const lowerQueryObject = (
       return rows;
     },
   };
-};
-
-/**
- * Resolve the param-gated groups `Q.when` recorded: gate on, the clauses
- * splice exactly as if written inline; gate off, they lower to nothing.
- * Runs before anything reads the clause list, so join-variable analysis
- * never sees a dropped clause.
- */
-const resolveWhens = (list: readonly BClause[], binder: ParamBinder): BClause[] => {
-  const out: BClause[] = [];
-  for (const c of list) {
-    if (c._tag === "whenGroup") {
-      if (!binder.gateOn(c.gate)) continue;
-      out.push(...resolveWhens(c.clauses, binder));
-      continue;
-    }
-    out.push(c);
-  }
-  return out;
 };

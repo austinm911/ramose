@@ -9,7 +9,6 @@ export { enrich, isCursor, q, refine, rule } from "./query.ts";
 export type {
   AnyQueryObject,
   Cursor,
-  OpenArgs,
   OpenResult,
   Page,
   Pipeline,
@@ -42,7 +41,6 @@ export {
   some,
   stage,
   updatedSince,
-  when,
 } from "./lib.ts";
 export type { FilterStage, IdRow, TraversalStage } from "./lib.ts";
 

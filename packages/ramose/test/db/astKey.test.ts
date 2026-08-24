@@ -1,6 +1,6 @@
 /**
- * Canonical subscription keys: post-binding lowered AST, deterministic
- * key order, params vs already-substituted queries.
+ * Canonical subscription keys: lowered AST, deterministic key order,
+ * inline-literal chains.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -15,8 +15,6 @@ import {
   liveSubscriptionKey,
   lowerQueryAst,
   lowerQueryObject,
-  params,
-  paramsKey,
   queryAstKey,
   queryStructureKey,
 } from "../../src/db/internal.ts";
@@ -60,41 +58,19 @@ describe("queryAstKey", () => {
     );
   });
 
-  test("a params query with bindings keys as the post-binding AST — same as the inline spelling", () => {
-    const p = params({ n: Schema.Number });
-    const limited = Query.from(Todo).ids().limit(p.n);
+  test("different inline values are different keys", () => {
+    expect(queryAstKey(Query.from(Todo).ids().limit(1))).not.toBe(
+      queryAstKey(Query.from(Todo).ids().limit(2)),
+    );
+  });
+
+  test("queryStructureKey is the same as queryAstKey", () => {
+    const q = Query.from(Todo).ids().limit(1);
+    expect(queryStructureKey(q)).toBe(queryAstKey(q));
+  });
+
+  test("an inline-literal query keys as its own AST", () => {
     const inline = Query.from(Todo).ids().limit(1);
-    expect(queryAstKey(limited, { n: 1 })).toBe(queryAstKey(inline));
-    expect(JSON.stringify(lowerQueryObject(limited, { n: 1 }).query)).not.toContain(
-      "$param",
-    );
-    const view = "1/todos?asOf=&history=false&minT=";
-    expect(liveSubscriptionKey(view, limited, { n: 1 })).toBe(
-      liveSubscriptionKey(view, inline),
-    );
-  });
-
-  test("different bindings are different post-binding keys", () => {
-    const p = params({ n: Schema.Number });
-    const limited = Query.from(Todo).ids().limit(p.n);
-    expect(queryAstKey(limited, { n: 1 })).not.toBe(queryAstKey(limited, { n: 2 }));
-  });
-
-  test("queryStructureKey is the holed AST — bindings do not change it", () => {
-    const p = params({ n: Schema.Number });
-    const limited = Query.from(Todo).ids().limit(p.n);
-    expect(queryStructureKey(limited)).toBe(queryStructureKey(limited));
-    const ast = lowerQueryAst(limited);
-    expect(JSON.stringify(ast)).toContain("$param");
-    expect(JSON.stringify(ast)).toContain("\"n\"");
-    expect(queryStructureKey(limited)).not.toBe(
-      queryAstKey(Query.from(Todo).ids().limit(1)),
-    );
-  });
-
-  test("an already-substituted query keys as its own AST", () => {
-    const inline = Query.from(Todo).ids().limit(1);
-    expect(JSON.stringify(lowerQueryAst(inline))).not.toContain("$param");
     expect(queryAstKey(inline)).toBe(canonicalAstKey(lowerQueryAst(inline)));
   });
 
@@ -107,9 +83,29 @@ describe("queryAstKey", () => {
     expect(liveSubscriptionKey(view, a)).toBe(liveSubscriptionKey(view, b));
   });
 
-  test("orderBy between two where() calls blocks sorted-equality sharing", () => {
-    const a = Query.from(Todo).where({ done: false }).orderBy(Todo.rank).where({ rank: 3 });
-    const b = Query.from(Todo).where({ rank: 3 }).orderBy(Todo.rank).where({ done: false });
+  test("orderBy between two filters blocks sorted-equality sharing", () => {
+    // Fluent `.where` after `.orderBy` cannot lower (default select is
+    // inserted before orderBy). Pipe keeps both filters as clauses, and
+    // the orderBy in the middle stops applyEq from re-sorting them.
+    const a = Query.q(() =>
+      pipe(
+        Query.entities(Todo),
+        Query.is(Todo.done, false),
+        Query.orderBy(Todo.rank),
+        Query.is(Todo.rank, 3),
+        Query.select({ id: Todo.id }),
+      ),
+    );
+    const b = Query.q(() =>
+      pipe(
+        Query.entities(Todo),
+        Query.is(Todo.rank, 3),
+        Query.orderBy(Todo.rank),
+        Query.is(Todo.done, false),
+        Query.select({ id: Todo.id }),
+      ),
+    );
+    expect(queryAstKey(a)).not.toMatch(/^\0error:/);
     expect(queryAstKey(a)).not.toBe(queryAstKey(b));
   });
 
@@ -130,32 +126,22 @@ describe("queryAstKey", () => {
     expect(JSON.stringify(lowerQueryAst(q))).toContain(":todo/title");
   });
 
-  test("a throwing params lowering keys stably — same query and bindings, same key", () => {
-    const p = params({ n: Schema.Number });
-    const limited = Query.from(Todo).ids().limit(p.n);
-    const bad = { extra: 1 };
-    const ka = queryAstKey(limited, bad);
-    const kb = queryAstKey(limited, bad);
-    expect(ka).toMatch(/^\0error:/);
-    expect(ka).toBe(kb);
-    const view = "1/todos?asOf=&history=false&minT=";
-    expect(liveSubscriptionKey(view, limited, bad)).toBe(
-      liveSubscriptionKey(view, limited, bad),
-    );
-    expect(liveSubscriptionKey(view, limited, bad)).not.toBe(
-      liveSubscriptionKey(view, limited, { extra: 2 }),
-    );
-  });
-
-  test("two unlowerable queries with the same message do not share a key", () => {
+  test("two unlowerable queries with the same message share a key", () => {
     const a = Query.q(() => Query.entities(Todo)).after(null);
     const b = Query.q(() => Query.entities(Todo)).after(null);
     const ka = queryAstKey(a);
     const kb = queryAstKey(b);
     expect(ka).toMatch(/^\0error:/);
-    expect(kb).toMatch(/^\0error:/);
-    expect(ka).not.toBe(kb);
-    expect(queryAstKey(a)).toBe(ka);
+    expect(kb).toBe(ka);
+    expect(queryAstKey(Query.from(Todo).after(null))).toBe(ka);
+  });
+
+  test("unlowerable queries with different messages do not share a key", () => {
+    const after = Query.from(Todo).after(null);
+    const badLimit = Query.from(Todo).limit(-1);
+    expect(queryAstKey(after)).toMatch(/^\0error:/);
+    expect(queryAstKey(badLimit)).toMatch(/^\0error:/);
+    expect(queryAstKey(after)).not.toBe(queryAstKey(badLimit));
   });
 
   test("WeakMap memo hides an impure body; assertLoweringPurity warns", () => {
@@ -183,31 +169,20 @@ describe("queryAstKey", () => {
 });
 
 describe("liveSubscriptionKey", () => {
-  test("params distinguish two bindings of the same query", () => {
-    const p = params({ n: Schema.Number });
-    const limited = Query.from(Todo).ids().limit(p.n);
+  test("different inline values do not share a key", () => {
     const view = "1/todos?asOf=&history=false&minT=";
-    expect(liveSubscriptionKey(view, limited, { n: 1 })).not.toBe(
-      liveSubscriptionKey(view, limited, { n: 2 }),
+    expect(liveSubscriptionKey(view, Query.from(Todo).ids().limit(1))).not.toBe(
+      liveSubscriptionKey(view, Query.from(Todo).ids().limit(2)),
     );
-    expect(liveSubscriptionKey(view, limited, { n: 1 })).toBe(
-      liveSubscriptionKey(view, limited, { n: 1 }),
+    expect(liveSubscriptionKey(view, Query.from(Todo).ids().limit(1))).toBe(
+      liveSubscriptionKey(view, Query.from(Todo).ids().limit(1)),
     );
   });
 
-  test("equivalent no-params queries share a key across object identity", () => {
+  test("equivalent queries share a key across object identity", () => {
     const view = "1/todos?asOf=&history=false&minT=";
     expect(liveSubscriptionKey(view, allTodos)).toBe(
       liveSubscriptionKey(view, Query.from(Todo).ids()),
-    );
-  });
-
-  test("an empty params object is omitted — same key as no params", () => {
-    expect(paramsKey({})).toBe("");
-    expect(paramsKey(undefined)).toBe("");
-    const view = "1/todos?asOf=&history=false&minT=";
-    expect(liveSubscriptionKey(view, allTodos)).toBe(
-      liveSubscriptionKey(view, allTodos, {}),
     );
   });
 
