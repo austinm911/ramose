@@ -8,9 +8,9 @@
  *
  *   bun run dev:reef
  *
- * which is `bun alchemy dev examples/reef/alchemy.run.ts` with the env vars
- * miniflare needs defaulted (CI=1, ALCHEMY_STATE=local, placeholder
- * CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN — see .cursor/CLOUD.md). The
+ * which is `bun alchemy dev examples/reef/alchemy.run.ts`. `bun run
+ * dev:reef` sets CI / ALCHEMY_STATE and placeholder Cloudflare
+ * credentials the local emulator insists on. The
  * peer serves http://localhost:1337, the auth Worker http://localhost:1338,
  * and the `Ui` resource below starts the Vite dev server on
  * http://localhost:5173 once both Workers are up. Vite proxies /api to the

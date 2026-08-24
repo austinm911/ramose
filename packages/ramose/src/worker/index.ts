@@ -33,7 +33,8 @@
 
 import { DEFAULT_QUERY_MAX_CELLS, Histogram, type Principal, type PullElemPred, type PullPattern, type QueryStats, RateMeter, allows, componentLogger, fromJson, isAdmin, normalizePullPattern, pull, query, setTelemetryLevel, toJson } from "../internal/core/index.ts";
 import type { Db as CoreDb } from "../internal/core/index.ts";
-import { type RamoseEnv, envInt, internalHeaders } from "../internal/transactor/index.ts";
+import type { RamoseEnv } from "../RamoseEnv.ts";
+import { envInt, internalHeaders } from "../internal/transactor/index.ts";
 import { TransactorDO } from "../internal/transactor/transactor-do.ts";
 import { QueryReplicaDO } from "../internal/replica/index.ts";
 import * as Effect from "effect/Effect";
@@ -48,7 +49,7 @@ import { PRINCIPAL_HEADER } from "./session.ts";
 import { DEMO_HTML } from "./demo.ts";
 
 export { TransactorDO, QueryReplicaDO };
-export type { RamoseEnv };
+export type { RamoseEnv } from "../RamoseEnv.ts";
 export { type ErrorHttp, errorResponse, errorToHttp, statusOf, toDbError } from "../errorHttp.ts";
 export { toHttp, fromThrown, isRamoseError } from "./errors.ts";
 
@@ -452,9 +453,17 @@ async function route(request: Request, env: RamoseEnv, url: URL, db: string, res
     if (policy !== undefined && !isAdmin(principal)) {
       return json({ db, t: basisT, principal: who }, 200, { "x-ramose-ms": String(Date.now() - t0) });
     }
+    // A DO that is still provisioning answers 500 "Worker not found." as
+    // JSON. Swallowing that into `r.json()` made `/info` 200 while the
+    // first write still failed — e2e warmup treated it as ready.
+    const doJson = async (res: Response): Promise<unknown> => {
+      const body = await res.text();
+      if (!res.ok) throw new UpstreamError({ status: res.status, body });
+      return JSON.parse(body);
+    };
     const [tx, rep] = await Promise.all([
-      transactor().fetch(txUrl("/info"), { headers: { ...coloHeader(request), ...internalHeaders(env) } }).then((r) => r.json()),
-      env.REPLICA.get(replicaId(env, db, regionOf(request), 1, hintOf(request, env))).fetch(`https://replica/info?db=${encodeURIComponent(db)}`, { headers: { ...coloHeader(request), ...internalHeaders(env) } }).then((r) => r.json()),
+      transactor().fetch(txUrl("/info"), { headers: { ...coloHeader(request), ...internalHeaders(env) } }).then(doJson),
+      env.REPLICA.get(replicaId(env, db, regionOf(request), 1, hintOf(request, env))).fetch(`https://replica/info?db=${encodeURIComponent(db)}`, { headers: { ...coloHeader(request), ...internalHeaders(env) } }).then(doJson),
     ]);
     return json({
       db,

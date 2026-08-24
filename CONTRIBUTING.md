@@ -46,10 +46,12 @@ bun run dev:todos               # local peer on :1337, todos app on :5173
 bun run dev:reef                # the Reef example instead
 ```
 
-`dev:*` runs the whole stack under miniflare with placeholder Cloudflare
-credentials — nothing is uploaded. Cursor Cloud Agents should also read
-[`.cursor/CLOUD.md`](.cursor/CLOUD.md) for harness-specific port and credential
-caveats.
+`dev:*` runs the whole stack under miniflare and sets `CI=1`,
+`ALCHEMY_STATE=local`, and placeholder Cloudflare credentials the emulator
+insists on — nothing is uploaded. A raw `bun alchemy dev <stack>` without
+those keys fails with `AuthError: No credentials configured`. Cursor Cloud
+Agents should also read [`.cursor/CLOUD.md`](.cursor/CLOUD.md) for
+harness-specific port and credential caveats.
 
 ## End-to-end tests
 
