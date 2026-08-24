@@ -254,12 +254,15 @@ const seed = async (db: Db<typeof Tracker>) => {
     [Team.name, { root: "root", eng: "eng" }],
   ] as const) {
     const rows = (await db.query(byName(attr))) as unknown as readonly {
-      id: { id: number };
+      id: number | { readonly id: number };
       name: string;
     }[];
     for (const r of rows) {
       const key = (keys as Record<string, string>)[r.name as string];
-      if (key !== undefined) out[key] = r.id;
+      if (key !== undefined) {
+        const id = typeof r.id === "number" ? r.id : r.id.id;
+        out[key] = { id };
+      }
     }
   }
   return out;
@@ -1598,8 +1601,8 @@ describe("Query.from — fluent app spelling", () => {
     const ids = await seed(db);
     const rows = await db.query(Query.from(User).ids());
     const got = new Set(rows.map((r) => r.id));
-    expect(got.has(ids.ada.id)).toBe(true);
-    expect(got.has(ids.grace.id)).toBe(true);
+    expect(got.has(ids.ada.id as (typeof rows)[number]["id"])).toBe(true);
+    expect(got.has(ids.grace.id as (typeof rows)[number]["id"])).toBe(true);
     await peer.dispose();
   });
 

@@ -31,6 +31,12 @@ const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<a
 
 const names = Query.q(() => pipe(Query.entities(User), Query.select({ name: User.name })));
 
+/** Brand-stripped principal for `toEqual` against literal numbers. */
+const asWire = (p: { readonly eid: number | null; readonly class: string }) => ({
+  eid: p.eid as number | null,
+  class: p.class,
+});
+
 /** `/info` at a mutable principal; reads answer over the socket. */
 const peerWith = (state: {
   principal: { eid: number | null; class: string } | undefined;
@@ -63,16 +69,16 @@ describe("db.principal()", () => {
     const c = client(peer, { token: Effect.succeed(redacted("s3cret")) });
     const db = c.ramose.db("movies", Movies);
 
-    expect(await db.principal()).toEqual({
-      eid: { id: 7 },
+    expect(asWire(await db.principal())).toEqual({
+      eid: 7,
       class: "member",
     });
     expect(infoCalls(peer)).toBe(1);
     expect(peer.calls[0]!.headers.authorization).toBe("Bearer s3cret");
 
     // a resolved entity is stable: the second ask is the cache
-    expect(await db.principal()).toEqual({
-      eid: { id: 7 },
+    expect(asWire(await db.principal())).toEqual({
+      eid: 7,
       class: "member",
     });
     expect(infoCalls(peer)).toBe(1);
@@ -91,18 +97,18 @@ describe("db.principal()", () => {
     const c = client(peer);
     const db = c.ramose.db("movies", Movies);
 
-    expect(await db.principal()).toEqual({ eid: null, class: "member" });
-    expect(await db.principal()).toEqual({ eid: null, class: "member" });
+    expect(asWire(await db.principal())).toEqual({ eid: null, class: "member" });
+    expect(asWire(await db.principal())).toEqual({ eid: null, class: "member" });
     expect(infoCalls(peer)).toBe(2); // no row yet: every ask goes to the peer
 
     // the row lands (the peer provisioned it); the very next ask resolves
     state.principal = { eid: 9, class: "member" };
-    expect(await db.principal()).toEqual({
-      eid: { id: 9 },
+    expect(asWire(await db.principal())).toEqual({
+      eid: 9,
       class: "member",
     });
-    expect(await db.principal()).toEqual({
-      eid: { id: 9 },
+    expect(asWire(await db.principal())).toEqual({
+      eid: 9,
       class: "member",
     });
     expect(infoCalls(peer)).toBe(3); // …and is cached from then on
@@ -117,8 +123,8 @@ describe("db.principal()", () => {
     const db = c.ramose.db("movies", Movies);
 
     await db.query(names); // opens the socket: generation moves
-    expect(await db.principal()).toEqual({
-      eid: { id: 7 },
+    expect(asWire(await db.principal())).toEqual({
+      eid: 7,
       class: "member",
     });
     expect(infoCalls(peer)).toBe(1);
@@ -128,8 +134,8 @@ describe("db.principal()", () => {
     await db.query(names); // reconnects
     expect(peer.sockets).toHaveLength(2);
 
-    expect(await db.principal()).toEqual({
-      eid: { id: 7 },
+    expect(asWire(await db.principal())).toEqual({
+      eid: 7,
       class: "member",
     });
     expect(infoCalls(peer)).toBe(2);
@@ -157,8 +163,8 @@ describe("db.principal()", () => {
     await db.query(names); // 401 → auth frame → retried on the same socket
     expect(peer.frameOps("auth")).toHaveLength(1);
 
-    expect(await db.principal()).toEqual({
-      eid: { id: 21 },
+    expect(asWire(await db.principal())).toEqual({
+      eid: 21,
       class: "member",
     });
     expect(infoCalls(peer)).toBe(0);
@@ -197,8 +203,8 @@ describe("db.principal()", () => {
     const db = c.ramose.db("movies", Movies);
 
     await db.query(names);
-    expect(await db.principal()).toEqual({
-      eid: { id: 7 },
+    expect(asWire(await db.principal())).toEqual({
+      eid: 7,
       class: "member",
     });
     expect(infoCalls(peer)).toBe(1);
@@ -210,17 +216,17 @@ describe("db.principal()", () => {
 
     // the old eid must not be served: the swapped principal has no row yet
     state.principal = { eid: null, class: "member" };
-    expect(await db.principal()).toEqual({ eid: null, class: "member" });
+    expect(asWire(await db.principal())).toEqual({ eid: null, class: "member" });
     expect(infoCalls(peer)).toBe(2);
 
     // …until it does; the fresh answer is cached against this ack
     state.principal = { eid: 33, class: "member" };
-    expect(await db.principal()).toEqual({
-      eid: { id: 33 },
+    expect(asWire(await db.principal())).toEqual({
+      eid: 33,
       class: "member",
     });
-    expect(await db.principal()).toEqual({
-      eid: { id: 33 },
+    expect(asWire(await db.principal())).toEqual({
+      eid: 33,
       class: "member",
     });
     expect(infoCalls(peer)).toBe(3);
@@ -239,12 +245,12 @@ describe("db.principal()", () => {
     const { databases, close } = httpsClient(peer);
     const db = databases.db("movies", Movies);
 
-    expect(await db.principal()).toEqual({
-      eid: { id: 5 },
+    expect(asWire(await db.principal())).toEqual({
+      eid: 5,
       class: "admin",
     });
-    expect(await db.principal()).toEqual({
-      eid: { id: 5 },
+    expect(asWire(await db.principal())).toEqual({
+      eid: 5,
       class: "admin",
     });
     expect(infoCalls(peer)).toBe(1);

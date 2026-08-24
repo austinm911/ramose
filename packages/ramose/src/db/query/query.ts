@@ -121,13 +121,17 @@ export type PipeStage =
 /**
  * The pipe surface's incremental builder for the same body value
  * `Query.q` writes directly. `Row` is a phantom: the row the
- * pipeline's terminals have shaped so far. In a generator body the same
- * value is a clause source: `yield* entities(Issue)` mints the branded
- * focus var and contributes membership.
+ * pipeline's terminals have shaped so far. `N` is the current focus
+ * namespace (`entities(User)` starts as `User`; `follow` moves it).
+ * Runtime `ns` is the scan root `entities(...)` planted — membership
+ * lowering reads that object; `N` is the type-level focus and does
+ * not have to stay in lockstep after a traversal. In a generator
+ * body the same value is a clause source: `yield* entities(Issue)`
+ * mints the branded focus var and contributes membership.
  */
-export interface Pipeline<Row = unknown> {
+export interface Pipeline<Row = unknown, N extends AnyEntity = AnyEntity> {
   readonly _tag: "Pipeline";
-  readonly ns: AnyEntity;
+  readonly ns: N;
   readonly stages: readonly PipeStage[];
   readonly _row?: Row;
   [Symbol.iterator](): Iterator<never, Var<EidCell>, any>;
@@ -1062,7 +1066,11 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     switch (v.kind) {
       case "entity":
       case "tx":
-        return (cell) => (typeof cell === "number" ? makeEid(cell) : cell);
+        // Projected entity/tx vars stay `{ id }` rows; the cell is the
+        // branded number. `select({ id: N.id })` is a different path and
+        // yields the number directly.
+        return (cell) =>
+          typeof cell === "number" ? { id: makeEid(cell) } : cell;
       case "t":
         return (cell) => (typeof cell === "number" ? cell - TX_BASE : cell);
       default:
@@ -1123,7 +1131,10 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   const proj = built.proj;
   if (isIdsSpec(proj)) {
     find.push(nameOf(proj.v));
-    finalizeRows = (tuples) => tuples.map((t) => (typeof t[0] === "number" ? makeEid(t[0]) : t[0]));
+    finalizeRows = (tuples) =>
+      tuples.map((t) =>
+        typeof t[0] === "number" ? { id: makeEid(t[0]) } : t[0],
+      );
   } else if (isPullSpec(proj)) {
     const map = shapeToPullMap(proj.shape);
     const focus = nameOf(proj.focus);

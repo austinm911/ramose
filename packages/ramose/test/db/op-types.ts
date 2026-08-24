@@ -6,6 +6,7 @@
  */
 
 import * as Schema from "effect/Schema";
+import { pipe } from "effect/Function";
 import type {
   Db,
   Eid,
@@ -15,6 +16,8 @@ import type {
   Op,
   OpHandle,
   OpReport,
+  Row,
+  Tempid,
   TxHandle,
 } from "../../src/db/internal.ts";
 import {
@@ -22,8 +25,10 @@ import {
   Field,
   Operation,
   Query,
+  Ref,
   Schema as DbSchema,
   merge,
+  tempid,
 } from "../../src/db/internal.ts";
 
 import { Meta, Movie, Movies, User } from "./fixture.ts";
@@ -107,20 +112,24 @@ type _writesHandle = Expect<
   const b = op.entity();
   a.set(User.bestFriend, b);
   a.set(User.bestFriend, b.eid);
-  a.set(User.bestFriend, "friend");
+  a.set(User.bestFriend, op.tempid("friend"));
   a.set(User.friends, b);
+  // @ts-expect-error a bare string is not a tempid
+  a.set(User.bestFriend, "friend");
   // @ts-expect-error name is a string, not a handle
   a.set(User.name, b);
   // @ts-expect-error age is a number, not a tempid
   a.set(User.age, "tmp-1");
 }
 
-// ── self.eid is Eid | string (queued contextual path may pass a tempid) ────
+// ── self.eid is Eid | Tempid (queued contextual path may pass a tempid) ────
 
 type SelfEid = (typeof op.self)["eid"];
-type _selfEidHasString = Expect<Extends<string, SelfEid>>;
+type _selfEidHasTempid = Expect<Extends<Tempid, SelfEid>>;
 type _selfEidHasUser = Expect<Extends<Eid<typeof User>, SelfEid>>;
-// @ts-expect-error self.eid may be a queued tempid string
+// @ts-expect-error a bare string is not a tempid
+const _selfEidFromString: SelfEid = "tmp-1";
+// @ts-expect-error self.eid may be a queued tempid
 const _selfEidAsNumber: number = op.self.eid;
 
 // ── db.run entity is the on namespace ──────────────────────────────────────
@@ -172,11 +181,40 @@ type _renamed = Expect<
   Equal<typeof renamed, Promise<OpReport<{}, typeof Movies>>>
 >;
 db.run(setUserName, 1001, { name: "Ada" });
+db.run(setUserName, tempid("tmp-1"), { name: "Ada" });
+// @ts-expect-error a bare string is not a tempid
 db.run(setUserName, "tmp-1", { name: "Ada" });
 db.run(setUserName, [User.name, "Ada"], { name: "Ada" });
 db.run(setUserName, [":user/name", "Ada"] as const, { name: "Ada" });
 declare const userRow: { readonly id: Eid<typeof User> };
 db.run(setUserName, userRow, { name: "Ada" });
+
+const pipeIdsQ = Query.q(() => pipe(Query.entities(User), Query.ids()));
+type PipeIdRow = Row<typeof pipeIdsQ>;
+type _pipeIdRow = Expect<Equal<PipeIdRow, { readonly id: Eid<typeof User> }>>;
+declare const pipeIdRow: PipeIdRow;
+db.pull(pipeIdRow, { name: User.name });
+db.pull(pipeIdRow.id, { name: User.name });
+db.run(setUserName, pipeIdRow, { name: "Ada" });
+db.run(setUserName, pipeIdRow.id, { name: "Ada" });
+const pipeFilterIdsQ = Query.q(() =>
+  pipe(Query.entities(User), Query.has(User.name), Query.ids()),
+);
+type _pipeFilterIds = Expect<
+  Equal<Row<typeof pipeFilterIdsQ>, { readonly id: Eid<typeof User> }>
+>;
+const pipeFollowQ = Query.q(() =>
+  pipe(Query.entities(User), Query.follow(User.bestFriend)),
+);
+type _pipeFollowRow = Expect<
+  Equal<Row<typeof pipeFollowQ>, { readonly id: Eid<typeof User> }>
+>;
+declare const followRow: Row<typeof pipeFollowQ>;
+db.pull(followRow, { name: User.name });
+db.pull(followRow.id, { name: User.name });
+db.run(setUserName, followRow, { name: "Ada" });
+db.run(setUserName, followRow.id, { name: "Ada" });
+
 declare const idsRow: { readonly id: number };
 // @ts-expect-error an unbranded .ids() row is not a branded user cell
 db.run(setUserName, idsRow, { name: "Ada" });
@@ -207,7 +245,7 @@ const issueOp = Operation(
 declare const boardDb: Db<typeof Board>;
 boardDb.run(issueOp, [Issue.key, "i-1"], {});
 boardDb.run(issueOp, [":issue/key", "i-1"] as const, {});
-boardDb.run(issueOp, "tmp-1", {});
+boardDb.run(issueOp, tempid("tmp-1"), {});
 declare const issueRow: { readonly id: Eid<typeof Issue> };
 boardDb.run(issueOp, issueRow, {});
 declare const commentRow: { readonly id: Eid<typeof Comment> };
@@ -295,7 +333,7 @@ type _handleEid = Expect<
   Equal<OpHandle<typeof Movies>["eid"], TxHandle<typeof Movies>["eid"]>
 >;
 type _selfIsHandle = Expect<
-  Extends<typeof op.self, OpHandle<typeof Movies>>
+  Extends<typeof op.self, OpHandle<typeof Movies, Eid<typeof User> | Tempid>>
 >;
 
 // ── put ────────────────────────────────────────────────────────────────────
@@ -315,9 +353,11 @@ catalogOp.put(User, { bestFriend: putCreate, friends: [putCreate] });
 const putUpdate = catalogOp.put(User, 1001, { age: 37, name: undefined });
 type _putUpdate = Expect<Extends<typeof putUpdate, OpHandle<typeof Movies>>>;
 
-catalogOp.put(User, { bestFriend: { id: 1002 } });
+catalogOp.put(User, { bestFriend: 1002 });
+catalogOp.put(User, { bestFriend: { id: userId } });
 catalogOp.put(User, { bestFriend: catalogOp.principal });
 catalogOp.put(User, { bestFriend: userId });
+catalogOp.put(User, userId, { age: 36 });
 catalogOp.put(User, userRow, { age: 36 });
 
 {
@@ -333,4 +373,37 @@ catalogOp.put(User, userRow, { age: 36 });
   catalogOp.put(User, movieId, { name: "Ada" });
   // @ts-expect-error a movie eid is not a user ref
   catalogOp.put(User, { bestFriend: movieId });
+}
+
+// ── Issue.creator rejects a Label eid (concrete catalog fixture) ───────────
+
+const Creator = Entity("user", {
+  name: Field(Schema.String),
+});
+const Marker = Entity("label", {
+  name: Field(Schema.String),
+});
+const Ticket = Entity("issue", {
+  title: Field(Schema.String),
+  creator: Field(Ref(Creator)),
+});
+const Tracker = DbSchema({ user: Creator, label: Marker, issue: Ticket });
+declare const trackerOp: Op<typeof Tracker>;
+declare const creatorId: Eid<typeof Creator>;
+declare const labelId: Eid<typeof Marker>;
+declare const ticketRow: { readonly id: Eid<typeof Ticket> };
+
+trackerOp.put(Ticket, { title: "ship", creator: creatorId });
+trackerOp.set(ticketRow.id, Ticket.creator, creatorId);
+trackerOp.set(ticketRow.id, Ticket.creator, trackerOp.tempid("ada"));
+// `{ id: row.id }` re-wrap is no longer required — the branded cell is enough
+trackerOp.put(Ticket, ticketRow.id, { title: "ship" });
+
+{
+  // @ts-expect-error a Label eid is not assignable to Issue.creator
+  trackerOp.put(Ticket, { title: "ship", creator: labelId });
+  // @ts-expect-error a Label eid is not assignable to Issue.creator
+  trackerOp.set(ticketRow.id, Ticket.creator, labelId);
+  // @ts-expect-error a bare string is not a tempid
+  trackerOp.set(ticketRow.id, Ticket.creator, "ada");
 }

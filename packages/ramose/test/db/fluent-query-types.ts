@@ -16,6 +16,7 @@ import type {
 } from "../../src/db/internal.ts";
 import { Entity, Field, Instant, Long, Query, Ref, stored } from "../../src/db/internal.ts";
 import * as Schema from "effect/Schema";
+import { pipe } from "effect/Function";
 
 import { Movies, User } from "./fixture.ts";
 
@@ -79,12 +80,25 @@ Query.from(Comment).where({ text: 42 });
 // ── .ids() is today's { id } row ───────────────────────────────────────────
 
 const onlyIds = Query.from(Comment).ids();
-type _ids = Expect<Equal<Row<typeof onlyIds>, { readonly id: number }>>;
+type _ids = Expect<Equal<Row<typeof onlyIds>, { readonly id: Eid<typeof Comment> }>>;
+
+// ── select-less pipe `.ids()` / `follow` keep the focus namespace ───────────
+
+const pipeIds = Query.q(() => pipe(Query.entities(Comment), Query.ids()));
+type _pipeIds = Expect<
+  Equal<Row<typeof pipeIds>, { readonly id: Eid<typeof Comment> }>
+>;
+const pipeFollow = Query.q(() =>
+  pipe(Query.entities(Comment), Query.follow(Comment.issue)),
+);
+type _pipeFollow = Expect<
+  Equal<Row<typeof pipeFollow>, { readonly id: Eid<typeof Issue> }>
+>;
 
 const idsThenSelect = Query.from(Comment).ids().select({ text: Comment.text });
 type _idsThenSelect = Expect<Equal<Row<typeof idsThenSelect>, { readonly text: string }>>;
 const selectThenIds = Query.from(Comment).select({ text: Comment.text }).ids();
-type _selectThenIds = Expect<Equal<Row<typeof selectThenIds>, { readonly id: number }>>;
+type _selectThenIds = Expect<Equal<Row<typeof selectThenIds>, { readonly id: Eid<typeof Comment> }>>;
 
 // ── optional fields only are `| undefined` ─────────────────────────────────
 

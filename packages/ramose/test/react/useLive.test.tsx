@@ -34,9 +34,9 @@ const oneTodo = Ramose.Query.from(Todo).ids().limit(1);
 /** Every pass is a handful of microtasks; a beat is plenty. */
 const settle = (ms = 25) => Bun.sleep(ms);
 
-/** Entity ids as the shape the rows carry — `Eid` is `{ id }`, as data. */
-const ids = (...ns: number[]): readonly Ramose.Eid[] =>
-  ns.map((id) => ({ id }));
+/** `.ids()` rows — `{ id }` with a branded number cell. */
+const ids = (...ns: number[]) =>
+  ns.map((id) => ({ id: id as Ramose.Eid<typeof Todo> }));
 
 const todoWorld = async (n: number) => {
   const conn = await catalogWorld(Todos);
@@ -445,7 +445,7 @@ describe("useLive (query form)", () => {
 
   test("a ReadDb double without liveRaw does not re-finalize already-shaped rows", async () => {
     const shaped = ids(7);
-    const one = { id: 7 };
+    const one = ids(7)[0]!;
     const live = (value: unknown): Ramose.Subscription<unknown> => ({
       subscribe(onValue) {
         onValue(value);
@@ -673,7 +673,7 @@ describe("useLive shared subscription cache", () => {
     try {
       const a = renderHook(() => useLive(db, take));
       const b = renderHook(() => useLive(db, limited));
-      await waitFor(() => expect(a.result.current.rows).toEqual({ id: world.eids[0]! }));
+      await waitFor(() => expect(a.result.current.rows).toEqual(ids(world.eids[0]!)[0]));
       await waitFor(() => expect(b.result.current.rows).toEqual(ids(world.eids[0]!)));
       expect(Array.isArray(a.result.current.rows)).toBe(false);
       expect(Array.isArray(b.result.current.rows)).toBe(true);
@@ -695,7 +695,7 @@ describe("useLive shared subscription cache", () => {
       const b = renderHook(() => useLive(db, limited));
       const a = renderHook(() => useLive(db, take));
       await waitFor(() => expect(b.result.current.rows).toEqual(ids(world.eids[0]!)));
-      await waitFor(() => expect(a.result.current.rows).toEqual({ id: world.eids[0]! }));
+      await waitFor(() => expect(a.result.current.rows).toEqual(ids(world.eids[0]!)[0]));
       expect(Array.isArray(a.result.current.rows)).toBe(false);
       expect(Array.isArray(b.result.current.rows)).toBe(true);
       expect(spy.calls).toBe(1);
