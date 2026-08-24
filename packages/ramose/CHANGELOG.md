@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### A bound verifier without a policy fails closed (#242)
+
+`checkAuth` and the Worker's auth `build` now treat verifier fields
+(`jwksUrl` / `jwksService` / `issuers` / `aud`, or the Worker env
+equivalents including `RAMOSE_JWKS_JSON`) as implying a policy. The
+docs' deploy sample — `jwt` + `jwksUrl` next to
+`policy: process.env.RAMOSE_POLICY` — no longer ships a silently open
+database when that variable is missing. Binding nothing still stays
+open. Partial verifiers still 401 `/db/*` with `/health` 200 (#238).
+
+An unrecognized `RAMOSE_WRITES` (`ALL`, typos) still fails closed to
+`"operations"`, and now warns at deploy with the same wording as the
+Worker's `writes.unrecognized` startup log.
+
 ### `stored(schema, vt)` replaces the FieldOptions `valueType` override (#244)
 
 `Field(schema, { valueType })` could typecheck a mismatch
