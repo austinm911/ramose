@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Explicit `superuser` and `schemaClasses` (part of #179, tracker #205)
+
+Policy bypass is no longer the literal class `"admin"`. The policy head
+names `superuser` (compiled onto the wire; core reads it through
+`classesOf`, the seam #215 will fill from grants) and `schemaClasses`
+(who may install schema; defaults to `[superuser]`). `policy()` throws
+when no class can install schema, and rejects `P.class(superuser)` in
+an arm as unreachable. A class literally called `admin` is ordinary
+unless it is named `superuser`.
+
+Reef's classes are `owner` / `member` / `viewer` with
+`schemaClasses: ["owner"]` and no bypass class. Workspace owners still
+install from the browser; they no longer receive a bypass-class JWT.
+`classOfRole` maps Better Auth `owner`/`admin` → `owner`.
+
+Open mode still reports `class: "admin"` as a display label. There is
+no `isAdmin`.
+
 ### Aggregates with order/limit and a scalar terminal (tracker #189)
 
 `orderBy` / `limit` / `offset` are methods on `QueryObject`, so both
