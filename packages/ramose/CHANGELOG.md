@@ -93,6 +93,35 @@ ensure-exists is a compile error — that is `update`.
 
 Zero Effect types on the promise `Op` surface.
 
+### Decision-7 rollout hazards (part of #279, tracker #205)
+
+Docs and the principal deploy-check for the three operational hazards
+of the required-at-transact default flip, none of which block
+pre-release (breakage is allowed). Remaining work stays on #279.
+
+Requiredness is stored as `:db/optional`. Installs from before this
+flip never wrote that datom, so after deploying the new code every
+card-one attr reads as required until `install()` runs again — a hard
+write outage between deploy and reinstall. Redeploy then reinstall:
+`Ramose.Database` does this for you; runtime-created databases need
+their creation-time `install()` re-run. The healing install works
+because schema attrs stay `:db/`-exempt from the required check. The
+same flip is why raw-datom schema literals in the test suite grew
+`:db/optional`.
+
+The peer always writes the principal ident. The `role` sibling is
+written only when that attr exists and is string-typed. Matching
+`ramose.attrs` are per-token and never guaranteed — they do not make
+a required field provisionable. A required field beyond principal +
+string role (including a required non-string `role`) makes first
+login `tx/required`. `policy()` / `compile()` fail closed when the
+principal entity has unprovisionable required fields.
+
+`Field.isOptional` is true when `{ optional: true }` **or** the Effect
+schema AST admits `undefined` (`Field(Schema.UndefinedOr(Schema.String))`).
+The inference is unchanged; fail-closed "say `optional: true`
+explicitly" is #185's doctrine.
+
 ### Schema evolution guard on `install()` (tracker #187)
 
 `install()` reads the installed attribute set first and fails with

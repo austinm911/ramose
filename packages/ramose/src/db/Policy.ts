@@ -20,7 +20,9 @@ import type {
 } from "../internal/core/policy/ast.ts";
 import { POLICY_OPS } from "../internal/core/policy/ast.ts";
 import { isAttrRef } from "./attrRef.ts";
-import type { AnyField } from "./Field.ts";
+import { isOptionalField, type AnyField } from "./Field.ts";
+import { roleIdentOf } from "../internal/core/policy/provision.ts";
+import { inferDbValueType } from "./valueTypes.ts";
 import type { AnySchema } from "./Schema.ts";
 import type { Eid } from "./Eid.ts";
 import type { CatalogIdent } from "./idents.ts";
@@ -604,6 +606,7 @@ export function policy<
   const idents = catalogIdents(schema);
   const principalIdent = identOf(head.principal as AttrRef);
   if (!idents.has(principalIdent)) fail(`principal ${principalIdent} is not in the schema`, principalIdent);
+  checkPrincipalProvisioning(schema, principalIdent);
 
   const classes = head.classes;
   if (classes.length === 0) fail("classes must not be empty");
@@ -836,6 +839,45 @@ export interface CompileOptions {
   readonly pulls?: readonly unknown[];
 }
 
+const isStringField = (field: AnyField): boolean =>
+  inferDbValueType(field.schema, field.valueType) === "string";
+
+/**
+ * Fail closed at deploy: only the principal ident, a string-typed
+ * `role` sibling, and optional / card-many fields are provisionable.
+ * The peer writes `role` only when that attr is string-typed — a
+ * required card-one non-string `role` is not provisionable. The peer
+ * *may* stamp matching `ramose.attrs` at login, but those keys are
+ * per-token and never guaranteed — they do not make a required field
+ * provisionable. A required card-one field beyond principal + string
+ * role makes first login `tx/required`. Mark those fields
+ * `optional: true` (or use a schema AST that admits `undefined`).
+ */
+export const checkPrincipalProvisioning = (
+  schema: AnySchema,
+  principalIdent: string,
+): void => {
+  const entity = Object.values(schema.entities).find((e) => entityFieldIdents(e).has(principalIdent));
+  if (entity === undefined) return;
+  const roleIdent = roleIdentOf(principalIdent);
+  const missing: string[] = [];
+  for (const field of Object.values(entity.fields)) {
+    const ident = typeof field.ident === "string" ? field.ident : undefined;
+    if (ident === undefined) continue;
+    if (ident === principalIdent) continue;
+    if (ident === roleIdent && isStringField(field as AnyField)) continue;
+    if (isOptionalField(field as AnyField)) continue;
+    missing.push(ident);
+  }
+  if (missing.length === 0) return;
+  const listed = missing.join(", ");
+  const one = missing.length === 1;
+  fail(
+    `principal entity ${entity.ns} has required field${one ? "" : "s"} the peer does not write: ${listed} — mark ${one ? "it" : "them"} optional: true or first login is tx/required`,
+    missing[0],
+  );
+};
+
 /**
  * `reshapePullResult` drops an entity that is missing a *required* key, so a
  * read-masked attribute pulled as required would delete the row instead of
@@ -884,6 +926,7 @@ export const checkPulls = (p: Policy, pulls: readonly unknown[]): void => {
 /** Compile to the wire JSON. Round-tripped through core's `parsePolicy`. */
 export const compile = (p: Policy, options?: CompileOptions): string => {
   if (p?._tag !== "Policy") fail("compile() expects a policy(...) value");
+  checkPrincipalProvisioning(p.schema, p.principal);
   if (options?.pulls) checkPulls(p, options.pulls);
   const compiled = lower(p);
   const json = JSON.stringify(compiled);

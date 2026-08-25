@@ -12,6 +12,7 @@ import {
   Q,
   Query,
   Ref,
+  stored,
 } from "../../src/db/internal.ts";
 
 const User = Entity("user", { sub: Field.unique(Schema.String, "upsert") });
@@ -318,6 +319,60 @@ describe("deploy-time errors", () => {
         {},
       ),
     ).toThrow(/principal :other\/sub is not in the schema/);
+  });
+
+  test("a principal entity with an unprovisionable required field is a PolicyError", () => {
+    const Named = Entity("user", {
+      sub: Field.unique(Schema.String, "upsert"),
+      name: Field(Schema.String),
+    });
+    const Catalog = DbSchema({ user: Named });
+    expect(() =>
+      P.policy({ schema: Catalog, principal: Named.sub, classes: ["member"] }, {}),
+    ).toThrow(PolicyError);
+    expect(() =>
+      P.policy({ schema: Catalog, principal: Named.sub, classes: ["member"] }, {}),
+    ).toThrow(/required field.*:user\/name.*optional: true or first login is tx\/required/);
+    expect(() =>
+      P.checkPrincipalProvisioning(Catalog, ":user/sub"),
+    ).toThrow(/:user\/name/);
+  });
+
+  test("a required non-string role is not provisionable", () => {
+    const Role = Entity("role", { name: Field(Schema.String) });
+    const RefUser = Entity("user", {
+      sub: Field.unique(Schema.String, "upsert"),
+      role: Field(Ref(() => Role)),
+    });
+    const RefCatalog = DbSchema({ user: RefUser, role: Role });
+    expect(() =>
+      P.policy({ schema: RefCatalog, principal: RefUser.sub, classes: ["member"] }, {}),
+    ).toThrow(PolicyError);
+    expect(() => P.checkPrincipalProvisioning(RefCatalog, ":user/sub")).toThrow(/:user\/role/);
+
+    const Numbered = Entity("user", {
+      sub: Field.unique(Schema.String, "upsert"),
+      role: Field(Schema.Number),
+    });
+    const NumberedCatalog = DbSchema({ user: Numbered });
+    expect(() =>
+      P.checkPrincipalProvisioning(NumberedCatalog, ":user/sub"),
+    ).toThrow(/:user\/role/);
+  });
+
+  test("principal sub, string role, optional fields, and card-many are provisionable", () => {
+    const Account = Entity("user", {
+      sub: Field.unique(Schema.String, "upsert"),
+      role: Field(Schema.String),
+      name: Field(Schema.String, { optional: true }),
+      email: Field(stored(Schema.UndefinedOr(Schema.String), "string")),
+      tags: Field.many(Schema.String),
+    });
+    const Catalog = DbSchema({ user: Account });
+    expect(() =>
+      P.policy({ schema: Catalog, principal: Account.sub, classes: ["member"] }, {}),
+    ).not.toThrow();
+    expect(() => P.compile(P.policy({ schema: Catalog, principal: Account.sub, classes: ["member"] }, {}))).not.toThrow();
   });
 
   test("an empty fragment is a PolicyError — public is `true`", () => {
