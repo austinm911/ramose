@@ -456,7 +456,6 @@ export const BoardScreen = ({
                             onClick={() => {
                               if (myEid === undefined) return;
                               void seed.run({
-                                creatorId: myEid,
                                 labels: labels.data ?? [],
                               });
                             }}
@@ -506,7 +505,6 @@ export const BoardScreen = ({
                 status: draft.status,
                 priority: draft.priority,
                 rank: rankAfter(column[column.length - 1]?.rank),
-                creatorId: myEid,
                 ...(draft.assigneeId != null
                   ? { assigneeId: draft.assigneeId }
                   : {}),

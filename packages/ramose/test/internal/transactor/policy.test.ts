@@ -27,14 +27,9 @@ const POLICY = parsePolicy({
   ns: {
     doc: {
       read: allow(eq(":doc/owner")),
-      create: allow({ _tag: "const", value: true }),
-      add: allow(eq(":doc/owner")),
-      retract: allow(eq(":doc/owner")),
-      retractEntity: allow(eq(":doc/owner")),
     },
     user: { read: allow({ _tag: "const", value: true }) },
   },
-  preset: { ":doc/owner": principalOperand },
 });
 
 const admin: Principal = { kind: "service", class: "admin", claims: {}, db: "test" };
@@ -80,36 +75,77 @@ describe("the commit loop's policy check", () => {
     expect(err?.code).toBe("policy");
   });
 
-  test("a denied op rejects as TxRejected { code: policy, attr } and never reaches the log", async () => {
+  test("a denied op rejects as TxRejected { code: policy } and never reaches the log", async () => {
     const { h, eids } = await seeded();
     const before = h.transactor.t;
     const err = await rejection(h.transactor.transact([[":db/add", eids.doc, ":doc/title", "hacked"]], member("user_bob")));
     expect(err?._tag).toBe("TxRejected");
     expect(err?.code).toBe("policy");
-    expect(err?.attr).toBe(":doc/title");
+    expect(err?.attr).toBe(":db/tx");
     expect(err?.message).not.toContain("hacked");
     expect(h.transactor.t).toBe(before); // no `t` consumed
   });
 
-  test("the owner's own write commits, and the batch's other txs are unaffected by a denial", async () => {
+  test("an operation-originated tx skips checkTx; a raw member tx does not", async () => {
     const { h, eids } = await seeded();
     const before = h.transactor.t;
     const denied = rejection(h.transactor.transact([[":db/add", eids.doc, ":doc/title", "hacked"]], member("user_bob")));
-    const allowed = h.transactor.transact([[":db/add", eids.doc, ":doc/title", "Roadmap v2"]], member("user_ada"));
+    const allowed = h.transactor.transact(
+      [[":db/add", eids.doc, ":doc/title", "Roadmap v2"]],
+      member("user_ada"),
+      undefined,
+      { fromOperation: true },
+    );
     expect((await denied)?.code).toBe("policy");
     expect((await allowed).t).toBe(before + 1);
     expect(h.logTs()).toEqual([1, 2, 3, 4]);
   });
 
-  test("the writer injects presets and resolves the principal itself when the ingress check was skipped", async () => {
-    const { h } = await seeded();
-    const ack = await h.transactor.transact([{ ":db/id": "d", ":doc/title": "Spec" }], member("user_ada"));
+  test("fromOperation is how a named operation lands its tx", async () => {
+    const { h, eids } = await seeded();
+    const ack = await h.transactor.transact(
+      [{ ":db/id": "d", ":doc/title": "Spec", ":doc/owner": eids.ada }],
+      member("user_ada"),
+      undefined,
+      { fromOperation: true },
+    );
     const db = h.transactor.connection.db();
     const owner = await db.entity(ack.tempids.d);
-    // `:doc/owner` was never in the tx: the peer injected it from the principal
     expect((owner as Record<string, unknown>)[":doc/owner"]).toBeDefined();
-    // and now the owner can write to it
-    expect((await h.transactor.transact([[":db/add", ack.tempids.d, ":doc/title", "Spec v2"]], member("user_ada"))).t).toBeGreaterThan(0);
+    expect(
+      (
+        await h.transactor.transact(
+          [[":db/add", ack.tempids.d, ":doc/title", "Spec v2"]],
+          member("user_ada"),
+          undefined,
+          { fromOperation: true },
+        )
+      ).t,
+    ).toBeGreaterThan(0);
+  });
+
+  test("a member cannot install or redefine schema on the writer", async () => {
+    const { h } = await seeded();
+    const before = h.transactor.t;
+    const install = [
+      {
+        ":db/ident": ":junk/one",
+        ":db/valueType": ":db.type/string",
+        ":db/cardinality": ":db.cardinality/one",
+        ":db/optional": true,
+      },
+    ];
+    const redefine = [
+      {
+        ":db/ident": ":user/sub",
+        ":db/valueType": ":db.type/string",
+        ":db/unique": ":db.unique/identity",
+      },
+    ];
+    expect((await rejection(h.transactor.transact(install, member("user_bob"))))?.code).toBe("policy");
+    expect((await rejection(h.transactor.transact(redefine, member("user_bob"))))?.code).toBe("policy");
+    expect(h.transactor.t).toBe(before);
+    expect((await h.transactor.transact(install, admin)).t).toBe(before + 1);
   });
 
   test("admin skips the check entirely", async () => {
@@ -119,7 +155,11 @@ describe("the commit loop's policy check", () => {
 
   test("a unique conflict under a policy names neither the entity nor the value", async () => {
     const { h } = await seeded();
-    const err = await rejection(h.transactor.transact([{ ":doc/title": "Copy", ":doc/slug": "roadmap" }], member("user_bob")));
+    const err = await rejection(
+      h.transactor.transact([{ ":doc/title": "Copy", ":doc/slug": "roadmap" }], member("user_bob"), undefined, {
+        fromOperation: true,
+      }),
+    );
     expect(err?._tag).toBe("TxRejected");
     expect(err?.code).toBe("tx/unique-conflict");
     expect(err?.message).toBe("unique conflict");
@@ -127,8 +167,13 @@ describe("the commit loop's policy check", () => {
   });
 
   test("ack.datoms omits facts the writer cannot read (hidden attr)", async () => {
-    const { h } = await seeded();
-    const ack = await h.transactor.transact([{ ":db/id": "d", ":doc/title": "Spec", ":doc/audit": "hunter2" }], member("user_ada"));
+    const { h, eids } = await seeded();
+    const ack = await h.transactor.transact(
+      [{ ":db/id": "d", ":doc/title": "Spec", ":doc/audit": "hunter2", ":doc/owner": eids.ada }],
+      member("user_ada"),
+      undefined,
+      { fromOperation: true },
+    );
     const values = ack.datoms.map((d) => d[3]);
     expect(values).toContain("Spec");
     expect(values).not.toContain("hunter2");
@@ -144,16 +189,28 @@ describe("the commit loop's policy check", () => {
     const { h, eids } = await seeded();
     const ada = member("user_ada");
     const bob = member("user_bob");
-    const first = await h.transactor.transact([{ ":db/id": "d", ":doc/title": "Ada only", ":doc/audit": "secret-ack" }], ada, "c1");
+    const first = await h.transactor.transact(
+      [{ ":db/id": "d", ":doc/title": "Ada only", ":doc/audit": "secret-ack", ":doc/owner": eids.ada }],
+      ada,
+      "c1",
+      { fromOperation: true },
+    );
     expect(first.datoms.map((d) => d[3])).not.toContain("secret-ack");
-    const replay = await h.transactor.transact([{ ":db/id": "other", ":doc/title": "ignored" }], ada, "c1");
+    const replay = await h.transactor.transact([{ ":db/id": "other", ":doc/title": "ignored" }], ada, "c1", {
+      fromOperation: true,
+    });
     expect(replay).toEqual(first);
     expect(h.transactor.t).toBe(first.t);
 
     const denied = await rejection(h.transactor.transact([[":db/add", eids.doc, ":doc/title", "hacked"]], bob, "c1"));
     expect(denied?.code).toBe("policy");
 
-    const foreign = await h.transactor.transact([{ ":db/id": "bobs", ":doc/title": "Bob doc" }], bob, "c1");
+    const foreign = await h.transactor.transact(
+      [{ ":db/id": "bobs", ":doc/title": "Bob doc", ":doc/owner": eids.bob }],
+      bob,
+      "c1",
+      { fromOperation: true },
+    );
     expect(foreign.t).toBe(first.t + 1);
     expect(foreign.datoms).not.toEqual(first.datoms);
     expect(foreign.datoms.map((d) => d[3])).toContain("Bob doc");

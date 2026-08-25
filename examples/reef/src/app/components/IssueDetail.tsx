@@ -304,7 +304,7 @@ export const IssueDetail = ({
     const body = commentDraft.trim();
     if (body === "" || myEid === undefined) return;
     setCommentDraft("");
-    void comment.run(issueId, { body, authorId: myEid });
+    void comment.run(issueId, { body });
   };
 
   const status = row.status as Status;
