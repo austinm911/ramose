@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Pull-hook suspense keys the pattern structurally (issue #306)
+
+`usePull` / `useLivePull` key the pattern the same way `useQuery` keys
+the query: canonical JSON of `lowerPullPattern`, not object identity.
+A render-fresh `{ title: Todo.title }` with `{ suspense: true }` settles
+instead of minting a new suspend slot (and a new `db.pull`) on every
+retry render. `.optional` is folded into the key (it never reaches the
+wire) so a required shape and an optional one do not share a slot.
+Evicting a still-pending live slot closes the standing read instead of
+leaving it open until the first emission.
+
 ### Policy: rule arms on bare operations fail closed
 
 A wire `operations` arm that names a rule (or a v1 expression that
