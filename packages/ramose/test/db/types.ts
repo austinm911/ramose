@@ -23,6 +23,7 @@ import {
   type Db,
   type DbError,
   type DbPrincipal,
+  type IncompatibleSchema,
   type Eid,
   type EntityRef,
   type Equal,
@@ -321,7 +322,9 @@ const installed = movies.effect.install();
 type _writtenOk = Expect<
   Equal<Effect.Success<typeof installed>, TxReport<typeof Movies>>
 >;
-type _writtenErr = Expect<Equal<Effect.Error<typeof installed>, DbError>>;
+type _writtenErr = Expect<
+  Equal<Effect.Error<typeof installed>, DbError | IncompatibleSchema>
+>;
 /** Every signature's `R` is `never`. */
 type _writtenR = Expect<Equal<Effect.Services<typeof installed>, never>>;
 type _noPromiseTransact = Expect<
@@ -361,6 +364,7 @@ const caught = movies
       InternalError: (e) => Effect.succeed(e.message),
       NetworkError: (e) => Effect.succeed(e.message),
       OperationRejected: (e) => Effect.succeed(e.message),
+      IncompatibleSchema: (e) => Effect.succeed(e.message),
     }),
   );
 type _caught = Expect<
@@ -416,6 +420,10 @@ type _dbExtendsRead = Expect<Extends<Db<typeof Movies>, ReadDb<typeof Movies>>>;
 const installedP = movies.install();
 type _install = Expect<
   Equal<typeof installedP, Promise<TxReport<typeof Movies>>>
+>;
+const installedHatch = movies.install({ allowIncompatible: [":user/name"] });
+type _installHatch = Expect<
+  Equal<typeof installedHatch, Promise<TxReport<typeof Movies>>>
 >;
 
 /** `db.principal()` — who am I; the eid is typed against this db's catalog. */
