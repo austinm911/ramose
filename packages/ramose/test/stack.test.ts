@@ -14,12 +14,19 @@ import * as Test from "alchemy/Test/Bun";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as net from "node:net";
+import { OperationsCoverageError } from "../src/db/Errors.ts";
 import { Database } from "../src/Database.ts";
 import { providers } from "../src/Providers.ts";
 import { Server } from "../src/Server.ts";
 import { workerEntry } from "../src/workerEntry.ts";
 import { Movie, Movies, User } from "./db/fixture.ts";
-import { Field, Schema as DbSchema, Entity } from "../src/db/internal.ts";
+import {
+  Field,
+  Operation,
+  Schema as DbSchema,
+  defineOperations,
+  Entity,
+} from "../src/db/internal.ts";
 import * as Schema from "effect/Schema";
 
 interface Transaction {
@@ -30,6 +37,7 @@ interface Transaction {
 
 /** A peer that is up, counting its health probes and recording its writes. */
 let probes = 0;
+let healthOperations: string[] | undefined;
 let transactions: Transaction[] = [];
 let t = 0;
 const peer = Bun.serve({
@@ -38,7 +46,13 @@ const peer = Bun.serve({
     const { pathname } = new URL(request.url);
     if (pathname === "/health") {
       probes++;
-      return Response.json({ ok: true, service: "ramose", stage: "test", time: Date.now() });
+      return Response.json({
+        ok: true,
+        service: "ramose",
+        stage: "test",
+        time: Date.now(),
+        ...(healthOperations !== undefined ? { operations: healthOperations } : {}),
+      });
     }
     const write = /^\/db\/([^/]+)\/transact$/.exec(pathname);
     if (write !== null) {
@@ -83,6 +97,7 @@ afterAll(() => {
 });
 beforeEach(() => {
   transactions = [];
+  healthOperations = undefined;
 });
 
 /** The planned action per resource, in FQN order. */
@@ -144,6 +159,61 @@ describe("Ramose.Server", () => {
       yield* stack.deploy(Server("Ramose", props));
       const plan = yield* stack.plan(Server("Ramose", props));
       expect(actions(plan)).toEqual(["noop"]);
+      yield* stack.destroy();
+    }),
+  );
+
+  test.provider("operations coverage fails the deploy when an id is missing", (stack) =>
+    Effect.gen(function* () {
+      healthOperations = ["user/create"];
+      const createUser = Operation(
+        "user/create",
+        { input: Schema.Struct({}), output: Schema.Struct({}) },
+        () => ({}),
+      );
+      const setName = Operation(
+        "user/set-name",
+        { input: Schema.Struct({ name: Schema.String }), output: Schema.Struct({}) },
+        () => ({}),
+      );
+      const result = yield* Effect.result(
+        stack.deploy(
+          Server("Ramose", {
+            worker: peerUrl,
+            probe: false,
+            operations: defineOperations(Movies, { createUser, setName }),
+          }),
+        ),
+      );
+      expect(result._tag).toBe("Failure");
+      if (result._tag !== "Failure") return;
+      expect(result.failure).toBeInstanceOf(OperationsCoverageError);
+      expect((result.failure as OperationsCoverageError).missing).toEqual(["user/set-name"]);
+      expect(String(result)).toMatch(/missing operations: user\/set-name/);
+    }),
+  );
+
+  test.provider("operations coverage passes when /health lists every id", (stack) =>
+    Effect.gen(function* () {
+      healthOperations = ["user/create", "user/set-name"];
+      const createUser = Operation(
+        "user/create",
+        { input: Schema.Struct({}), output: Schema.Struct({}) },
+        () => ({}),
+      );
+      const setName = Operation(
+        "user/set-name",
+        { input: Schema.Struct({ name: Schema.String }), output: Schema.Struct({}) },
+        () => ({}),
+      );
+      const server = yield* stack.deploy(
+        Server("Ramose", {
+          worker: peerUrl,
+          probe: false,
+          operations: defineOperations(Movies, { createUser, setName }),
+        }),
+      );
+      expect(server.url).toBe(peerUrl);
       yield* stack.destroy();
     }),
   );

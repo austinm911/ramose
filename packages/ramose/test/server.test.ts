@@ -10,6 +10,7 @@
 
 import { describe, expect, test } from "bun:test";
 import * as Redacted from "effect/Redacted";
+import { OperationsCoverageError } from "../src/db/Errors.ts";
 import { Database, isDatabase } from "../src/Database.ts";
 import { Databases } from "../src/Databases.ts";
 import {
@@ -17,12 +18,15 @@ import {
   authEnv,
   checkAuth,
   compareAuthToWorker,
+  compareOperationsToHealth,
   compareWritesToWorker,
+  coverageTimeoutMs,
   DEFAULT_JWT_MAX_TTL,
   internalSecret,
   isServer,
   ownedAuthEnv,
   ownedPeerEnv,
+  PROBE_DEFAULTS,
   resolveWorker,
   resolveWrites,
   Server,
@@ -48,6 +52,9 @@ import {
   validatePeerWiring,
 } from "../src/peer.ts";
 import { workerEntry } from "../src/workerEntry.ts";
+import * as Schema from "effect/Schema";
+import { Operation, defineOperations } from "../src/db/internal.ts";
+import { Movies, User } from "./db/fixture.ts";
 
 describe("identity", () => {
   test("the resource classes carry their types", () => {
@@ -332,10 +339,10 @@ describe("the server's auth env", () => {
     const databaseHasAuth: DatabaseHasAuth = false;
     expect(databaseHasAuth).toBe(false);
     type HasOperations = "operations" extends keyof ServerProps ? true : false;
-    const hasOperations: HasOperations = false;
+    const hasOperations: HasOperations = true;
     type HasWrites = "writes" extends keyof ServerProps ? true : false;
     const hasWrites: HasWrites = true;
-    expect([hasOperations, hasWrites]).toEqual([false, true]);
+    expect([hasOperations, hasWrites]).toEqual([true, true]);
   });
 
   test("Output / Effect-valued JWKS and origins pass through un-normalised", () => {
@@ -663,5 +670,57 @@ describe("writes lowers onto RAMOSE_WRITES", () => {
     expect(writesAllPolicyWarning("all", undefined, hatch({ RAMOSE_POLICY: '{"v":1}', RAMOSE_WRITES: "all" }))).toBe(
       WRITES_ALL_POLICY_WARNING,
     );
+  });
+});
+
+describe("operations coverage vs /health", () => {
+  const createUser = Operation(
+    "user/create",
+    { input: Schema.Struct({}), output: Schema.Struct({}) },
+    () => ({}),
+  );
+  const setName = Operation(
+    "user/set-name",
+    {
+      on: User,
+      input: Schema.Struct({ name: Schema.String }),
+      output: Schema.Struct({}),
+    },
+    () => ({}),
+  );
+  const client = defineOperations(Movies, { createUser, setName });
+
+  test("unset operations skips", () => {
+    expect(compareOperationsToHealth(undefined, { operations: [] })).toBeUndefined();
+  });
+
+  test("matching ids pass; extra peer ops pass", () => {
+    expect(
+      compareOperationsToHealth(client, {
+        operations: ["user/create", "user/set-name", "user/extra"],
+      }),
+    ).toBeUndefined();
+  });
+
+  test("a missing id is a named deploy error", () => {
+    const error = compareOperationsToHealth(client, { operations: ["user/create"] });
+    expect(error).toBeInstanceOf(OperationsCoverageError);
+    expect(error?.missing).toEqual(["user/set-name"]);
+    expect(error?.message).toMatch(/missing operations: user\/set-name/);
+  });
+
+  test("a health body with no operations list is an empty registry", () => {
+    const error = compareOperationsToHealth(client, { ok: true });
+    expect(error).toBeInstanceOf(OperationsCoverageError);
+    expect(error?.missing).toEqual(["user/create", "user/set-name"]);
+  });
+
+  test("coverage fetch uses the caller's probe.timeoutMs", () => {
+    expect(coverageTimeoutMs({ timeoutMs: 60_000 }, PROBE_DEFAULTS.live)).toBe(60_000);
+    expect(coverageTimeoutMs({ timeoutMs: 60_000 }, PROBE_DEFAULTS.local)).toBe(60_000);
+    expect(coverageTimeoutMs(undefined, PROBE_DEFAULTS.live)).toBe(PROBE_DEFAULTS.live.timeoutMs);
+    expect(coverageTimeoutMs({}, PROBE_DEFAULTS.local)).toBe(PROBE_DEFAULTS.local.timeoutMs);
+    expect(coverageTimeoutMs(false, PROBE_DEFAULTS.live)).toBe(PROBE_DEFAULTS.live.timeoutMs);
+    expect(coverageTimeoutMs(false, PROBE_DEFAULTS.local)).toBe(PROBE_DEFAULTS.local.timeoutMs);
   });
 });
