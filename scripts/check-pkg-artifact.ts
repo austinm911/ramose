@@ -42,7 +42,9 @@ if (/from\s+["'][^"']*\.ts["']/.test(dbSource)) {
 // artifact passed to a consumer, not the source entrypoint.
 const db = await import(pathToFileURL(dbPath).href);
 if (
-  typeof db.Attr !== "function" ||
+  typeof db.Entity !== "function" ||
+  typeof db.Schema !== "function" ||
+  typeof db.Field !== "function" ||
   !(db.DATABASE_NAME_RE instanceof RegExp) ||
   typeof db.DatabaseNotFound !== "function"
 ) {
