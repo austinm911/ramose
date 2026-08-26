@@ -3,22 +3,21 @@
  * `rows` is the projection or `null` (a retract is an emission, not an end),
  * and a pinned view emits once, completes, and keeps its rows.
  *
- * Two rules for callers: the view and the `subject` are structural —
- * `db.asOf(t)` and `{ id: 17 }` written inline are fine — while `pattern`
- * is identity, so hoist it exactly as you hoist a query.
+ * The view, the `subject`, and the `pattern` are structural —
+ * `db.asOf(t)` and `{ id: 17 }` written inline are fine, and a render-fresh
+ * `{ title: Todo.title }` is the same pull as a hoisted one.
  */
 
 import type {
-  Catalog,
-  CatalogEid,
+  Schema,
   DbError,
-  Eid,
+  EntityRef,
   IdentPullPattern,
-  LookupRef,
   Pull,
   ReadDb,
   ValidatePull,
 } from "../db/index.ts";
+import { pullPatternKey } from "../db/astKey.ts";
 import type * as Stream from "effect/Stream";
 import { useMemo } from "octane";
 import { type Live, useLive } from "./useLive.ts";
@@ -26,7 +25,7 @@ import { viewDep } from "../react/seam.ts";
 import { splitSlot, subSlot } from "./internal.ts";
 
 /** The pattern a subject accepts — the same rule as `db.pull` / `db.livePull`. */
-type PullPattern<C extends Catalog.Any, P> = [P] extends [readonly unknown[]]
+type PullPattern<C extends Schema.Any, P> = [P] extends [readonly unknown[]]
   ? P & IdentPullPattern<C>
   : ValidatePull<C, P>;
 
@@ -47,27 +46,25 @@ const subjectKey = (subject: unknown): string => {
   return JSON.stringify(id ?? subject);
 };
 
-export function usePull<C extends Catalog.Any, const P>(
+export function usePull<C extends Schema.Any, const P>(
   db: ReadDb<C>,
-  subject: Eid<C> | CatalogEid<C> | LookupRef<C>,
+  subject: EntityRef<C>,
   pattern: PullPattern<C, P>,
 ): Live<Pull<C, P> | null>;
-export function usePull<C extends Catalog.Any, const P>(
+export function usePull<C extends Schema.Any, const P>(
   db: ReadDb<C>,
-  subject: Eid<C> | CatalogEid<C> | LookupRef<C>,
+  subject: EntityRef<C>,
   pattern: PullPattern<C, P>,
   ...rest: [slot?: symbol]
 ): Live<Pull<C, P> | null> {
   const [, slot] = splitSlot(rest);
   const view = viewDep(db);
   const key = subjectKey(subject);
+  const patternKey = pullPatternKey(pattern);
   const stream: Stream.Stream<Pull<C, P> | null, DbError> = useMemo(
-    () => db.livePull<P>(subject, pattern),
-    // `db` and `subject` enter through their structural stand-ins: a fresh
-    // but equal view or `{ id }` literal must not tear the subscription down
-    [view, key, pattern],
+    () => db.effect.livePull<P>(subject, pattern),
+    [view, key, patternKey],
     subSlot(slot, "pull:stream"),
   );
-  // `useLive`'s stream form is the package's one subscription engine
   return useLive(stream, subSlot(slot, "pull:live"));
 }

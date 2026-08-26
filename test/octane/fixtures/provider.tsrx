@@ -4,7 +4,6 @@
  * *prop change* does to the client the provider owns.
  */
 
-import * as Effect from "effect/Effect";
 import type { Client, ClientOptions, Db } from "ramose/db";
 import { useEffect } from "octane";
 import { RamoseProvider, useDb, useRamose } from "ramose/octane";
@@ -35,10 +34,10 @@ export function ReadOnce(props: { report?: (client: Client) => void }) @{
 	const db = useDb("todos", Todos);
 	props.report?.(client);
 	useEffect(() => {
-		// a `q` on a closed client rejects (that is what a prop change does to
+		// a query on a closed client rejects (that is what a prop change does to
 		// the old one) — recovering from it is the provider's job, not this
 		// probe's to observe
-		Effect.runPromise(db.q(titles)).catch(() => {});
+		void db.query(titles).catch(() => {});
 	}, [db]);
 	<span class="read-once" />
 }

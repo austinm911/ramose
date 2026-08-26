@@ -10,7 +10,6 @@
  */
 
 import * as Schema from "effect/Schema";
-import { pipe } from "effect/Function";
 import * as Ramose from "ramose/db";
 import {
   catalogWorld,
@@ -29,17 +28,15 @@ import {
 export { fakePeer, txSnap };
 export type { Answer, Call, FakePeer, Frame };
 
-export const Todo = Ramose.Namespace("todo", {
-  title: Ramose.Attr(Schema.String),
-  slug: Ramose.Attr(Schema.String, { unique: "identity" }),
+export const Todo = Ramose.Entity("todo", {
+  title: Ramose.Field(Schema.String),
 });
-export const Todos = Ramose.Catalog({ todo: Todo });
+export const Todos = Ramose.Schema({ todo: Todo });
 
 /** Hoisted, as every consumer must hoist them: `query` is an identity dep. */
-const Q = Ramose.Query;
-export const titles = Q.q(() => pipe(Q.entities(Todo), Q.select({ title: Todo.title })));
-export const allTodos = Q.q(() => pipe(Q.entities(Todo)));
-export const oneTodo = Q.q(() => pipe(Q.entities(Todo), Q.limit(1)));
+export const titles = Ramose.Query.from(Todo).select({ title: Todo.title });
+export const allTodos = Ramose.Query.from(Todo).ids();
+export const oneTodo = Ramose.Query.from(Todo).ids().limit(1);
 export const shape = { title: Todo.title };
 
 /** Every pass is a handful of microtasks; a beat is plenty. */
@@ -49,8 +46,8 @@ export const sleep = (ms = 25): Promise<void> => {
   return promise;
 };
 
-/** Entity ids in the shape rows carry them — `Eid` is `{ id }`, as data. */
-export const ids = (...ns: number[]): readonly Ramose.Eid[] =>
+/** Entity ids in the shape rows carry them — `IdRow` is `{ id }`. */
+export const ids = (...ns: number[]): readonly { readonly id: number }[] =>
   ns.map((id) => ({ id }));
 
 export interface World {
@@ -67,7 +64,7 @@ export const todoWorld = async (n: number): Promise<World> => {
   const eids: number[] = [];
   for (let i = 0; i < n; i++) {
     const rep = await conn.transact([
-      { ":db/id": `t${i}`, ":todo/title": `t${i}`, ":todo/slug": `s${i}` },
+      { ":db/id": `t${i}`, ":todo/title": `t${i}` },
     ]);
     eids.push(rep.tempids[`t${i}`]!);
   }

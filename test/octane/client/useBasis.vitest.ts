@@ -1,8 +1,8 @@
 /**
  * `useBasis` — where the basis is:
  *
- * - a live view asks the peer (`GET /db/:name/info`) once on mount and again
- *   on every `{ op: "tx" }` / resync;
+ * - a live view reads `session.t` synchronously and again on every
+ *   `{ op: "tx" }` / resync — no `GET /info` per tick;
  * - an `asOf(t)` view answers `t` on the first render, with no request and
  *   no socket;
  * - switching views re-answers, still without a request when pinned.
@@ -26,6 +26,7 @@ const infoCalls = (calls: readonly Call[]) =>
 /** A peer whose `/info` answers the basis the test is currently pretending to. */
 const basisPeer = (state: { t: number }): FakePeer =>
   fakePeer({
+    answer: () => ({ body: { t: state.t, result: [] } }),
     http: (call) =>
       call.url.includes("/info")
         ? { body: { db: "todos", t: state.t } }
@@ -40,7 +41,7 @@ const dbOver = (peer: FakePeer) =>
   }).db("todos", Todos);
 
 describe("useBasis", () => {
-  test("a live view asks the peer, then re-asks on every { op: tx }", async () => {
+  test("a live view reads session.t, then follows { op: tx } without /info per tick", async () => {
     const state = { t: 7 };
     const peer = basisPeer(state);
     const box = capture<number | undefined>();
@@ -52,12 +53,13 @@ describe("useBasis", () => {
 
     await waitFor(() => expect(box.last()).toBe(7));
     expect(container.querySelector(".basis")!.textContent).toBe("7");
-    expect(infoCalls(peer.calls).length).toBeGreaterThan(0);
+    const infos = infoCalls(peer.calls).length;
 
     state.t = 9;
     peer.push({ op: "tx", t: 9, datoms: [] });
     await waitFor(() => expect(box.last()).toBe(9));
     expect(container.querySelector(".basis")!.textContent).toBe("9");
+    expect(infoCalls(peer.calls).length).toBe(infos);
   });
 
   test("an asOf view answers its t on the first render, with no request", () => {
@@ -88,9 +90,7 @@ describe("useBasis", () => {
     await waitFor(() => expect(box.last()).toBe(5));
     expect(peer.calls).toHaveLength(0);
 
-    // the live view is the one that asks
     rerender({ props: props(undefined) });
     await waitFor(() => expect(box.last()).toBe(7));
-    expect(infoCalls(peer.calls)).toHaveLength(1);
   });
 });

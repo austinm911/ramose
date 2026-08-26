@@ -8,10 +8,10 @@
  * hooks key structurally, and a fixture that hoisted it would test nothing.
  */
 
-import * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 import { useEffect } from "octane";
-import type { Eid, QueryObject, ReadDb } from "ramose/db";
+import type { QueryObject, ReadDb } from "ramose/db";
+import * as Ramose from "ramose/db";
 import {
 	type Async,
 	type Live,
@@ -20,10 +20,10 @@ import {
 	usePull,
 	useQuery,
 } from "ramose/octane";
-import { shape, titles, Todos } from "../support/world.ts";
+import { shape, titles, Todo, Todos } from "../support/world.ts";
 
 type Todos = ReadDb<typeof Todos>;
-type Rows = QueryObject<readonly Eid[]>;
+type Rows = QueryObject<{ readonly id: number }>;
 type Reported = (live: Live<unknown, unknown>) => void;
 
 const text = (value: unknown): string => JSON.stringify(value ?? null);
@@ -47,14 +47,13 @@ export function LiveAsOf(props: {
 	<div class="rows" data-ticks={String(live.ticks)}>{text(live.rows)}</div>
 }
 
-/** `useLive` with params bound inline — a params-only change must not blank rows. */
-export function LiveParams(props: {
+/** `useLive` with a render-fresh `limit(n)` — same AST must not re-subscribe. */
+export function LiveLimited(props: {
 	db: Todos;
-	query: QueryObject<readonly Eid[], { n: number }>;
 	n: number;
 	report: Reported;
 }) @{
-	const live = useLive(props.db, props.query, { n: props.n });
+	const live = useLive(props.db, Ramose.Query.from(Todo).ids().limit(props.n));
 	props.report(live);
 	<div class="rows">{text(live.rows)}</div>
 }
@@ -111,7 +110,7 @@ export function BasisWatching(props: {
 	const t = useBasis(props.db);
 	props.report(t);
 	useEffect(() => {
-		Effect.runPromise(props.db.q(titles)).catch(() => {});
+		void props.db.query(titles).catch(() => {});
 	}, [props.db]);
 	<div class="basis">{t === undefined ? "-" : String(t)}</div>
 }

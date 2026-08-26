@@ -1,6 +1,6 @@
 /** `useRamose` and `useDb` — the two hooks every other hook here builds on. */
 
-import type { Catalog, Client, Db } from "../db/index.ts";
+import type { Schema, Client, Db } from "../db/index.ts";
 import { createContext, useContext, useMemo } from "octane";
 import { splitSlot, subSlot } from "./internal.ts";
 
@@ -34,25 +34,25 @@ export const useRamose = (): Client => {
 };
 
 /**
- * `client.db(name, catalog)`, memoised on `[client, name, catalog]`.
+ * `client.db(name, schema)`, memoised on `[client, name, schema]`.
  *
  * The call itself is pure — no network, no ensure, no socket — so the memo is
  * purely about identity: a stable `Db` reference means effects and memos
- * keyed on it do not re-fire every render. Pass a module-scope catalog (the
+ * keyed on it do not re-fire every render. Pass a module-scope schema (the
  * normal spelling) or the identity changes every render and the memo is
  * worthless.
  */
-export function useDb<C extends Catalog.Any>(name: string, catalog: C): Db<C>;
-export function useDb<C extends Catalog.Any>(
+export function useDb<C extends Schema.Any>(name: string, schema: C): Db<C>;
+export function useDb<C extends Schema.Any>(
   name: string,
-  catalog: C,
+  schema: C,
   ...rest: [slot?: symbol]
 ): Db<C> {
   const [, slot] = splitSlot(rest);
   const client = useRamose();
   return useMemo(
-    () => client.db(name, catalog),
-    [client, name, catalog],
+    () => client.db(name, schema),
+    [client, name, schema],
     subSlot(slot, "db:memo"),
   );
 }

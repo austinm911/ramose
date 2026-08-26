@@ -9,16 +9,14 @@
 
 import { render, waitFor } from "@octanejs/testing-library";
 import * as Cause from "effect/Cause";
-import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Ramose from "ramose/db";
 import type { Live } from "ramose/octane";
 import { describe, expect, test } from "vitest";
 import {
   LiveAsOf,
-  LiveParams,
+  LiveLimited,
   LiveRows,
   LiveStream,
 } from "../fixtures/reads.tsrx";
@@ -31,7 +29,6 @@ import {
   oneTodo,
   overlayPeer,
   sleep,
-  Todo,
   todoWorld,
   Todos,
   txSnap,
@@ -160,31 +157,28 @@ describe("useLive (query form)", () => {
     }
   });
 
-  test("a params-only change re-runs without blanking rows", async () => {
-    const limited = Ramose.Query.q({ n: Schema.Number }, (p) =>
-      pipe(Ramose.Query.entities(Todo), Ramose.Query.limit(p.n)),
-    );
-
+  test("a render-fresh query with the same AST keeps rows; a new limit resubscribes", async () => {
     const world = await todoWorld(2);
     const { db, close } = overlay(world);
     const box = capture<Live<unknown, unknown>>();
     try {
-      const { rerender } = render(LiveParams, {
-        props: { db, query: limited, n: 1, report: box.report },
+      const { rerender } = render(LiveLimited, {
+        props: { db, n: 1, report: box.report },
       });
       await waitFor(() =>
         expect(box.last().rows).toEqual(ids(world.eids[0]!)),
       );
 
-      rerender({ props: { db, query: limited, n: 2, report: box.report } });
-      // no blank slate in between: every reported state from here on has rows
-      const from = box.renders.length;
+      rerender({ props: { db, n: 1, report: box.report } });
+      await sleep();
+      expect(box.last().rows).toEqual(ids(world.eids[0]!));
+      expect(box.last().ticks).toBe(0);
+
+      rerender({ props: { db, n: 2, report: box.report } });
       await waitFor(() =>
         expect(box.last().rows).toEqual(ids(...world.eids)),
       );
-      expect(
-        box.renders.slice(from).every((live) => live.rows !== undefined),
-      ).toBe(true);
+      expect(box.last().ticks).toBe(0);
       expect(box.last().error).toBeUndefined();
     } finally {
       await close();

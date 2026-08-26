@@ -1,18 +1,19 @@
 /**
- * `useQuery` — one-shot `db.q(query)` as component state.
+ * `useQuery` — one-shot `db.query(query)` as component state.
  *
  * Two rules for callers:
  *
  * - The view is structural: `useQuery(db.asOf(t), q)` built inline re-runs
- *   per `t`, not per render. `query` is identity — hoist it. Bind changing
- *   values with `Ramose.params` as the third argument.
+ *   per `t`, not per render. The query is structural too (canonical
+ *   serialization of the lowered AST). Put changing values in the query
+ *   (`where({ issue: issueId })`).
  * - The in-flight state is `loading: true` over the *previous* `data` (no
  *   flash to `undefined` on scrub); stale answers are dropped last-write-wins
  *   by issue order, not by resolution order.
  */
 
-import type { Catalog, DbError, QueryError, QueryObject, ReadDb } from "../db/index.ts";
-import { paramsKey, type ParamArgs } from "../db/Params.ts";
+import type { Schema, DbError, QueryError, QueryObject, ReadDb } from "../db/index.ts";
+import { queryAstKey } from "../db/astKey.ts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -30,20 +31,18 @@ export interface Async<A, E = DbError> {
   readonly loading: boolean;
 }
 
-export function useQuery<C extends Catalog.Any, R, P = never>(
+export function useQuery<C extends Schema.Any, R, Out = readonly R[]>(
   db: ReadDb<C>,
-  query: QueryObject<R, P>,
-  ...params: ParamArgs<P>
-): Async<R, QueryError<R, P>>;
-export function useQuery<C extends Catalog.Any, R, P = never>(
+  query: QueryObject<R, Out>,
+): Async<Out, QueryError<Out>>;
+export function useQuery<C extends Schema.Any, R, Out = readonly R[]>(
   db: ReadDb<C>,
-  query: QueryObject<R, P>,
-  ...rest: [...params: ParamArgs<P>, slot?: symbol]
-): Async<R, QueryError<R, P>> {
-  const [args, slot] = splitSlot(rest);
-  const params = args as ParamArgs<P>;
-  const bindings = args[0];
-  const [state, set] = useState<Async<R, QueryError<R, P>>>(
+  query: QueryObject<R, Out>,
+  ...rest: [slot?: symbol]
+): Async<Out, QueryError<Out>> {
+  const [, slot] = splitSlot(rest);
+  const astKey = queryAstKey(query);
+  const [state, set] = useState<Async<Out, QueryError<Out>>>(
     { data: undefined, error: undefined, loading: true },
     subSlot(slot, "query:state"),
   );
@@ -56,7 +55,7 @@ export function useQuery<C extends Catalog.Any, R, P = never>(
       let disposed = false;
       /** Land this run's outcome unless a later-issued run already landed. */
       const land = (
-        next: (prev: Async<R, QueryError<R, P>>) => Async<R, QueryError<R, P>>,
+        next: (prev: Async<Out, QueryError<Out>>) => Async<Out, QueryError<Out>>,
       ): void => {
         if (disposed || seq < runs.current.applied) return;
         runs.current.applied = seq;
@@ -70,14 +69,13 @@ export function useQuery<C extends Catalog.Any, R, P = never>(
       );
 
       const fiber = Effect.runFork(
-        db.q(query, ...params).pipe(
+        db.effect.query(query).pipe(
           Effect.flatMap((rows) =>
             Effect.sync(() =>
-              land(() => ({ data: rows as R, error: undefined, loading: false })),
+              land(() => ({ data: rows as Out, error: undefined, loading: false })),
             ),
           ),
           Effect.catchCause((error) =>
-            // the cleanup's own interrupt is not a failure to surface
             Cause.hasInterruptsOnly(error)
               ? Effect.void
               : Effect.sync(() =>
@@ -92,10 +90,7 @@ export function useQuery<C extends Catalog.Any, R, P = never>(
         Effect.runFork(Fiber.interrupt(fiber));
       };
     },
-    // the view is a structural dependency; `db` itself may be a fresh object
-    // every render (`db.asOf(t)` is pure and unmemoised by design). Params
-    // are structural too — `{ issueId }` inline is fine.
-    [viewDep(db), query, paramsKey(bindings)],
+    [viewDep(db), astKey],
     subSlot(slot, "query:run"),
   );
 
