@@ -1,0 +1,1 @@
+{"version":3,"file":"host.js","sourceRoot":"","sources":["../../../src/internal/transactor/host.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;GAUG;AA4CH,MAAM,CAAC,MAAM,cAAc,GAAqB;IAC9C,gBAAgB,EAAE,GAAG;IACrB,eAAe,EAAE,KAAK;IACtB,iBAAiB,EAAE,KAAK;IACxB,UAAU,EAAE,MAAM;IAClB,eAAe,EAAE,EAAE;IACnB,WAAW,EAAE,EAAE;IACf,QAAQ,EAAE,CAAC;IACX,YAAY,EAAE,KAAK;CACpB,CAAC"}

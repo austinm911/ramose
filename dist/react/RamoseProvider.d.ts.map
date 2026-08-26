@@ -1,0 +1,1 @@
+{"version":3,"file":"RamoseProvider.d.ts","sourceRoot":"","sources":["../../src/react/RamoseProvider.tsx"],"names":[],"mappings":"AAEA;;;;;;;;;;;;GAYG;AAEH,OAAO,EAEL,KAAK,aAAa,EAEnB,MAAM,gBAAgB,CAAC;AACxB,OAAO,EACL,KAAK,SAAS,EAKf,MAAM,OAAO,CAAC;AAGf;;;GAGG;AACH,MAAM,WAAW,mBAAoB,SAAQ,aAAa;IACxD,QAAQ,CAAC,QAAQ,CAAC,EAAE,SAAS,CAAC;CAC/B;AAED,eAAO,MAAM,cAAc,UAAW,mBAAmB,gCAgCxD,CAAC"}

@@ -1,0 +1,58 @@
+/**
+ * `ramose/db` — the portable half of Ramose.
+ *
+ * Schema, connecting, the database and the tagged errors, in one flat
+ * namespace: `import * as Ramose from "ramose/db"`. It runs in a
+ * browser, in a Worker, in Node/Bun and in a test.
+ *
+ * **Nothing reachable from this module imports `alchemy`** (the deploy engine)
+ * or the engine barrel (`src/internal/core/index.ts`) — that is what makes it
+ * browser-safe without a
+ * bundler alias, and `test/db-portable.test.ts` fails the build if it ever
+ * stops being true. The deploy-time surface (`Server`, the capability, the
+ * transport layers, `Policy`) lives in `ramose`.
+ *
+ * ```typescript
+ * import * as Ramose from "ramose/db";
+ *
+ * export const Todo = Ramose.Entity("todo", {
+ *   title: Ramose.string(),
+ *   done: Ramose.boolean(),
+ *   createdAt: Ramose.timestamp(),
+ * });
+ * export const Todos = Ramose.Schema({ todo: Todo });
+ *
+ * const ramose = Ramose.connect({ url, token });
+ * export const db = ramose.db("todos", Todos);
+ * // Effect users: `db.effect.query` / `import { layer } from "ramose/db/effect"`.
+ * // Advanced schemas: `Ramose.Field(schema)` still accepts a raw Effect Schema;
+ * // wrap with `stored(schema, vt)` when inference cannot name `:db.type/*`.
+ * ```
+ */
+export { Enum, Field, Ref, boolean, bytes, float, int, string, timestamp, uuid, type AnyField, type FieldOptions, type ValueOf, } from "./Field.ts";
+export { Schema, type AnySchema } from "./Schema.ts";
+export { Entity, type AnyEntity } from "./Entity.ts";
+export { Bytes, Instant, Long, Uuid, stored, type DbValueType, } from "./valueTypes.ts";
+export { all } from "./Pull.ts";
+export { again } from "./Pull.ts";
+export { pick } from "./Pull.ts";
+export { values, type NestedOpts, type ValuesField } from "./shapes.ts";
+export { Q } from "./query/index.ts";
+export * as Query from "./query/surface.ts";
+export type { AnyQueryObject, Cursor, EntityRow, FluentQuery, RefIdCell, OpenResult, Page, Pipeline, QueryObject, Row, Rows, RuleValue, } from "./query/index.ts";
+export type { EidLike, Shape } from "./shapes.ts";
+export { type Client, type ClientOptions, type ConnectionStatus, connect, } from "./connect.ts";
+export type { DatabasesShape } from "./client-shape.ts";
+export { type Claims, token, type TokenInput, type TokenSource, } from "./token.ts";
+export type { Subscription } from "./subscription.ts";
+export { DATABASE_NAME_RE, isDatabaseName } from "./DatabaseName.ts";
+export { IDENT_NAME_RE, RESERVED_FIELD_KEYS, isIdentName, isReservedFieldKey, } from "./IdentName.ts";
+export type { Db, DbPrincipal, QueryError, ReadDb, TxReport, } from "./Db.ts";
+export type { InstallOptions, SchemaChange } from "./Errors.ts";
+export type { SchemaEid, Eid } from "./Eid.ts";
+export type { EntityRef, LookupRef } from "./idents.ts";
+export { tempid, type Tempid } from "./entityArg.ts";
+export type { Again, AllRow, AllShape, IdentPullPattern, Pull, RecurDepth, RecurStub, ValidatePull, } from "./Pull.ts";
+export { EntityId, Operation, Operations, PrefixHalt, checkOperationsCoverage, defineOperations, operationCards, operationNames, type AnyOperation, type AnyOperations, type DefinedOperations, type Op, type OpPrincipal, type OpReport, type OperationCard, type OperationEffectContext, type OperationInvocation, } from "./Operation.ts";
+export { DatabaseNotFound, type DbError, InternalError, InvalidRequest, isDatabaseError, NetworkError, NotOne, OperationRejected, OperationsCoverageError, IncompatibleSchema, PolicyError, QueryBudgetExceeded, TxRejected, Unauthorized, Unavailable, } from "./Errors.ts";
+//# sourceMappingURL=index.d.ts.map

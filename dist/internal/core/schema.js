@@ -1,0 +1,251 @@
+/**
+ * Schema: attributes are entities described by datoms (Datomic-inspired):
+ *   :db/ident        string   — the attribute's name, e.g. ":user/email"
+ *   :db/valueType    string   — ":db.type/string" | long | double | boolean | ref | uuid | instant | bytes
+ *   :db/cardinality  string   — ":db.cardinality/one" | ":db.cardinality/many"
+ *   :db/unique       string   — ":db.unique/identity" | ":db.unique/value"   (implies AVET)
+ *   :db/index        boolean  — AVET membership
+ *   :db/isComponent  boolean
+ *   :db/doc          string
+ *
+ * `Schema` is an immutable-ish projection of those datoms that the engine
+ * consults for interning, typing, and index membership (AVET for indexed /
+ * unique attrs, VAET for refs — never index everything).
+ */
+import { ValueTag } from "./datom.js";
+// ---------------------------------------------------------------------------
+// Bootstrap attribute ids (stable forever)
+// ---------------------------------------------------------------------------
+export const DB_IDENT = 10;
+export const DB_VALUE_TYPE = 40;
+export const DB_CARDINALITY = 41;
+export const DB_UNIQUE = 42;
+export const DB_IS_COMPONENT = 43;
+export const DB_INDEX = 44;
+export const DB_OPTIONAL = 45;
+export const DB_TX_INSTANT = 50;
+export const DB_DOC = 62;
+/** First entity id handed out to user entities. */
+export const FIRST_USER_EID = 1000;
+/** Tx entities live in their own id partition: e = TX_BASE + t. */
+export const TX_BASE = 2 ** 42;
+export function txEid(t) {
+    return TX_BASE + t;
+}
+export function isTxEid(e) {
+    return e >= TX_BASE;
+}
+export function tOfTxEid(e) {
+    return e - TX_BASE;
+}
+export const VALUE_TYPE_IDENTS = {
+    ":db.type/long": ValueTag.Long,
+    ":db.type/double": ValueTag.Double,
+    ":db.type/string": ValueTag.Str,
+    ":db.type/boolean": ValueTag.Bool,
+    ":db.type/ref": ValueTag.Ref,
+    ":db.type/uuid": ValueTag.Uuid,
+    ":db.type/instant": ValueTag.Inst,
+    ":db.type/bytes": ValueTag.Bytes,
+};
+export const VALUE_TYPE_NAMES = Object.fromEntries(Object.entries(VALUE_TYPE_IDENTS).map(([k, v]) => [v, k]));
+const BOOTSTRAP_SPECS = [
+    { id: DB_IDENT, ident: ":db/ident", valueType: ":db.type/string", cardinality: "one", unique: "identity", doc: "Unique name of an entity" },
+    { id: DB_VALUE_TYPE, ident: ":db/valueType", valueType: ":db.type/string", cardinality: "one" },
+    { id: DB_CARDINALITY, ident: ":db/cardinality", valueType: ":db.type/string", cardinality: "one" },
+    { id: DB_UNIQUE, ident: ":db/unique", valueType: ":db.type/string", cardinality: "one" },
+    { id: DB_IS_COMPONENT, ident: ":db/isComponent", valueType: ":db.type/boolean", cardinality: "one" },
+    { id: DB_INDEX, ident: ":db/index", valueType: ":db.type/boolean", cardinality: "one" },
+    { id: DB_OPTIONAL, ident: ":db/optional", valueType: ":db.type/boolean", cardinality: "one" },
+    { id: DB_TX_INSTANT, ident: ":db/txInstant", valueType: ":db.type/instant", cardinality: "one", index: true },
+    { id: DB_DOC, ident: ":db/doc", valueType: ":db.type/string", cardinality: "one" },
+];
+/** Datoms describing an attribute entity `e` per `spec`, at tx `t`. */
+export function attributeDatoms(e, spec, t) {
+    const vt = typeof spec.valueType === "number" ? spec.valueType : VALUE_TYPE_IDENTS[spec.valueType];
+    if (vt === undefined)
+        throw new Error(`unknown valueType ${String(spec.valueType)}`);
+    const out = [
+        { e, a: DB_IDENT, vt: ValueTag.Str, v: spec.ident, t, op: true },
+        { e, a: DB_VALUE_TYPE, vt: ValueTag.Str, v: VALUE_TYPE_NAMES[vt], t, op: true },
+        { e, a: DB_CARDINALITY, vt: ValueTag.Str, v: `:db.cardinality/${spec.cardinality ?? "one"}`, t, op: true },
+    ];
+    if (spec.unique)
+        out.push({ e, a: DB_UNIQUE, vt: ValueTag.Str, v: `:db.unique/${spec.unique}`, t, op: true });
+    if (spec.index)
+        out.push({ e, a: DB_INDEX, vt: ValueTag.Bool, v: true, t, op: true });
+    if (spec.isComponent)
+        out.push({ e, a: DB_IS_COMPONENT, vt: ValueTag.Bool, v: true, t, op: true });
+    if (spec.optional)
+        out.push({ e, a: DB_OPTIONAL, vt: ValueTag.Bool, v: true, t, op: true });
+    if (spec.doc)
+        out.push({ e, a: DB_DOC, vt: ValueTag.Str, v: spec.doc, t, op: true });
+    return out;
+}
+/** The bootstrap transaction (t = 1): system attributes describing themselves. */
+export function bootstrapDatoms() {
+    const t = 1;
+    const out = [];
+    for (const s of BOOTSTRAP_SPECS)
+        out.push(...attributeDatoms(s.id, s, t));
+    out.push({ e: txEid(t), a: DB_TX_INSTANT, vt: ValueTag.Inst, v: 0, t, op: true });
+    return out;
+}
+export class Schema {
+    byId = new Map();
+    byIdent = new Map();
+    /** every :db/ident (attributes and plain ident entities) → eid */
+    idents = new Map();
+    identOf = new Map();
+    partials = new Map();
+    static bootstrap() {
+        return new Schema().apply(bootstrapDatoms());
+    }
+    clone() {
+        const s = new Schema();
+        for (const [k, v] of this.byId)
+            s.byId.set(k, v);
+        for (const [k, v] of this.byIdent)
+            s.byIdent.set(k, v);
+        for (const [k, v] of this.idents)
+            s.idents.set(k, v);
+        for (const [k, v] of this.identOf)
+            s.identOf.set(k, v);
+        for (const [k, v] of this.partials)
+            s.partials.set(k, { ...v });
+        return s;
+    }
+    /** Apply schema-relevant datoms (others are ignored). Mutates and returns this. */
+    apply(datoms) {
+        const touched = new Set();
+        for (const d of datoms) {
+            if (d.a > DB_DOC)
+                continue; // fast reject: user attrs have larger ids... unless < 1000; check below anyway
+            let p = this.partials.get(d.e);
+            switch (d.a) {
+                case DB_IDENT: {
+                    if (!p)
+                        this.partials.set(d.e, (p = {}));
+                    if (d.op) {
+                        p.ident = d.v;
+                        this.idents.set(d.v, d.e);
+                        this.identOf.set(d.e, d.v);
+                    }
+                    else {
+                        if (this.idents.get(d.v) === d.e)
+                            this.idents.delete(d.v);
+                        this.identOf.delete(d.e);
+                        if (p.ident === d.v)
+                            p.ident = undefined;
+                    }
+                    touched.add(d.e);
+                    break;
+                }
+                case DB_VALUE_TYPE:
+                    if (!p)
+                        this.partials.set(d.e, (p = {}));
+                    p.valueType = d.op ? d.v : undefined;
+                    touched.add(d.e);
+                    break;
+                case DB_CARDINALITY:
+                    if (!p)
+                        this.partials.set(d.e, (p = {}));
+                    p.cardinality = d.op ? d.v : undefined;
+                    touched.add(d.e);
+                    break;
+                case DB_UNIQUE:
+                    if (!p)
+                        this.partials.set(d.e, (p = {}));
+                    p.unique = d.op ? d.v : undefined;
+                    touched.add(d.e);
+                    break;
+                case DB_INDEX:
+                    if (!p)
+                        this.partials.set(d.e, (p = {}));
+                    p.index = d.op ? d.v : undefined;
+                    touched.add(d.e);
+                    break;
+                case DB_OPTIONAL:
+                    if (!p)
+                        this.partials.set(d.e, (p = {}));
+                    p.optional = d.op ? d.v : undefined;
+                    touched.add(d.e);
+                    break;
+                case DB_IS_COMPONENT:
+                    if (!p)
+                        this.partials.set(d.e, (p = {}));
+                    p.isComponent = d.op ? d.v : undefined;
+                    touched.add(d.e);
+                    break;
+                case DB_DOC:
+                    if (!p)
+                        this.partials.set(d.e, (p = {}));
+                    p.doc = d.op ? d.v : undefined;
+                    touched.add(d.e);
+                    break;
+                default:
+                    break;
+            }
+        }
+        for (const e of touched)
+            this.rebuild(e);
+        return this;
+    }
+    rebuild(e) {
+        const p = this.partials.get(e);
+        const old = this.byId.get(e);
+        if (old) {
+            this.byId.delete(e);
+            this.byIdent.delete(old.ident);
+        }
+        if (!p || !p.ident || !p.valueType)
+            return;
+        const vt = VALUE_TYPE_IDENTS[p.valueType];
+        if (vt === undefined)
+            return;
+        const unique = p.unique === ":db.unique/identity" ? "identity" : p.unique === ":db.unique/value" ? "value" : undefined;
+        const attr = {
+            id: e,
+            ident: p.ident,
+            valueType: vt,
+            cardinality: p.cardinality === ":db.cardinality/many" ? "many" : "one",
+            unique,
+            index: !!p.index || unique !== undefined,
+            isComponent: !!p.isComponent,
+            doc: p.doc,
+            optional: !!p.optional,
+        };
+        this.byId.set(e, attr);
+        this.byIdent.set(attr.ident, attr);
+    }
+    attr(idOrIdent) {
+        return typeof idOrIdent === "number" ? this.byId.get(idOrIdent) : this.byIdent.get(idOrIdent);
+    }
+    requireAttr(idOrIdent) {
+        const a = this.attr(idOrIdent);
+        if (!a)
+            throw new Error(`unknown attribute ${String(idOrIdent)}`);
+        return a;
+    }
+    /** Resolve an ident (attribute or plain ident entity) to its entity id. */
+    entid(ident) {
+        return this.idents.get(ident);
+    }
+    ident(e) {
+        return this.identOf.get(e);
+    }
+    attributes() {
+        return [...this.byId.values()];
+    }
+    /** Should datoms of attribute `a` be in AVET? (indexed or unique) */
+    isAvet(a) {
+        const at = this.byId.get(a);
+        return at !== undefined && at.index;
+    }
+    /** Should datoms of attribute `a` be in VAET? (refs) */
+    isVaet(a) {
+        const at = this.byId.get(a);
+        return at !== undefined && at.valueType === ValueTag.Ref;
+    }
+}
+//# sourceMappingURL=schema.js.map
