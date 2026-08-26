@@ -35,14 +35,13 @@ import {
   txOps,
   seedWrite,
 } from "../src/db/internal.ts";
-import { asPromiseOp, buildOp, runBody } from "../src/db/op-handle.ts";
+import { BodyFailed, asPromiseOp, buildOp, runBody } from "../src/db/op-handle.ts";
+import { isDatabaseError } from "../src/db/Errors.ts";
 import { asLookupRef, lowerEntityArg, materializeOutput } from "../src/db/Operation.ts";
 import { schemaTx } from "../src/db/ensure.ts";
 import { client, scriptedPeer, httpsClient, settle, until, type Call } from "./peer.ts";
 import { Movie, Movies, User } from "./db/fixture.ts";
 
-const run = <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<A> =>
-  Effect.isEffect(value) ? Effect.runPromise(value) : value;
 const runFail = async <A, E>(value: Effect.Effect<A, E> | Promise<A>): Promise<unknown> => {
   if (Effect.isEffect(value)) return Effect.runPromise(Effect.flip(value));
   try {
@@ -467,6 +466,37 @@ describe("PrefixHalt is out-of-band", () => {
   });
 });
 
+describe("BodyFailed carries the body's throw", () => {
+  const throwing = (thrown: unknown) => ({
+    body: async (_op: Op) => {
+      throw thrown;
+    },
+  });
+  const failureOf = (thrown: unknown): Promise<unknown> =>
+    Effect.runPromise(runBody(throwing(thrown), stubOp("run").op, {})).then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+  // `worker/operations.ts` unwraps with `err instanceof BodyFailed`, so the
+  // class identity has to survive the rejection, not just the shape.
+  test("runPromise rejects with the BodyFailed instance", async () => {
+    const thrown = new OperationRejected({ message: "no", operation: "x" });
+    const err = await failureOf(thrown);
+    expect(err).toBeInstanceOf(BodyFailed);
+    expect((err as BodyFailed).cause).toBe(thrown);
+  });
+
+  // `overlay.ts` classifies `cause`; a thrown DbError has to stay one rather
+  // than being re-classified as an opaque tx failure.
+  test("a thrown DbError is still a DbError under .cause", async () => {
+    const err = await failureOf(new TxRejected({ message: "bad", code: "dangling" }));
+    const cause = (err as BodyFailed).cause;
+    expect(isDatabaseError(cause)).toBe(true);
+    expect((cause as TxRejected)._tag).toBe("TxRejected");
+  });
+});
+
 describe("op.effect thunk rejections", () => {
   class PaymentDeclined extends Data.TaggedError("PaymentDeclined")<{
     readonly message: string;
@@ -770,7 +800,7 @@ describe("put", () => {
       schema: Movies,
       input: Schema.Struct({
         name: Schema.String,
-        age: Schema.optional(Schema.Number),
+        age: Schema.optional(Schema.Finite),
       }),
       output: Schema.Struct({}),
     },

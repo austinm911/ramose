@@ -34,7 +34,11 @@ export type FetchLike = (
 
 /** The ambient `fetch`, bound once. */
 export const globalFetch: FetchLike = (url, init) =>
-  fetch(url, { method: init.method, headers: init.headers, body: init.body });
+  fetch(url, {
+    method: init.method,
+    headers: init.headers,
+    ...(init.body !== undefined && { body: init.body }),
+  });
 
 /** Adapt a standard `fetch` (what {@link ClientOptions} takes) to the seam. */
 export const fromStandardFetch = (f: typeof fetch): FetchLike =>
@@ -137,6 +141,10 @@ export const probeUnauthorized = (
   options: Omit<SendOptions, "method" | "body">,
 ): Effect.Effect<Unauthorized | undefined> =>
   sendOnce({ ...options, method: "GET" }).pipe(
+    // Not `Effect.asVoid`: `undefined` is a value of the declared success
+    // type `Unauthorized | undefined` — "checked, and not unauthorized" — so
+    // discarding it to `void` widens the channel rather than narrowing it.
+    // @effect-diagnostics-next-line effectMapVoid:off
     Effect.map(() => undefined),
     Effect.catch((e: DbError) =>
       Effect.succeed(e._tag === "Unauthorized" ? e : undefined),
@@ -194,17 +202,12 @@ const sendOnce = (
         }),
     });
 
-    let parsed: unknown;
-    try {
-      parsed = text.length > 0 ? JSON.parse(text) : null;
-    } catch {
-      parsed = { error: text };
-    }
+    const parsed = yield* Effect.try(
+      () => (text.length > 0 ? (JSON.parse(text) as unknown) : null),
+    ).pipe(Effect.orElseSucceed((): unknown => ({ error: text })));
 
     if (!response.ok) {
-      return yield* Effect.fail(
-        fromResponse(response.status, parsed, response.headers),
-      );
+      return yield* fromResponse(response.status, parsed, response.headers);
     }
     return { body: fromJson(parsed), headers: response.headers };
   });

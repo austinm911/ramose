@@ -49,7 +49,7 @@ export interface FieldOptions {
 
 type FieldFlags = {
   readonly cardinality?: Cardinality;
-  readonly unique?: Uniqueness;
+  readonly unique?: Uniqueness | undefined;
   readonly owned?: boolean;
 };
 
@@ -197,9 +197,10 @@ const mergeFieldOptions = (
 ): FieldOptions => {
   rejectRetiredOptions(extra);
   if (!isField(input)) return extra ?? {};
+  const doc = extra?.doc ?? input.doc;
   return {
     index: extra?.index ?? input.index,
-    doc: extra?.doc ?? input.doc,
+    ...(doc !== undefined && { doc }),
     optional: extra?.optional ?? input.isOptional,
   };
 };
@@ -383,9 +384,15 @@ export const boolean: Shorthand<typeof Schema.Boolean, "boolean"> = shorthand(
 /** Whole number. Stored as `:db.type/long` (plain `float()` / `Schema.Number` is double). */
 export const int: Shorthand<typeof Long, "long"> = shorthand(Long);
 
-/** Floating-point number. Stored as `:db.type/double`. */
-export const float: Shorthand<typeof Schema.Number, "double"> = shorthand(
-  Schema.Number,
+/**
+ * Floating-point number. Stored as `:db.type/double`.
+ *
+ * `Finite`, not `Number`: the wire format is JSON, where `Infinity` and `NaN`
+ * serialize to `null`, so a non-finite value could never round-trip. Rejecting
+ * it at the schema fails loudly instead of silently storing `null`.
+ */
+export const float: Shorthand<typeof Schema.Finite, "double"> = shorthand(
+  Schema.Finite,
 );
 
 /** Point in time. You pass and receive a `Date`. Stored as `:db.type/instant`. */

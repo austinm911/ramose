@@ -1,14 +1,23 @@
 {
+  "$schema": "./node_modules/@effect/tsgo/schema.json",
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
-    "module": "ESNext",
+    // Bundled code: Vite, Bun and the Workers build own module transformation,
+    // so tsc is a type-checker only and keeps `preserve` + `bundler` rather
+    // than the `NodeNext` rules that apply when tsc is the compiler.
+    "module": "preserve",
     "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "verbatimModuleSyntax": true,
+    "rewriteRelativeImportExtensions": true,
+    "incremental": true,
     "strict": true,
     "noUncheckedIndexedAccess": false,
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
-    "exactOptionalPropertyTypes": false,
+    "exactOptionalPropertyTypes": true,
+    "noUnusedLocals": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "allowImportingTsExtensions": true,
@@ -33,7 +42,70 @@
       "ramose/better-auth": ["./packages/ramose/src/better-auth/index.ts"],
       "ramose/better-auth/client": ["./packages/ramose/src/better-auth/client.ts"],
       "ramose/effect": ["./packages/ramose/src/effect.ts"]
-    }
+    },
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        // Every rule the language service ships at `warning` is raised to
+        // `error` so it fails `bun run typecheck` instead of scrolling past in
+        // CI. Only `multipleEffectProvide` and `unknownInEffectCatch` had live
+        // findings when this was turned on; the rest are standing guards.
+        // `duplicatePackage` earns its place — it is what caught two copies of
+        // `alchemy` resolving at once, which for an Effect-based package means
+        // two distinct service identities and a Layer that silently does not
+        // satisfy the requirement it looks like it satisfies.
+        "diagnosticSeverity": {
+          "duplicatePackage": "error",
+          "effectFnIife": "error",
+          "effectGenUsesAdapter": "error",
+          "effectInFailure": "error",
+          "effectInVoidSuccess": "error",
+          "genericEffectServices": "error",
+          "globalErrorInEffectCatch": "error",
+          "globalErrorInEffectFailure": "error",
+          "layerMergeAllWithDependencies": "error",
+          "lazyPromiseInEffectSync": "error",
+          "multipleEffectProvide": "error",
+          "outdatedApi": "error",
+          "promiseInEffectSuccess": "error",
+          "scopeInLayerEffect": "error",
+          "unknownInEffectCatch": "error",
+          // Suggestion-level rules, also raised to `error`.
+          "abortControllerInEffect": "error",
+          "catchAllToMapError": "error",
+          "catchChainToFirstSuccessOf": "error",
+          "catchTagToCatchReason": "error",
+          "catchToIgnore": "error",
+          "catchToOrElseSucceed": "error",
+          "catchUnfailableEffect": "error",
+          "effectFnOpportunity": "error",
+          "effectMapFlatten": "error",
+          "effectMapVoid": "error",
+          "effectSucceedWithVoid": "error",
+          "flatMapToMap": "error",
+          "lazyEffect": "error",
+          "leakingRequirements": "error",
+          "multipleCatchTag": "error",
+          "preferTypedSchemaDecoder": "error",
+          "preferUnsafeConstructor": "error",
+          "redundantMapError": "error",
+          "redundantOrDie": "error",
+          "redundantSchemaTagIdentifier": "error",
+          "returnEffectInGen": "error",
+          "runEffectInsideEffect": "error",
+          "schemaNumber": "error",
+          "schemaStructWithTag": "error",
+          "schemaSyncInEffect": "error",
+          "syncToSucceed": "error",
+          "tryCatchInEffectGen": "error",
+          "unnecessaryEffectGen": "error",
+          "unnecessaryFailYieldableError": "error",
+          "unnecessaryPipe": "error",
+          "unnecessaryPipeChain": "error",
+          "unnecessaryTypeofType": "error"
+        }
+      }
+    ]
   },
   "include": [
     "alchemy.run.ts",

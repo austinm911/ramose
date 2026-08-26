@@ -44,10 +44,12 @@
     "deploy:prod": "bun run scripts/build-packages.ts && bun alchemy deploy --stage prod",
     "deploy:docs": "bun alchemy deploy website/alchemy.run.ts",
     "deploy:docs:prod": "bun alchemy deploy website/alchemy.run.ts --stage prod --adopt",
-    "destroy": "bun alchemy destroy"
+    "destroy": "bun alchemy destroy",
+    "prepare": "effect-tsgo patch --typescript --no-oxlint"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250101.0",
+    "@effect/tsgo": "0.37.0",
     "@stylexjs/stylex": "^0.19.0",
     "@stylexjs/unplugin": "^0.19.0",
     "@types/bun": "latest",
@@ -60,12 +62,12 @@
     "vite": "^7.0.0"
   },
   "dependencies": {
-    "@alchemy.run/better-auth": "^2.0.0-beta.72",
-    "@effect/platform-bun": ">=4.0.0-beta.105",
-    "@effect/platform-node": ">=4.0.0-beta.105",
-    "alchemy": "2.0.0-beta.72",
+    "@alchemy.run/better-auth": "^2.0.0-beta.74",
+    "@effect/platform-bun": ">=4.0.0-rc.110",
+    "@effect/platform-node": ">=4.0.0-rc.110",
+    "alchemy": "2.0.0-beta.74",
     "better-auth": "^1.6.30",
-    "effect": ">=4.0.0-beta.105",
+    "effect": ">=4.0.0-rc.110",
     "ramose": "workspace:*"
   }
 }

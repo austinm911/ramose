@@ -10,7 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import type { ClientOptions } from "./connect.ts";
-import { type Db, makeDb, type Wire } from "./Db.ts";
+import { makeDb, type Wire } from "./Db.ts";
 import type { EffectOf, RedactedOf } from "./effect-types.ts";
 import {
   type DbError,
@@ -76,6 +76,9 @@ const bearer = (
   token: Effect.Effect<Redacted.Redacted<string>, DbError> | undefined,
 ): Effect.Effect<string | undefined, DbError> =>
   token === undefined
+    // Not `Effect.void`: `undefined` is a value of the declared success type
+    // `string | undefined` (the token is absent), not an empty result.
+    // @effect-diagnostics-next-line effectSucceedWithVoid:off
     ? Effect.succeed(undefined)
     : token.pipe(
         Effect.map((t) => {

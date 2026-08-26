@@ -4,6 +4,7 @@
  * the peer Worker so both sides run the same body.
  */
 
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import type { AnySchema } from "./Schema.ts";
 import { type DbError, InternalError, InvalidRequest, isDatabaseError } from "./Errors.ts";
@@ -182,7 +183,7 @@ const promiseEntity = (entity: RuntimeOpHandle): OpHandle => ({
     runSync(entity.remove(field, value));
   },
   delete: () => {
-    runSync(entity.delete());
+    runSync(entity.delete);
   },
 });
 
@@ -248,25 +249,38 @@ export const asPromiseOp = (op: RuntimeOp): Op<any, any> => {
   };
 };
 
+/**
+ * A throw out of an operation body.
+ *
+ * `operation.body` is user code, so `cause` holds whatever it threw,
+ * untouched — callers classify the original value (a thrown {@link DbError}
+ * stays a `DbError`). The wrapper exists so the error channel is typed:
+ * `unknown` in the channel meant every caller had to re-discover what it
+ * might be, and gave the compiler nothing to check.
+ */
+export class BodyFailed extends Data.TaggedError("ramose/BodyFailed")<{
+  readonly cause: unknown;
+}> {}
+
 /** Run a body, treating a {@link PrefixHalt} as a successful prefix stop. */
 export const runBody = (
   operation: Pick<AnyOperation, "body">,
   op: RuntimeOp,
   input: unknown,
-): Effect.Effect<{ output: unknown; halted: boolean }, unknown> =>
+): Effect.Effect<{ output: unknown; halted: boolean }, BodyFailed> =>
   Effect.tryPromise({
     try: () => Promise.resolve(operation.body(asPromiseOp(op), input)),
-    catch: (cause) => cause,
+    catch: (cause) => new BodyFailed({ cause }),
   }).pipe(
     Effect.map((output) =>
       op._prefix.halted
         ? { output: undefined, halted: true }
         : { output, halted: false },
     ),
-    Effect.catch((cause) =>
-      op._prefix.halted || cause instanceof PrefixHalt
+    Effect.catch((error) =>
+      op._prefix.halted || error.cause instanceof PrefixHalt
         ? Effect.succeed({ output: undefined, halted: true })
-        : Effect.fail(cause),
+        : Effect.fail(error),
     ),
     Effect.catchDefect((defect) =>
       op._prefix.halted || defect instanceof PrefixHalt

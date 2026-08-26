@@ -153,15 +153,13 @@ export const installCatalog = Effect.fn(function* (args: {
   readonly url: string;
   readonly token: Redacted.Redacted<string> | undefined;
   readonly schema: Schema.Any;
-  readonly timeoutMs?: number;
+  readonly timeoutMs?: number | undefined;
 }) {
   const { name, url, token, schema } = args;
   if (url === undefined || url === "") {
-    return yield* Effect.fail(
-      new InvalidRequest({
-        message: `ramose: the server for database ${JSON.stringify(name)} has no URL — deploy it before installing a schema on it`,
-      }),
-    );
+    return yield* new InvalidRequest({
+      message: `ramose: the server for database ${JSON.stringify(name)} has no URL — deploy it before installing a schema on it`,
+    });
   }
   const timeoutMs = Math.max(1, args.timeoutMs ?? DEFAULT_INSTALL_TIMEOUT_MS);
   const { databases, close } = makeDatabases({
@@ -203,6 +201,11 @@ const install = Effect.fn(function* (id: string, props: DatabaseProps) {
  * is the same HTTPS transaction against a deployed server and against the
  * `alchemy dev` one.
  */
+// Kept as a zero-argument factory rather than a bare Layer value: as a
+// value the whole provider graph would be constructed at module load,
+// on every import, instead of when a stack actually asks for it. It is
+// also the shape alchemy uses in every provider package it ships.
+// @effect-diagnostics-next-line lazyEffect:off
 export const DatabaseProvider = () =>
   Provider.succeed(Database, {
     reconcile: Effect.fn(function* ({ id, news }) {

@@ -18,7 +18,7 @@ import type { AnySchema } from "./Schema.ts";
 import type { TxReport } from "./Db.ts";
 import { type DbError, InvalidRequest, OperationsCoverageError } from "./Errors.ts";
 import type { AnyEntity } from "./Entity.ts";
-import { asLookupRef, lowerEntityArg, tempid, type Tempid } from "./entityArg.ts";
+import type { Tempid } from "./entityArg.ts";
 import type { EntityRef, LookupRef, UnbrandedId } from "./idents.ts";
 import type { AnyQueryObject, QueryObject } from "./query/index.ts";
 import {
@@ -149,7 +149,7 @@ export type RunArg<C extends AnySchema, OC extends AnySchema, A> =
  * `{ id: handle }`) in an `EntityId` slot — {@link finalizeOutput}
  * rematerializes it after the writer assigns eids.
  */
-export const EntityId: typeof Schema.Number = Schema.Number;
+export const EntityId: typeof Schema.Finite = Schema.Finite;
 
 /**
  * What a body may return for output type `O`: a handle is legal
@@ -355,7 +355,7 @@ export interface RuntimeOpHandle {
   readonly eid: unknown;
   set(field: unknown, value: unknown): Effect.Effect<void>;
   remove(field: unknown, value?: unknown): Effect.Effect<void>;
-  delete(): Effect.Effect<void>;
+  readonly delete: Effect.Effect<void>;
 }
 
 export interface RuntimeOp {
@@ -531,8 +531,8 @@ const definePatch = <
       on: entity as never,
       input: structOf(entity, keys) as Schema.Codec<PatchInput<E, Keys>, unknown>,
       output: emptyOutput,
-      doc: options?.doc,
-      schema: options?.schema,
+      ...(options?.doc !== undefined && { doc: options.doc }),
+      ...(options?.schema !== undefined && { schema: options.schema }),
     },
     (op, input) => {
       const self = (op as { readonly self?: unknown }).self;
@@ -630,7 +630,7 @@ const makeRegistry = <const M extends Record<string, AnyOperation>>(
   return {
     _tag: "Operations",
     operations,
-    schema,
+    ...(schema !== undefined && { schema }),
     get,
     names: () => namesOfRegistry(operations),
     cards: () => cardsOfRegistry(operations, get),
@@ -801,7 +801,7 @@ export const finalizeOutput = (
   tempids: Readonly<Record<string, number>>,
 ): Effect.Effect<unknown, InvalidRequest> =>
   encodeOutput(schema, materializeOutput(value, tempids)).pipe(
-    Effect.catch(() => Effect.succeed(materializeOutput(value, tempids))),
+    Effect.orElseSucceed(() => materializeOutput(value, tempids)),
   );
 
 /** Decode a wire output back into the operation's output type. */
