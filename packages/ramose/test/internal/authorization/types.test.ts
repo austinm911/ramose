@@ -1,0 +1,782 @@
+/**
+ * Type-level fixtures for the authorization identity / IR vocabulary.
+ *
+ * `bun run typecheck` compiles this file. A mismatch turns `Expect<Equal<…>>`
+ * into a type error, or leaves a `@ts-expect-error` unused.
+ */
+
+import { expect, test } from "bun:test";
+import * as Schema from "effect/Schema";
+import type { Equal, Expect, Extends } from "../../../src/db/equal.ts";
+import {
+  AuthorizationDenied,
+  AuthorizationBudgetExceeded,
+  BudgetExhausted,
+  CatalogId,
+  CatalogMismatch,
+  CatalogVersion,
+  DatabaseId,
+  DEFAULT_AUTHORIZATION_BUDGET,
+  EntityAbsent,
+  EntityId,
+  False,
+  FieldAbsent,
+  FieldId,
+  Incomplete,
+  IncompleteRuleSnapshot,
+  INSTALLED_AUTHORIZATION_IR_VERSION,
+  InvalidIR,
+  InvalidTraversal,
+  LeaseExpired,
+  MAX_EXISTS_DEPTH,
+  MAX_READ_LEASE_MS,
+  MAX_TRAVERSAL_DEPTH,
+  MissingMe,
+  MissingMeProjection,
+  NotLoaded,
+  OperationId,
+  POLICY_TEMPLATE_IR_VERSION,
+  PolicyHash,
+  Present,
+  RelativeFieldId,
+  RelativeOperationId,
+  RuleId,
+  SchemaFingerprint,
+  TraitId,
+  True,
+  type AuthorizationFailure,
+  AuthorizationPrincipal,
+  CatalogBindingInput,
+  type CatalogDescriptor,
+  ClaimDescriptor,
+  type ClaimVocabulary,
+  type CompleteProjected,
+  FieldDescriptor,
+  type IncompleteProjected,
+  InputTerm,
+  JsonScalar,
+  InstalledAuthorizationIR,
+  type OperationId as OperationIdType,
+  type OperationInputFieldDescriptor,
+  OperationInputShape,
+  PolicyTemplateIR,
+  type Present as PresentType,
+  type Projected,
+  type ProjectedValue,
+  type RelativeOperationId as RelativeOperationIdType,
+  type Truth,
+} from "../../../src/internal/authorization/index.ts";
+
+// @ts-expect-error — not a public package export yet
+import type { PolicyTemplateIR as _PublicTemplate } from "ramose";
+// @ts-expect-error — not a public package export yet
+import type { InstalledAuthorizationIR as _PublicInstalled } from "ramose/db";
+
+type PublicKeys = keyof typeof import("ramose");
+type _noPublicAuthorization = Expect<
+  Equal<Extract<PublicKeys, "Authorization" | "PolicyTemplateIR" | "InstalledAuthorizationIR">, never>
+>;
+
+const catalog = CatalogId.make("app");
+const issueOwner = { kind: "entity" as const, name: "issue" };
+const taggableOwner = { kind: "trait" as const, name: "taggable" };
+
+type _catalogIdFromSchema = Expect<Equal<CatalogId, typeof CatalogId.Type>>;
+type _databaseIdFromSchema = Expect<Equal<DatabaseId, typeof DatabaseId.Type>>;
+type _catalogVersionFromSchema = Expect<Equal<CatalogVersion, typeof CatalogVersion.Type>>;
+type _schemaFingerprintFromSchema = Expect<Equal<SchemaFingerprint, typeof SchemaFingerprint.Type>>;
+type _policyHashFromSchema = Expect<Equal<PolicyHash, typeof PolicyHash.Type>>;
+type _ruleIdFromSchema = Expect<Equal<RuleId, typeof RuleId.Type>>;
+type _entityIdFromSchema = Expect<Equal<EntityId, typeof EntityId.Type>>;
+type _traitIdFromSchema = Expect<Equal<TraitId, typeof TraitId.Type>>;
+type _fieldIdFromSchema = Expect<Equal<FieldId, typeof FieldId.Type>>;
+type _operationIdFromSchema = Expect<Equal<OperationIdType, typeof OperationId.Type>>;
+type _relativeFieldFromSchema = Expect<Equal<RelativeFieldId, typeof RelativeFieldId.Type>>;
+type _relativeOpFromSchema = Expect<Equal<RelativeOperationIdType, typeof RelativeOperationId.Type>>;
+type _templateFromSchema = Expect<Equal<PolicyTemplateIR, typeof PolicyTemplateIR.Type>>;
+type _installedFromSchema = Expect<Equal<InstalledAuthorizationIR, typeof InstalledAuthorizationIR.Type>>;
+type _bindingFromSchema = Expect<Equal<CatalogBindingInput, typeof CatalogBindingInput.Type>>;
+type _fieldFromSchema = Expect<Equal<FieldDescriptor, typeof FieldDescriptor.Type>>;
+type _inputFromSchema = Expect<Equal<OperationInputShape, typeof OperationInputShape.Type>>;
+type _claimFromSchema = Expect<Equal<ClaimDescriptor, typeof ClaimDescriptor.Type>>;
+type _inputTermFromSchema = Expect<Equal<InputTerm, typeof InputTerm.Type>>;
+type _principalFromSchema = Expect<Equal<AuthorizationPrincipal, typeof AuthorizationPrincipal.Type>>;
+
+type TemplateEncoded = typeof PolicyTemplateIR.Encoded;
+type InstalledEncoded = typeof InstalledAuthorizationIR.Encoded;
+type _templateEncodedKnown = Expect<Extends<TemplateEncoded, { readonly _tag: "PolicyTemplateIR" }>>;
+type _installedEncodedKnown = Expect<
+  Extends<InstalledEncoded, { readonly _tag: "InstalledAuthorizationIR" }>
+>;
+type _templateEncodedNotUnknown = Expect<Equal<Extends<unknown, TemplateEncoded>, false>>;
+type _installedEncodedNotUnknown = Expect<Equal<Extends<unknown, InstalledEncoded>, false>>;
+type _installedCatalogDecoded = Expect<Equal<InstalledAuthorizationIR["catalog"], CatalogId>>;
+type _installedCatalogEncoded = Expect<Equal<InstalledEncoded["catalog"], string>>;
+type _jsonValueEncoded = Expect<Equal<typeof JsonScalar.Encoded, JsonScalar>>;
+
+type OwnerlessOperation = {
+  readonly _tag: "OperationId";
+  readonly catalog: typeof catalog;
+  readonly localName: "create";
+  readonly target: "none";
+};
+
+type TargetOmittedOperation = {
+  readonly _tag: "OperationId";
+  readonly catalog: typeof catalog;
+  readonly owner: typeof issueOwner;
+  readonly localName: "create";
+};
+
+type OwnerAsTarget = {
+  readonly _tag: "OperationId";
+  readonly catalog: typeof catalog;
+  readonly owner: "none";
+  readonly localName: "create";
+  readonly target: typeof issueOwner;
+};
+
+type _ownerRequired = Expect<Equal<Extends<OwnerlessOperation, OperationIdType>, false>>;
+type _targetRequired = Expect<Equal<Extends<TargetOmittedOperation, OperationIdType>, false>>;
+type _ownerAndTargetIndependent = Expect<Equal<Extends<OwnerAsTarget, OperationIdType>, false>>;
+
+type TargetlessOwned = {
+  readonly _tag: "OperationId";
+  readonly catalog: typeof catalog;
+  readonly owner: typeof issueOwner;
+  readonly localName: "create";
+  readonly target: "none";
+};
+type _targetNoneWithOwner = Expect<Extends<TargetlessOwned, OperationIdType>>;
+
+type TraitTargeted = {
+  readonly _tag: "OperationId";
+  readonly catalog: typeof catalog;
+  readonly owner: typeof taggableOwner;
+  readonly localName: "addTag";
+  readonly target: "required";
+};
+type _traitOwnerSupported = Expect<Extends<TraitTargeted, OperationIdType>>;
+
+type RelativeOwnerless = {
+  readonly _tag: "RelativeOperationId";
+  readonly localName: "create";
+  readonly target: "none";
+};
+type _relativeOwnerRequired = Expect<
+  Equal<Extends<RelativeOwnerless, RelativeOperationIdType>, false>
+>;
+
+type _templateNotInstalled = Expect<
+  Equal<Extends<PolicyTemplateIR, InstalledAuthorizationIR>, false>
+>;
+type _installedNotTemplate = Expect<
+  Equal<Extends<InstalledAuthorizationIR, PolicyTemplateIR>, false>
+>;
+
+type PrincipalWithoutSubject = {
+  readonly claims: {};
+  readonly classes: readonly [];
+};
+type _subjectRequired = Expect<
+  Equal<Extends<PrincipalWithoutSubject, AuthorizationPrincipal>, false>
+>;
+
+type ServicePrincipal = {
+  readonly subject: "svc";
+  readonly claims: {};
+  readonly classes: readonly [];
+};
+type _meOptional = Expect<Extends<ServicePrincipal, AuthorizationPrincipal>>;
+type _emptyClassesAllowed = Expect<Extends<ServicePrincipal, AuthorizationPrincipal>>;
+
+type _absentIsNotUndefined = Expect<
+  Equal<Extends<undefined, Projected>, false>
+>;
+type _incompleteIsNotPresent = Expect<
+  Equal<Extends<IncompleteProjected, typeof FieldAbsent | typeof EntityAbsent>, false>
+>;
+type _truthIncompleteHasReason = Expect<
+  Extends<{ readonly _tag: "Incomplete"; readonly reason: typeof MissingMe }, Truth>
+>;
+
+type MissingRefTarget = {
+  readonly id: FieldId;
+  readonly valueType: "ref";
+  readonly cardinality: "one";
+  readonly optional: false;
+  readonly owned: false;
+};
+type _refTargetRequired = Expect<Equal<Extends<MissingRefTarget, FieldDescriptor>, false>>;
+
+type RefFieldWithTarget = {
+  readonly id: FieldId;
+  readonly valueType: "ref";
+  readonly refTarget: { readonly _tag: "entity"; readonly entity: EntityId };
+  readonly cardinality: "one";
+  readonly index: true;
+  readonly optional: false;
+  readonly owned: false;
+};
+type _refTargetPreserved = Expect<Extends<RefFieldWithTarget, FieldDescriptor>>;
+
+type IndexedFieldMissingFlag = {
+  readonly id: FieldId;
+  readonly valueType: "string";
+  readonly cardinality: "one";
+  readonly optional: false;
+  readonly owned: false;
+};
+type _indexRequired = Expect<Equal<Extends<IndexedFieldMissingFlag, FieldDescriptor>, false>>;
+
+type _missingMeIsProjected = Expect<Extends<typeof MissingMeProjection, Projected>>;
+type _missingMeIsIncomplete = Expect<
+  Extends<typeof MissingMeProjection, IncompleteProjected>
+>;
+type _missingMeIsNotComplete = Expect<
+  Equal<Extends<typeof MissingMeProjection, CompleteProjected>, false>
+>;
+type _missingMeIsNotEntityAbsent = Expect<
+  Equal<Extends<typeof MissingMeProjection, typeof EntityAbsent>, false>
+>;
+
+type _presentUndefinedNever = Expect<Equal<PresentType<undefined>, never>>;
+type _presentOptionalNever = Expect<Equal<PresentType<string | undefined>, never>>;
+type _presentScalarOk = Expect<Extends<PresentType<string>, Projected>>;
+type _presentInstantOk = Expect<Extends<PresentType<Date>, Projected>>;
+type _presentBytesOk = Expect<Extends<PresentType<Uint8Array>, Projected>>;
+type _presentManyOk = Expect<Extends<PresentType<readonly number[]>, Projected>>;
+type _projectedValueCoversStorage = Expect<
+  Extends<Date | Uint8Array | readonly string[], ProjectedValue>
+>;
+
+type KeyOnlyClaims = readonly ["teams"];
+type _claimKeysRejected = Expect<Equal<Extends<KeyOnlyClaims, ClaimVocabulary>, false>>;
+
+type TeamsClaim = {
+  readonly key: "teams";
+  readonly optional: false;
+  readonly shape: {
+    readonly _tag: "array";
+    readonly items: { readonly _tag: "scalar"; readonly valueType: "string" };
+  };
+};
+type _claimShapePreserved = Expect<Extends<TeamsClaim, ClaimDescriptor>>;
+
+type StructOnlyInput = {
+  readonly fields: readonly OperationInputFieldDescriptor[];
+};
+type _topLevelFieldsRejected = Expect<
+  Equal<Extends<StructOnlyInput, OperationInputShape>, false>
+>;
+type _topLevelArrayOk = Expect<
+  Extends<{ readonly _tag: "array"; readonly items: { readonly _tag: "opaque" } }, OperationInputShape>
+>;
+type _topLevelOpaqueOk = Expect<Extends<{ readonly _tag: "opaque" }, OperationInputShape>>;
+
+type InputRootTerm = { readonly _tag: "input"; readonly path: readonly [] };
+type _inputRootOk = Expect<Extends<InputRootTerm, InputTerm>>;
+type InputFieldTerm = { readonly _tag: "input"; readonly path: readonly ["title"] };
+type _inputFieldOk = Expect<Extends<InputFieldTerm, InputTerm>>;
+type InputKeyOnly = { readonly _tag: "input"; readonly key: "title" };
+type _inputKeyRejected = Expect<Equal<Extends<InputKeyOnly, InputTerm>, false>>;
+
+type BindingWithoutDatabase = {
+  readonly catalog: CatalogDescriptor;
+  readonly template: PolicyTemplateIR;
+};
+type _databaseRequiredOnBind = Expect<
+  Equal<Extends<BindingWithoutDatabase, CatalogBindingInput>, false>
+>;
+
+type FlatScalarInput = {
+  readonly key: "labels";
+  readonly valueType: "string";
+  readonly cardinality: "many";
+  readonly optional: false;
+};
+type _flatInputRejected = Expect<
+  Equal<Extends<FlatScalarInput, OperationInputFieldDescriptor>, false>
+>;
+
+type NestedArrayStructInput = {
+  readonly key: "labels";
+  readonly optional: false;
+  readonly shape: {
+    readonly _tag: "array";
+    readonly items: {
+      readonly _tag: "struct";
+      readonly fields: readonly [
+        {
+          readonly key: "name";
+          readonly optional: false;
+          readonly shape: { readonly _tag: "scalar"; readonly valueType: "string" };
+        },
+      ];
+    };
+  };
+};
+type _nestedInputPreserved = Expect<
+  Extends<NestedArrayStructInput, OperationInputFieldDescriptor>
+>;
+
+type FailureTags = AuthorizationFailure["_tag"];
+type _allFailures = Expect<
+  Equal<
+    FailureTags,
+    | "InvalidIR"
+    | "CatalogMismatch"
+    | "IncompleteRuleSnapshot"
+    | "AuthorizationBudgetExceeded"
+    | "LeaseExpired"
+    | "AuthorizationDenied"
+  >
+>;
+
+const templateFixture: PolicyTemplateIR = {
+  _tag: "PolicyTemplateIR",
+  version: POLICY_TEMPLATE_IR_VERSION,
+  classes: [],
+  claims: [
+    {
+      key: "org",
+      optional: false,
+      shape: { _tag: "scalar", valueType: "string" },
+    },
+    {
+      key: "teams",
+      optional: true,
+      shape: {
+        _tag: "array",
+        items: { _tag: "scalar", valueType: "string" },
+      },
+    },
+  ],
+  principal: {
+    subjectClaim: "sub",
+    entity: RelativeFieldId.make({ owner: { kind: "entity", name: "user" }, localName: "authId" }),
+  },
+  rules: [
+    {
+      id: RuleId.make("owns-issue"),
+      focus: { _tag: "entity", entity: { _tag: "RelativeEntityId", name: "issue" } },
+      expr: {
+        _tag: "eq",
+        left: {
+          _tag: "ref",
+          root: { _tag: "resource" },
+          steps: [{ field: RelativeFieldId.make({ owner: issueOwner, localName: "owner" }) }],
+        },
+        right: { _tag: "me" },
+      },
+      usesResource: true,
+      usesInput: false,
+      usesMe: true,
+      usesSubject: false,
+      traversalDepth: 1,
+      existsDepth: 0,
+      dependencies: [],
+    },
+    {
+      id: RuleId.make("rename-input"),
+      focus: {
+        _tag: "operation",
+        operation: RelativeOperationId.make({ owner: issueOwner, localName: "rename", target: "required" }),
+      },
+      expr: {
+        _tag: "and",
+        exprs: [
+          { _tag: "hasClass", class: "member" },
+          { _tag: "has", term: { _tag: "input", path: ["title"] } },
+          { _tag: "eq", left: { _tag: "subject" }, right: { _tag: "claim", key: "org" } },
+        ],
+      },
+      usesResource: false,
+      usesInput: true,
+      usesMe: false,
+      usesSubject: true,
+      traversalDepth: 0,
+      existsDepth: 0,
+      dependencies: [],
+    },
+    {
+      id: RuleId.make("tag-grant"),
+      focus: { _tag: "trait", trait: { _tag: "RelativeTraitId", name: "taggable" } },
+      expr: {
+        _tag: "some",
+        collection: {
+          _tag: "ref",
+          root: { _tag: "resource" },
+          steps: [{ field: RelativeFieldId.make({ owner: taggableOwner, localName: "tags" }) }],
+        },
+        bind: "tag",
+        pred: {
+          _tag: "exists",
+          entity: { _tag: "RelativeEntityId", name: "tag-grant" },
+          bind: "grant",
+          pred: {
+            _tag: "and",
+            exprs: [
+              {
+                _tag: "eq",
+                left: {
+                  _tag: "ref",
+                  root: { _tag: "bind", name: "grant" },
+                  steps: [{ field: RelativeFieldId.make({ owner: { kind: "entity", name: "tag-grant" }, localName: "user" }) }],
+                },
+                right: { _tag: "me" },
+              },
+              {
+                _tag: "eq",
+                left: {
+                  _tag: "ref",
+                  root: { _tag: "bind", name: "grant" },
+                  steps: [{ field: RelativeFieldId.make({ owner: { kind: "entity", name: "tag-grant" }, localName: "tag" }) }],
+                },
+                right: { _tag: "bind", name: "tag" },
+              },
+            ],
+          },
+        },
+      },
+      usesResource: true,
+      usesInput: false,
+      usesMe: true,
+      usesSubject: false,
+      traversalDepth: 1,
+      existsDepth: 1,
+      dependencies: [],
+    },
+  ],
+  decisions: {
+    entities: [
+      {
+        target: { _tag: "RelativeEntityId", name: "issue" },
+        decision: { allow: [RuleId.make("owns-issue")], deny: [] },
+      },
+    ],
+    traits: [
+      {
+        target: { _tag: "RelativeTraitId", name: "taggable" },
+        decision: { allow: [RuleId.make("tag-grant")], deny: [] },
+      },
+    ],
+    fields: [],
+    operations: [
+      {
+        target: RelativeOperationId.make({ owner: issueOwner, localName: "rename", target: "required" }),
+        decision: { allow: [RuleId.make("rename-input")], deny: [] },
+      },
+      {
+        target: RelativeOperationId.make({ owner: issueOwner, localName: "create", target: "none" }),
+        decision: { allow: [RuleId.make("rename-input")], deny: [] },
+      },
+    ],
+  },
+};
+
+const installedFixture: InstalledAuthorizationIR = {
+  _tag: "InstalledAuthorizationIR",
+  version: INSTALLED_AUTHORIZATION_IR_VERSION,
+  database: DatabaseId.make("todos"),
+  catalog,
+  catalogVersion: CatalogVersion.make("1"),
+  schemaFingerprint: SchemaFingerprint.make("schema"),
+  policyHash: PolicyHash.make("policy"),
+  classes: ["member"],
+  claims: [
+    {
+      key: "org",
+      optional: false,
+      shape: { _tag: "scalar", valueType: "string" },
+    },
+    {
+      key: "teams",
+      optional: true,
+      shape: {
+        _tag: "array",
+        items: { _tag: "scalar", valueType: "string" },
+      },
+    },
+  ],
+  principal: {
+    subjectClaim: "sub",
+    entity: FieldId.make({ catalog, owner: { kind: "entity", name: "user" }, localName: "authId" }),
+  },
+  identities: {
+    entities: [EntityId.make({ catalog, name: "issue" })],
+    traits: [TraitId.make({ catalog, name: "taggable" })],
+    fields: [FieldId.make({ catalog, owner: issueOwner, localName: "owner" })],
+    operations: [
+      OperationId.make({ catalog, owner: issueOwner, localName: "rename", target: "required" }),
+      OperationId.make({ catalog, owner: issueOwner, localName: "create", target: "none" }),
+      OperationId.make({ catalog, owner: taggableOwner, localName: "addTag", target: "required" }),
+    ],
+  },
+  traitComposition: [
+    {
+      composer: EntityId.make({ catalog, name: "issue" }),
+      trait: TraitId.make({ catalog, name: "taggable" }),
+      transitive: [TraitId.make({ catalog, name: "taggable" })],
+    },
+  ],
+  operations: [
+    {
+      id: OperationId.make({ catalog, owner: issueOwner, localName: "rename", target: "required" }),
+      input: {
+        _tag: "struct",
+        fields: [
+          {
+            key: "title",
+            optional: false,
+            shape: { _tag: "scalar", valueType: "string" },
+          },
+        ],
+      },
+    },
+    {
+      id: OperationId.make({ catalog, owner: issueOwner, localName: "create", target: "none" }),
+      input: {
+        _tag: "array",
+        items: {
+          _tag: "struct",
+          fields: [
+            {
+              key: "title",
+              optional: false,
+              shape: { _tag: "scalar", valueType: "string" },
+            },
+            {
+              key: "name",
+              optional: false,
+              shape: { _tag: "scalar", valueType: "string" },
+            },
+          ],
+        },
+      },
+    },
+  ],
+  rules: [],
+  decisions: { entities: [], traits: [], fields: [], operations: [] },
+  accessPlans: [],
+};
+
+const catalogDescriptor: CatalogDescriptor = {
+  id: catalog,
+  version: CatalogVersion.make("1"),
+  fingerprint: SchemaFingerprint.make("schema"),
+  entities: [{ id: EntityId.make({ catalog, name: "issue" }), traits: [TraitId.make({ catalog, name: "taggable" })] }],
+  traits: [{ id: TraitId.make({ catalog, name: "taggable" }), traits: [] }],
+  fields: [
+    {
+      id: FieldId.make({ catalog, owner: issueOwner, localName: "owner" }),
+      valueType: "ref",
+      refTarget: { _tag: "entity", entity: EntityId.make({ catalog, name: "user" }) },
+      cardinality: "one",
+      index: false,
+      optional: false,
+      owned: false,
+    },
+  ],
+  operations: installedFixture.operations,
+  traitComposition: installedFixture.traitComposition,
+};
+
+const bindingInput: CatalogBindingInput = {
+  database: DatabaseId.make("todos"),
+  catalog: catalogDescriptor,
+  template: templateFixture,
+};
+
+const _operationFixtures = () => {
+  const ownedTargetless: OperationIdType = OperationId.make({
+    catalog,
+    owner: issueOwner,
+    localName: "create",
+    target: "none",
+  });
+  const traitOwned: OperationIdType = OperationId.make({
+    catalog,
+    owner: taggableOwner,
+    localName: "addTag",
+    target: "required",
+  });
+
+  // @ts-expect-error — owner cannot be omitted
+  const noOwner: OperationIdType = {
+    _tag: "OperationId",
+    catalog,
+    localName: "create",
+    target: "none",
+  };
+
+  // @ts-expect-error — target cannot be omitted or inferred from owner
+  const noTarget: OperationIdType = {
+    _tag: "OperationId",
+    catalog,
+    owner: issueOwner,
+    localName: "create",
+  };
+
+  // @ts-expect-error — a template is not installed IR
+  const asInstalled: InstalledAuthorizationIR = templateFixture;
+
+  // @ts-expect-error — installed IR is not a template
+  const asTemplate: PolicyTemplateIR = installedFixture;
+
+  const ownerHop: FieldDescriptor = {
+    id: FieldId.make({ catalog, owner: issueOwner, localName: "owner" }),
+    valueType: "ref",
+    refTarget: { _tag: "entity", entity: EntityId.make({ catalog, name: "user" }) },
+    cardinality: "one",
+    index: true,
+    optional: false,
+    owned: false,
+  };
+
+  // @ts-expect-error — ref fields must name the referenced entity/trait
+  const ownerWithoutTarget: FieldDescriptor = {
+    id: FieldId.make({ catalog, owner: issueOwner, localName: "owner" }),
+    valueType: "ref",
+    cardinality: "one",
+    index: false,
+    optional: false,
+    owned: false,
+  };
+
+  const unindexed = {
+    id: FieldId.make({ catalog, owner: issueOwner, localName: "title" }),
+    valueType: "string" as const,
+    cardinality: "one" as const,
+    optional: false as const,
+    owned: false as const,
+  };
+  // @ts-expect-error — index is distinct from uniqueness and is required
+  const missingIndex: FieldDescriptor = unindexed;
+
+  const nestedLabels: OperationInputFieldDescriptor = {
+    key: "labels",
+    optional: false,
+    shape: {
+      _tag: "array",
+      items: {
+        _tag: "struct",
+        fields: [
+          {
+            key: "name",
+            optional: false,
+            shape: { _tag: "scalar", valueType: "string" },
+          },
+        ],
+      },
+    },
+  };
+
+  const flattenedLabels = {
+    key: "labels",
+    valueType: "string",
+    cardinality: "many",
+    optional: false,
+  };
+  // @ts-expect-error — nested input is not a single storage scalar
+  const flattenedAsInput: OperationInputFieldDescriptor = flattenedLabels;
+
+  // @ts-expect-error — Present cannot hold undefined
+  const presentUndefined = Present(undefined);
+
+  const presentInstant: PresentType<Date> = Present(new Date(0));
+  const presentBytes: PresentType<Uint8Array> = Present(new Uint8Array());
+  const presentMany: PresentType<readonly string[]> = Present(["a"]);
+
+  const topLevelArray: OperationInputShape = {
+    _tag: "array",
+    items: { _tag: "opaque" },
+  };
+  const fieldsOnlyInput = {
+    fields: [] as const,
+  };
+  // @ts-expect-error — top-level input is a shape, not a bare field map
+  const asTopLevel: OperationInputShape = fieldsOnlyInput;
+
+  const inputRoot: InputTerm = { _tag: "input", path: [] };
+  const inputField: InputTerm = { _tag: "input", path: ["title"] };
+  // @ts-expect-error — whole-input and nested fields use path, not key
+  const inputByKey: InputTerm = { _tag: "input", key: "title" };
+
+  const claimKeys = ["teams"] as const;
+  // @ts-expect-error — claim vocabulary stores shapes, not bare keys
+  const asClaims: ClaimVocabulary = claimKeys;
+
+  const bindWithoutDb = {
+    catalog: catalogDescriptor,
+    template: templateFixture,
+  };
+  // @ts-expect-error — binding names the target database
+  const asBind: CatalogBindingInput = bindWithoutDb;
+
+  return {
+    ownedTargetless,
+    traitOwned,
+    noOwner,
+    noTarget,
+    asInstalled,
+    asTemplate,
+    ownerHop,
+    ownerWithoutTarget,
+    missingIndex,
+    nestedLabels,
+    flattenedLabels,
+    flattenedAsInput,
+    presentUndefined,
+    presentInstant,
+    presentBytes,
+    presentMany,
+    topLevelArray,
+    asTopLevel,
+    inputRoot,
+    inputField,
+    inputByKey,
+    asClaims,
+    asBind,
+  };
+};
+
+test("authorization type fixtures compile", () => {
+  void _operationFixtures;
+  void bindingInput;
+  expect(True._tag).toBe("True");
+  expect(False._tag).toBe("False");
+  expect(Incomplete(NotLoaded)._tag).toBe("Incomplete");
+  expect(Present(1)._tag).toBe("Present");
+  expect(Present(new Date(0)).value).toBeInstanceOf(Date);
+  expect(Present(new Uint8Array([1])).value).toBeInstanceOf(Uint8Array);
+  expect(() => Present(undefined as never)).toThrow(/Present cannot hold undefined/);
+  expect(FieldAbsent._tag).toBe("FieldAbsent");
+  expect(EntityAbsent._tag).toBe("EntityAbsent");
+  expect(MissingMeProjection._tag).toBe("MissingMe");
+  expect(MissingMe._tag).toBe("MissingMe");
+  expect(InvalidTraversal._tag).toBe("InvalidTraversal");
+  expect(BudgetExhausted._tag).toBe("BudgetExhausted");
+  expect(MAX_TRAVERSAL_DEPTH).toBe(3);
+  expect(MAX_EXISTS_DEPTH).toBe(3);
+  expect(MAX_READ_LEASE_MS).toBe(5_000);
+  expect(DEFAULT_AUTHORIZATION_BUDGET).toBeGreaterThan(0);
+  expect(new InvalidIR({ message: "bad" })._tag).toBe("InvalidIR");
+  expect(new CatalogMismatch({ message: "stale" })._tag).toBe("CatalogMismatch");
+  expect(
+    new IncompleteRuleSnapshot({ message: "gap", reason: NotLoaded })._tag,
+  ).toBe("IncompleteRuleSnapshot");
+  expect(
+    new AuthorizationBudgetExceeded({ message: "over", spent: 2, limit: 1 })._tag,
+  ).toBe("AuthorizationBudgetExceeded");
+  expect(new LeaseExpired({ message: "lease" })._tag).toBe("LeaseExpired");
+  expect(new AuthorizationDenied()._tag).toBe("AuthorizationDenied");
+  // @ts-expect-error — denial carries no diagnostic payload
+  new AuthorizationDenied({ message: "exists" });
+  expect(Object.getPrototypeOf(templateFixture)).toBe(Object.prototype);
+  expect(Object.getPrototypeOf(installedFixture)).toBe(Object.prototype);
+  expect(Schema.is(JsonScalar)(1)).toBe(true);
+  expect(Schema.is(JsonScalar)(Number.NaN)).toBe(false);
+  expect(Schema.is(JsonScalar)(Number.POSITIVE_INFINITY)).toBe(false);
+  expect(Schema.is(JsonScalar)(Number.NEGATIVE_INFINITY)).toBe(false);
+});
