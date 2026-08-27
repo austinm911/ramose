@@ -23,6 +23,7 @@ import {
 } from "./bounds.ts";
 import { canonicalizeJson, hasLoneSurrogate } from "./canonical-json.ts";
 import { OperationDescriptor, TraitComposition } from "./catalog.ts";
+import { sha256HexSync } from "./digest.ts";
 import { InvalidIR } from "./failures.ts";
 import { OperationId, PolicyHash, RuleId } from "./identities.ts";
 import {
@@ -146,11 +147,42 @@ export const hashRelativeRule = Effect.fn("Authorization.hashRelativeRule")(func
 export const hashCanonicalRule = Effect.fn("Authorization.hashCanonicalRule")(function* (
   rule: CanonicalAuthorizationRuleType,
 ) {
-  const digest = yield* hashCanonicalJson(
-    omitKey(encodedJson(encodeCanonicalRule(rule)), "id"),
-  );
+  const digest = yield* hashCanonicalJson(canonicalAuthorizationRuleJson(rule));
   return RuleId.make(digest);
 });
+
+/**
+ * Canonical rule body for {@link RuleId}: schema-encoded JSON minus `id`,
+ * RFC 8785 JCS. Shared by the Effect hash shell and the sync validator.
+ */
+export const canonicalAuthorizationRuleJson = (
+  rule: CanonicalAuthorizationRuleType,
+): JsonValue => omitKey(encodedJson(encodeCanonicalRule(rule)), "id");
+
+/**
+ * Pure SHA-256 of the #357 canonical rule body. Same digest as
+ * {@link hashCanonicalRule}; no Effect, Web Crypto, or service lookup.
+ */
+export const hashCanonicalRuleSync = (rule: CanonicalAuthorizationRuleType): RuleId =>
+  RuleId.make(sha256HexSync(UTF8.encode(canonicalizeJson(canonicalAuthorizationRuleJson(rule)))));
+
+/**
+ * Same digest as {@link hashCanonicalRuleSync}, as `Result`. JCS-invalid
+ * strings (lone surrogates) become {@link InvalidIR} instead of throwing.
+ */
+export const hashCanonicalRuleResult = (
+  rule: CanonicalAuthorizationRuleType,
+): Result.Result<RuleId, InvalidIR> => {
+  try {
+    return Result.succeed(hashCanonicalRuleSync(rule));
+  } catch (cause) {
+    return Result.fail(
+      new InvalidIR({
+        message: `canonical hash failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      }),
+    );
+  }
+};
 
 /**
  * Schema-encoded IR is JSON by construction. This is the only cast from
