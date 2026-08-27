@@ -23,9 +23,36 @@ import {
   MAX_STRING_LENGTH,
 } from "./bounds.ts";
 import { canonicalizeJson, hasLoneSurrogate } from "./canonical-json.ts";
-import { OperationDescriptor, TraitComposition } from "./catalog.ts";
+import {
+  EntityDescriptor,
+  FieldDescriptor,
+  OperationDescriptor,
+  TraitComposition,
+  TraitDescriptor,
+  type CatalogDescriptor,
+} from "./catalog.ts";
+import {
+  InstalledCatalogUnit,
+  type InstalledCatalogUnit as InstalledCatalogUnitType,
+} from "./catalog-unit.ts";
 import { InvalidIR } from "./failures.ts";
-import { OperationId, PolicyHash, RuleId } from "./identities.ts";
+import {
+  CatalogUnitHash,
+  EntityId,
+  FieldId,
+  OperationId,
+  PolicyHash,
+  RuleId,
+  SchemaFingerprint,
+  TraitId,
+} from "./identities.ts";
+import {
+  normalizeEntities,
+  normalizeFields,
+  normalizeOperations,
+  normalizeTraitComposition,
+  normalizeTraits,
+} from "./install/normalize.ts";
 import {
   CanonicalAuthorizationRule,
   InstalledAuthorizationIR,
@@ -38,6 +65,8 @@ import {
 } from "./ir.ts";
 import type { JsonValue } from "./json.ts";
 import {
+  AUTHORIZATION_CATALOG_SCHEMA_HASH_DOMAIN_V1,
+  AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V1,
   AUTHORIZATION_POLICY_HASH_DOMAIN_V1,
   AUTHORIZATION_RULE_HASH_DOMAIN_V1,
 } from "./version.ts";
@@ -48,6 +77,7 @@ const UTF8 = new TextEncoder();
 
 export type PolicyTemplateIREncoded = typeof PolicyTemplateIR.Encoded;
 export type InstalledAuthorizationIREncoded = typeof InstalledAuthorizationIR.Encoded;
+export type InstalledCatalogUnitEncoded = typeof InstalledCatalogUnit.Encoded;
 export type RelativeAuthorizationRuleEncoded = typeof RelativeAuthorizationRule.Encoded;
 export type CanonicalAuthorizationRuleEncoded = typeof CanonicalAuthorizationRule.Encoded;
 
@@ -70,6 +100,16 @@ export const decodeInstalledAuthorizationResult = (
     input,
   );
 
+/** Structural document only. Not {@link InstalledCatalogUnitV1}. */
+export const decodeInstalledCatalogUnitResult = (
+  input: unknown,
+): Result.Result<InstalledCatalogUnitType, InvalidIR> =>
+  decodeDocument(
+    Schema.decodeUnknownResult(InstalledCatalogUnit, STRICT),
+    (rule) => encodedJson(Schema.encodeUnknownSync(CanonicalAuthorizationRule)(rule)),
+    input,
+  );
+
 export const decodePolicyTemplate = Effect.fn("decodePolicyTemplate")(function* (
   input: unknown,
 ): Effect.fn.Return<PolicyTemplateIRType, InvalidIR> {
@@ -82,12 +122,22 @@ export const decodeInstalledAuthorization = Effect.fn("decodeInstalledAuthorizat
   },
 );
 
+export const decodeInstalledCatalogUnit = Effect.fn("decodeInstalledCatalogUnit")(
+  function* (input: unknown): Effect.fn.Return<InstalledCatalogUnitType, InvalidIR> {
+    return yield* Effect.fromResult(decodeInstalledCatalogUnitResult(input));
+  },
+);
+
 export const encodePolicyTemplate = (document: PolicyTemplateIRType): PolicyTemplateIREncoded =>
   Schema.encodeUnknownSync(PolicyTemplateIR)(document);
 
 export const encodeInstalledAuthorization = (
   document: InstalledAuthorizationIRType,
 ): InstalledAuthorizationIREncoded => Schema.encodeUnknownSync(InstalledAuthorizationIR)(document);
+
+export const encodeInstalledCatalogUnit = (
+  document: InstalledCatalogUnitType,
+): InstalledCatalogUnitEncoded => Schema.encodeUnknownSync(InstalledCatalogUnit)(document);
 
 // Hoisted for the same reason as the two above: a `Schema.*Sync` call sitting
 // inside an `Effect.fn` generator turns an encode failure into a defect rather
@@ -107,6 +157,9 @@ export const canonicalizePolicyTemplate = (document: PolicyTemplateIRType): stri
 export const canonicalizeInstalledAuthorization = (
   document: InstalledAuthorizationIRType,
 ): string => canonicalizeJson(encodedJson(encodeInstalledAuthorization(document)));
+
+export const canonicalizeInstalledCatalogUnit = (document: InstalledCatalogUnitType): string =>
+  canonicalizeJson(encodedJson(encodeInstalledCatalogUnit(document)));
 
 const concatUtf8 = (prefix: string, text: string): Uint8Array => {
   const left = UTF8.encode(prefix);
@@ -185,6 +238,56 @@ export const hashInstalledAuthorization = Effect.fn("Authorization.hashInstalled
   },
 );
 
+export const hashInstalledCatalogUnit = Effect.fn("Authorization.hashInstalledCatalogUnit")(
+  function* (document: InstalledCatalogUnitType) {
+    const digest = yield* hashDomainSeparatedCanonicalJson(
+      AUTHORIZATION_CATALOG_UNIT_HASH_DOMAIN_V1,
+      omitKey(encodedJson(encodeInstalledCatalogUnit(document)), "unitHash"),
+    );
+    return CatalogUnitHash.make(digest);
+  },
+);
+
+/**
+ * SHA-256 of the normalized catalog schema tables. Material is RFC 8785
+ * JCS of `entities` / `traits` / `fields` / `operations` /
+ * `traitComposition` after the same normalize pass assemble uses.
+ * Identity fields (`id`, `database`, `version`, `fingerprint`) and
+ * policy / `unitHash` are excluded so unused field flags participate
+ * in {@link SchemaFingerprint} without a live catalog.
+ */
+export const hashCatalogSchemaFingerprint = Effect.fn(
+  "Authorization.hashCatalogSchemaFingerprint",
+)(function* (
+  tables: Pick<CatalogDescriptor, "entities" | "traits" | "fields" | "operations" | "traitComposition"> &
+    Partial<Pick<CatalogDescriptor, "id" | "database" | "version" | "fingerprint">>,
+) {
+  const [entities, traits, fields, operations, traitComposition] = yield* Effect.fromResult(
+    Result.all([
+      normalizeEntities(tables.entities),
+      normalizeTraits(tables.traits),
+      normalizeFields(tables.fields),
+      normalizeOperations(tables.operations),
+      normalizeTraitComposition(tables.traitComposition),
+    ]),
+  );
+  const digest = yield* hashDomainSeparatedCanonicalJson(
+    AUTHORIZATION_CATALOG_SCHEMA_HASH_DOMAIN_V1,
+    encodedJson({
+      entities: entities.map((entity) => Schema.encodeUnknownSync(EntityDescriptor)(entity)),
+      traits: traits.map((trait) => Schema.encodeUnknownSync(TraitDescriptor)(trait)),
+      fields: fields.map((field) => Schema.encodeUnknownSync(FieldDescriptor)(field)),
+      operations: operations.map((operation) =>
+        Schema.encodeUnknownSync(OperationDescriptor)(operation),
+      ),
+      traitComposition: traitComposition.map((row) =>
+        Schema.encodeUnknownSync(TraitComposition)(row),
+      ),
+    }),
+  );
+  return SchemaFingerprint.make(digest);
+});
+
 export const hashRelativeRule = Effect.fn("Authorization.hashRelativeRule")(function* (
   rule: RelativeAuthorizationRuleType,
 ) {
@@ -257,6 +360,17 @@ const identityCollision = (
   document: unknown,
   encodeRule: (rule: unknown) => JsonValue,
 ): InvalidIR | undefined => {
+  if (isCatalogUnit(document)) {
+    return (
+      identityTableCollisions(document.identities) ??
+      entityDescriptorCollisions(document.entities) ??
+      traitDescriptorCollisions(document.traits) ??
+      fieldDescriptorCollisions(document.fields) ??
+      operationDescriptorCollisions(document.operations) ??
+      traitCompositionCollisions(document.traitComposition) ??
+      identityCollision(document.policy, encodeRule)
+    );
+  }
   if (!isTemplate(document) && !isInstalled(document)) {
     return new InvalidIR({ message: "rejected malformed document" });
   }
@@ -293,6 +407,11 @@ const isInstalled = (document: unknown): document is InstalledAuthorizationIRTyp
   document !== null &&
   (document as { readonly _tag?: unknown })._tag === "InstalledAuthorizationIR";
 
+const isCatalogUnit = (document: unknown): document is InstalledCatalogUnitType =>
+  typeof document === "object" &&
+  document !== null &&
+  (document as { readonly _tag?: unknown })._tag === "InstalledCatalogUnit";
+
 const decisionCollisions = (decisions: {
   readonly entities: ReadonlyArray<{ readonly target: unknown }>;
   readonly traits: ReadonlyArray<{ readonly target: unknown }>;
@@ -309,6 +428,57 @@ const identityTableCollisions = (
   uniqueEncoded(identities.traits, "trait identity") ??
   uniqueEncoded(identities.fields, "field identity") ??
   uniqueEncoded(identities.operations, "operation identity");
+
+const entityDescriptorCollisions = (
+  entities: InstalledCatalogUnitType["entities"],
+): InvalidIR | undefined =>
+  internByIdentity(
+    entities.map((entity) => {
+      const encoded = encodedJson(Schema.encodeUnknownSync(EntityDescriptor)(entity));
+      return {
+        id: canonicalizeJson(encodedJson(Schema.encodeUnknownSync(EntityId)(entity.id))),
+        body: canonicalizeJson(omitKey(encoded, "id")),
+      };
+    }),
+    {
+      collision: (id) => `entity identity collision: ${id} maps to different canonical bodies`,
+      duplicate: (id) => `duplicate entity identity: ${id}`,
+    },
+  );
+
+const traitDescriptorCollisions = (
+  traits: InstalledCatalogUnitType["traits"],
+): InvalidIR | undefined =>
+  internByIdentity(
+    traits.map((trait) => {
+      const encoded = encodedJson(Schema.encodeUnknownSync(TraitDescriptor)(trait));
+      return {
+        id: canonicalizeJson(encodedJson(Schema.encodeUnknownSync(TraitId)(trait.id))),
+        body: canonicalizeJson(omitKey(encoded, "id")),
+      };
+    }),
+    {
+      collision: (id) => `trait identity collision: ${id} maps to different canonical bodies`,
+      duplicate: (id) => `duplicate trait identity: ${id}`,
+    },
+  );
+
+const fieldDescriptorCollisions = (
+  fields: InstalledCatalogUnitType["fields"],
+): InvalidIR | undefined =>
+  internByIdentity(
+    fields.map((field) => {
+      const encoded = encodedJson(Schema.encodeUnknownSync(FieldDescriptor)(field));
+      return {
+        id: canonicalizeJson(encodedJson(Schema.encodeUnknownSync(FieldId)(field.id))),
+        body: canonicalizeJson(omitKey(encoded, "id")),
+      };
+    }),
+    {
+      collision: (id) => `field identity collision: ${id} maps to different canonical bodies`,
+      duplicate: (id) => `duplicate field identity: ${id}`,
+    },
+  );
 
 const operationDescriptorCollisions = (
   operations: InstalledAuthorizationIRType["operations"],
