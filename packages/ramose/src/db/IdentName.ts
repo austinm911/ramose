@@ -231,7 +231,7 @@ export type ValidMerge<
 // ── runtime failures (definition time — throws, not DbError) ───────────────
 
 export const invalidIdentName = (
-  kind: "entity" | "field" | "trait",
+  kind: "entity" | "field" | "trait" | "operation",
   name: string,
 ): Error =>
   new Error(

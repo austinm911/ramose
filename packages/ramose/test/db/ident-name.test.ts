@@ -10,8 +10,10 @@ import { describe, expect, test } from "bun:test";
 import {
   Entity,
   IDENT_NAME_RE,
+  OwnedOperations,
   RESERVED_FIELD_KEYS,
   Schema,
+  Trait,
   isIdentName,
   isReservedFieldKey,
   string,
@@ -47,7 +49,13 @@ describe("ident names", () => {
   });
 
   test("reserved field keys are the Entity metadata names", () => {
-    expect([...RESERVED_FIELD_KEYS]).toEqual(["id", "ns", "fields", "_tag", "traits"]);
+    expect([...RESERVED_FIELD_KEYS]).toEqual([
+      "id",
+      "ns",
+      "fields",
+      "_tag",
+      "traits",
+    ]);
     for (const key of RESERVED_FIELD_KEYS) {
       expect(isReservedFieldKey(key)).toBe(true);
     }
@@ -55,6 +63,7 @@ describe("ident names", () => {
     expect(isIdentName("ns")).toBe(true);
     expect(isIdentName("fields")).toBe(true);
     expect(isIdentName("traits")).toBe(true);
+    expect(isIdentName("operations")).toBe(true);
     expect(isIdentName("_tag")).toBe(false);
     expect(isReservedFieldKey("title")).toBe(false);
   });
@@ -67,6 +76,15 @@ describe("Entity()", () => {
     expect(Post.title.ident).toBe(":post/title");
     expect(Post.id.ident).toBe(":db/id");
     expect(Post.fields.title).toBe(Post.title);
+  });
+
+  test("keeps operations available as an ordinary field", () => {
+    const Post = Entity("post", { operations: string() });
+    const Group = Trait("group", { operations: string() });
+    expect(Post.operations.ident).toBe(":post/operations");
+    expect(Group.operations.ident).toBe(":group/operations");
+    expect(Post[OwnedOperations]).toEqual({});
+    expect(Group[OwnedOperations]).toEqual({});
   });
 
   test("rejects a reserved field key before it can overwrite metadata", () => {

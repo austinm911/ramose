@@ -207,6 +207,12 @@ const catalogUnitOperation = {
       },
     ],
   },
+  output: { _tag: "struct", fields: [] },
+  inputSchemaHash: digestHex(0x91),
+  outputSchemaHash: digestHex(0x92),
+  bodyHash: digestHex(0x93),
+  composers: [],
+  writes: [],
 } as const;
 
 const catalogUnitComposition = [
@@ -219,7 +225,7 @@ const catalogUnitComposition = [
 
 export const catalogUnitEncoded = {
   _tag: "InstalledCatalogUnit",
-  version: 1,
+  version: 2,
   catalog: {
     id: "app",
     database: "todos",

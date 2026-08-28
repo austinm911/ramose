@@ -11,13 +11,17 @@
 
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { COMPOSED_TRAITS } from "./Composer.ts";
 import type { Eid } from "./Eid.ts";
 import type { AnySchema } from "./Schema.ts";
 import { InvalidRequest, OperationsCoverageError } from "./Errors.ts";
 import type { AnyEntity } from "./Entity.ts";
+import type { AnyTrait } from "./Trait.ts";
 import type { Tempid } from "./entityArg.ts";
+import { invalidIdentName, isIdentName, type ValidIdentName } from "./IdentName.ts";
 import type { EntityRef, LookupRef, UnbrandedId } from "./idents.ts";
 import type { AnyQueryObject, QueryObject } from "./query/index.ts";
+import { untargetedRef } from "./valueTypes.ts";
 import {
   type PutAttrs,
   type PutCreateAttrs,
@@ -145,7 +149,7 @@ export type RunArg<C extends AnySchema, OC extends AnySchema, A> =
  * `{ id: handle }`) in an `EntityId` slot; authoritative execution resolves
  * it after the writer assigns eids.
  */
-export const EntityId: typeof Schema.Finite = Schema.Finite;
+export const EntityId: typeof untargetedRef = untargetedRef;
 
 /**
  * What a body may return for output type `O`: a handle is legal
@@ -206,6 +210,347 @@ export interface OpHandle<
 
 /** Any handle, including contextual `self`. */
 export type AnyOpHandle<C extends AnySchema = AnySchema> = OpHandle<C, any>;
+
+/** Entity or trait that canonically owns an operation. */
+export type OperationOwner = AnyEntity | AnyTrait;
+
+/**
+ * Symbol-keyed operation metadata. A symbol preserves the long-standing right
+ * to declare an ordinary schema field named `operations`.
+ */
+export const OwnedOperations: unique symbol = Symbol.for(
+  "ramose/owned-operations",
+);
+
+declare const OwnedOperationOwnerBrand: unique symbol;
+declare const OwnedOpContextBrand: unique symbol;
+const OwnedOperationAuthorToken: unique symbol = Symbol(
+  "ramose/owned-operation-author-token",
+);
+
+type OperationOwnerShape = {
+  readonly _tag: "Entity" | "Trait";
+  readonly ns: string;
+  readonly fields: object;
+};
+
+type MutableField<Definition extends OperationOwnerShape> = Definition["fields"][
+  keyof Definition["fields"] & string
+] extends infer Field
+  ? Field extends { readonly ident: string }
+    ? Field extends { readonly fixed: true }
+      ? never
+      : Field
+    : never
+  : never;
+
+type TraitComposerEntity<Target extends AnyTrait> = AnyEntity & {
+  readonly [COMPOSED_TRAITS]: {
+    readonly [Name in Target["ns"]]: true;
+  };
+};
+
+type OwnedInvocationEntity<Owner extends OperationOwnerShape> =
+  Owner extends { readonly _tag: "Entity" }
+    ? Owner & AnyEntity
+    : Owner extends { readonly _tag: "Trait" }
+      ? TraitComposerEntity<Owner & AnyTrait>
+      : never;
+
+type OwnedHandleRef<Target extends AnyEntity> = {
+  readonly _tag: "TxHandle";
+  readonly eid: Eid<Target> | Tempid;
+};
+
+type OwnedFieldValue<
+  Owner extends OperationOwnerShape,
+  A,
+> = A extends {
+  readonly valueType: "ref";
+  readonly schema: { readonly _target?: infer Target };
+}
+  ? Exclude<Target, undefined> extends infer Declared
+    ? Declared extends AnyEntity
+      ? EntityRef<AnySchema, Declared, OwnedHandleRef<Declared>>
+      : Declared extends AnyTrait
+        ? EntityRef<
+            AnySchema,
+            TraitComposerEntity<Declared>,
+            OwnedHandleRef<TraitComposerEntity<Declared>>
+          >
+        : Owner extends { readonly _tag: "Entity" }
+          ? EntityRef<
+              AnySchema,
+              OwnedInvocationEntity<Owner>,
+              OwnedHandleRef<OwnedInvocationEntity<Owner>>
+            >
+          : Owner extends { readonly _tag: "Trait" }
+            ? EntityRef<
+                AnySchema,
+                OwnedInvocationEntity<Owner>,
+                OwnedHandleRef<OwnedInvocationEntity<Owner>>
+              >
+            : EntityRef<AnySchema, AnyEntity, AnyOpHandle>
+    : never
+  : OpValue<AnySchema, A>;
+
+type EntityIdentity<Entity extends AnyEntity> = Pick<
+  Entity,
+  "_tag" | "ns" | "fields"
+> &
+  Pick<
+    AnyEntity,
+    "id" | typeof COMPOSED_TRAITS | typeof OwnedOperations
+  >;
+
+type EntityRefOf<Entity extends AnyEntity> = EntityRef<
+  AnySchema,
+  EntityIdentity<Entity>,
+  OwnedHandleRef<EntityIdentity<Entity>>
+>;
+
+/** Entity-specialized handle returned by definition-directed writes. */
+export type OwnedEntityHandle<Entity extends AnyEntity> = Omit<
+  OpHandle<AnySchema>,
+  "eid" | "set" | "remove"
+> & {
+  readonly eid: Eid<Entity> | Tempid;
+  set<const A extends MutableField<Entity>>(
+    field: A,
+    value: OwnedFieldValue<Entity, A>,
+  ): void;
+  remove<const A extends MutableField<Entity>>(
+    field: A,
+    value?: OwnedFieldValue<Entity, A>,
+  ): void;
+};
+
+/** A targeted handle only accepts fields carried by its canonical owner. */
+export type OwnedTargetHandle<Owner extends OperationOwnerShape> = Omit<
+  OpHandle<AnySchema>,
+  "eid" | "set" | "remove"
+> & {
+  readonly eid: Eid<OwnedInvocationEntity<Owner>> | Tempid;
+  set<const A extends MutableField<Owner>>(
+    field: A,
+    value: OwnedFieldValue<Owner, A>,
+  ): void;
+  remove<const A extends MutableField<Owner>>(
+    field: A,
+    value?: OwnedFieldValue<Owner, A>,
+  ): void;
+};
+
+type OwnerEntity<Owner extends OperationOwnerShape> = Owner extends {
+  readonly _tag: "Entity";
+  readonly fields: AnyEntity["fields"];
+}
+  ? Owner &
+      Pick<
+        AnyEntity,
+        "id" | typeof COMPOSED_TRAITS | typeof OwnedOperations
+      >
+  : never;
+
+type DefinitionWriteEntity<
+  Owner extends OperationOwnerShape,
+  Writes extends readonly AnyEntity[],
+> = OwnerEntity<Owner> | Writes[number];
+
+type DecodedFieldValue<Field> = Field extends {
+  readonly schema: { readonly Type: infer Value };
+}
+  ? Value
+  : unknown;
+
+type FieldIsOptional<Field> = Field extends { readonly cardinality: "many" }
+  ? true
+  : Field extends { readonly isOptional: true }
+    ? true
+    : Field extends { readonly default: (...args: never[]) => unknown }
+      ? true
+      : Field extends { readonly compositionDefault: true }
+        ? true
+        : undefined extends DecodedFieldValue<Field>
+          ? true
+          : false;
+
+type MutableKeys<Entity extends AnyEntity> = {
+  [K in keyof Entity["fields"] & string]: Entity["fields"][K] extends {
+    readonly fixed: true;
+  }
+    ? never
+    : K;
+}[keyof Entity["fields"] & string];
+
+type RequiredCreateKeys<Entity extends AnyEntity> = {
+  [K in MutableKeys<Entity>]: FieldIsOptional<Entity["fields"][K]> extends true
+    ? never
+    : K;
+}[MutableKeys<Entity>];
+
+type OptionalCreateKeys<Entity extends AnyEntity> = Exclude<
+  MutableKeys<Entity>,
+  RequiredCreateKeys<Entity>
+>;
+
+type DefinitionWriteValue<
+  Entity extends AnyEntity,
+  K extends keyof Entity["fields"] & string,
+> = Entity["fields"][K] extends infer Field
+  ? Field extends { readonly cardinality: "many" }
+    ? ReadonlyArray<OwnedFieldValue<Entity, Field>>
+    : OwnedFieldValue<Entity, Field>
+  : never;
+
+type FixedAttrs<Entity extends AnyEntity> = {
+  [K in keyof Entity["fields"] & string as Entity["fields"][K] extends {
+    readonly fixed: true;
+  }
+    ? K
+    : never]?: never;
+};
+
+type CreateAttrsForEntity<Entity extends AnyEntity> = {
+  [K in RequiredCreateKeys<Entity>]: DefinitionWriteValue<Entity, K>;
+} & {
+  [K in OptionalCreateKeys<Entity>]?: DefinitionWriteValue<Entity, K> | undefined;
+} & FixedAttrs<Entity>;
+
+type CreateAttrsOf<Entity extends AnyEntity> = Entity extends AnyEntity
+  ? CreateAttrsForEntity<Entity>
+  : never;
+
+type MutableAttrsForEntity<Entity extends AnyEntity> = {
+  [K in MutableKeys<Entity>]?: DefinitionWriteValue<Entity, K> | undefined;
+} & FixedAttrs<Entity>;
+
+type MutableAttrsOf<Entity extends AnyEntity> = Entity extends AnyEntity
+  ? MutableAttrsForEntity<Entity>
+  : never;
+
+type UpsertKeys<Entity extends AnyEntity> = {
+  [K in MutableKeys<Entity>]: Entity["fields"][K] extends {
+    readonly unique: "upsert";
+  }
+    ? K
+    : never;
+}[MutableKeys<Entity>];
+
+type RequireAtLeastOne<T, Keys extends keyof T> = {
+  [K in Keys]-?: Required<Pick<T, K>> & Partial<Omit<T, K>>;
+}[Keys];
+
+type UpdateMapAttrsForEntity<Entity extends AnyEntity> = [
+  UpsertKeys<Entity>,
+] extends [never]
+  ? { readonly "update map form needs a unique: \"upsert\" field": never }
+  : RequireAtLeastOne<
+      MutableAttrsOf<Entity>,
+      UpsertKeys<Entity> & keyof MutableAttrsOf<Entity>
+    >;
+
+/** Complete create input for an entity owner, including flattened trait fields. */
+type OwnerCreateAttrs<Owner extends OperationOwnerShape> = Owner extends {
+  readonly _tag: "Entity";
+  readonly fields: AnyEntity["fields"];
+}
+  ? CreateAttrsOf<OwnerEntity<Owner>>
+  : never;
+
+type OwnedEntityRef<Owner extends OperationOwnerShape> = EntityRef<
+  AnySchema,
+  OwnedInvocationEntity<Owner>,
+  OwnedHandleRef<OwnedInvocationEntity<Owner>>
+>;
+
+/**
+ * Operation body surface after an owner map binds the definition.
+ * Targetless entity operations gain `create`; targeted operations gain `self`.
+ */
+export type OwnedOp<
+  Owner extends OperationOwnerShape,
+  Self extends boolean,
+  Writes extends readonly AnyEntity[] = readonly [],
+> = Omit<
+  Op<AnySchema, undefined>,
+  "self" | "entity" | "set" | "remove" | "delete" | "put" | "update"
+> & {
+  readonly [OwnedOpContextBrand]: {
+    readonly owner: Owner;
+    readonly self: Self;
+    readonly writes: Writes;
+  };
+  readonly self: Self extends true ? OwnedTargetHandle<Owner> : undefined;
+  entity(id: OwnedEntityRef<Owner>): OwnedTargetHandle<Owner>;
+  entity<const Entity extends DefinitionWriteEntity<Owner, Writes>>(
+    definition: Entity,
+    id: EntityRefOf<NoInfer<Entity>>,
+  ): OwnedEntityHandle<Entity>;
+  set<
+    const Entity extends DefinitionWriteEntity<Owner, Writes>,
+    const A extends MutableField<NoInfer<Entity>>,
+  >(
+    definition: Entity,
+    entity: EntityRefOf<NoInfer<Entity>>,
+    field: A,
+    value: OwnedFieldValue<NoInfer<Entity>, A>,
+  ): void;
+  remove<
+    const Entity extends DefinitionWriteEntity<Owner, Writes>,
+    const A extends MutableField<NoInfer<Entity>>,
+  >(
+    definition: Entity,
+    entity: EntityRefOf<NoInfer<Entity>>,
+    field: A,
+    value?: OwnedFieldValue<NoInfer<Entity>, A>,
+  ): void;
+  delete<const Entity extends DefinitionWriteEntity<Owner, Writes>>(
+    definition: Entity,
+    entity: EntityRefOf<NoInfer<Entity>>,
+  ): void;
+  put<const Entity extends DefinitionWriteEntity<Owner, Writes>>(
+    ...args: Entity extends AnyEntity
+      ? [entity: Entity, attrs: CreateAttrsForEntity<NoInfer<Entity>>]
+      : never
+  ): OwnedEntityHandle<Entity>;
+  put<const Entity extends DefinitionWriteEntity<Owner, Writes>>(
+    ...args: Entity extends AnyEntity
+      ? [
+          entity: Entity,
+          id: EntityRefOf<NoInfer<Entity>>,
+          attrs: MutableAttrsForEntity<NoInfer<Entity>>,
+        ]
+      : never
+  ): OwnedEntityHandle<Entity>;
+  update<const Entity extends DefinitionWriteEntity<Owner, Writes>>(
+    ...args: Entity extends AnyEntity
+      ? [entity: Entity, attrs: UpdateMapAttrsForEntity<NoInfer<Entity>>]
+      : never
+  ): OwnedEntityHandle<Entity>;
+  update<const Entity extends DefinitionWriteEntity<Owner, Writes>>(
+    ...args: Entity extends AnyEntity
+      ? [
+          entity: Entity,
+          id: EntityRefOf<NoInfer<Entity>>,
+          attrs: MutableAttrsForEntity<NoInfer<Entity>>,
+        ]
+      : never
+  ): OwnedEntityHandle<Entity>;
+  readonly create: Self extends false
+    ? Owner extends { readonly _tag: "Entity" }
+      ? (attrs: OwnerCreateAttrs<Owner>) => OwnedEntityHandle<OwnerEntity<Owner>>
+      : undefined
+    : undefined;
+};
+
+/** Context available while an operation is still waiting for its owner map. */
+type UnboundOwnedOp<Self extends boolean> = Omit<Op<AnySchema, undefined>, "self"> & {
+  readonly self: Self extends true ? unknown : undefined;
+  readonly create: Self extends false
+    ? ((...args: never[]) => OpHandle<AnySchema>) | undefined
+    : undefined;
+};
 
 /**
  * The handle an authoritative operation body uses. Transaction verbs
@@ -322,6 +667,140 @@ export interface Operation<
 
 export type AnyOperation = Operation<string, any, any, any, any>;
 
+type CodecType<S> = S extends { readonly Type: infer T } ? T : unknown;
+
+type NormalizeOwnedSelf<Self extends boolean> = boolean extends Self
+  ? boolean
+  : Self extends false
+    ? false
+    : true;
+
+type OwnedRun<
+  Owner extends OperationOwnerShape,
+  ICodec extends Schema.Top,
+  OCodec extends Schema.Top,
+  Self extends boolean,
+  Writes extends readonly AnyEntity[],
+> = (
+  op: OwnedOp<Owner, Self, Writes>,
+  input: CodecType<ICodec>,
+) => Promise<OutputDraft<CodecType<OCodec>>> | OutputDraft<CodecType<OCodec>>;
+
+type UnboundOwnedRun<
+  ICodec extends Schema.Top,
+  OCodec extends Schema.Top,
+  Self extends boolean,
+> = (
+  op: UnboundOwnedOp<Self>,
+  input: CodecType<ICodec>,
+) => Promise<OutputDraft<CodecType<OCodec>>> | OutputDraft<CodecType<OCodec>>;
+
+/** Owner-map authoring form before Entity/Trait supplies canonical ownership. */
+export interface UnboundOperation<
+  ICodec extends Schema.Top = Schema.Top,
+  OCodec extends Schema.Top = Schema.Top,
+  Self extends boolean = boolean,
+  Writes extends readonly AnyEntity[] = readonly AnyEntity[],
+> {
+  readonly _tag: "UnboundOperation";
+  readonly input: ICodec;
+  readonly output: OCodec;
+  /** `true` by default; `false` removes both the invocation target and `op.self`. */
+  readonly self: Self;
+  /** Additional entity definitions this operation may write. */
+  readonly writes: Writes;
+  readonly doc: string | undefined;
+  readonly run: UnboundOwnedRun<ICodec, OCodec, Self>;
+}
+
+export type AnyUnboundOperation = UnboundOperation<
+  Schema.Top,
+  Schema.Top,
+  boolean,
+  readonly AnyEntity[]
+>;
+
+type OwnerAuthoredOperation<
+  Owner extends OperationOwnerShape,
+  ICodec extends Schema.Top = Schema.Top,
+  OCodec extends Schema.Top = Schema.Top,
+  Self extends boolean = boolean,
+  Writes extends readonly AnyEntity[] = readonly AnyEntity[],
+> = UnboundOperation<ICodec, OCodec, Self, Writes> & {
+  readonly [OwnedOperationOwnerBrand]: Owner;
+  readonly [OwnedOperationAuthorToken]: object;
+};
+
+/** Public operation value after its enclosing owner and local map key bind it. */
+export interface OwnedOperation<
+  Owner extends OperationOwner = OperationOwner,
+  LocalName extends string = string,
+  ICodec extends Schema.Top = Schema.Top,
+  OCodec extends Schema.Top = Schema.Top,
+  Self extends boolean = boolean,
+  Writes extends readonly AnyEntity[] = readonly AnyEntity[],
+> {
+  readonly _tag: "OwnedOperation";
+  readonly owner: Owner;
+  readonly localName: LocalName;
+  readonly input: ICodec;
+  readonly output: OCodec;
+  readonly self: Self;
+  readonly writes: Writes;
+  readonly doc: string | undefined;
+  readonly run: OwnedRun<Owner, ICodec, OCodec, Self, Writes>;
+}
+
+export type AnyOwnedOperation = OwnedOperation<
+  OperationOwner,
+  string,
+  Schema.Top,
+  Schema.Top,
+  boolean,
+  readonly AnyEntity[]
+>;
+
+type BoundOwnedOperation<
+  Owner extends OperationOwner,
+  LocalName extends string,
+  Spec,
+> = Spec extends UnboundOperation<
+  infer ICodec,
+  infer OCodec,
+  infer Self,
+  infer Writes
+>
+  ? OwnedOperation<Owner, LocalName, ICodec, OCodec, Self, Writes>
+  : never;
+
+/** Owner-map values after their enclosing Entity/Trait binds them. */
+export type BoundOwnerOperations<
+  Owner extends OperationOwner,
+  Ops extends Readonly<Record<string, AnyUnboundOperation>>,
+> = {
+  readonly [K in keyof Ops]: BoundOwnedOperation<Owner, K & string, Ops[K]>;
+};
+
+type InvalidOperationName<K extends string> = {
+  readonly [P in `invalid operation name ${K}`]: true;
+};
+
+/** Type-level operation-key and value validation for Entity/Trait options. */
+export type ValidOwnedOperationMap<
+  Ops extends Readonly<Record<string, AnyUnboundOperation>>,
+  Owner extends OperationOwnerShape,
+> = string extends keyof Ops
+  ? never
+  : {
+      readonly [K in keyof Ops]: K extends string
+        ? K extends ValidIdentName<K>
+          ? Ops[K] extends { readonly [OwnedOperationOwnerBrand]: Owner }
+            ? Ops[K]
+            : never
+          : Ops[K] & InvalidOperationName<K>
+        : never;
+    };
+
 export interface Operations<
   M extends Record<string, AnyOperation> = Record<string, AnyOperation>,
 > {
@@ -391,8 +870,8 @@ const emptyOutput = Schema.Struct({});
 const docOf = (doc: string | undefined): string | undefined =>
   doc === undefined || doc === "" ? undefined : doc;
 
-/** Define one named operation. */
-const defineOperation = <
+/** Define one legacy standalone named operation. */
+const defineNamedOperation = <
   Name extends string,
   I,
   O = {},
@@ -411,6 +890,153 @@ const defineOperation = <
   doc: docOf(schemas.doc),
   body,
 });
+
+type OwnedOperationSpec<
+  ICodec extends Schema.Top,
+  OCodec extends Schema.Top,
+  Self extends boolean,
+  Writes extends readonly AnyEntity[],
+  Context,
+  Run,
+> = {
+  readonly input: ICodec;
+  readonly output: OCodec;
+  readonly self?: Self;
+  readonly writes?: ValidWriteDefinitions<Writes>;
+  readonly doc?: string;
+  readonly run: [Context] extends [never]
+    ? UnboundOwnedRun<ICodec, OCodec, NormalizeOwnedSelf<Self>>
+    : Context extends OperationOwnerShape
+      ? OwnedRun<Context, ICodec, OCodec, NormalizeOwnedSelf<Self>, Writes> &
+          Run &
+          ExactRunContext<
+            Run,
+            OwnedOp<Context, NormalizeOwnedSelf<Self>, Writes>
+          >
+      : never;
+};
+
+type RunContext<Run> = Run extends (...args: infer Args) => unknown
+  ? Args["length"] extends 0
+    ? undefined
+    : Args[0]
+  : never;
+
+type ExactRunContext<Run, Expected> = [RunContext<Run>] extends [undefined]
+  ? unknown
+  : [RunContext<Run>] extends [Expected]
+    ? [Expected] extends [RunContext<Run>]
+      ? unknown
+      : never
+    : never;
+
+type IsUnion<T, Whole = T> = T extends unknown
+  ? [Whole] extends [T]
+    ? false
+    : true
+  : never;
+
+type ValidWriteDefinitions<Writes extends readonly AnyEntity[]> =
+  number extends Writes["length"]
+    ? never
+    : true extends IsUnion<Writes>
+      ? never
+      : Writes;
+
+/**
+ * Owner-bound constructor supplied to an Entity/Trait `operations` authoring
+ * callback. Binding before the inner call is what lets TypeScript validate
+ * `op.self` fields and complete entity creates against the canonical owner.
+ */
+export interface OwnedOperationAuthor<Owner extends OperationOwnerShape> {
+  <
+    const ICodec extends Schema.Top,
+    const OCodec extends Schema.Top,
+    const Self extends boolean = true,
+    const Writes extends readonly AnyEntity[] = readonly [],
+    const Run extends OwnedRun<
+      Owner,
+      ICodec,
+      OCodec,
+      NormalizeOwnedSelf<Self>,
+      Writes
+    > = OwnedRun<Owner, ICodec, OCodec, NormalizeOwnedSelf<Self>, Writes>,
+  >(
+    spec: OwnedOperationSpec<ICodec, OCodec, Self, Writes, Owner, Run>,
+  ): OwnerAuthoredOperation<
+    Owner,
+    ICodec,
+    OCodec,
+    NormalizeOwnedSelf<Self>,
+    Writes
+  >;
+  readonly [OwnedOperationAuthorToken]: object;
+}
+
+/** Unbound form; Entity/Trait supply an owner-bound constructor when needed. */
+function defineOperation<
+  const ICodec extends Schema.Top,
+  const OCodec extends Schema.Top,
+  const Self extends boolean = true,
+  const Writes extends readonly AnyEntity[] = readonly [],
+  const Run extends UnboundOwnedRun<
+    ICodec,
+    OCodec,
+    NormalizeOwnedSelf<Self>
+  > = UnboundOwnedRun<ICodec, OCodec, NormalizeOwnedSelf<Self>>,
+>(
+  spec: OwnedOperationSpec<ICodec, OCodec, Self, Writes, never, Run>,
+): UnboundOperation<ICodec, OCodec, NormalizeOwnedSelf<Self>, Writes>;
+/** Standalone form retained for the pre-authoritative local peer fixtures. */
+function defineOperation<
+  Name extends string,
+  I,
+  O = {},
+  C extends AnySchema = AnySchema,
+  N extends OnEntity<C> = undefined,
+>(
+  name: Name,
+  schemas: OperationSchemas<I, O, N, C>,
+  body: (op: Op<C, N>, input: I) => Promise<OutputDraft<O>> | OutputDraft<O>,
+): Operation<Name, I, O, N, C>;
+function defineOperation(
+  nameOrSpec:
+    | string
+    | OwnedOperationSpec<
+        Schema.Top,
+        Schema.Top,
+        boolean,
+        readonly AnyEntity[],
+        never,
+        UnboundOwnedRun<Schema.Top, Schema.Top, boolean>
+      >,
+  schemas?: OperationSchemas<unknown, unknown, AnyEntity | undefined, AnySchema>,
+  body?: (op: Op<AnySchema, AnyEntity | undefined>, input: unknown) => unknown,
+): AnyOperation | AnyUnboundOperation {
+  if (typeof nameOrSpec === "string") {
+    if (schemas === undefined || body === undefined) {
+      throw new Error("ramose: Operation(name, schemas, body) needs schemas and a body");
+    }
+    return defineNamedOperation(
+      nameOrSpec,
+      schemas,
+      body as (
+        op: Op<AnySchema, AnyEntity | undefined>,
+        input: unknown,
+      ) => OutputDraft<unknown> | Promise<OutputDraft<unknown>>,
+    );
+  }
+  const self = nameOrSpec.self !== false;
+  return {
+    _tag: "UnboundOperation",
+    input: nameOrSpec.input,
+    output: nameOrSpec.output,
+    self,
+    writes: Object.freeze([...(nameOrSpec.writes ?? [])]),
+    doc: docOf(nameOrSpec.doc),
+    run: nameOrSpec.run,
+  } as AnyUnboundOperation;
+}
 
 type FieldSchemaType<E extends AnyEntity, K extends string> = E["fields"][K] extends {
   readonly schema: { readonly Type: infer T };
@@ -451,7 +1077,7 @@ const definePatch = <
   keys: Keys,
   options?: { readonly doc?: string; readonly schema?: C },
 ): Operation<Name, PatchInput<E, Keys>, {}, E, C> => {
-  const operation = defineOperation(
+  const operation = defineNamedOperation(
     name,
     {
       on: entity as never,
@@ -511,6 +1137,110 @@ const operationFor = <C extends AnySchema>(schema: C): OperationFor<C> =>
         definePatch(name, entity, keys, { ...options, schema })) as OperationPatch<C>,
     },
   );
+
+/** Bind one owner-local map without registering anything globally. */
+export const bindOwnedOperations = <
+  Owner extends OperationOwner,
+  const Ops extends Readonly<Record<string, AnyUnboundOperation>>,
+>(
+  owner: Owner,
+  operations: Ops | undefined,
+  author?: OwnedOperationAuthor<OperationOwnerShape>,
+): BoundOwnerOperations<Owner, Ops> => {
+  const out: Record<string, AnyOwnedOperation> = {};
+  if (operations === undefined) {
+    return out as unknown as BoundOwnerOperations<Owner, Ops>;
+  }
+  if (Reflect.ownKeys(operations).some((key) => typeof key !== "string")) {
+    throw new Error("ramose/schema: operation map keys must be strings");
+  }
+  const authorToken = author?.[OwnedOperationAuthorToken];
+  for (const [localName, operation] of Object.entries(operations)) {
+    if (!isIdentName(localName)) throw invalidIdentName("operation", localName);
+    if (
+      typeof operation !== "object" ||
+      operation === null ||
+      operation._tag !== "UnboundOperation"
+    ) {
+      throw new Error(
+        `ramose/schema: ${owner.ns}.${localName} must be Ramose.Operation({ input, output, run })`,
+      );
+    }
+    if (
+      !Array.isArray(operation.writes) ||
+      operation.writes.some((entity) => entity?._tag !== "Entity")
+    ) {
+      throw new Error(
+        `ramose/schema: ${owner.ns}.${localName} writes must contain entity definitions`,
+      );
+    }
+    if (
+      authorToken !== undefined &&
+      (operation as Partial<OwnerAuthoredOperation<OperationOwnerShape>>)[
+        OwnedOperationAuthorToken
+      ] !== authorToken
+    ) {
+      throw new Error(
+        `ramose/schema: ${owner.ns}.${localName} must use the Operation author supplied to its operations callback`,
+      );
+    }
+    out[localName] = {
+      _tag: "OwnedOperation",
+      owner,
+      localName,
+      input: operation.input,
+      output: operation.output,
+      self: operation.self,
+      writes: operation.writes,
+      doc: operation.doc,
+      run: operation.run,
+    } as unknown as AnyOwnedOperation;
+  }
+  return out as unknown as BoundOwnerOperations<Owner, Ops>;
+};
+
+export const isOwnedOperation = (value: unknown): value is AnyOwnedOperation =>
+  typeof value === "object" &&
+  value !== null &&
+  (value as { readonly _tag?: unknown })._tag === "OwnedOperation";
+
+/** @internal Build the owner-specialized constructor passed by Entity/Trait. */
+export const ownedOperationAuthor = <
+  Owner extends OperationOwnerShape,
+>(): OwnedOperationAuthor<Owner> => {
+  const token = {};
+  const author = ((
+    spec: OwnedOperationSpec<
+      Schema.Top,
+      Schema.Top,
+      boolean,
+      readonly AnyEntity[],
+      Owner,
+      OwnedRun<
+        Owner,
+        Schema.Top,
+        Schema.Top,
+        boolean,
+        readonly AnyEntity[]
+      >
+    >,
+  ) => {
+    const operation = defineOperation(
+      spec as unknown as OwnedOperationSpec<
+        Schema.Top,
+        Schema.Top,
+        boolean,
+        readonly AnyEntity[],
+        never,
+        UnboundOwnedRun<Schema.Top, Schema.Top, boolean>
+      >,
+    ) as AnyUnboundOperation;
+    Object.defineProperty(operation, OwnedOperationAuthorToken, { value: token });
+    return operation;
+  }) as unknown as OwnedOperationAuthor<Owner>;
+  Object.defineProperty(author, OwnedOperationAuthorToken, { value: token });
+  return author;
+};
 
 /** Define one named operation. `Operation.for(catalog)` bakes `schema:` in. */
 export const Operation: typeof defineOperation & {

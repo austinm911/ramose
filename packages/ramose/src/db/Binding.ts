@@ -49,21 +49,27 @@ export const TRAIT_BIND_FACTORY: unique symbol = Symbol.for(
 );
 
 type SpecOf<B> = B extends (...args: infer _Args) => infer S ? S : never;
-type SelectedOf<S, K extends PropertyKey> = K extends keyof S
-  ? Exclude<S[K], undefined>
-  : {};
+type SelectedOf<S, K extends PropertyKey> = S extends unknown
+  ? K extends keyof S
+    ? Exclude<S[K], undefined>
+    : {}
+  : never;
+type KeysOfUnion<T> = T extends unknown ? keyof T : never;
 type ValuesOf<B> = SelectedOf<SpecOf<B>, "values">;
 type DefaultsOf<B> = SelectedOf<SpecOf<B>, "defaults">;
 
-type BoundField<F, K extends PropertyKey, B> = K extends keyof ValuesOf<B>
+type BoundField<F, K extends PropertyKey, B> = K extends KeysOfUnion<ValuesOf<B>>
   ? F & { readonly fixed: true }
-  : K extends keyof DefaultsOf<B>
+  : K extends KeysOfUnion<DefaultsOf<B>>
     ? F & { readonly compositionDefault: true }
     : F;
 
-type BoundFields<T extends TraitLike, B> = {
-  readonly [K in keyof T["fields"]]: BoundField<T["fields"][K], K, B>;
+/** Apply one bind result to a field map at the type boundary. */
+export type BoundFieldMap<Fields extends Readonly<Record<string, AnyField>>, B> = {
+  readonly [K in keyof Fields]: BoundField<Fields[K], K, B>;
 };
+
+type BoundFields<T extends TraitLike, B> = BoundFieldMap<T["fields"], B>;
 
 export type TraitLike = {
   readonly _tag: "Trait";
@@ -223,12 +229,12 @@ export const makeBindableTrait = <T extends TraitLike, B extends TraitBind>(
 ): BindableTrait<T, B> => {
   const callable = ((definition: CodeDefinitionRef) =>
     makeTraitBinding(trait, definition, bind)) as BindableTrait<T, B>;
-  for (const [key, value] of Object.entries(trait)) {
-    Object.defineProperty(callable, key, {
-      value,
-      enumerable: true,
-      configurable: true,
-    });
+  for (const key of Reflect.ownKeys(trait)) {
+    Object.defineProperty(
+      callable,
+      key,
+      Object.getOwnPropertyDescriptor(trait, key)!,
+    );
   }
   Object.defineProperty(callable, TRAIT_BIND_FACTORY, { value: bind });
   return callable;

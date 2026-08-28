@@ -3,6 +3,7 @@
 import {
   makeBindableTrait,
   type BindableTrait,
+  type BoundFieldMap,
   type TraitBind,
 } from "./Binding.ts";
 import {
@@ -28,6 +29,15 @@ import {
   type ValidIdentName,
   type ValidTraitCompose,
 } from "./IdentName.ts";
+import {
+  bindOwnedOperations,
+  OwnedOperations,
+  ownedOperationAuthor,
+  type AnyUnboundOperation,
+  type BoundOwnerOperations,
+  type OwnedOperationAuthor,
+  type ValidOwnedOperationMap,
+} from "./Operation.ts";
 
 export type TraitOptions<
   Traits extends readonly AnyTrait[] = readonly AnyTrait[],
@@ -50,6 +60,7 @@ export type BindableTraitOptions<
 export type Trait<
   Name extends string = string,
   Fields extends FieldMap = FieldMap,
+  Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
 > = {
   readonly _tag: "Trait";
   readonly ns: Name;
@@ -71,6 +82,8 @@ export type Trait<
       readonly _ns?: Trait<Name, Fields>;
     } & PathCarrier
   >;
+  /** Symbol-keyed operations canonically owned by this trait. */
+  readonly [OwnedOperations]: BoundOwnerOperations<Trait<Name, Fields, Ops>, Ops>;
 } & StampedMap<Name, Fields>;
 
 /**
@@ -94,6 +107,7 @@ export type AnyTrait = {
       readonly cardinality: "one";
     } & PathCarrier
   >;
+  readonly [OwnedOperations]?: Readonly<Record<string, unknown>>;
 };
 
 export declare namespace Trait {
@@ -116,10 +130,18 @@ type TraitWithTraits<
   Name extends string,
   Fields extends FieldMap,
   Traits extends readonly AnyTrait[],
-> = Trait<Name, Fields> &
+  Ops extends Readonly<Record<string, AnyUnboundOperation>>,
+> = Trait<Name, Fields, Ops> &
   FlattenedTraitFields<Traits> & {
     readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
     readonly traits: Traits;
+    readonly [OwnedOperations]: BoundOwnerOperations<
+      Trait<Name, Fields, Ops> & {
+        readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
+        readonly traits: Traits;
+      },
+      Ops
+    >;
   };
 
 type TraitResult<
@@ -127,9 +149,60 @@ type TraitResult<
   Fields extends FieldMap,
   Traits extends readonly AnyTrait[],
   Bind extends TraitBind<Fields> | undefined,
+  Ops extends Readonly<Record<string, AnyUnboundOperation>>,
 > = Bind extends TraitBind<Fields>
-  ? BindableTrait<TraitWithTraits<Name, Fields, Traits>, Bind>
-  : TraitWithTraits<Name, Fields, Traits>;
+  ? BindableTrait<TraitWithTraits<Name, Fields, Traits, Ops>, Bind>
+  : TraitWithTraits<Name, Fields, Traits, Ops>;
+
+type TraitOperationContext<
+  Name extends string,
+  Fields extends FieldMap,
+  Traits extends readonly AnyTrait[],
+> = {
+  readonly _tag: "Trait";
+  readonly ns: Name;
+  readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
+  readonly traits: Traits;
+};
+
+type BindableTraitOperationContext<
+  Name extends string,
+  Fields extends FieldMap,
+  Traits extends readonly AnyTrait[],
+  Bind extends TraitBind<Fields>,
+> = {
+  readonly _tag: "Trait";
+  readonly ns: Name;
+  readonly fields: BoundFieldMap<StampedMap<Name, Fields>, Bind> &
+    FlattenedTraitFields<Traits>;
+  readonly traits: Traits;
+};
+
+type BindableTraitOperationOwner<
+  Name extends string,
+  Fields extends FieldMap,
+  Traits extends readonly AnyTrait[],
+  Bind extends TraitBind<Fields>,
+> = BindableTraitOperationContext<Name, Fields, Traits, Bind> &
+  Pick<Trait<Name, Fields>, "id"> & {
+    readonly [OwnedOperations]?: Readonly<Record<string, unknown>>;
+  };
+
+type BindableTraitWithOperations<
+  Name extends string,
+  Fields extends FieldMap,
+  Traits extends readonly AnyTrait[],
+  Bind extends TraitBind<Fields>,
+  Ops extends Readonly<Record<string, AnyUnboundOperation>>,
+> = BindableTrait<
+  Omit<TraitWithTraits<Name, Fields, Traits, Ops>, typeof OwnedOperations> & {
+    readonly [OwnedOperations]: BoundOwnerOperations<
+      BindableTraitOperationOwner<Name, Fields, Traits, Bind>,
+      Ops
+    >;
+  },
+  Bind
+>;
 
 /** Group fields under one ident prefix, optionally composing other traits. */
 export function Trait<const Name extends string, Fields extends FieldMap>(
@@ -140,33 +213,128 @@ export function Trait<
   const Name extends string,
   Fields extends FieldMap,
   const Bind extends TraitBind<Fields>,
+  const Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
+>(
+  name: ValidIdentName<Name>,
+  fields: Fields & ValidFieldMap<Fields>,
+  options: {
+    readonly traits?: never;
+    readonly bind: Bind;
+    readonly operations: (
+      Operation: OwnedOperationAuthor<
+        BindableTraitOperationContext<Name, Fields, readonly [], Bind>
+      >,
+    ) => ValidOwnedOperationMap<
+      Ops,
+      BindableTraitOperationContext<Name, Fields, readonly [], Bind>
+    > & Ops;
+  },
+): BindableTraitWithOperations<Name, Fields, readonly [], Bind, Ops>;
+export function Trait<
+  const Name extends string,
+  Fields extends FieldMap,
+  const Bind extends TraitBind<Fields>,
+  const Traits extends readonly AnyTrait[] = [],
+  const Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
+>(
+  name: ValidIdentName<Name>,
+  fields: Fields & ValidFieldMap<Fields>,
+  options: {
+    readonly traits: Traits;
+    readonly bind: Bind;
+    readonly operations: (
+      Operation: OwnedOperationAuthor<
+        BindableTraitOperationContext<Name, Fields, Traits, Bind>
+      >,
+    ) => ValidOwnedOperationMap<
+      Ops,
+      BindableTraitOperationContext<Name, Fields, Traits, Bind>
+    > & Ops;
+  } & ValidTraitCompose<Fields, Traits>,
+): BindableTraitWithOperations<Name, Fields, Traits, Bind, Ops>;
+export function Trait<
+  const Name extends string,
+  Fields extends FieldMap,
+  const Bind extends TraitBind<Fields>,
   const Traits extends readonly AnyTrait[] = [],
 >(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
-  options: BindableTraitOptions<Fields, Traits, Bind> &
-    ValidTraitCompose<Fields, Traits>,
-): BindableTrait<TraitWithTraits<Name, Fields, Traits>, Bind>;
+  options: BindableTraitOptions<Fields, Traits, Bind> & {
+    readonly operations?: never;
+  } & ValidTraitCompose<Fields, Traits>,
+): BindableTrait<TraitWithTraits<Name, Fields, Traits, {}>, Bind>;
 export function Trait<
   const Name extends string,
   Fields extends FieldMap,
-  const Traits extends readonly AnyTrait[],
+  const Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
 >(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
-  options: TraitOptions<Traits> & ValidTraitCompose<Fields, Traits>,
-): TraitWithTraits<Name, Fields, Traits>;
+  options: {
+    readonly traits?: never;
+    readonly bind?: never;
+    readonly operations: (
+      Operation: OwnedOperationAuthor<
+        TraitOperationContext<Name, Fields, readonly []>
+      >,
+    ) => ValidOwnedOperationMap<
+      Ops,
+      TraitOperationContext<Name, Fields, readonly []>
+    > & Ops;
+  },
+): TraitWithTraits<Name, Fields, readonly [], Ops>;
 export function Trait<
   const Name extends string,
   Fields extends FieldMap,
-  const Traits extends readonly AnyTrait[],
+  const Traits extends readonly AnyTrait[] = [],
+  const Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
+>(
+  name: ValidIdentName<Name>,
+  fields: Fields & ValidFieldMap<Fields>,
+  options: {
+    readonly traits: Traits;
+    readonly operations: (
+      Operation: OwnedOperationAuthor<TraitOperationContext<Name, Fields, Traits>>,
+    ) => ValidOwnedOperationMap<
+      Ops,
+      TraitOperationContext<Name, Fields, Traits>
+    > & Ops;
+  } & ValidTraitCompose<Fields, Traits>,
+): TraitWithTraits<Name, Fields, Traits, Ops>;
+export function Trait<
+  const Name extends string,
+  Fields extends FieldMap,
+  const Traits extends readonly AnyTrait[] = [],
+>(
+  name: ValidIdentName<Name>,
+  fields: Fields & ValidFieldMap<Fields>,
+  options: {
+    readonly traits?: Traits;
+    readonly operations?: never;
+  } & ValidTraitCompose<Fields, Traits>,
+): TraitWithTraits<Name, Fields, Traits, {}>;
+export function Trait<
+  const Name extends string,
+  Fields extends FieldMap,
+  const Traits extends readonly AnyTrait[] = [],
   const Bind extends TraitBind<Fields> | undefined = undefined,
+  const Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
 >(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
-  options?: (TraitOptions<Traits> & { readonly bind?: Bind }) &
-    ValidTraitCompose<Fields, Traits>,
-): Trait<Name, Fields> | TraitResult<Name, Fields, Traits, Bind> {
+  options?: (TraitOptions<Traits> & {
+    readonly bind?: Bind;
+    readonly operations?:
+      | Ops
+      | ((Operation: OwnedOperationAuthor<any>) => Ops);
+  }) & ValidTraitCompose<Fields, Traits>,
+):
+  | Trait<Name, Fields, Ops>
+  | TraitResult<Name, Fields, Traits, Bind, Ops>
+  | (Bind extends TraitBind<Fields>
+      ? BindableTraitWithOperations<Name, Fields, Traits, Bind, Ops>
+      : never) {
   assertTraitName(name);
   assertFieldKeys(fields);
   const direct = (options?.traits ?? []) as readonly ComposerLike[];
@@ -197,13 +365,32 @@ export function Trait<
     fields: merged,
     traits: direct,
     id: idField,
+    [OwnedOperations]: {},
     ...merged,
-  } as unknown as TraitWithTraits<Name, Fields, Traits>;
+  };
+  const operationAuthor =
+    typeof options?.operations === "function"
+      ? ownedOperationAuthor<TraitOperationContext<Name, Fields, Traits>>()
+      : undefined;
+  const operationSpecs =
+    typeof options?.operations === "function"
+      ? options.operations(operationAuthor!)
+      : options?.operations;
+  (trait as { [OwnedOperations]: unknown })[OwnedOperations] = bindOwnedOperations(
+    trait as unknown as Trait<Name, Fields, Ops> & {
+      readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
+      readonly traits: Traits;
+    },
+    operationSpecs,
+    operationAuthor,
+  );
   if (options?.bind !== undefined) {
     return makeBindableTrait(
-      trait,
+      trait as unknown as TraitWithTraits<Name, Fields, Traits, Ops>,
       options.bind,
-    ) as unknown as TraitResult<Name, Fields, Traits, Bind>;
+    ) as unknown as TraitResult<Name, Fields, Traits, Bind, Ops>;
   }
-  return trait;
+  return trait as unknown as
+    | Trait<Name, Fields, Ops>
+    | TraitWithTraits<Name, Fields, Traits, Ops>;
 }
