@@ -10,6 +10,12 @@
 import { R2NodeStore, cacheApiTier, dbPrefix, prefixedBucket } from "../internal/storage/index.ts";
 import { type RamoseEnv, internalHeaders } from "../internal/transactor/index.ts";
 import type { Basis } from "../internal/replica/index.ts";
+import type { LiveBasisEvent } from "../internal/authorization/live.ts";
+import { Unauthorized } from "../db/Errors.ts";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
 import { UpstreamError } from "./errors.ts";
 
 const sources = new Map<string, R2NodeStore>();
@@ -117,6 +123,91 @@ export function nearestReplica(env: RamoseEnv, db: string, request: Request): Du
   return env.REPLICA.get(replicaId(env, db, region, 1, hint), { locationHint: hint } as any);
 }
 
+/**
+ * One internal WebSocket carries every basis change for a live request. The
+ * replica also owns deployment-version probes in separate alarm invocations,
+ * closing this socket when the public route no longer selects this Worker.
+ */
+export const watchBasisChanges = (
+  env: RamoseEnv,
+  db: string,
+  request: Request,
+): {
+  readonly changes: Stream.Stream<LiveBasisEvent, Unauthorized>;
+  readonly currentBasis: () => Basis | undefined;
+} => {
+  let currentBasis: Basis | undefined;
+  const changes = Stream.callback<LiveBasisEvent, Unauthorized>((out) =>
+    Effect.gen(function* () {
+      const expectedDeployment = env.CF_VERSION_METADATA?.id;
+      if (typeof expectedDeployment !== "string" || expectedDeployment.length === 0) {
+        return yield* new Unauthorized({});
+      }
+      const health = new URL("/health", request.url);
+      const stub = nearestReplica(env, db, request);
+      const response = yield* Effect.tryPromise({
+        try: () => stub.fetch(`https://replica/watch?db=${encodeURIComponent(db)}`, {
+          headers: {
+            Upgrade: "websocket",
+            ...coloHeader(request),
+            ...internalHeaders(env),
+            "x-ramose-live-deployment": expectedDeployment,
+            "x-ramose-live-health": health.href,
+          },
+        }),
+        catch: () => new Unauthorized({}),
+      });
+      const ws = response.webSocket;
+      if (response.status !== 101 || ws === null) {
+        return yield* new Unauthorized({});
+      }
+      const fail = () => {
+        Queue.failCauseUnsafe(out, Cause.fail(new Unauthorized({})));
+        try {
+          ws.close(1011, "live watch failed");
+        } catch {
+          /* already gone */
+        }
+      };
+      ws.addEventListener("message", (event) => {
+        try {
+          const frame = JSON.parse(String(event.data)) as {
+            kind?: unknown;
+            t?: unknown;
+            basis?: Partial<Basis>;
+          };
+          const basis = frame.basis;
+          if (
+            !Number.isSafeInteger(frame.t) ||
+            basis?.v !== 1 ||
+            basis.db !== db ||
+            basis.t !== frame.t ||
+            basis.root === undefined ||
+            !Array.isArray(basis.novelty)
+          ) return fail();
+          currentBasis = basis as Basis;
+          if (frame.kind === "ready") Queue.offerUnsafe(out, "ready");
+          else if (frame.kind === "basis") Queue.offerUnsafe(out, "change");
+          else fail();
+        } catch {
+          fail();
+        }
+      });
+      ws.addEventListener("close", fail);
+      ws.addEventListener("error", fail);
+      ws.accept();
+      yield* Effect.addFinalizer(() => Effect.sync(() => {
+        try {
+          ws.close(1000, "live response closed");
+        } catch {
+          /* already gone */
+        }
+      }));
+    }),
+  );
+  return { changes, currentBasis: () => currentBasis };
+};
+
 export function wantsBasisCache(request: Request, env?: Pick<RamoseEnv, "RAMOSE_CACHE_BASIS">): boolean {
   const h = request.headers.get("x-ramose-cache-basis") ?? env?.RAMOSE_CACHE_BASIS ?? "1";
   return h !== "0";
@@ -165,11 +256,62 @@ export interface BasisFetch {
   behind: boolean;
 }
 
+export interface BasisFetchOptions {
+  /** Ignore request/env cache controls and fetch the replica basis. */
+  readonly bypassCache?: boolean;
+  /** Fence the replica read at the transactor's current committed t. */
+  readonly authoritativeFence?: boolean;
+}
+
+export const basisCacheEnabled = (
+  request: Request,
+  env?: Pick<RamoseEnv, "RAMOSE_CACHE_BASIS">,
+  options: BasisFetchOptions = {},
+): boolean => options.bypassCache !== true && wantsBasisCache(request, env);
+
+/** The strongest read fence supplied by the caller and the authoritative writer. */
+export const effectiveBasisMinT = (
+  clientMinT: number | undefined,
+  transactorT: number | undefined,
+): number | undefined => {
+  if (clientMinT === undefined) return transactorT;
+  if (transactorT === undefined) return clientMinT;
+  return Math.max(clientMinT, transactorT);
+};
+
+const fetchTransactorT = async (env: RamoseEnv, db: string): Promise<number> => {
+  const stub = env.TRANSACTOR.get(env.TRANSACTOR.idFromName(db));
+  const res = await stub.fetch(
+    `https://transactor/info?db=${encodeURIComponent(db)}`,
+    { headers: internalHeaders(env) },
+  );
+  if (!res.ok) throw new UpstreamError({ status: res.status, body: await res.text() });
+  const body = (await res.json()) as { readonly t?: unknown };
+  if (!Number.isSafeInteger(body.t) || (body.t as number) < 0) {
+    throw new UpstreamError({
+      status: 502,
+      body: JSON.stringify({ error: "transactor returned an invalid basis" }),
+    });
+  }
+  return body.t as number;
+};
+
 /** Fetch a basis for `db`: isolate cache (per knobs) or the nearest replica's GET /basis. */
-export async function fetchBasisWithStats(env: RamoseEnv, db: string, request: Request): Promise<BasisFetch> {
-  const useCache = wantsBasisCache(request, env);
+export async function fetchBasisWithStats(
+  env: RamoseEnv,
+  db: string,
+  request: Request,
+  options: BasisFetchOptions = {},
+): Promise<BasisFetch> {
+  const useCache = basisCacheEnabled(request, env, options);
   const mode = cacheModeOf(request, env);
-  const minT = minTOf(request);
+  // Cache bypass alone is not a freshness fence: an open replica novelty
+  // socket can have missed a broadcast. Live renewals first read the writer's
+  // committed t, then require /basis to catch up through the transactor log.
+  const transactorT = options.authoritativeFence === true
+    ? await fetchTransactorT(env, db)
+    : undefined;
+  const minT = effectiveBasisMinT(minTOf(request), transactorT);
   const key = `${db}|${hintOf(request, env) ?? ""}`;
   let reason: BasisFetch["reason"] = "off";
   if (useCache) {
@@ -203,6 +345,12 @@ export async function fetchBasisWithStats(env: RamoseEnv, db: string, request: R
     await new Promise((r) => setTimeout(r, MIN_T_RETRY_MS));
   }
   const behind = minT !== undefined && basis.t < minT;
+  if (options.authoritativeFence === true && behind) {
+    throw new UpstreamError({
+      status: 503,
+      body: JSON.stringify({ error: "replica behind authoritative basis" }),
+    });
+  }
   if (useCache) {
     // never overwrite a newer entry (a concurrent refetch or a min-t poll may have raced us)
     const cur = basisCache.get(key);
@@ -211,8 +359,13 @@ export async function fetchBasisWithStats(env: RamoseEnv, db: string, request: R
   return { basis, hit: false, reason, calls, behind };
 }
 
-export async function fetchBasis(env: RamoseEnv, db: string, request: Request): Promise<Basis> {
-  return (await fetchBasisWithStats(env, db, request)).basis;
+export async function fetchBasis(
+  env: RamoseEnv,
+  db: string,
+  request: Request,
+  options: BasisFetchOptions = {},
+): Promise<Basis> {
+  return (await fetchBasisWithStats(env, db, request, options)).basis;
 }
 
 /** Diagnostic response headers describing how the basis was obtained. */

@@ -50,6 +50,38 @@ import { checkpoint, handleIsolateTestAdmin, resetTestHooks } from "../test-hook
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify(toJson(body)), { status, headers: { "content-type": "application/json", ...extra } });
 
+const DEPLOYMENT_HEADER = "x-ramose-deployment";
+const LIVE_DEPLOYMENT_INTERVAL_MS = 2_000;
+const LIVE_DEPLOYMENT_TIMEOUT_MS = 2_000;
+const LIVE_UPSTREAM_WATCH_INTERVAL_MS = 1_000;
+const LIVE_UPSTREAM_STALE_MS = 3_500;
+const LIVE_UPSTREAM_CATCHUP_TIMEOUT_MS = 2_000;
+
+const withAbortTimeout = async <A>(
+  timeoutMs: number,
+  run: (signal: AbortSignal) => Promise<A>,
+): Promise<A> => {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`operation timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([run(controller.signal), deadline]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+};
+
+type BasisWatchAttachment = {
+  readonly kind: "basis-watch";
+  readonly expectedDeployment: string;
+  readonly healthUrl: string;
+};
+
 /** Client read fence (`x-ramose-min-t` or `?minT=`). */
 function requestedMinT(raw: string | null | undefined): number | undefined {
   if (raw === null || raw === undefined || raw === "") return undefined;
@@ -165,6 +197,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
 
   private adoptRoot(rec: RootRecord): void {
     if (this.root && rec.t <= this.root.t) return;
+    const beforeT = this.basisT;
     this.root = rec;
     this.setMeta("root", rec);
     // drop novelty absorbed by the new root
@@ -173,6 +206,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     this.sql.exec(`DELETE FROM novelty WHERE t <= ?`, rec.t);
     this.stats.rootFlips++;
     this.log.info("replica.root", { db: this.dbName, rootT: rec.t, noveltyBefore: before, noveltyAfter: this.entries.length });
+    if (this.basisT !== beforeT) this.notifyBasisWatches(this.basisT);
   }
 
   private async handleFrame(frame: WireFrame): Promise<void> {
@@ -192,7 +226,13 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       case "gap":
         this.stats.gaps++;
         this.log.warn("replica.gap", { db: this.dbName, from: frame.from, basisT: this.basisT });
-        await this.catchUpFromR2(frame.from);
+        await withAbortTimeout(
+          LIVE_UPSTREAM_CATCHUP_TIMEOUT_MS,
+          async (signal) => {
+            await this.catchUpFromR2(frame.from);
+            if (signal.aborted) throw new Error("upstream catch-up timed out");
+          },
+        );
         break;
       case "tx": {
         const e = entryFromFrame(frame);
@@ -202,7 +242,10 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
           // gap: fill from the transactor's log (or R2), then apply this frame
           this.stats.gaps++;
           this.log.warn("replica.gap", { db: this.dbName, expected, got: e.t });
-          await this.fillGap(this.basisT, e.t - 1);
+          await withAbortTimeout(
+            LIVE_UPSTREAM_CATCHUP_TIMEOUT_MS,
+            (signal) => this.fillGap(this.basisT, e.t - 1, signal),
+          );
           if (e.t !== this.basisT + 1) return; // still inconsistent; a resume will fix it
         }
         if (!this.root || e.t > this.root.t) await this.applyDatoms(e);
@@ -212,15 +255,19 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
   }
 
   /** Fetch (from, to] from the transactor's HTTP /log, falling back to R2 chunks. */
-  private async fillGap(from: number, to: number): Promise<void> {
+  private async fillGap(from: number, to: number, signal?: AbortSignal): Promise<void> {
     if (!this.dbName) return;
     try {
       const stub = this.env.TRANSACTOR.get(this.env.TRANSACTOR.idFromName(this.dbName));
-      const res = await stub.fetch(`https://transactor/log?from=${from}&to=${to}&db=${encodeURIComponent(this.dbName)}`, { headers: internalHeaders(this.env) });
+      const res = await stub.fetch(`https://transactor/log?from=${from}&to=${to}&db=${encodeURIComponent(this.dbName)}`, {
+        headers: internalHeaders(this.env),
+        ...(signal === undefined ? {} : { signal }),
+      });
       if (res.ok) {
         const body = (await res.json()) as { earliestLogT: number; entries: any[] };
         if (body.earliestLogT !== 0 && body.earliestLogT <= from + 1) {
           for (const f of body.entries) {
+            if (signal?.aborted) throw new Error("upstream catch-up timed out");
             const e = entryFromFrame(f);
             if (e.t === this.basisT + 1) await this.applyDatoms(e);
           }
@@ -228,9 +275,12 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
         }
       }
     } catch (err) {
+      if (signal?.aborted) throw err;
       this.log.warn("replica.log.fetch.failed", { db: this.dbName, error: String(err), from, to });
     }
+    if (signal?.aborted) throw new Error("upstream catch-up timed out");
     await this.catchUpFromR2(from, to);
+    if (signal?.aborted) throw new Error("upstream catch-up timed out");
   }
 
   /** Read log/ chunks from R2 for t in (from, to] and apply in order. */
@@ -269,7 +319,9 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     this.log.info("replica.connect", { db: this.dbName, from: this.basisT, reconnects: this.stats.reconnects, novelty: this.entries.length });
     ws.addEventListener("message", (ev) => this.enqueueFrame(ev));
     const drop = () => {
-      if (this.ws === ws) this.ws = undefined;
+      if (this.ws !== ws) return;
+      this.ws = undefined;
+      this.closeBasisWatches("upstream disconnected");
       // Listening sessions never call `sync()`. Retry with backoff until the
       // socket is back or every attached session is gone.
       this.scheduleReconnect();
@@ -319,17 +371,19 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       void this.tickWatch().finally(() => {
         if (this.listening()) this.armWatch();
       });
-    }, 2_000);
+    }, LIVE_UPSTREAM_WATCH_INTERVAL_MS);
   }
 
   private async tickWatch(): Promise<void> {
     if (!this.listening()) return;
     if (!this.ws || this.ws.readyState !== 1) {
+      this.closeBasisWatches("upstream unavailable");
       this.scheduleReconnect();
       return;
     }
-    if (this.lastUpstreamAt !== 0 && Date.now() - this.lastUpstreamAt > 6_000) {
+    if (this.lastUpstreamAt !== 0 && Date.now() - this.lastUpstreamAt > LIVE_UPSTREAM_STALE_MS) {
       this.log.warn("replica.upstream.stale", { db: this.dbName, basisT: this.basisT, silentMs: Date.now() - this.lastUpstreamAt });
+      this.closeBasisWatches("upstream stale");
       try {
         this.ws.close(1000, "stale");
       } catch {
@@ -342,6 +396,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     try {
       this.ws.send(JSON.stringify({ kind: "ping" }));
     } catch {
+      this.closeBasisWatches("upstream ping failed");
       this.ws = undefined;
       this.scheduleReconnect();
     }
@@ -373,12 +428,23 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
       raw = JSON.parse(data);
     } catch (err) {
       console.error("replica: bad frame", err);
+      this.closeBasisWatches("invalid upstream frame");
       return;
     }
     this.lastUpstreamAt = Date.now();
     if (raw !== null && typeof raw === "object" && (raw as { kind?: unknown }).kind === "pong") {
       const t = (raw as { t?: unknown }).t;
-      if (typeof t === "number") await this.catchUpTo(t);
+      if (typeof t === "number") {
+        try {
+          await withAbortTimeout(
+            LIVE_UPSTREAM_CATCHUP_TIMEOUT_MS,
+            (signal) => this.catchUpTo(t, signal),
+          );
+        } catch (err) {
+          this.log.warn("replica.watch.catchup.failed", { db: this.dbName, error: String(err), basisT: this.basisT, targetT: t });
+          this.closeBasisWatches("upstream catch-up failed");
+        }
+      }
       return;
     }
     await this.enqueue(async () => {
@@ -386,6 +452,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
         await this.handleFrame(raw as WireFrame);
       } catch (err) {
         console.error("replica: bad frame", err);
+        this.closeBasisWatches("upstream apply failed");
       }
     });
   }
@@ -401,12 +468,13 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
    * Enqueued on `applyChain` so a live frame cannot double-apply the same t.
    * Fenced HTTP reads and upstream `pong` (live-session watch) both call this.
    */
-  private async catchUpTo(minT: number | undefined): Promise<void> {
+  private async catchUpTo(minT: number | undefined, signal?: AbortSignal): Promise<void> {
     if (minT === undefined || this.basisT >= minT) return;
     const target = minT;
     await this.enqueue(async () => {
+      if (signal?.aborted) throw new Error("upstream catch-up timed out");
       if (this.basisT >= target) return;
-      await this.fillGap(this.basisT, target);
+      await this.fillGap(this.basisT, target, signal);
     });
   }
 
@@ -512,11 +580,80 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     }
   }
 
+  private basisWatchOf(ws: WebSocket): BasisWatchAttachment | undefined {
+    try {
+      const raw = ws.deserializeAttachment?.() as Partial<BasisWatchAttachment> | undefined;
+      if (
+        raw?.kind === "basis-watch" &&
+        typeof raw.expectedDeployment === "string" &&
+        raw.expectedDeployment.length > 0 &&
+        typeof raw.healthUrl === "string"
+      ) {
+        return raw as BasisWatchAttachment;
+      }
+    } catch {
+      /* malformed attachments are ordinary sessions and fail closed there */
+    }
+    return undefined;
+  }
+
+  private basisWatches(): readonly [WebSocket, BasisWatchAttachment][] {
+    const watches: [WebSocket, BasisWatchAttachment][] = [];
+    for (const ws of this.ctx.getWebSockets() as WebSocket[]) {
+      const attachment = this.basisWatchOf(ws);
+      if (attachment !== undefined) watches.push([ws, attachment]);
+    }
+    return watches;
+  }
+
+  private async armDeploymentWatch(): Promise<void> {
+    const next = Date.now() + LIVE_DEPLOYMENT_INTERVAL_MS;
+    const armed = await this.ctx.storage.getAlarm();
+    if (armed === null || armed > next) await this.ctx.storage.setAlarm(next);
+  }
+
+  private notifyBasisWatches(t: number): void {
+    if (this.dbName === undefined || this.root === undefined) {
+      this.closeBasisWatches("basis unavailable");
+      return;
+    }
+    const basis = makeBasis(
+      this.dbName,
+      this.root,
+      this.entries,
+      this.ctx.id.toString().slice(0, 8),
+    );
+    const body = JSON.stringify({ kind: "basis", t, basis });
+    for (const [ws] of this.basisWatches()) {
+      try {
+        ws.send(body);
+      } catch {
+        try {
+          ws.close(1011, "basis notification failed");
+        } catch {
+          /* already gone */
+        }
+      }
+    }
+  }
+
+  private closeBasisWatches(reason: string): void {
+    for (const [ws] of this.basisWatches()) {
+      try {
+        ws.close(1011, reason);
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+
   private async notifySessions(e: LogEntry): Promise<void> {
     const entry: SessionLogEntry = { t: e.t, datoms: e.datoms.map(toWireDatom) };
     const rootT = this.root?.t ?? 0;
+    this.notifyBasisWatches(e.t);
     const sockets = this.ctx.getWebSockets() as WebSocket[];
     for (const ws of sockets) {
+      if (this.basisWatchOf(ws) !== undefined) continue;
       const s = this.sessionOf(ws);
       try {
         await s.applyEntry(entry, rootT);
@@ -586,14 +723,71 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
+  private async upgradeBasisWatch(request: Request): Promise<Response> {
+    if ((request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") {
+      return json({ error: "expected websocket" }, 426);
+    }
+    const expectedDeployment = request.headers.get("x-ramose-live-deployment") ?? "";
+    const healthUrl = request.headers.get("x-ramose-live-health") ?? "";
+    let health: URL;
+    try {
+      health = new URL(healthUrl);
+    } catch {
+      return json({ error: "invalid deployment watch" }, 400);
+    }
+    if (
+      expectedDeployment.length === 0 ||
+      (health.protocol !== "https:" && health.protocol !== "http:") ||
+      health.pathname !== "/health" ||
+      health.username !== "" ||
+      health.password !== ""
+    ) {
+      return json({ error: "invalid deployment watch" }, 400);
+    }
+    await this.sync();
+    if (this.ws?.readyState !== 1) {
+      return json({ error: "replica upstream unavailable" }, 503);
+    }
+    if (this.dbName === undefined || this.root === undefined) {
+      return json({ error: "database has no root yet" }, 503);
+    }
+    const pair = new WebSocketPair();
+    const [client, server] = [pair[0], pair[1]];
+    this.ctx.acceptWebSocket(server);
+    server.serializeAttachment?.({
+      kind: "basis-watch",
+      expectedDeployment,
+      healthUrl: health.href,
+    } satisfies BasisWatchAttachment);
+    const basis = makeBasis(
+      this.dbName,
+      this.root,
+      this.entries,
+      this.ctx.id.toString().slice(0, 8),
+    );
+    server.send(JSON.stringify({ kind: "ready", t: basis.t, basis }));
+    this.armWatch();
+    await this.armDeploymentWatch();
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
   override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     await this.init();
+    if (this.basisWatchOf(ws) !== undefined) return;
     const s = this.sessionOf(ws);
     await s.onMessage(message);
     this.persist(ws, s);
   }
 
   override async webSocketClose(ws: WebSocket, code: number): Promise<void> {
+    if (this.basisWatchOf(ws) !== undefined) {
+      try {
+        ws.close(code, "bye");
+      } catch {
+        /* already gone */
+      }
+      return;
+    }
     const s = this.live.get(ws);
     s?.close();
     this.live.delete(ws);
@@ -602,6 +796,65 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     } catch {
       /* already gone */
     }
+  }
+
+  /**
+   * Deployment probes run as separate Durable Object alarm invocations, so a
+   * long-lived Worker response never accumulates one subrequest per lease.
+   * Any failed or mismatched probe closes the internal watch and therefore
+   * fails the live response closed before its next five-second lease.
+   */
+  override async alarm(): Promise<void> {
+    await this.init();
+    const watches = this.basisWatches();
+    if (watches.length === 0) return;
+    if (
+      this.ws?.readyState !== 1 ||
+      this.lastUpstreamAt === 0 ||
+      Date.now() - this.lastUpstreamAt > LIVE_UPSTREAM_STALE_MS
+    ) {
+      this.closeBasisWatches("upstream freshness lost");
+      return;
+    }
+    const byHealthUrl = new Map<string, [WebSocket, BasisWatchAttachment][]>();
+    for (const item of watches) {
+      const group = byHealthUrl.get(item[1].healthUrl);
+      if (group === undefined) byHealthUrl.set(item[1].healthUrl, [item]);
+      else group.push(item);
+    }
+    await Promise.all([...byHealthUrl].map(async ([healthUrl, group]) => {
+      let currentDeployment: string | undefined;
+      try {
+        // One bounded probe per distinct public route fences every subscriber
+        // on that route without charging the long-lived Worker invocation.
+        currentDeployment = await withAbortTimeout(
+          LIVE_DEPLOYMENT_TIMEOUT_MS,
+          async (signal) => {
+            const health = new URL(healthUrl);
+            health.searchParams.set("live-renew", crypto.randomUUID());
+            const response = await fetch(health, {
+              method: "GET",
+              headers: { "cache-control": "no-cache" },
+              redirect: "error",
+              signal,
+            });
+            const value = response.headers.get(DEPLOYMENT_HEADER);
+            return response.ok && value !== null && value.length > 0 ? value : undefined;
+          },
+        );
+      } catch {
+        /* an ambiguous deployment probe fails this route's watches closed */
+      }
+      for (const [ws, watch] of group) {
+        if (currentDeployment === watch.expectedDeployment) continue;
+        try {
+          ws.close(1000, "deployment changed");
+        } catch {
+          /* already gone */
+        }
+      }
+    }));
+    if (this.basisWatches().length > 0) await this.armDeploymentWatch();
   }
 
   // ---------------------------------------------------------------------------
@@ -623,6 +876,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
     }
     if (!this.dbName) return json({ error: "missing ?db=" }, 400);
     if (url.pathname === "/session") return this.upgradeSession(request);
+    if (url.pathname === "/watch") return this.upgradeBasisWatch(request);
     // Route dispatch as an Effect program: the routes stay plain async/await,
     // failures are classified into tagged errors (errors.ts) and mapped back to
     // exactly the statuses/bodies this endpoint returned before.
@@ -704,6 +958,7 @@ export class QueryReplicaDO extends DurableObject<RamoseEnv> {
         return json({ error: "not found" }, 404);
       }
       case "/admin/reconnect": {
+        this.closeBasisWatches("upstream reconnecting");
         try {
           this.ws?.close(1000, "reconnect");
         } catch {}

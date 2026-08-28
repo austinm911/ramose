@@ -17,7 +17,7 @@ import {
 import type { EntityRef } from "../internal/core/db.ts";
 import type { Db } from "../internal/core/db.ts";
 import { parseJson } from "../internal/core/json.ts";
-import { dbFromBasis } from "../internal/replica/basis.ts";
+import { dbFromBasis, type Basis } from "../internal/replica/basis.ts";
 import { envInt } from "../internal/transactor/env.ts";
 import { DEFAULT_QUERY_MAX_CELLS } from "../internal/core/query/engine.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
@@ -102,7 +102,7 @@ const readFromBody = (
   method: string,
   body: Record<string, unknown> | undefined,
 ): Result.Result<OneShotRead, BadRequest | Unauthorized> => {
-  if (rest === "/query" && method === "POST") {
+  if ((rest === "/query" || rest === "/live") && method === "POST") {
     if (body?.query !== undefined && body.query !== null) {
       return Result.succeed({
         kind: "query",
@@ -194,11 +194,35 @@ export const parseOneShotReadRequest = Effect.fn("parseOneShotReadRequest")(func
 export const acquireCurrentDb = (
   env: RamoseEnv,
   request: Request,
+  options: {
+    readonly bypassBasisCache?: boolean;
+    readonly authoritativeBasisFence?: boolean;
+  } = {},
 ): ((database: DatabaseId) => Effect.Effect<Db, RamoseError>) =>
   (database) =>
     Effect.tryPromise({
       try: async () => {
-        const basis = await fetchBasis(env, database, request);
+        const basis = await fetchBasis(env, database, request, {
+          bypassCache: options.bypassBasisCache === true,
+          authoritativeFence: options.authoritativeBasisFence === true,
+        });
+        return dbFromBasis(segmentSource(env, database), basis);
+      },
+      catch: (cause) => fromThrown(cause),
+    });
+
+/** Build repeated live values from the basis carried by the replica watch. */
+export const acquireWatchedDb = (
+  env: RamoseEnv,
+  currentBasis: () => Basis | undefined,
+): ((database: DatabaseId) => Effect.Effect<Db, RamoseError>) =>
+  (database) =>
+    Effect.tryPromise({
+      try: async () => {
+        const basis = currentBasis();
+        if (basis === undefined || basis.db !== database) {
+          throw new Error("live basis unavailable");
+        }
         return dbFromBasis(segmentSource(env, database), basis);
       },
       catch: (cause) => fromThrown(cause),

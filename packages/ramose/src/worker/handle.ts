@@ -23,9 +23,11 @@ import * as Result from "effect/Result";
 import { authenticateRequest } from "./admit.ts";
 import {
   acquireCurrentDb,
+  acquireWatchedDb,
   parseOneShotReadRequest,
   queryMaxCells,
 } from "./authorized-read.ts";
+import { authorizedLiveResponse } from "./authorized-live.ts";
 import { asTestAdminError, handleTestAdmin } from "./test-admin.ts";
 import {
   Analytics,
@@ -49,6 +51,7 @@ import {
   toHttp,
 } from "./errors.ts";
 import { JwtVerifier, fromEnv } from "./jwt.ts";
+import { watchBasisChanges } from "./peer.ts";
 
 export interface ServerOptions {
   readonly operations?: AnyOperations;
@@ -97,6 +100,13 @@ const CORS = {
     "content-type,authorization,upgrade,x-ramose-replica-hint,x-ramose-cache-basis,x-ramose-cache-mode,x-ramose-min-t,x-ramose-catalog,x-ramose-unit-hash",
   "access-control-expose-headers":
     "x-ramose-ms,x-ramose-r2-gets,x-ramose-cache-hits,x-ramose-basis-t,x-ramose-basis-hit,x-ramose-basis-reason,x-ramose-basis-calls,x-ramose-basis-behind,x-ramose-replica-hint,x-ramose-cache-basis,x-ramose-cache-mode,x-ramose-colo",
+};
+
+const DEPLOYMENT_HEADER = "x-ramose-deployment";
+
+const deploymentVersion = (env: RamoseEnv): string | undefined => {
+  const id = env.CF_VERSION_METADATA?.id;
+  return typeof id === "string" && id.length > 0 ? id : undefined;
 };
 
 export interface RequestInfo {
@@ -228,13 +238,21 @@ export const handle = (
           });
         }
       }
-      return json({
-        ok: true,
-        service: "ramose",
-        stage: env.RAMOSE_STAGE ?? "dev",
-        time: Date.now(),
-        operations: operationNames(peer.operations),
-      });
+      const version = deploymentVersion(env);
+      return json(
+        {
+          ok: true,
+          service: "ramose",
+          stage: env.RAMOSE_STAGE ?? "dev",
+          time: Date.now(),
+          operations: operationNames(peer.operations),
+        },
+        200,
+        {
+          "cache-control": "no-store",
+          ...(version === undefined ? {} : { [DEPLOYMENT_HEADER]: version }),
+        },
+      );
     }
 
     const match = /^\/db\/([^/]+)(\/.*)?$/.exec(url.pathname);
@@ -252,7 +270,7 @@ export const handle = (
     }
     if (peer.catalogs === undefined) return yield* new Unauthorized({});
     if (
-      !((rest === "/query" || rest === "/pull") && request.method === "POST") &&
+      !((rest === "/query" || rest === "/pull" || rest === "/live") && request.method === "POST") &&
       !(/^\/entity\/\d+$/.test(rest) && request.method === "GET")
     ) {
       return yield* new Unauthorized({});
@@ -260,26 +278,43 @@ export const handle = (
 
     const parsed = yield* parseOneShotReadRequest(request, rest);
     const stacks = env.RAMOSE_STAGE !== "prod";
-    const result = yield* executeAuthorizedRead(
-      {
-        authenticate: Effect.succeed(callerFromVerified(verified)),
-        catalogs: peer.catalogs,
-        routeDatabase: DatabaseId.make(db),
-        catalogKey: parsed.catalogKey,
-        unitHash: parsed.unitHash,
-        currentDb: acquireCurrentDb(env, request),
-        view: parsed.view,
-      },
-      parsed.read,
-      { maxCells: queryMaxCells(env) },
-    ).pipe(
-      Effect.mapError((error) => {
-        if (error instanceof Unauthorized) return error;
-        if (isRamoseError(error)) return error;
-        if (error instanceof OneShotReadError) return fromThrown(error.cause, { stacks });
-        return fromThrown(error, { stacks });
+    const liveWatch = rest === "/live" ? watchBasisChanges(env, db, request) : undefined;
+    const admissionCurrentDb = acquireCurrentDb(env, request, {
+      bypassBasisCache: rest === "/live",
+      authoritativeBasisFence: rest === "/live",
+    });
+    const input = {
+      authenticate:
+        rest === "/live"
+          ? authenticateRequest(request).pipe(Effect.map(callerFromVerified))
+          : Effect.succeed(callerFromVerified(verified)),
+      ...(liveWatch === undefined ? {} : {
+        basisChanges: liveWatch.changes,
+        admissionCurrentDb,
       }),
-    );
+      catalogs: peer.catalogs,
+      routeDatabase: DatabaseId.make(db),
+      catalogKey: parsed.catalogKey,
+      unitHash: parsed.unitHash,
+      currentDb: liveWatch === undefined
+        ? admissionCurrentDb
+        : acquireWatchedDb(env, liveWatch.currentBasis),
+      view: parsed.view,
+    };
+    const mapReadError = (error: unknown): RamoseError => {
+      if (error instanceof Unauthorized) return error;
+      if (isRamoseError(error)) return error;
+      if (error instanceof OneShotReadError) return fromThrown(error.cause, { stacks });
+      return fromThrown(error, { stacks });
+    };
+    if (rest === "/live") {
+      return yield* authorizedLiveResponse(input, parsed.read, { maxCells: queryMaxCells(env) }, CORS).pipe(
+        Effect.mapError(mapReadError),
+      );
+    }
+    const result = yield* executeAuthorizedRead(input, parsed.read, {
+      maxCells: queryMaxCells(env),
+    }).pipe(Effect.mapError(mapReadError));
     return json({ result });
   });
 
