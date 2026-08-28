@@ -173,7 +173,7 @@ describe("owned operation authoring", () => {
 
 describe("owned operation lowering", () => {
   test("produces deterministic catalog-local identities and inert descriptors", async () => {
-    const { App, Audit, Issue } = fixture();
+    const { App, Issue } = fixture();
     const first = await Effect.runPromise(
       lowerOwnedOperations(catalog, App, artifactHash),
     );
@@ -213,13 +213,90 @@ describe("owned operation lowering", () => {
     expect(JSON.stringify(first.descriptors)).not.toContain("function");
 
     const definition = first.definitions.find((entry) => entry.localName === "create")!;
-    expect(definition.owner).toBe(Issue);
-    expect(definition.input).toBe(Issue[OwnedOperations].create.input);
-    expect(definition.output).toBe(Issue[OwnedOperations].create.output);
-    expect(definition.run as unknown).toBe(Issue[OwnedOperations].create.run);
-    expect(definition.writes).toEqual([Audit]);
+    expect(definition.owner).toEqual({ kind: "entity", name: "issue" });
+    expect(definition.input).not.toBe(Issue[OwnedOperations].create.input);
+    expect(definition.input.decode({ title: "T", slug: "t" })).toEqual({
+      title: "T",
+      slug: "t",
+    });
+    expect(definition.output.encode({ id: 1 })).toEqual({ id: 1 });
+    expect(definition.bodySource).toBe(
+      Function.prototype.toString.call(Issue[OwnedOperations].create.run),
+    );
+    expect(definition.writes.map((entry) => entry.name)).toEqual(["audit"]);
     expect(Object.isFrozen(first.descriptors)).toBe(true);
     expect(Object.isFrozen(first.definitions)).toBe(true);
+  });
+
+  test("retains compiled operation codecs instead of mutable schemas", async () => {
+    const Input = Schema.Struct({ value: Schema.String });
+    const Output = Schema.Struct({ ok: Schema.Boolean });
+    const Worker = Entity("worker", {}, {
+      operations: (Operation) => ({
+        run: Operation({
+          self: false,
+          input: Input,
+          output: Output,
+          run: () => ({ ok: true }),
+        }),
+      }),
+    });
+    const lowered = await Effect.runPromise(
+      lowerOwnedOperations(
+        catalog,
+        CatalogSchema({ worker: Worker }),
+        artifactHash,
+      ),
+    );
+    const definition = lowered.definitions[0]!;
+
+    expect(Reflect.set(
+      Input,
+      "ast",
+      Schema.Struct({ value: Schema.Finite }).ast,
+    )).toBe(true);
+    expect(Reflect.set(
+      Output,
+      "ast",
+      Schema.Struct({ ok: Schema.String }).ast,
+    )).toBe(true);
+    expect(definition.input.decode({ value: "stable" }))
+      .toEqual({ value: "stable" });
+    expect(() => definition.input.decode({ value: 1 }))
+      .toThrow();
+    expect(definition.output.encode({ ok: true }))
+      .toEqual({ ok: true });
+    expect(() => definition.output.encode({ ok: "changed" }))
+      .toThrow();
+  });
+
+  test("rejects operation codecs with caller-owned callback captures", async () => {
+    let allow = true;
+    const Captured = Schema.String.check(Schema.makeFilter((value) =>
+      allow && value.length > 0 ? true : "blocked"
+    ));
+    const Worker = Entity("callbackWorker", {}, {
+      operations: (Operation) => ({
+        run: Operation({
+          self: false,
+          input: Schema.Struct({ value: Captured }),
+          output: Schema.Struct({}),
+          run: () => ({}),
+        }),
+      }),
+    });
+    const failure = await Effect.runPromise(Effect.flip(
+      lowerOwnedOperations(
+        catalog,
+        CatalogSchema({ callbackWorker: Worker }),
+        artifactHash,
+      ),
+    ));
+
+    expect(failure.message).toMatch(
+      /cannot be sealed without retaining executable callbacks/,
+    );
+    allow = false;
   });
 
   test("keeps trait ownership once and derives direct plus transitive composers", async () => {

@@ -3,13 +3,22 @@
 import * as Schema from "effect/Schema";
 import {
   bindingOf,
+  cloneBindingValue,
   resolveTraitBinding,
   traitDefinitionOf,
   type ResolvedTraitBinding,
   type TraitLike,
 } from "./Binding.ts";
-import { isOptionalField, type AnyField, type CreationDefaultContext } from "./Field.ts";
+import {
+  creationDefaultIdentityOf,
+  isOptionalField,
+  type AnyField,
+  type CreationDefault,
+  type CreationDefaultContext,
+  type CreationDefaultInputs,
+} from "./Field.ts";
 import type { AnyEntity } from "./Entity.ts";
+import { snapshotSchema } from "./schemaSnapshot.ts";
 import { traitsOf, type ComposerLike } from "./compose.ts";
 
 export class BindingConflictError extends Error {
@@ -39,13 +48,72 @@ type DefaultEntry = {
   readonly path: readonly string[];
 };
 
+type CreationFieldEncoder = (value: unknown) => unknown;
+
+type CreationFieldCodec = {
+  readonly encode: CreationFieldEncoder;
+  readonly representation: Schema.Json;
+};
+
 export interface CompositionValueMetadata {
   readonly bindings: readonly ResolvedBindingUse[];
   readonly fixed: ReadonlyMap<string, FixedEntry>;
   readonly defaults: ReadonlyMap<string, readonly DefaultEntry[]>;
+  readonly encoders: ReadonlyMap<string, CreationFieldCodec>;
 }
 
+export type CompiledCreationDefault = {
+  readonly source: string;
+  readonly inputs: CreationDefaultInputs;
+  readonly evaluate: CreationDefault<unknown>;
+  readonly path: readonly string[];
+};
+
+export type CompiledCreationField = {
+  readonly key: string;
+  readonly ident: string;
+  readonly cardinality: "one" | "many";
+  readonly optional: boolean;
+  readonly encoder: CreationFieldEncoder;
+  readonly schemaRepresentation: Schema.Json;
+  readonly fixed: unknown | undefined;
+  readonly defaults: readonly CompiledCreationDefault[];
+  readonly fieldDefault: CompiledCreationDefault | undefined;
+};
+
+export type CompiledBindingIdentity = {
+  readonly trait: string;
+  readonly definition: string;
+  readonly dependencies: readonly string[];
+};
+
+/** Caller-free creation runtime plan and the exact records hashed beside it. */
+export type CompiledCreationPlan = {
+  readonly entity: string;
+  readonly fields: readonly CompiledCreationField[];
+  readonly bindings: readonly CompiledBindingIdentity[];
+};
+
 const formatPath = (path: readonly string[]): string => path.join(" → ");
+
+const declaredDefault = (
+  get: CreationDefault<unknown>,
+  path: readonly string[],
+  label: string,
+): CompiledCreationDefault => {
+  const identity = creationDefaultIdentityOf(get);
+  if (identity === undefined) {
+    throw new BindingConflictError(
+      `${label} must declare canonical captured inputs with creationDefault(inputs, get)`,
+    );
+  }
+  return Object.freeze({
+    source: identity.source,
+    inputs: identity.inputs,
+    evaluate: identity.evaluate,
+    path: Object.freeze([...path]),
+  });
+};
 
 const sameValue = (
   left: unknown,
@@ -132,10 +200,27 @@ export const bindingUsesOf = (composer: ComposerLike): readonly ResolvedBindingU
  */
 export const compositionValueMetadata = (
   entity: AnyEntity,
+): CompositionValueMetadata =>
+  compositionValueMetadataFromBindings(
+    entity,
+    bindingUsesOf(entity as ComposerLike),
+  );
+
+/** Build creation metadata from binding callbacks already resolved once. */
+export const compositionValueMetadataFromBindings = (
+  entity: AnyEntity,
+  bindings: readonly ResolvedBindingUse[],
 ): CompositionValueMetadata => {
-  const bindings = bindingUsesOf(entity as ComposerLike);
   const fixed = new Map<string, FixedEntry>();
   const defaults = new Map<string, DefaultEntry[]>();
+  const encoders = new Map<string, CreationFieldCodec>();
+  for (const field of Object.values(entity.fields)) {
+    const snapshot = snapshotSchema(field.schema);
+    encoders.set(field.ident, Object.freeze({
+      encode: snapshot.codec.encode,
+      representation: snapshot.representation,
+    }));
+  }
 
   for (const use of bindings) {
     for (const [key, value] of Object.entries(use.binding.values)) {
@@ -147,7 +232,12 @@ export const compositionValueMetadata = (
           `ramose/binding: fixed value ${field.ident} is undefined (path: ${formatPath(path)})`,
         );
       }
-      const validated = decodeField(field, value, "fixed value");
+      const validated = decodeField(
+        field,
+        value,
+        "fixed value",
+        encoders.get(field.ident)?.encode,
+      );
       if (defaults.has(field.ident)) {
         const prior = defaults.get(field.ident)![0]!;
         throw new BindingConflictError(
@@ -164,7 +254,7 @@ export const compositionValueMetadata = (
         fixed.set(field.ident, {
           key,
           ident: field.ident,
-          value: validated,
+          value: cloneBindingValue(validated),
           path,
         });
       }
@@ -186,13 +276,173 @@ export const compositionValueMetadata = (
     }
   }
 
-  return Object.freeze({ bindings, fixed, defaults });
+  return Object.freeze({ bindings, fixed, defaults, encoders });
+};
+
+/** Compile one entity into copied field records and trusted capabilities. */
+export const compileCreationPlan = (
+  entity: AnyEntity,
+  metadata: CompositionValueMetadata,
+): CompiledCreationPlan => {
+  const fields = Object.entries(entity.fields).map(([key, field]) => {
+    const codec = metadata.encoders.get(field.ident);
+    if (codec === undefined) {
+      throw new CreationValueError(
+        `ramose/create: no snapshotted codec for ${field.ident}`,
+      );
+    }
+    const fixed = metadata.fixed.get(field.ident);
+    const defaults = (metadata.defaults.get(field.ident) ?? []).map((entry) =>
+      declaredDefault(
+        entry.get as CreationDefault<unknown>,
+        entry.path,
+        `composition default '${field.ident}'`,
+      )
+    );
+    const fieldDefault = typeof field.default === "function"
+      ? declaredDefault(
+        field.default,
+        Object.freeze([`entity:${entity.ns}`, field.ident]),
+        `field default '${field.ident}'`,
+      )
+      : undefined;
+    return Object.freeze({
+      key,
+      ident: field.ident,
+      cardinality: field.cardinality,
+      optional: isOptionalField(field),
+      encoder: codec.encode,
+      schemaRepresentation: codec.representation,
+      fixed: fixed === undefined ? undefined : cloneBindingValue(fixed.value),
+      defaults: Object.freeze(defaults),
+      fieldDefault,
+    });
+  });
+  const bindings = metadata.bindings.map((use) => Object.freeze({
+    trait: use.binding.trait.ns,
+    definition: use.binding.definition.key,
+    dependencies: Object.freeze(
+      use.binding.dependencies.map((dependency) => dependency.key).sort(),
+    ),
+  }));
+  return Object.freeze({
+    entity: entity.ns,
+    fields: Object.freeze(fields),
+    bindings: Object.freeze(bindings),
+  });
+};
+
+const decodeCompiledField = (
+  field: CompiledCreationField,
+  value: unknown,
+  source: string,
+): unknown => {
+  try {
+    const normalized = cloneBindingValue(value);
+    if (field.cardinality === "many") {
+      if (!Array.isArray(normalized)) {
+        throw new Error("expected an array for a cardinality-many field");
+      }
+      for (const item of normalized) field.encoder(item);
+      return normalized;
+    }
+    field.encoder(normalized);
+    return normalized;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new CreationValueError(
+      `ramose/create: invalid ${source} for ${field.ident}: ${detail}`,
+    );
+  }
+};
+
+/** Resolve creation values without consulting an authoring entity or binding. */
+export const resolveCompiledCreationValues = (
+  plan: CompiledCreationPlan,
+  input: Readonly<Record<string, unknown>>,
+  context: CreationDefaultContext,
+): Readonly<Record<string, unknown>> => {
+  if (!(context.now instanceof Date) || !Number.isFinite(context.now.getTime())) {
+    throw new CreationValueError("ramose/create: authoritative now must be a valid Date");
+  }
+  const authoritativeNow = context.now.getTime();
+  const defaultContext = (): CreationDefaultContext =>
+    Object.freeze({ now: new Date(authoritativeNow) });
+  const byKey = new Map(plan.fields.map((field) => [field.key, field] as const));
+  for (const key of Object.keys(input)) {
+    const field = byKey.get(key);
+    if (field === undefined) {
+      throw new CreationValueError(
+        `ramose/create: unknown field ${JSON.stringify(key)} on entity ${JSON.stringify(plan.entity)}`,
+      );
+    }
+    if (field.fixed !== undefined) {
+      throw new CreationValueError(
+        `ramose/create: ${field.ident} is engine-owned and cannot be supplied`,
+      );
+    }
+  }
+
+  const out = Object.create(null) as Record<string, unknown>;
+  for (const field of plan.fields) {
+    if (field.fixed !== undefined) {
+      out[field.key] = decodeCompiledField(
+        field,
+        field.fixed,
+        "fixed value",
+      );
+      continue;
+    }
+    const explicit = Object.hasOwn(input, field.key) ? input[field.key] : undefined;
+    if (explicit !== undefined) {
+      out[field.key] = decodeCompiledField(field, explicit, "explicit value");
+      continue;
+    }
+
+    let defaultValue: unknown = undefined;
+    let defaultPath: readonly string[] | undefined;
+    for (const entry of field.defaults) {
+      const value = entry.evaluate(defaultContext());
+      if (value === undefined) continue;
+      const normalized = cloneBindingValue(value);
+      if (defaultPath !== undefined && !sameValue(defaultValue, normalized)) {
+        throw new BindingConflictError(
+          `ramose/binding: conflicting defaults for ${field.ident} (paths: ${formatPath(defaultPath)}; ${formatPath(entry.path)})`,
+        );
+      }
+      defaultValue = normalized;
+      defaultPath = entry.path;
+    }
+    if (defaultPath !== undefined) {
+      out[field.key] = decodeCompiledField(
+        field,
+        defaultValue,
+        "composition default",
+      );
+      continue;
+    }
+    if (field.fieldDefault !== undefined) {
+      const value = field.fieldDefault.evaluate(defaultContext());
+      if (value !== undefined) {
+        out[field.key] = decodeCompiledField(field, value, "field default");
+        continue;
+      }
+    }
+    if (field.optional) continue;
+    throw new CreationValueError(
+      `ramose/create: entity ${plan.entity} is missing required field ${field.ident}`,
+    );
+  }
+  return Object.freeze(out);
 };
 
 function decodeField(
   field: AnyField & { readonly ident: string },
   value: unknown,
   source: string,
+  encoder: CreationFieldEncoder = Schema.encodeUnknownSync(
+    field.schema as Schema.Encoder<unknown>,
+  ),
 ): unknown {
   try {
     if (field.cardinality === "many") {
@@ -200,11 +450,11 @@ function decodeField(
         throw new Error("expected an array for a cardinality-many field");
       }
       return value.map((item) => {
-        Schema.encodeUnknownSync(field.schema as Schema.Encoder<unknown>)(item);
+        encoder(item);
         return item;
       });
     }
-    Schema.encodeUnknownSync(field.schema as Schema.Encoder<unknown>)(value);
+    encoder(value);
     return value;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -249,6 +499,7 @@ export const resolveCreationValues = (
   entity: AnyEntity,
   input: Readonly<Record<string, unknown>>,
   context: CreationDefaultContext,
+  metadata: CompositionValueMetadata = compositionValueMetadata(entity),
 ): Readonly<Record<string, unknown>> => {
   if (!(context.now instanceof Date) || !Number.isFinite(context.now.getTime())) {
     throw new CreationValueError("ramose/create: authoritative now must be a valid Date");
@@ -256,7 +507,6 @@ export const resolveCreationValues = (
   const authoritativeNow = context.now.getTime();
   const defaultContext = (): CreationDefaultContext =>
     Object.freeze({ now: new Date(authoritativeNow) });
-  const metadata = compositionValueMetadata(entity);
   const fixedKeys = fixedLocalKeys(entity, metadata);
 
   for (const key of Object.keys(input)) {
@@ -275,15 +525,26 @@ export const resolveCreationValues = (
 
   const out: Record<string, unknown> = {};
   for (const [key, field] of Object.entries(entity.fields)) {
+    const encoder = metadata.encoders.get(field.ident)?.encode;
+    if (encoder === undefined) {
+      throw new CreationValueError(
+        `ramose/create: no snapshotted codec for ${field.ident}`,
+      );
+    }
     const fixed = metadata.fixed.get(field.ident);
     if (fixed !== undefined) {
-      out[key] = decodeField(field, fixed.value, "fixed value");
+      out[key] = decodeField(
+        field,
+        cloneBindingValue(fixed.value),
+        "fixed value",
+        encoder,
+      );
       continue;
     }
 
     const explicit = Object.hasOwn(input, key) ? input[key] : undefined;
     if (explicit !== undefined) {
-      out[key] = decodeField(field, explicit, "explicit value");
+      out[key] = decodeField(field, explicit, "explicit value", encoder);
       continue;
     }
 
@@ -302,14 +563,19 @@ export const resolveCreationValues = (
       defaultPath = entry.path;
     }
     if (defaultPath !== undefined) {
-      out[key] = decodeField(field, defaultValue, "composition default");
+      out[key] = decodeField(
+        field,
+        defaultValue,
+        "composition default",
+        encoder,
+      );
       continue;
     }
 
     if (typeof field.default === "function") {
       const value = field.default(defaultContext());
       if (value !== undefined) {
-        out[key] = decodeField(field, value, "field default");
+        out[key] = decodeField(field, value, "field default", encoder);
         continue;
       }
     }
