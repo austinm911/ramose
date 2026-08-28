@@ -63,6 +63,7 @@ describe("ident names", () => {
     expect(isIdentName("ns")).toBe(true);
     expect(isIdentName("fields")).toBe(true);
     expect(isIdentName("traits")).toBe(true);
+    expect(isIdentName("doc")).toBe(true);
     expect(isIdentName("operations")).toBe(true);
     expect(isIdentName("_tag")).toBe(false);
     expect(isReservedFieldKey("title")).toBe(false);
@@ -92,12 +93,22 @@ describe("Entity()", () => {
       expect(() => Entity("post", { [key]: string() })).toThrow(
         /reserved — id, ns, fields, _tag, and traits are Entity \/ Trait metadata/,
       );
+      expect(() => Trait("postTrait", { [key]: string() })).toThrow(
+        /reserved — id, ns, fields, _tag, and traits are Entity \/ Trait metadata/,
+      );
     }
     const Post = Entity("post", { title: string() });
     expect(Post.id.ident).toBe(":db/id");
     expect(Post.ns).toBe("post");
     expect(Post._tag).toBe("Entity");
     expect(Post.fields.title.ident).toBe(":post/title");
+  });
+
+  test("keeps doc available as an application field", () => {
+    const Post = Entity("postDoc", { doc: string() }, { doc: "Entity docs." });
+    const Documented = Trait("documented", { doc: string() }, { doc: "Trait docs." });
+    expect(Post.doc.ident).toBe(":postDoc/doc");
+    expect(Documented.doc.ident).toBe(":documented/doc");
   });
 
   test("rejects an invalid entity name", () => {

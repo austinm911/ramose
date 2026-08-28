@@ -22,6 +22,7 @@ import {
   txBuilder,
   txOps,
 } from "../../src/db/internal.ts";
+import { documentationOf } from "../../src/db/documentation.ts";
 import { query as coreQuery } from "../../src/internal/core/index.ts";
 import { Index } from "../../src/internal/core/datom.ts";
 import { restoreEngineTypeAssertions } from "../../src/internal/core/tx-provenance.ts";
@@ -63,6 +64,60 @@ const Diamond = Entity(
 const Board = Schema({ issue: Issue, note: Note, diamond: Diamond });
 
 describe("Trait() / Entity() composition", () => {
+  test("entity, trait, and defining field docs remain distinct through composition", () => {
+    const Documented = Trait(
+      "documented",
+      { label: string({ doc: "The defining trait field." }) },
+      { doc: "Reusable documented behavior." },
+    );
+    const Article = Entity(
+      "article",
+      { title: string({ doc: "The direct entity field." }) },
+      { traits: [Documented], doc: "A publishable article." },
+    );
+    const UndocumentedArticle = Entity(
+      "undocumentedArticle",
+      { title: string() },
+      { traits: [Documented] },
+    );
+
+    expect(documentationOf(Article)).toBe("A publishable article.");
+    expect(documentationOf(Documented)).toBe("Reusable documented behavior.");
+    expect(documentationOf(UndocumentedArticle)).toBeUndefined();
+    expect(Article.label).toBe(Documented.label);
+    expect(Article.label.doc).toBe("The defining trait field.");
+    expect(Article.title.doc).toBe("The direct entity field.");
+    expect(() =>
+      Entity(
+        "documentedOverride",
+        { label: string({ doc: "Entity override." }) },
+        {
+          // @ts-expect-error composed fields cannot be overridden by an entity
+          traits: [Documented],
+        },
+      )
+    ).toThrow(/conflicting field "label"/);
+    expect(documentationOf(Entity("blankDoc", {}, { doc: " \n\t" })))
+      .toBeUndefined();
+    expect(documentationOf(Trait("blankTraitDoc", {}, { doc: "" }))).toBeUndefined();
+
+    const HasDocField = Trait(
+      "hasDocField",
+      { doc: string({ doc: "The application document body." }) },
+      { doc: "Defines an application doc field." },
+    );
+    const Page = Entity(
+      "page",
+      {},
+      { traits: [HasDocField], doc: "A documented page." },
+    );
+    expect(Page.doc).toBe(HasDocField.doc);
+    expect(Page.doc.doc).toBe("The application document body.");
+    expect(documentationOf(Page)).toBe("A documented page.");
+    expect(documentationOf(HasDocField))
+      .toBe("Defines an application doc field.");
+  });
+
   test("flattened fields keep the trait ident and the same object", () => {
     expect(Issue.tag).toBe(Taggable.tag);
     expect(Issue.tag.ident).toBe(":taggable/tag");
@@ -109,7 +164,7 @@ describe("Trait() / Entity() composition", () => {
 
 describe("schemaTx", () => {
   test("entity-only catalogs emit only attribute maps", () => {
-    const Todo = Entity("todo", { title: string() });
+    const Todo = Entity("todo", { title: string() }, { doc: "A todo entity." });
     expect(schemaTx(Schema({ todo: Todo }))).toEqual([
       {
         ":db/ident": ":todo/title",

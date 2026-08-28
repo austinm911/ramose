@@ -41,6 +41,8 @@ Entity("post", { fields: string() });
 Entity("post", { _tag: string() });
 // @ts-expect-error reserved field name — Entity / Trait metadata
 Entity("post", { traits: string() });
+const DocField = Entity("postWithDoc", { doc: string() }, { doc: "Entity docs." });
+DocField.doc.ident;
 const OperationsField = Entity("postWithOperations", { operations: string() });
 OperationsField.operations.ident;
 

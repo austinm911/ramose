@@ -19,6 +19,7 @@ import {
 } from "./Entity.ts";
 import type { AnyField } from "./Field.ts";
 import { attachAttrNav, type AttrNav, type PathCarrier } from "./shapes.ts";
+import { DOCUMENTATION, normalizeDoc } from "./documentation.ts";
 import {
   invalidIdentName,
   isIdentName,
@@ -43,6 +44,7 @@ export type TraitOptions<
   Traits extends readonly AnyTrait[] = readonly AnyTrait[],
 > = {
   readonly traits?: Traits;
+  readonly doc?: string;
 };
 
 export type BindableTraitOptions<
@@ -219,6 +221,7 @@ export function Trait<
   fields: Fields & ValidFieldMap<Fields>,
   options: {
     readonly traits?: never;
+    readonly doc?: string;
     readonly bind: Bind;
     readonly operations: (
       Operation: OwnedOperationAuthor<
@@ -241,6 +244,7 @@ export function Trait<
   fields: Fields & ValidFieldMap<Fields>,
   options: {
     readonly traits: Traits;
+    readonly doc?: string;
     readonly bind: Bind;
     readonly operations: (
       Operation: OwnedOperationAuthor<
@@ -274,6 +278,7 @@ export function Trait<
   options: {
     readonly traits?: never;
     readonly bind?: never;
+    readonly doc?: string;
     readonly operations: (
       Operation: OwnedOperationAuthor<
         TraitOperationContext<Name, Fields, readonly []>
@@ -294,6 +299,7 @@ export function Trait<
   fields: Fields & ValidFieldMap<Fields>,
   options: {
     readonly traits: Traits;
+    readonly doc?: string;
     readonly operations: (
       Operation: OwnedOperationAuthor<TraitOperationContext<Name, Fields, Traits>>,
     ) => ValidOwnedOperationMap<
@@ -311,6 +317,7 @@ export function Trait<
   fields: Fields & ValidFieldMap<Fields>,
   options: {
     readonly traits?: Traits;
+    readonly doc?: string;
     readonly operations?: never;
   } & ValidTraitCompose<Fields, Traits>,
 ): TraitWithTraits<Name, Fields, Traits, {}>;
@@ -359,9 +366,11 @@ export function Trait<
     attrName: "id" as const,
     ident: ":db/id" as const,
   });
+  const doc = normalizeDoc(options?.doc);
   const trait = {
     _tag: "Trait" as const,
     ns: name,
+    [DOCUMENTATION]: doc,
     fields: merged,
     traits: direct,
     id: idField,

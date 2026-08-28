@@ -36,6 +36,7 @@ import {
   type OwnedOperationAuthor,
   type ValidOwnedOperationMap,
 } from "./Operation.ts";
+import { DOCUMENTATION, normalizeDoc } from "./documentation.ts";
 
 export type FieldMap = Record<string, AnyField>;
 
@@ -130,7 +131,9 @@ export type StampedMap<Ns extends string, Fields extends FieldMap> = {
  * Stamped fields plus metadata. Address a field as `User.name`.
  * `fields` is the iteration map (`schemaTx`, `pick`, policy) — not a
  * second public handle. `id`, `ns`, `fields`, `_tag`, and `traits` cannot
- * be field names, so spreading cannot overwrite metadata.
+ * be field names, so spreading cannot overwrite metadata. Entity documentation
+ * uses a collision-free internal slot, leaving `doc` available as an
+ * application field.
  *
  * Composed trait fields are intersected onto the instance (`Issue.tag`)
  * and keep the trait ident (`Issue.tag.ident === ":taggable/tag"`).
@@ -210,6 +213,7 @@ export type EntityOptions<
   Traits extends readonly AnyTrait[] = readonly AnyTrait[],
 > = {
   readonly traits?: Traits;
+  readonly doc?: string;
 };
 
 type EntityImplementationOptions<
@@ -348,6 +352,7 @@ export function Entity<
   fields: Fields & ValidFieldMap<Fields>,
   options: {
     readonly traits?: never;
+    readonly doc?: string;
     readonly operations: (
       Operation: OwnedOperationAuthor<
         EntityOperationContext<Name, Fields, readonly []>
@@ -368,6 +373,7 @@ export function Entity<
   fields: Fields & ValidFieldMap<Fields>,
   options: {
     readonly traits: Traits;
+    readonly doc?: string;
     readonly operations: (
       Operation: OwnedOperationAuthor<EntityOperationContext<Name, Fields, Traits>>,
     ) => ValidOwnedOperationMap<
@@ -385,6 +391,7 @@ export function Entity<
   fields: Fields & ValidFieldMap<Fields>,
   options: {
     readonly traits?: Traits;
+    readonly doc?: string;
     readonly operations?: never;
   } & ValidTraitCompose<Fields, Traits>,
 ): EntityWithTraits<Name, Fields, Traits, {}>;
@@ -423,9 +430,11 @@ export function Entity<
     attrName: "id" as const,
     ident: ":db/id" as const,
   });
+  const doc = normalizeDoc(options?.doc);
   const entity = {
     _tag: "Entity" as const,
     ns: name,
+    [DOCUMENTATION]: doc,
     fields: merged,
     traits: direct,
     [COMPOSED_TRAITS]: Object.fromEntries(
