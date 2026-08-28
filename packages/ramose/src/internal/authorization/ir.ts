@@ -6,7 +6,7 @@
  * intermediate for semantic validation. {@link ValidatedAuthorizationIR} is the
  * post-validation form with recomputed metadata for access-plan derivation
  * (#386). {@link InstalledAuthorizationIR} is the Schema-decoded structural
- * document. {@link InstalledAuthorizationIRV1} is the verified/sealed brand
+ * document. {@link InstalledAuthorizationIRV2} is the verified/sealed brand
  * runtime accepts. The four pipeline types are distinct: a template, bound,
  * validated, or structural installed document is not assignable where
  * verified installed IR is required.
@@ -40,10 +40,10 @@ import {
 } from "./principal.ts";
 import { AuthorizationLanguageVersion } from "./version.ts";
 
-export const POLICY_TEMPLATE_IR_VERSION = 1 as const;
-export const BOUND_AUTHORIZATION_IR_VERSION = 1 as const;
-export const VALIDATED_AUTHORIZATION_IR_VERSION = 1 as const;
-export const INSTALLED_AUTHORIZATION_IR_VERSION = 1 as const;
+export const POLICY_TEMPLATE_IR_VERSION = 2 as const;
+export const BOUND_AUTHORIZATION_IR_VERSION = 2 as const;
+export const VALIDATED_AUTHORIZATION_IR_VERSION = 2 as const;
+export const INSTALLED_AUTHORIZATION_IR_VERSION = 2 as const;
 
 export const PolicyTemplateIRVersion = Schema.Literal(POLICY_TEMPLATE_IR_VERSION);
 export type PolicyTemplateIRVersion = typeof PolicyTemplateIRVersion.Type;
@@ -69,6 +69,7 @@ export const RuleFocus = <
     Schema.TaggedStruct("entity", { entity: ids.entity }),
     Schema.TaggedStruct("trait", { trait: ids.trait }),
     Schema.TaggedStruct("field", { field: ids.field }),
+    Schema.TaggedStruct("operation", { operation: ids.operation }),
   ]);
 
 /**
@@ -125,6 +126,7 @@ export const AuthorizationDecisions = <
     entities: Schema.Array(DecisionEntry(ids.entity)),
     traits: Schema.Array(DecisionEntry(ids.trait)),
     fields: Schema.Array(DecisionEntry(ids.field)),
+    operations: Schema.Array(DecisionEntry(ids.operation)),
   });
 
 /**
@@ -202,7 +204,7 @@ export type AuthorizationValidationInput = typeof AuthorizationValidationInput.T
  * collisions only — not policy hash, rule hashes, decision semantics, or
  * access-plan completeness. This is not runtime authority.
  * Stored-document revalidation belongs to #368; until then, only
- * {@link installAuthorization} may seal {@link InstalledAuthorizationIRV1}.
+ * {@link installAuthorization} may seal {@link InstalledAuthorizationIRV2}.
  */
 export const InstalledAuthorizationIR = Schema.TaggedStruct("InstalledAuthorizationIR", {
   version: InstalledAuthorizationIRVersion,
@@ -217,14 +219,45 @@ export const InstalledAuthorizationIR = Schema.TaggedStruct("InstalledAuthorizat
 });
 export type InstalledAuthorizationIR = typeof InstalledAuthorizationIR.Type;
 
+/** Exact persisted policy shape embedded by catalog-unit v1. Migration only. */
+const LegacyCanonicalIdentitySchemasV1 = {
+  ...CanonicalIdentitySchemas,
+  operation: Schema.Never,
+};
+
+const LegacyAuthorizationDecisionsV1 = Schema.Struct({
+  entities: Schema.Array(DecisionEntry(CanonicalIdentitySchemas.entity)),
+  traits: Schema.Array(DecisionEntry(CanonicalIdentitySchemas.trait)),
+  fields: Schema.Array(DecisionEntry(CanonicalIdentitySchemas.field)),
+});
+
+export const LegacyInstalledAuthorizationIRV1 = Schema.TaggedStruct(
+  "InstalledAuthorizationIR",
+  {
+    version: Schema.Literal(1),
+    languageVersion: AuthorizationLanguageVersion,
+    policyHash: PolicyHash,
+    classes: ClassVocabulary,
+    claims: ClaimVocabulary,
+    principal: InstalledPrincipalResolution,
+    rules: Schema.Array(
+      AuthorizationRule(LegacyCanonicalIdentitySchemasV1, CanonicalAuthorizationExpr),
+    ),
+    decisions: LegacyAuthorizationDecisionsV1,
+    accessPlans: Schema.Array(RuleAccessPlan),
+  },
+);
+export type LegacyInstalledAuthorizationIRV1 =
+  typeof LegacyInstalledAuthorizationIRV1.Type;
+
 /**
  * Verified/sealed runtime-acceptable v1 artifact. Distinct from the
  * Schema-decoded structural document: #361 must consume this brand, not
  * decoder output. Only {@link installAuthorization} produces it today.
  * #368's authoritative load/revalidate path will be the other producer.
  */
-export type InstalledAuthorizationIRV1 = InstalledAuthorizationIR &
-  Brand.Brand<"InstalledAuthorizationIRV1">;
+export type InstalledAuthorizationIRV2 = InstalledAuthorizationIR &
+  Brand.Brand<"InstalledAuthorizationIRV2">;
 
 /**
  * Requested install identity the binder must match against the descriptor.

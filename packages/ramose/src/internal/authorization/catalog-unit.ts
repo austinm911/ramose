@@ -49,9 +49,10 @@ import {
   CanonicalAuthorizationRule,
   INSTALLED_AUTHORIZATION_IR_VERSION,
   InstalledAuthorizationIR,
+  LegacyInstalledAuthorizationIRV1,
   type BoundAuthorizationIR,
   type InstalledAuthorizationIR as InstalledAuthorizationIRType,
-  type InstalledAuthorizationIRV1 as InstalledAuthorizationIRV1Type,
+  type InstalledAuthorizationIRV2 as InstalledAuthorizationIRV2Type,
 } from "./ir.ts";
 import {
   normalizeAccessPlans,
@@ -118,7 +119,7 @@ export const LegacyInstalledCatalogUnitV1 = Schema.TaggedStruct(
   {
     version: Schema.Literal(1),
     catalog: LegacyCatalogDescriptorV1,
-    policy: InstalledAuthorizationIR,
+    policy: LegacyInstalledAuthorizationIRV1,
     unitHash: CatalogUnitHash,
   },
 );
@@ -539,7 +540,7 @@ const requireCatalogUnitDigests = Effect.fn("Authorization.requireCatalogUnitDig
 export const sealInstalledCatalogUnit = Effect.fn("Authorization.sealInstalledCatalogUnit")(
   function* (
     descriptor: CatalogDescriptorType,
-    policy: InstalledAuthorizationIRV1Type,
+    policy: InstalledAuthorizationIRV2Type,
   ): Effect.fn.Return<InstalledCatalogUnitV2, AssembleCatalogUnitFailure | CatalogUnitCorrupt> {
     const tables = yield* Effect.fromResult(assembleInstalledCatalogUnit(descriptor, policy));
     const snapshot = freezePlain(clonePlain(tables));
