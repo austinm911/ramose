@@ -122,6 +122,7 @@ export const testAdmin = async (
   rest:
     | "/r2"
     | "/storage"
+    | "/basis"
     | "/checkpoint"
     | "/abort"
     | "/reconnect"

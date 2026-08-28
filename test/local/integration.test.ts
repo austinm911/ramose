@@ -9,6 +9,7 @@ import { registerAuthContract } from "../contracts/auth.contract.ts";
 import { registerOperationsContract } from "../contracts/operations.contract.ts";
 import { registerPeerContract } from "../contracts/peer.contract.ts";
 import { localUrls } from "./fixtures.ts";
+import { registerBasisCache } from "./basis-cache.ts";
 import { registerCas } from "./cas.ts";
 import { registerInstrumentation } from "./instrumentation.ts";
 import { registerStorage } from "./storage.ts";
@@ -23,6 +24,7 @@ registerPeerContract({
 registerAuthContract({ urls: localUrls });
 registerOperationsContract({ urls: localUrls });
 registerInstrumentation({ urls: localUrls });
+registerBasisCache({ urls: localUrls });
 registerSessions({ urls: localUrls });
 registerCas({ urls: localUrls });
 registerStorage({ urls: localUrls });
