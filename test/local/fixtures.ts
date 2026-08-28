@@ -34,6 +34,9 @@ export type LocalUrls = {
   readonly jwksUrl: string;
   readonly jwksBoundUrl: string;
   readonly jwksUrlOnlyUrl: string;
+  readonly authUrl: string;
+  readonly authRestartUrl: string;
+  readonly authRotatedUrl: string;
 };
 
 const deployed = beforeAll(deploy(Stack));

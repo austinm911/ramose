@@ -14,6 +14,9 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ramose from "ramose";
+import LocalAuthRestartWorker from "./better-auth-restart-worker.ts";
+import LocalAuthRotatedWorker from "./better-auth-rotated-worker.ts";
+import LocalAuthWorker from "./better-auth-worker.ts";
 import {
   Empty,
   Jwks,
@@ -48,6 +51,9 @@ export const Stack = Alchemy.Stack(
     const jwks = yield* Jwks;
     const jwksBound = yield* JwksBound;
     const jwksUrlOnly = yield* JwksUrlOnly;
+    const auth = yield* LocalAuthWorker;
+    const authRestart = yield* LocalAuthRestartWorker;
+    const authRotated = yield* LocalAuthRotatedWorker;
     return {
       openUrl: open.url,
       emptyUrl: empty.url,
@@ -59,6 +65,9 @@ export const Stack = Alchemy.Stack(
       jwksUrl: jwks.url,
       jwksBoundUrl: jwksBound.url,
       jwksUrlOnlyUrl: jwksUrlOnly.url,
+      authUrl: auth.url,
+      authRestartUrl: authRestart.url,
+      authRotatedUrl: authRotated.url,
     };
   }),
 );

@@ -1,7 +1,6 @@
 {
   "comment": "Existing #390 test-double violations. Shrink to empty as migrations merge. Do not add new entries.",
   "files": {
-    "packages/ramose/test/better-auth/ramoseToken.test.ts": ["memoryAdapter"],
     "packages/ramose/test/internal/transactor/harness.ts": ["FakeAnalytics", "FakeSocket", "MemoryBucket", "bun:sqlite"],
     "packages/ramose/test/internal/transactor/indexer.test.ts": ["MemoryBucket"],
     "packages/ramose/test/internal/transactor/observability.test.ts": ["FakeAnalytics"],
