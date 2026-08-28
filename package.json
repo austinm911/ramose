@@ -60,6 +60,7 @@
     "alchemy": "2.0.0-beta.74",
     "better-auth": "^1.6.30",
     "effect": ">=4.0.0-rc.110",
+    "jose": "^6.0.0",
     "ramose": "workspace:*"
   }
 }
