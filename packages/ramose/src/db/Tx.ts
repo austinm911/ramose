@@ -6,7 +6,7 @@ import { lowerAttr } from "./attrRef.ts";
 import { composerIdent } from "./compose.ts";
 import { asLookupRef, lowerEntityArg, lowerWriteValue, tempid, type Tempid } from "./entityArg.ts";
 import type { AnyEntity } from "./Entity.ts";
-import type { AnyField, ValueOf } from "./Field.ts";
+import type { AnyField, CreationDefault, ValueOf } from "./Field.ts";
 import type { AnySchema } from "./Schema.ts";
 import { TxRejected } from "./Errors.ts";
 import type {
@@ -28,9 +28,24 @@ import type {
  * Field slot on the builder. A field ref (`User.name`) or a schema
  * ident (`":user/name"`). Unknown idents are not in the union.
  */
+type CatalogField<C extends AnySchema> = {
+  [N in keyof C["entities"]]: C["entities"][N]["fields"][keyof C["entities"][N]["fields"]];
+}[keyof C["entities"]];
+
+type FixedCatalogIdent<C extends AnySchema> = CatalogField<C> extends infer F
+  ? F extends { readonly fixed: true; readonly ident: infer I extends string }
+    ? I
+    : never
+  : never;
+
+type WritableCatalogIdent<C extends AnySchema> = Exclude<
+  CatalogIdent<C>,
+  FixedCatalogIdent<C>
+>;
+
 export type TxField<C extends AnySchema> =
-  | { readonly ident: CatalogIdent<C> }
-  | CatalogIdent<C>;
+  | { readonly ident: WritableCatalogIdent<C> }
+  | WritableCatalogIdent<C>;
 
 type IdentOfTxField<C extends AnySchema, A> = A extends {
   readonly ident: infer I extends string;
@@ -123,28 +138,46 @@ type PutFieldValue<
  * Partial attrs — every key optional. Used by `put(Entity, subject, {…})`
  * and `update`. Cardinality-many is an array; `undefined` is omitted.
  */
-export type PutAttrs<C extends AnySchema, N extends AnyEntity, H = TxHandle<C>> = {
-  [K in keyof WriteAtEntity<C, N> & string]?: PutFieldValue<C, N, K, H> | undefined;
+type FixedPutAttrs<N extends AnyEntity> = {
+  [K in keyof N["fields"] & string as N["fields"][K] extends {
+    readonly fixed: true;
+  } ? K : never]?: never;
 };
+
+export type PutAttrs<C extends AnySchema, N extends AnyEntity, H = TxHandle<C>> = {
+  [K in keyof WriteAtEntity<C, N> & string as N["fields"][K] extends {
+    readonly fixed: true;
+  } ? never : K]?: PutFieldValue<C, N, K, H> | undefined;
+} & FixedPutAttrs<N>;
 
 type FieldIsOptional<F> = F extends { readonly cardinality: "many" }
   ? true
   : F extends { readonly isOptional: true }
     ? true
-    : F extends { readonly default: unknown }
+    : F extends { readonly default: CreationDefault<unknown> }
       ? true
-      : undefined extends ValueOf<F extends AnyField ? F : never>
+      : F extends { readonly compositionDefault: true }
         ? true
-        : false;
+        : undefined extends ValueOf<F extends AnyField ? F : never>
+          ? true
+          : false;
+
+type PublicPutKeys<N extends AnyEntity> = {
+  [K in keyof N["fields"] & string]: N["fields"][K] extends {
+    readonly fixed: true;
+  } ? never : K;
+}[keyof N["fields"] & string];
 
 type RequiredPutKeys<N extends AnyEntity> = {
-  [K in keyof N["fields"] & string]: FieldIsOptional<N["fields"][K]> extends true
+  [K in keyof N["fields"] & string]: N["fields"][K] extends { readonly fixed: true }
+    ? never
+    : FieldIsOptional<N["fields"][K]> extends true
     ? never
     : K;
 }[keyof N["fields"] & string];
 
 type OptionalPutKeys<N extends AnyEntity> = Exclude<
-  keyof N["fields"] & string,
+  PublicPutKeys<N>,
   RequiredPutKeys<N>
 >;
 
@@ -161,10 +194,12 @@ export type PutCreateAttrs<
   [K in RequiredPutKeys<N>]: PutFieldValue<C, N, K, H>;
 } & {
   [K in OptionalPutKeys<N>]?: PutFieldValue<C, N, K, H> | undefined;
-};
+} & FixedPutAttrs<N>;
 
 type UpsertKeys<N extends AnyEntity> = {
-  [K in keyof N["fields"] & string]: N["fields"][K] extends {
+  [K in keyof N["fields"] & string]: N["fields"][K] extends { readonly fixed: true }
+    ? never
+    : N["fields"][K] extends {
     readonly unique: "upsert";
   }
     ? K
