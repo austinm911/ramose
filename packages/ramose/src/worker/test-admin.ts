@@ -18,13 +18,23 @@ import { internalHeaders } from "../internal/transactor/internal.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
 import { TEST_SESSION_TOKEN_HEADER } from "./session.ts";
 import { BadRequest, Internal, NotFound, UpstreamError } from "./errors.ts";
-import { coloHeader, nearestReplica } from "./peer.ts";
+import {
+  basisHeaders,
+  coloHeader,
+  fetchBasisWithStats,
+  invalidateBasis,
+  nearestReplica,
+} from "./peer.ts";
 import { handleStorageTestAdmin } from "./storage-test-admin.ts";
 
-const json = (body: unknown, status = 200): Response =>
+const json = (
+  body: unknown,
+  status = 200,
+  headers: Record<string, string> = {},
+): Response =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
   });
 
 const TEST_PREFIX = "/__test__/db/";
@@ -219,6 +229,18 @@ export const handleTestAdmin = async (
   if (request.method !== "POST") throw new BadRequest({ message: "test admin is POST" });
   if (rest === "/r2") return handleR2(request, env, db);
   if (rest === "/storage") return handleStorageTestAdmin(request, env, db);
+  if (rest === "/basis") {
+    const body = (await request.json()) as { action?: unknown };
+    if (body.action === "invalidate") {
+      invalidateBasis(db);
+      return json({ ok: true, db, invalidated: true });
+    }
+    if (body.action !== "fetch") {
+      throw new BadRequest({ message: "basis action must be fetch|invalidate" });
+    }
+    const fetched = await fetchBasisWithStats(env, db, request);
+    return json(fetched, 200, basisHeaders(request, env, fetched));
+  }
   if (rest === "/checkpoint") {
     const raw = await request.text();
     const body = raw.length === 0 ? {} : (JSON.parse(raw) as { scope?: unknown; action?: unknown; name?: unknown; error?: unknown });

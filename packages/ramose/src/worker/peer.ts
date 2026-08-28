@@ -235,6 +235,30 @@ export const BASIS_SAFETY_TTL_MS = 10 * 60_000; // peer mode: memory bound only,
 const MIN_T_RETRIES = 5; // replica /log catch-up can still race; poll briefly for min-t
 const MIN_T_RETRY_MS = 20;
 
+export type BasisCacheReason = "hit" | "off" | "miss" | "expired" | "min-t";
+
+/** Pure cache lookup decision; infrastructure fetches happen only after this returns a miss reason. */
+export const basisCacheDecision = (
+  useCache: boolean,
+  mode: CacheMode,
+  now: number,
+  cached: { readonly t: number; readonly at: number } | undefined,
+  minT: number | undefined,
+): BasisCacheReason => {
+  if (!useCache) return "off";
+  if (cached === undefined) return "miss";
+  const ttl = mode === "peer" ? BASIS_SAFETY_TTL_MS : BASIS_TTL_MS;
+  if (now - cached.at >= ttl) return "expired";
+  if (minT !== undefined && cached.t < minT) return "min-t";
+  return "hit";
+};
+
+/** A late replica answer must never replace a newer isolate-cached basis. */
+export const shouldReplaceCachedBasis = (
+  cachedT: number | undefined,
+  fetchedT: number,
+): boolean => cachedT === undefined || cachedT <= fetchedT;
+
 export function invalidateBasis(db: string): void {
   for (const k of basisCache.keys()) if (k.startsWith(`${db}|`)) basisCache.delete(k);
 }
@@ -249,7 +273,7 @@ export interface BasisFetch {
   /** served from the isolate cache without a replica call */
   hit: boolean;
   /** why the replica was called: "off" (cache disabled), "miss", "expired", "min-t" */
-  reason: "hit" | "off" | "miss" | "expired" | "min-t";
+  reason: BasisCacheReason;
   /** replica calls made (0 on a hit; >1 only when polling for min-t) */
   calls: number;
   /** min-t requested but the replica never reached it within the retry window */
@@ -313,14 +337,16 @@ export async function fetchBasisWithStats(
     : undefined;
   const minT = effectiveBasisMinT(minTOf(request), transactorT);
   const key = `${db}|${hintOf(request, env) ?? ""}`;
-  let reason: BasisFetch["reason"] = "off";
-  if (useCache) {
-    const hit = basisCache.get(key);
-    const ttl = mode === "peer" ? BASIS_SAFETY_TTL_MS : BASIS_TTL_MS;
-    if (!hit) reason = "miss";
-    else if (Date.now() - hit.at >= ttl) reason = "expired";
-    else if (minT !== undefined && hit.basis.t < minT) reason = "min-t";
-    else return { basis: hit.basis, hit: true, reason: "hit", calls: 0, behind: false };
+  const hit = basisCache.get(key);
+  const reason = basisCacheDecision(
+    useCache,
+    mode,
+    Date.now(),
+    hit === undefined ? undefined : { t: hit.basis.t, at: hit.at },
+    minT,
+  );
+  if (reason === "hit" && hit !== undefined) {
+    return { basis: hit.basis, hit: true, reason, calls: 0, behind: false };
   }
   const stub = nearestReplica(env, db, request);
   let calls = 0;
@@ -354,7 +380,9 @@ export async function fetchBasisWithStats(
   if (useCache) {
     // never overwrite a newer entry (a concurrent refetch or a min-t poll may have raced us)
     const cur = basisCache.get(key);
-    if (!cur || cur.basis.t <= basis.t) basisCache.set(key, { basis, at: Date.now() });
+    if (shouldReplaceCachedBasis(cur?.basis.t, basis.t)) {
+      basisCache.set(key, { basis, at: Date.now() });
+    }
   }
   return { basis, hit: false, reason, calls, behind };
 }
