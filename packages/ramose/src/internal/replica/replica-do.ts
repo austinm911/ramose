@@ -36,6 +36,14 @@ import { replicaErrorResponse, toReplicaError } from "./errors.ts";
 import {
   decideReplicationRevisionRetention,
 } from "./revision-retention.ts";
+import {
+  decideServerIdentityBinding,
+  generateServerIdentityRoot,
+  readServerIdentityRootRecord,
+  SERVER_IDENTITY_INCOMPATIBLE,
+  SERVER_IDENTITY_KEY_ID,
+  SERVER_IDENTITY_UNREADABLE,
+} from "../replication/server-identity.ts";
 
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
   new Response(JSON.stringify(toJson(body)), { status, headers: { "content-type": "application/json", ...extra } });
@@ -703,6 +711,12 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     if (gate) return gate;
     await this.init();
     const url = new URL(request.url);
+    // The identity/sealing root lives in one fixed-name instance of this
+    // namespace and is deliberately not a database-scoped resource, so it is
+    // served before any `?db=` binding.
+    if (url.pathname === "/server-identity") {
+      return this.serveServerIdentityRoot(request);
+    }
     const dbParam = url.searchParams.get("db");
     if (dbParam && dbParam !== this.dbName) {
       if (this.dbName !== undefined) return json({ error: `replica already bound to database ${this.dbName}` }, 409);
@@ -730,6 +744,55 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
     );
   }
 
+  /**
+   * Create-once, never-regenerate server identity/sealing root.
+   *
+   * Read and write happen in one synchronous turn, so the Durable Object's
+   * single-threaded execution is the whole mutual exclusion: two concurrent
+   * Workers cannot both mint a root.
+   *
+   * Only a genuinely absent record is initialized. A record this build cannot
+   * read — a newer version reached by rolling back, or corruption — fails
+   * closed, because replacing it would destroy the only key that reproduces
+   * every existing identity and revision.
+   */
+  private serveServerIdentityRoot(request: Request): Response {
+    if (request.method !== "GET" && request.method !== "POST") {
+      return json({ error: "method not allowed" }, 405);
+    }
+    const record = readServerIdentityRootRecord(
+      this.getMeta<unknown>("server-identity-root"),
+    );
+    if (record.type === "existing") {
+      return json({ root: record.root, created: false });
+    }
+    if (record.type === "unreadable") {
+      return json({ error: SERVER_IDENTITY_UNREADABLE }, 409);
+    }
+    const created = generateServerIdentityRoot(Date.now());
+    this.setMeta("server-identity-root", created);
+    return json({ root: created, created: true });
+  }
+
+  /**
+   * Revisions persisted under one sealing root are unreachable under another.
+   * A replaced or lost root quarantines them explicitly instead of letting a
+   * derived-name collision decide.
+   */
+  private serverIdentityQuarantine(keyId: string): Response | undefined {
+    const decision = decideServerIdentityBinding(
+      this.getMeta<string>("server-identity-key"),
+      keyId,
+    );
+    if (decision.type !== "incompatible") return undefined;
+    // The key id is a public name, not key material, and this route is
+    // already behind the internal capability.
+    return json(
+      { error: SERVER_IDENTITY_INCOMPATIBLE, persisted: decision.persisted },
+      409,
+    );
+  }
+
   protected async route(request: Request, url: URL, dbName: string): Promise<Response> {
     if (url.pathname === "/watch") return this.upgradeBasisWatch(request);
     switch (url.pathname) {
@@ -749,16 +812,23 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
           readonly revision?: unknown;
           readonly binding?: unknown;
           readonly basisT?: unknown;
+          readonly keyId?: unknown;
         };
         if (
           (body.action !== "remember" && body.action !== "resolve") ||
           typeof body.revision !== "string" ||
           !OPAQUE_REPLICATION_ID.test(body.revision) ||
           typeof body.binding !== "string" ||
-          !OPAQUE_REPLICATION_ID.test(body.binding)
+          !OPAQUE_REPLICATION_ID.test(body.binding) ||
+          typeof body.keyId !== "string" ||
+          !SERVER_IDENTITY_KEY_ID.test(body.keyId)
         ) {
           return json({ error: "invalid replication revision request" }, 400);
         }
+        // Refused before any row is read or written, so state sealed under a
+        // replaced root is neither reused nor corrupted.
+        const quarantined = this.serverIdentityQuarantine(body.keyId);
+        if (quarantined !== undefined) return quarantined;
         if (body.action === "resolve") {
           const row = this.sql.exec(
             `SELECT basis_t FROM replication_revisions
@@ -786,6 +856,11 @@ export class QueryReplicaDOBase extends DurableObject<RamoseEnv> {
         }
         if (storedBinding === undefined) {
           this.setMeta("replication-binding", body.binding);
+        }
+        // This store now belongs to one identity/sealing root; a later root
+        // finds it quarantined above rather than adopting it.
+        if (this.getMeta<string>("server-identity-key") === undefined) {
+          this.setMeta("server-identity-key", body.keyId);
         }
         const bindingRevisionCount = this.sql.exec(
           `SELECT COUNT(*) AS n FROM replication_revisions WHERE binding = ?`,
