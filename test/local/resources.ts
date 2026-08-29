@@ -10,13 +10,13 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Ramose from "ramose";
 import { AUD, ISS, JWKS } from "./auth-keys.ts";
 import { Open } from "./open.ts";
-import { operations } from "./ops.ts";
 import { TEST_HOOKS_ENV } from "./test-hooks-env.ts";
 
 export { Open };
 
 const worker = import.meta.resolve("./worker.ts");
 const empty = import.meta.resolve("./empty-worker.ts");
+const production = import.meta.resolve("./production-worker.ts");
 const operationWorker = import.meta.resolve("./operation-worker.ts");
 const graphPathWorker = import.meta.resolve("./graph-path-worker.ts");
 
@@ -31,7 +31,7 @@ const jwtAuth = () =>
 export const Empty = Ramose.Server("Empty", {
   peer: "EmptyPeer",
   storage: "EmptyStore",
-  main: empty,
+  main: production,
   env: TEST_HOOKS_ENV,
 });
 
@@ -64,7 +64,6 @@ export const Policy = Ramose.Server("Policy", {
   peer: "PolicyPeer",
   storage: "PolicyStore",
   main: worker,
-  operations,
   auth: {
     ...jwtAuth(),
     allowedOrigins: ["https://app.acme.test"],
