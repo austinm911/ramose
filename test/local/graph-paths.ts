@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import { Graph, Q, Query } from "ramose/db";
 import { signToken } from "../../packages/ramose/test/sign-local-token.ts";
@@ -29,7 +29,10 @@ import {
   Project,
   Workspace,
 } from "./graph-path-catalog.ts";
-import { graphPathRootProof } from "./graph-path-proof.ts";
+import {
+  graphPathRootProof,
+  loadGraphPathRootProof,
+} from "./graph-path-proof.ts";
 
 let rootInstall: Promise<void> | undefined;
 
@@ -167,6 +170,8 @@ const rootQuery = async <Out>(
 
 export const registerGraphPaths = (ctx: { urls: () => LocalUrls }) => {
   describe("authenticated hierarchical Graph paths", () => {
+    beforeAll(() => loadGraphPathRootProof(ctx.urls().graphPathsUrl));
+
     test("gates transitive traits, policy narrowing, operations, and refs on the real stack", async () => {
       const base = ctx.urls().graphPathsUrl;
       const root = GRAPH_PATH_ROOT_DATABASE;
