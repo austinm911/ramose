@@ -2,11 +2,15 @@ import { isDatabaseName } from "../db/DatabaseName.ts";
 import {
   callerFromVerified,
   DatabaseId,
+  executeAuthorizedGraphPathLive,
   executeAuthorizedGraphPathTarget,
   executeAuthorizedRead,
+  graphPathLeaseIdentity,
   OneShotReadError,
   runOneShotRead,
+  type AuthorizedGraphPathTarget,
   type DatabaseRouteDerivation,
+  type ResolvedDatabaseRoute,
 } from "../internal/authorization/index.ts";
 import {
   Histogram,
@@ -29,7 +33,10 @@ import {
   provisionResolvedDatabase,
   queryMaxCells,
 } from "./authorized-read.ts";
-import { authorizedLiveResponse } from "./authorized-live.ts";
+import {
+  authorizedLiveResponse,
+  liveResponseFromStream,
+} from "./authorized-live.ts";
 import {
   Analytics,
   type Route,
@@ -361,13 +368,13 @@ export const handle = (
       return fromThrown(error, { stacks });
     };
     if (parsed.path.length > 0) {
-      if (rest === "/live" || databaseBindings === undefined) {
+      if (databaseBindings === undefined) {
         return yield* new Unauthorized({ status: 403 });
       }
       const root = yield* Effect.fromResult(
         databaseBindings.root(DatabaseId.make(db)),
       ).pipe(Effect.mapError(() => new Unauthorized({ status: 403 })));
-      const result = yield* executeAuthorizedGraphPathTarget({
+      const pathInput = {
         authenticate: Effect.succeed(callerFromVerified(verified)),
         bindings: databaseBindings,
         root,
@@ -376,15 +383,58 @@ export const handle = (
           bypassBasisCache: true,
           authoritativeBasisFence: true,
         }),
-        provision: (route, derivation) =>
+        provision: (
+          route: ResolvedDatabaseRoute,
+          derivation: DatabaseRouteDerivation,
+        ) =>
           provisionResolvedDatabase(env, route, derivation),
         view: parsed.view,
-      }, (target) => Effect.tryPromise({
+      };
+      const readTarget = (target: AuthorizedGraphPathTarget) => Effect.tryPromise({
         try: () => runOneShotRead(target.context.filteredDb, parsed.read, {
           maxCells: queryMaxCells(env),
         }),
         catch: (cause) => new OneShotReadError({ cause }),
-      })).pipe(Effect.mapError(mapReadError));
+      });
+      if (rest === "/live") {
+        // Admission remains an ordinary complete-path one-shot read. The body
+        // then watches target changes and reauthorizes that complete path on
+        // every wake and bounded idle renewal.
+        const target = yield* executeAuthorizedGraphPathTarget(
+          pathInput,
+          (authorized) => readTarget(authorized).pipe(Effect.as(authorized)),
+        ).pipe(Effect.mapError(mapReadError));
+        // One target wake socket is sufficient for result freshness. Ancestor
+        // changes are authoritative on the next complete-path renewal (and
+        // may use the optional early-invalidation seam); holding one socket
+        // per segment would exceed Cloudflare's connection limit on deep paths.
+        const liveWatch = watchBasisChanges(
+          env,
+          target.route.database,
+          request,
+        );
+        const stream = executeAuthorizedGraphPathLive({
+          ...pathInput,
+          authenticate: authenticateRequest(request).pipe(
+            Effect.map(callerFromVerified),
+          ),
+          currentDb: acquireCurrentDb(env, request, {
+            bypassBasisCache: true,
+            authoritativeBasisFence: true,
+          }),
+          // Admission already provisioned every authorized child. Renewal is
+          // authorization-only and must not create a per-lease write path.
+          provision: () => Effect.void,
+          basisChanges: liveWatch.changes,
+          expectedLeaseIdentity: graphPathLeaseIdentity(target, parsed.path),
+          ...(boundaries === undefined ? {} : { boundaries }),
+        }, parsed.read, { maxCells: queryMaxCells(env) });
+        return yield* liveResponseFromStream(stream, cors);
+      }
+      const result = yield* executeAuthorizedGraphPathTarget(
+        pathInput,
+        readTarget,
+      ).pipe(Effect.mapError(mapReadError));
       return json({ result }, 200, request, env);
     }
     if (parsed.catalogKey === undefined || parsed.unitHash === undefined) {
