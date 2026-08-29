@@ -20,10 +20,15 @@ export const CONFORMANCE_DATABASES = Object.freeze([
   "conformance-history-b",
   "conformance-live",
   "conformance-expiry",
+  "conformance-idempotent-revocation",
+  "conformance-idempotent-self-delete",
+  "conformance-idempotent-self-hidden",
+  "conformance-idempotent-lookup-rebind",
 ]);
 
 export const ConformanceUser = Entity("conformanceUser", {
   sub: Field.unique(string(), "strict"),
+  access: string({ default: () => "enabled" }),
 }, {
   operations: (Operation) => ({
     create: Operation({
@@ -32,6 +37,14 @@ export const ConformanceUser = Entity("conformanceUser", {
       output: EffectSchema.Struct({ id: EntityId }),
       run(op, input) {
         return { id: op.create({ sub: input.sub }) };
+      },
+    }),
+    setAccess: Operation({
+      input: EffectSchema.Struct({ access: EffectSchema.String }),
+      output: EffectSchema.Struct({ id: EntityId }),
+      run(op, input) {
+        op.self.set(ConformanceUser.access, input.access);
+        return { id: op.self };
       },
     }),
   }),
@@ -80,6 +93,29 @@ export const ConformanceIssue = Entity("conformanceIssue", {
         return { id: op.self, title: input.title };
       },
     }),
+    deleteAndEchoTitle: Operation({
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.Struct({ title: EffectSchema.String }),
+      async run(op) {
+        const row = await op.pull(op.self.eid, [":conformanceIssue/title"]) as Record<string, unknown>;
+        op.self.delete();
+        return { title: row[":conformanceIssue/title"] as string };
+      },
+    }),
+    archive: Operation({
+      input: EffectSchema.Struct({
+        key: EffectSchema.String,
+        owner: EntityId,
+        org: EffectSchema.String,
+      }),
+      output: EffectSchema.Struct({ id: EntityId }),
+      run(op, input) {
+        op.self.set(ConformanceIssue.key, input.key);
+        op.self.set(ConformanceIssue.owner, input.owner as never);
+        op.self.set(ConformanceIssue.org, input.org);
+        return { id: op.self };
+      },
+    }),
     transfer: Operation({
       input: EffectSchema.Struct({
         owner: EntityId,
@@ -89,6 +125,24 @@ export const ConformanceIssue = Entity("conformanceIssue", {
       run(op, input) {
         op.self.set(ConformanceIssue.owner, input.owner as never);
         op.self.set(ConformanceIssue.org, input.org);
+        return { id: op.self };
+      },
+    }),
+    moveLookup: Operation({
+      input: EffectSchema.Struct({
+        replacement: EntityId,
+        archivedKey: EffectSchema.String,
+        lookupKey: EffectSchema.String,
+      }),
+      output: EffectSchema.Struct({ id: EntityId }),
+      run(op, input) {
+        op.self.set(ConformanceIssue.key, input.archivedKey);
+        op.set(
+          ConformanceIssue,
+          input.replacement,
+          ConformanceIssue.key,
+          input.lookupKey,
+        );
         return { id: op.self };
       },
     }),
@@ -119,17 +173,33 @@ const policy = await Effect.runPromise(Policy.compileReadAuthorization({
     Policy.read(ConformanceIssue).when(
       Policy.any(
         admin,
-        Policy.eq(ConformanceIssue.owner, Policy.me),
+        Policy.all(
+          Policy.eq(
+            Policy.path(ConformanceIssue.owner, ConformanceUser.access),
+            Policy.lit("enabled"),
+          ),
+          Policy.eq(ConformanceIssue.owner, Policy.me),
+        ),
         Policy.eq(ConformanceIssue.org, Policy.claim("org")),
       ),
     ),
     Policy.read(ConformanceIssue.audit).when(admin),
     Policy.invoke(ConformanceUser[OwnedOperations].create).when(admin),
+    Policy.invoke(ConformanceUser[OwnedOperations].setAccess).when(admin),
     Policy.invoke(ConformanceIssue[OwnedOperations].create).when(admin),
     Policy.invoke(ConformanceIssue[OwnedOperations].rename).when(
       Policy.any(member, admin),
     ),
+    Policy.invoke(ConformanceIssue[OwnedOperations].deleteAndEchoTitle).when(
+      Policy.any(member, admin),
+    ),
+    Policy.invoke(ConformanceIssue[OwnedOperations].archive).when(
+      Policy.any(member, admin),
+    ),
     Policy.invoke(ConformanceIssue[OwnedOperations].transfer).when(
+      Policy.any(member, admin),
+    ),
+    Policy.invoke(ConformanceIssue[OwnedOperations].moveLookup).when(
       Policy.any(member, admin),
     ),
   ],

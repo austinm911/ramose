@@ -17,23 +17,45 @@ const invoke = async (
   },
   input: unknown,
   target?: number,
+  invocationId: string = crypto.randomUUID(),
 ) => json(base, `/db/${database}/op`, {
   method: "POST",
   token,
   headers: { "content-type": "application/json" },
   body: JSON.stringify({
     ...operationProof,
+    invocationId,
     operation,
     input,
     ...(target === undefined ? {} : { target }),
   }),
 });
 
+const withoutReceipt = (body: Record<string, unknown>) => {
+  const { receipt: _receipt, ...rest } = body;
+  return rest;
+};
+
 const install = async (base: string, database: string) => {
   const response = await testAdmin(base, database, "/transact", {
     tx: schemaTx(OperationSchema),
   });
   expect(response.status).toBe(200);
+};
+
+const operationReceiptCount = async (
+  base: string,
+  database: string,
+): Promise<number> => {
+  const response = await testAdmin(
+    base,
+    database,
+    "/operation-receipts",
+    {},
+  );
+  expect(response.status).toBe(200);
+  expect(response.body.count).toBeNumber();
+  return response.body.count as number;
 };
 
 const waitForCheckpoint = async (
@@ -67,8 +89,11 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         localName: "create",
       }, { title: "Created" });
       expect(created.status).toBe(200);
-      expect(created.body).toEqual({
-        result: { id: expect.any(Number) },
+      expect(typeof created.body.result.id).toBe("number");
+      expect(created.body.receipt).toEqual({
+        version: 1,
+        invocationId: expect.any(String),
+        status: "completed",
       });
       expect(Object.hasOwn(created.body, "t")).toBe(false);
       expect(created.res.headers.get("x-ramose-basis-t")).toBeNull();
@@ -101,7 +126,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         localName: "returnTransportTag",
       }, {});
       expect(transportTag.status).toBe(200);
-      expect(transportTag.body).toEqual({
+      expect(transportTag.body).toMatchObject({
         result: { $inst: "application-value" },
       });
 
@@ -110,7 +135,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         localName: "echoTransportTagInput",
       }, { $inst: "application-input" });
       expect(transportTagInput.status).toBe(200);
-      expect(transportTagInput.body).toEqual({
+      expect(transportTagInput.body).toMatchObject({
         result: { $inst: "application-input" },
       });
 
@@ -142,6 +167,367 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(outputProto.kept).toBe(true);
     });
 
+    test("concurrent duplicates commit once and replay one exact durable receipt", async () => {
+      const base = ctx.urls().nativeOperationsUrl;
+      const database = "operations-idempotent-concurrent";
+      await install(base, database);
+      const token = await signToken(database, "member", "user_concurrent");
+      const operation = {
+        owner: { kind: "entity" as const, name: "nativeItem" },
+        localName: "create",
+      };
+      const input = { title: "Exactly once" };
+      const invocationId = "concurrent-invocation-01";
+
+      const delivered = await Promise.all(
+        Array.from({ length: 8 }, () =>
+          invoke(
+            base,
+            database,
+            token,
+            operation,
+            input,
+            undefined,
+            invocationId,
+          )
+        ),
+      );
+      expect(delivered.every((response) => response.status === 200)).toBe(true);
+      const first = delivered[0]!.body;
+      expect(typeof first.result.id).toBe("number");
+      expect(first.receipt).toEqual({
+        version: 1,
+        invocationId,
+        status: "completed",
+      });
+      expect(delivered.map((response) => response.body)).toEqual(
+        Array.from({ length: delivered.length }, () => first),
+      );
+
+      const beforeRestart = await testAdmin(base, database, "/query", {
+        query: '[:find ?e :where [?e :nativeItem/title "Exactly once"]]',
+      });
+      expect(beforeRestart.body.result).toEqual([[first.result.id]]);
+
+      const aborted = await testAdmin(base, database, "/abort", {
+        target: "transactor",
+      });
+      expect(aborted.status).toBe(200);
+      const replayed = await invoke(
+        base,
+        database,
+        token,
+        operation,
+        input,
+        undefined,
+        invocationId,
+      );
+      expect(replayed.status).toBe(200);
+      expect(replayed.body).toEqual(first);
+
+      const changed = await invoke(
+        base,
+        database,
+        token,
+        operation,
+        { title: "Must not execute" },
+        undefined,
+        invocationId,
+      );
+      expect(changed.status).toBe(409);
+      expect(changed.body).toEqual({
+        error: "request rejected",
+        code: "invocation_conflict",
+      });
+      const absent = await testAdmin(base, database, "/query", {
+        query: '[:find ?e :where [?e :nativeItem/title "Must not execute"]]',
+      });
+      expect(absent.body.result).toEqual([]);
+    });
+
+    test("a self-deleting operation replays after restart without treating its own commit as revocation", async () => {
+      const base = ctx.urls().nativeOperationsUrl;
+      const database = "operations-idempotent-self-delete";
+      await install(base, database);
+      const token = await signToken(database, "member", "user_self_delete");
+      const created = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "create",
+      }, { title: "Erase me" });
+      expect(created.status).toBe(200);
+      const target = created.body.result.id as number;
+      const invocationId = "self-delete-invocation-01";
+      const operation = {
+        owner: { kind: "entity" as const, name: "nativeItem" },
+        localName: "deleteAndEchoTitle",
+      };
+      const completed = await invoke(
+        base,
+        database,
+        token,
+        operation,
+        {},
+        target,
+        invocationId,
+      );
+      expect(completed.status).toBe(200);
+      expect(completed.body).toEqual({
+        result: { title: "ERASE ME" },
+        receipt: { version: 1, invocationId, status: "completed" },
+      });
+
+      // Prove replay remains exact after a later unrelated writer position and
+      // a new isolate, while the original target remains absent.
+      const unrelated = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "create",
+      }, { title: "Unrelated later commit" });
+      expect(unrelated.status).toBe(200);
+      const aborted = await testAdmin(base, database, "/abort", {
+        target: "transactor",
+      });
+      expect(aborted.status).toBe(200);
+
+      const replayed = await invoke(
+        base,
+        database,
+        token,
+        operation,
+        {},
+        target,
+        invocationId,
+      );
+      expect(replayed.status).toBe(200);
+      expect(replayed.body).toEqual(completed.body);
+      const state = await testAdmin(base, database, "/query", {
+        query: '[:find ?title :where [?e :nativeItem/title ?title]]',
+      });
+      expect(state.body.result).toEqual([["Unrelated later commit"]]);
+    });
+
+    test("a disconnected caller retries the exact post-commit result", async () => {
+      const base = ctx.urls().nativeOperationsUrl;
+      const database = "operations-idempotent-disconnect";
+      await install(base, database);
+      const token = await signToken(database, "member", "user_disconnect");
+      const invocationId = "disconnect-invocation-01";
+      const armed = await testAdmin(base, database, "/checkpoint", {
+        scope: "worker",
+        action: "arm-wait",
+        name: "operation.response",
+      });
+      expect(armed.status).toBe(200);
+
+      const controller = new AbortController();
+      const pending = fetch(
+        `${base.replace(/\/+$/, "")}/db/${database}/op`,
+        {
+          method: "POST",
+          signal: controller.signal,
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            ...operationProof,
+            invocationId,
+            operation: {
+              owner: { kind: "entity", name: "nativeItem" },
+              localName: "create",
+            },
+            input: { title: "Lost acknowledgement" },
+          }),
+        },
+      );
+      let released = false;
+      try {
+        await waitForCheckpoint(base, database, "worker", "operation.response");
+        controller.abort();
+        await pending.catch(() => undefined);
+        await testAdmin(base, database, "/checkpoint", {
+          scope: "worker",
+          action: "release",
+          name: "operation.response",
+        });
+        released = true;
+      } finally {
+        controller.abort();
+        if (!released) {
+          await testAdmin(base, database, "/checkpoint", {
+            scope: "worker",
+            action: "release",
+            name: "operation.response",
+          });
+        }
+      }
+
+      const replayed = await invoke(
+        base,
+        database,
+        token,
+        {
+          owner: { kind: "entity", name: "nativeItem" },
+          localName: "create",
+        },
+        { title: "Lost acknowledgement" },
+        undefined,
+        invocationId,
+      );
+      expect(replayed.status).toBe(200);
+      expect(typeof replayed.body.result.id).toBe("number");
+      expect(replayed.body.receipt).toEqual({
+        version: 1,
+        invocationId,
+        status: "completed",
+      });
+      const committed = await testAdmin(base, database, "/query", {
+        query: '[:find ?e :where [?e :nativeItem/title "Lost acknowledgement"]]',
+      });
+      expect(committed.body.result).toEqual([[replayed.body.result.id]]);
+    });
+
+    test("authorization-scope changes conflict instead of replaying or executing", async () => {
+      const base = ctx.urls().nativeOperationsUrl;
+      const database = "operations-idempotent-authorization";
+      await install(base, database);
+      const invocationId = "authorization-invocation-01";
+      const now = Math.floor(Date.now() / 1_000);
+      const member = await signToken(
+        database,
+        "member",
+        "user_scope",
+        undefined,
+        { iat: now - 30, exp: now + 240 },
+      );
+      const changedAuthorization = await signToken(
+        database,
+        "reader",
+        "user_scope",
+      );
+      const operation = {
+        owner: { kind: "entity" as const, name: "nativeItem" },
+        localName: "create",
+      };
+      const input = { title: "Scoped result" };
+      const completed = await invoke(
+        base,
+        database,
+        member,
+        operation,
+        input,
+        undefined,
+        invocationId,
+      );
+      expect(completed.status).toBe(200);
+
+      const changed = await invoke(
+        base,
+        database,
+        changedAuthorization,
+        operation,
+        input,
+        undefined,
+        invocationId,
+      );
+      expect(changed.status).toBe(409);
+      expect(changed.body).toEqual({
+        error: "request rejected",
+        code: "invocation_conflict",
+      });
+
+      const renewed = await signToken(
+        database,
+        "member",
+        "user_scope",
+        undefined,
+        { iat: now, exp: now + 300 },
+      );
+      const replayed = await invoke(
+        base,
+        database,
+        renewed,
+        operation,
+        input,
+        undefined,
+        invocationId,
+      );
+      expect(replayed.body).toEqual(completed.body);
+      const committed = await testAdmin(base, database, "/query", {
+        query: '[:find ?e :where [?e :nativeItem/title "Scoped result"]]',
+      });
+      expect(committed.body.result).toEqual([[completed.body.result.id]]);
+    });
+
+    test("the first exact retry lazily recovers an isolate-lost claim without execution", async () => {
+      const base = ctx.urls().nativeOperationsUrl;
+      const database = "operations-idempotent-indeterminate";
+      await install(base, database);
+      const token = await signToken(database, "member", "user_indeterminate");
+      const invocationId = "indeterminate-invocation-01";
+      const armed = await testAdmin(base, database, "/checkpoint", {
+        scope: "transactor",
+        action: "arm-wait",
+        name: "operation.claimed",
+      });
+      expect(armed.status).toBe(200);
+
+      const pending = invoke(
+        base,
+        database,
+        token,
+        {
+          owner: { kind: "entity", name: "nativeItem" },
+          localName: "create",
+        },
+        { title: "Never executed" },
+        undefined,
+        invocationId,
+      );
+      await waitForCheckpoint(
+        base,
+        database,
+        "transactor",
+        "operation.claimed",
+      );
+      const aborted = await testAdmin(base, database, "/abort", {
+        target: "transactor",
+      });
+      expect(aborted.status).toBe(200);
+      await pending.catch(() => undefined);
+
+      let recovered: Awaited<ReturnType<typeof invoke>> | undefined;
+      for (let attempt = 0; attempt < 20; attempt++) {
+        recovered = await invoke(
+          base,
+          database,
+          token,
+          {
+            owner: { kind: "entity", name: "nativeItem" },
+            localName: "create",
+          },
+          { title: "Never executed" },
+          undefined,
+          invocationId,
+        );
+        if (recovered.status === 409) break;
+        await Bun.sleep(50);
+      }
+      expect(recovered?.status).toBe(409);
+      expect(recovered?.body).toEqual({
+        error: "request state is indeterminate",
+        code: "invocation_indeterminate",
+        receipt: {
+          version: 1,
+          invocationId,
+          status: "indeterminate",
+        },
+      });
+      const absent = await testAdmin(base, database, "/query", {
+        query: '[:find ?e :where [?e :nativeItem/title "Never executed"]]',
+      });
+      expect(absent.body.result).toEqual([]);
+    });
+
     test("targeted operation requires both its grant and filtered target visibility", async () => {
       const base = ctx.urls().nativeOperationsUrl;
       const database = "operations-targeted";
@@ -159,6 +545,7 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(renamed.status).toBe(200);
       expect(renamed.body.result).toEqual({ id: item.body.result.id, title: "After" });
 
+      const receiptsBeforeDenials = await operationReceiptCount(base, database);
       const reader = await signToken(database, "reader");
       const readableButNotGranted = await invoke(base, database, reader, {
         owner: { kind: "entity", name: "nativeItem" },
@@ -177,7 +564,31 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       }, { title: "Denied" }, 999_999);
       expect(grantedButHidden.status).toBe(403);
       expect(nonexistent.status).toBe(403);
-      expect(grantedButHidden.body).toEqual(nonexistent.body);
+      expect(withoutReceipt(grantedButHidden.body)).toEqual(
+        withoutReceipt(nonexistent.body),
+      );
+
+      const uniqueUnauthorized = await Promise.all(
+        Array.from({ length: 24 }, (_, index) =>
+          invoke(
+            base,
+            database,
+            index % 2 === 0 ? reader : operator,
+            {
+              owner: { kind: "entity" as const, name: "nativeItem" },
+              localName: "rename",
+            },
+            { title: `Denied ${index}` },
+            item.body.result.id,
+            `unauthorized-unique-${index}`,
+          )
+        ),
+      );
+      expect(uniqueUnauthorized.every((response) => response.status === 403))
+        .toBe(true);
+      expect(await operationReceiptCount(base, database)).toBe(
+        receiptsBeforeDenials,
+      );
 
       const invalidInput = await invoke(base, database, member, {
         owner: { kind: "entity", name: "nativeItem" },
@@ -323,18 +734,41 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(ordinaryRead.status).toBe(200);
       expect(JSON.stringify(ordinaryRead.body)).not.toContain("Hidden");
 
-      const trusted = await invoke(base, database, member, {
+      const invocationId = "consumed-ref-invocation-01";
+      const operation = {
         owner: { kind: "entity", name: "nativeItem" },
         localName: "deleteHiddenOther",
-      }, { id: hiddenId });
+      } as const;
+      const input = { id: hiddenId };
+      const trusted = await invoke(
+        base,
+        database,
+        member,
+        operation,
+        input,
+        undefined,
+        invocationId,
+      );
       expect(trusted.status).toBe(200);
-      expect(trusted.body).toEqual({ result: { name: "HIDDEN" } });
+      expect(trusted.body).toMatchObject({ result: { name: "HIDDEN" } });
 
       const absent = await testAdmin(base, database, "/query", {
         query: `[:find ?e :where [?e :nativeOther/name "Hidden"]]`,
       });
       expect(absent.status).toBe(200);
       expect(absent.body.result).toEqual([]);
+
+      const replayed = await invoke(
+        base,
+        database,
+        member,
+        operation,
+        input,
+        undefined,
+        invocationId,
+      );
+      expect(replayed.status).toBe(200);
+      expect(replayed.body).toEqual(trusted.body);
     });
 
     test("raw writes and stale unit proofs remain closed", async () => {
@@ -355,36 +789,82 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         localName: "create",
       }, { name: "Conflict" });
       expect(firstUnique.status).toBe(200);
+      const conflictInvocationId = "post-claim-tx-rejection-01";
       const conflict = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeOther" },
         localName: "create",
-      }, { name: "Conflict" });
+      }, { name: "Conflict" }, undefined, conflictInvocationId);
       expect(conflict.status).toBe(409);
-      expect(conflict.body).toEqual({ error: "request rejected" });
+      expect(conflict.body).toMatchObject({
+        error: "request rejected",
+        receipt: { status: "rejected" },
+      });
       expect(JSON.stringify(conflict.body)).not.toContain(String(firstUnique.body.result.id));
+      const conflictReplay = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeOther" },
+        localName: "create",
+      }, { name: "Conflict" }, undefined, conflictInvocationId);
+      expect(conflictReplay).toMatchObject({
+        status: conflict.status,
+        body: conflict.body,
+      });
 
+      const bodyCrashInvocationId = "post-claim-body-failure-01";
       const crashed = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },
         localName: "crash",
-      }, {});
+      }, {}, undefined, bodyCrashInvocationId);
       expect(crashed.status).toBe(500);
       expect(crashed.body.error).toBe("internal error");
+      expect(crashed.body).toMatchObject({
+        code: "invocation_failed",
+        receipt: { status: "failed" },
+      });
       expect(JSON.stringify(crashed.body)).not.toContain("secret@internal");
+      const crashedReplay = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "crash",
+      }, {}, undefined, bodyCrashInvocationId);
+      expect(crashedReplay).toMatchObject({
+        status: crashed.status,
+        body: crashed.body,
+      });
 
+      const receiptsBeforeInputAdmission = await operationReceiptCount(
+        base,
+        database,
+      );
+      const invalidInputId = "pre-admission-invalid-input-01";
       const invalidInput = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },
         localName: "inputCrash",
-      }, { value: 42 });
+      }, { value: 42 }, undefined, invalidInputId);
       expect(invalidInput.status).toBe(400);
       expect(invalidInput.body).toEqual({ error: "invalid request" });
+      expect((await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "inputCrash",
+      }, { value: 42 }, undefined, invalidInputId)).body).toEqual(
+        invalidInput.body,
+      );
 
+      const inputCrashId = "pre-admission-input-crash-01";
       const inputCrashed = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },
         localName: "inputCrash",
-      }, { value: "explode" });
+      }, { value: "explode" }, undefined, inputCrashId);
       expect(inputCrashed.status).toBe(500);
       expect(inputCrashed.body).toEqual({ error: "internal error" });
       expect(JSON.stringify(inputCrashed.body)).not.toContain("input-secret@internal");
+      expect((await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "inputCrash",
+      }, { value: "explode" }, undefined, inputCrashId)).body).toEqual(
+        inputCrashed.body,
+      );
+      expect(await operationReceiptCount(base, database)).toBe(
+        receiptsBeforeInputAdmission,
+      );
 
       const item = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },
@@ -397,14 +877,21 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         localName: "fieldCodec",
       }, { kind: "invalid" }, item.body.result.id);
       expect(invalidField.status).toBe(400);
-      expect(invalidField.body).toEqual({ error: "invalid request" });
+      expect(invalidField.body).toMatchObject({
+        error: "invalid request",
+        receipt: { status: "rejected" },
+      });
 
       const fieldCrashed = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },
         localName: "fieldCodec",
       }, { kind: "crash" }, item.body.result.id);
       expect(fieldCrashed.status).toBe(500);
-      expect(fieldCrashed.body).toEqual({ error: "internal error" });
+      expect(fieldCrashed.body).toMatchObject({
+        error: "internal error",
+        code: "invocation_failed",
+        receipt: { status: "failed" },
+      });
       expect(JSON.stringify(fieldCrashed.body)).not.toContain("field-secret@internal");
 
       const beforeRefCodec = await testAdmin(base, database, "/query", {
@@ -416,14 +903,21 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         localName: "refFieldCodec",
       }, { kind: "invalid", id: firstUnique.body.result.id }, item.body.result.id);
       expect(invalidRef.status).toBe(400);
-      expect(invalidRef.body).toEqual({ error: "invalid request" });
+      expect(invalidRef.body).toMatchObject({
+        error: "invalid request",
+        receipt: { status: "rejected" },
+      });
 
       const refCrashed = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },
         localName: "refFieldCodec",
       }, { kind: "crash", id: firstUnique.body.result.id }, item.body.result.id);
       expect(refCrashed.status).toBe(500);
-      expect(refCrashed.body).toEqual({ error: "internal error" });
+      expect(refCrashed.body).toMatchObject({
+        error: "internal error",
+        code: "invocation_failed",
+        receipt: { status: "failed" },
+      });
       expect(JSON.stringify(refCrashed.body)).not.toContain("ref-secret@internal");
       const afterRefCodec = await testAdmin(base, database, "/query", {
         query: "[:find ?e :where [?e :nativeItem/title ?title]]",
@@ -431,10 +925,11 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
       expect(afterRefCodec.status).toBe(200);
       expect(afterRefCodec.body.t).toBe(beforeRefCodec.body.t);
 
+      const domainRejectionInvocationId = "post-claim-domain-rejection-01";
       const rejected = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },
         localName: "reject",
-      }, {});
+      }, {}, undefined, domainRejectionInvocationId);
       expect(rejected.status).toBe(409);
       expect(rejected.body).toEqual({
         error: "domain refused",
@@ -443,14 +938,33 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         operation: "nativeItem/reject",
         step: "rule",
         reason: "intentional",
+        receipt: {
+          version: 1,
+          invocationId: expect.any(String),
+          status: "rejected",
+        },
+      });
+      const rejectedReplay = await invoke(base, database, token, {
+        owner: { kind: "entity", name: "nativeItem" },
+        localName: "reject",
+      }, {}, undefined, domainRejectionInvocationId);
+      expect(rejectedReplay).toMatchObject({
+        status: rejected.status,
+        body: rejected.body,
       });
 
-      const stale = await json(base, `/db/${database}/op`, {
+      const receiptsBeforeCatalogAdmission = await operationReceiptCount(
+        base,
+        database,
+      );
+      const staleInvocationId = "pre-admission-stale-catalog-01";
+      const staleRequest = () => json(base, `/db/${database}/op`, {
         method: "POST",
         token,
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           ...operationProof,
+          invocationId: staleInvocationId,
           unitHash: "0".repeat(64),
           operation: {
             owner: { kind: "entity", name: "nativeItem" },
@@ -459,13 +973,24 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
           input: { title: "stale" },
         }),
       });
+      const stale = await staleRequest();
+      const staleRetry = await staleRequest();
       const missingOperation = await invoke(base, database, token, {
         owner: { kind: "entity", name: "nativeItem" },
         localName: "missing",
       }, {});
       expect(stale.status).toBe(403);
+      expect(staleRetry).toMatchObject({
+        status: stale.status,
+        body: stale.body,
+      });
       expect(missingOperation.status).toBe(403);
-      expect(stale.body).toEqual(missingOperation.body);
+      expect(withoutReceipt(stale.body)).toEqual(
+        withoutReceipt(missingOperation.body),
+      );
+      expect(await operationReceiptCount(base, database)).toBe(
+        receiptsBeforeCatalogAdmission,
+      );
     });
   });
 };

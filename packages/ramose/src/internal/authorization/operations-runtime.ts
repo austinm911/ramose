@@ -16,6 +16,7 @@ import type {
   OperationEffectContext,
 } from "../../db/Operation.ts";
 import { cloneBindingValue } from "../../db/Binding.ts";
+import { sha256Hex } from "../core/bytes.ts";
 import {
   isQueryObject,
   tryLowerQueryObject,
@@ -31,6 +32,7 @@ import { markEngineTypeAssertion } from "../core/tx-provenance.ts";
 import type { Connection, TxReport } from "../core/conn.ts";
 import { Index } from "../core/datom.ts";
 import type { Db, EntityRef } from "../core/db.ts";
+import { toWireDatom } from "../core/log.ts";
 import { query } from "../core/query/engine.ts";
 import { pull } from "../core/query/pull.ts";
 import { RAMOSE_TYPE, RAMOSE_TYPE_IDENT } from "../core/schema.ts";
@@ -66,13 +68,25 @@ import type {
   OwnerRef,
 } from "./identities.ts";
 import { operationGrantAllows } from "./operation-grant.ts";
+import { canonicalizeJson } from "./canonical-json.ts";
+import type { JsonValue } from "./json.ts";
+import type { AuthorizationPrincipal } from "./principal.ts";
 import {
   constructAuthorizedRequestContext,
   constructAuthorizedResolvedRequestContext,
   type AuthenticatedCaller,
   type AuthorizedRequestContext,
 } from "./request.ts";
-import { uniqueCanonicalTypeName } from "./read-filter.ts";
+import {
+  compileReadFilter,
+  type ReadAuthorizationObservation,
+  uniqueCanonicalTypeName,
+} from "./read-filter.ts";
+import type { InvocationReplayFenceV1 } from "./invocation-receipts.ts";
+
+const REPLAY_AUTHORIZATION_DIGEST_DOMAIN =
+  "ramose/operation-replay-authorization/v1\0";
+const UTF8 = new TextEncoder();
 
 export type OperationInvocation = {
   readonly database: DatabaseId;
@@ -90,6 +104,8 @@ export type OperationInvocation = {
 export type OperationExecution = {
   readonly report: TxReport;
   readonly output: unknown;
+  /** Private data-only replay exemption captured from the staged dbAfter. */
+  readonly replayFence: InvocationReplayFenceV1;
   /** Private lease fence retained by the serialized Transactor only. */
   readonly assertFresh: () => void;
 };
@@ -105,6 +121,29 @@ export type OperationRuntime = {
 export type ResolvedOperationCatalog = {
   readonly deployed: DeployedCatalogDefinition;
   readonly route?: ResolvedDatabaseRoute;
+};
+
+const OPERATION_ADMISSION: unique symbol = Symbol("ramose.operation-admission");
+
+/**
+ * Opaque, request-local proof that the deployed operation, caller, target,
+ * input references, and authorization lease passed on the writer's current
+ * basis. It contains private runnable capabilities and is never serialized.
+ */
+export type CatalogOperationAdmission = {
+  readonly [OPERATION_ADMISSION]: {
+    readonly connection: Connection;
+    readonly runtime: OperationRuntime;
+    readonly invocation: OperationInvocation;
+  };
+  readonly resolved: ResolvedOperationCatalog;
+  readonly binding: DeployedOperationBinding;
+  readonly descriptor: OperationDescriptor;
+  readonly context: AuthorizedRequestContext;
+  readonly decoded: unknown;
+  readonly expiresAtSeconds: number;
+  readonly authoritativeNowMs: number;
+  readonly target?: { readonly eid: number; readonly type: string };
 };
 
 /**
@@ -937,16 +976,107 @@ const resolveOutputHandles = async (
   return visit(shape, value);
 };
 
+type InvocationRefSlot = {
+  readonly path: readonly (string | number)[];
+  readonly eid: number;
+  readonly shape: Extract<OperationInputShape, { readonly _tag: "ref" }>;
+};
+
+const refPathKey = (path: readonly (string | number)[]): string =>
+  JSON.stringify(path);
+
+const collectAuthoritativeRefSlots = (
+  shape: OperationInputShape,
+  value: unknown,
+  path: readonly (string | number)[] = [],
+  slots: InvocationRefSlot[] = [],
+): readonly InvocationRefSlot[] => {
+  switch (shape._tag) {
+    case "ref":
+      if (typeof value === "number") slots.push({ path, eid: value, shape });
+      return slots;
+    case "array":
+      if (Array.isArray(value)) {
+        value.forEach((item, index) =>
+          collectAuthoritativeRefSlots(
+            shape.items,
+            item,
+            [...path, index],
+            slots,
+          )
+        );
+      }
+      return slots;
+    case "struct":
+      if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+        for (const field of shape.fields) {
+          if (Object.hasOwn(value, field.key)) {
+            collectAuthoritativeRefSlots(
+              field.shape,
+              (value as Record<string, unknown>)[field.key],
+              [...path, field.key],
+              slots,
+            );
+          }
+        }
+      }
+      return slots;
+    case "scalar":
+    case "opaque":
+      return slots;
+  }
+};
+
+type ReplayRefExemption = InvocationReplayFenceV1["consumedRefs"][number];
+
+const replayRefExemptions = (
+  fence: InvocationReplayFenceV1,
+  shape: OperationInputShape,
+  value: unknown,
+): ReadonlyMap<string, ReplayRefExemption> => {
+  const slots = new Map(collectAuthoritativeRefSlots(shape, value).map((slot) =>
+    [refPathKey(slot.path), slot] as const
+  ));
+  const exemptions = new Map<string, ReplayRefExemption>();
+  for (const exemption of fence.consumedRefs) {
+    const key = refPathKey(exemption.path);
+    const slot = slots.get(key);
+    if (slot === undefined || slot.eid !== exemption.eid || exemptions.has(key)) {
+      throw new OperationRuntimeFault(
+        "admission",
+        new Error("durable replay fence does not match operation input refs"),
+      );
+    }
+    exemptions.set(key, exemption);
+  }
+  return exemptions;
+};
+
 const validateAuthoritativeRefs = async (
   definition: InstalledCatalogDefinition,
   shape: OperationInputShape,
   value: unknown,
   db: Db,
   selfType: string | undefined,
+  exemptions?: ReadonlyMap<string, ReplayRefExemption>,
+  path: readonly (string | number)[] = [],
 ): Promise<void> => {
   switch (shape._tag) {
     case "ref": {
-      if (typeof value !== "number" || !(await db.exists(value))) {
+      if (typeof value !== "number") {
+        throw new InvalidRequest({ message: "operation ref does not resolve" });
+      }
+      if (!(await db.exists(value))) {
+        const exemption = exemptions?.get(refPathKey(path));
+        if (
+          exemption !== undefined && exemption.eid === value &&
+          refCompatible(
+            definition,
+            shape.refTarget,
+            exemption.type,
+            selfType,
+          )
+        ) return;
         throw new InvalidRequest({ message: "operation ref does not resolve" });
       }
       const concrete = await typeName(db, value);
@@ -957,8 +1087,16 @@ const validateAuthoritativeRefs = async (
     }
     case "array":
       if (Array.isArray(value)) {
-        for (const item of value) {
-          await validateAuthoritativeRefs(definition, shape.items, item, db, selfType);
+        for (let index = 0; index < value.length; index++) {
+          await validateAuthoritativeRefs(
+            definition,
+            shape.items,
+            value[index],
+            db,
+            selfType,
+            exemptions,
+            [...path, index],
+          );
         }
       }
       return;
@@ -972,6 +1110,8 @@ const validateAuthoritativeRefs = async (
               (value as Record<string, unknown>)[field.key],
               db,
               selfType,
+              exemptions,
+              [...path, field.key],
             );
           }
         }
@@ -981,6 +1121,257 @@ const validateAuthoritativeRefs = async (
     case "opaque":
       return;
   }
+};
+
+const observationKey = (observation: ReadAuthorizationObservation): string => {
+  switch (observation._tag) {
+    case "type":
+      return `type:${observation.eid}`;
+    case "field":
+      return `field:${observation.eid}:${observation.ident}`;
+    case "exists":
+      return `exists:${observation.eid}`;
+  }
+};
+
+type ReplayAuthorizationReadSet = Extract<
+  NonNullable<InvocationReplayFenceV1["target"]>["postCommit"],
+  { readonly kind: "absent" }
+>["authorizationReadSet"];
+type ReplayAuthorizationReadKey = ReplayAuthorizationReadSet[number];
+
+const observationReadKey = (
+  observation: ReadAuthorizationObservation,
+): ReplayAuthorizationReadKey => {
+  switch (observation._tag) {
+    case "type":
+    case "exists":
+      return Object.freeze({ kind: observation._tag, eid: observation.eid });
+    case "field":
+      return Object.freeze({
+        kind: "field",
+        eid: observation.eid,
+        ident: observation.ident,
+      });
+  }
+};
+
+const readAuthorizationObservation = async (
+  db: Db,
+  key: ReplayAuthorizationReadKey,
+): Promise<ReadAuthorizationObservation> => {
+  switch (key.kind) {
+    case "type": {
+      const datoms = await db.datomsArray(Index.EAVT, {
+        e: key.eid,
+        a: RAMOSE_TYPE,
+      });
+      return { _tag: "type", eid: key.eid, datoms: datoms.map(toWireDatom) };
+    }
+    case "exists":
+      return { _tag: "exists", eid: key.eid, value: await db.exists(key.eid) };
+    case "field": {
+      const attribute = db.schema.attr(key.ident);
+      const datoms = attribute === undefined
+        ? []
+        : await db.datomsArray(Index.EAVT, { e: key.eid, a: attribute.id });
+      return {
+        _tag: "field",
+        eid: key.eid,
+        ident: key.ident,
+        attributeId: attribute?.id ?? null,
+        datoms: datoms.map(toWireDatom),
+      };
+    }
+  }
+};
+
+const hashAuthorizationObservations = async (
+  principal: AuthorizationPrincipal,
+  eid: number,
+  targetRef: EntityRef,
+  observations: readonly ReadAuthorizationObservation[],
+): Promise<string> => {
+  const material = toJson({
+    version: 1,
+    resourceEid: eid,
+    targetRef,
+    principalEid: principal.me?.eid ?? null,
+    observations: [...observations]
+      .map((observation) => [observationKey(observation), observation] as const)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, observation]) => ({ key, observation })),
+  }) as JsonValue;
+  return sha256Hex(UTF8.encode(
+    `${REPLAY_AUTHORIZATION_DIGEST_DOMAIN}${canonicalizeJson(material)}`,
+  ));
+};
+
+const authorizationReadSetDigest = async (
+  principal: AuthorizationPrincipal,
+  db: Db,
+  eid: number,
+  targetRef: EntityRef,
+  readSet: ReplayAuthorizationReadSet,
+): Promise<string> => hashAuthorizationObservations(
+  principal,
+  eid,
+  targetRef,
+  await Promise.all(readSet.map((key) => readAuthorizationObservation(db, key))),
+);
+
+/**
+ * Re-evaluate one target's filtered visibility while recording the immutable
+ * database facts actually consulted by the read policy. The durable receipt
+ * stores only the domain-separated digest, never hidden datoms themselves.
+ */
+const targetAuthorizationState = async (
+  definition: InstalledCatalogDefinition,
+  principal: AuthorizationPrincipal,
+  db: Db,
+  eid: number,
+  targetRef: EntityRef,
+): Promise<{
+  readonly visible: boolean;
+  readonly digest: string;
+  readonly observations: readonly ReadAuthorizationObservation[];
+}> => {
+  const observations = new Map<string, ReadAuthorizationObservation>();
+  const current = db.withComposition(definition.composition);
+  const predicate = compileReadFilter({
+    unit: definition.unit,
+    principal,
+    currentDb: current,
+    observe: (observation) => {
+      observations.set(observationKey(observation), observation);
+    },
+  });
+  const filtered = current.filter(predicate);
+  const visibleEid = typeof targetRef === "number"
+    ? targetRef
+    : await filtered.entid(targetRef);
+  // Always evaluate the originally fenced eid. A self-commit may remove the
+  // lookup value while leaving a hidden row whose policy dependencies still
+  // have to be bound into the durable witness.
+  const resourceVisible = await filtered.exists(eid);
+  const visible = visibleEid === eid && resourceVisible;
+  const observed = Object.freeze([...observations.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, observation]) => observation));
+  const digest = await hashAuthorizationObservations(
+    principal,
+    eid,
+    targetRef,
+    observed,
+  );
+  return Object.freeze({ visible, digest, observations: observed });
+};
+
+const captureInvocationReplayFence = async (
+  admission: CatalogOperationAdmission,
+  dbAfter: Db,
+): Promise<InvocationReplayFenceV1> => {
+  const originalDb = admission.context.currentDb;
+  const typeCache = new Map<number, Promise<string | undefined>>();
+  const originalType = (eid: number): Promise<string | undefined> => {
+    const cached = typeCache.get(eid);
+    if (cached !== undefined) return cached;
+    const pending = typeName(originalDb, eid);
+    typeCache.set(eid, pending);
+    return pending;
+  };
+  const consumedRefs: InvocationReplayFenceV1["consumedRefs"][number][] = [];
+  for (const slot of collectAuthoritativeRefSlots(
+    admission.descriptor.input,
+    admission.decoded,
+  )) {
+    if (await dbAfter.exists(slot.eid)) continue;
+    const concrete = await originalType(slot.eid);
+    if (concrete === undefined) {
+      throw new OperationRuntimeFault(
+        "admission",
+        new Error("admitted operation ref has no pre-commit type"),
+      );
+    }
+    consumedRefs.push(Object.freeze({
+      path: Object.freeze([...slot.path]),
+      eid: slot.eid,
+      type: concrete,
+    }));
+  }
+  let target: InvocationReplayFenceV1["target"];
+  if (admission.target !== undefined) {
+    const invocationTarget = admission[OPERATION_ADMISSION].invocation.target;
+    if (invocationTarget === undefined) {
+      throw new OperationRuntimeFault(
+        "admission",
+        new Error("admitted targeted operation has no invocation target"),
+      );
+    }
+    const referenceEid = typeof invocationTarget === "number"
+      ? invocationTarget
+      : await dbAfter.entid(invocationTarget) ?? null;
+    if (!(await dbAfter.exists(admission.target.eid))) {
+      const before = await targetAuthorizationState(
+        admission.resolved.deployed.definition,
+        admission.context.principal,
+        originalDb,
+        admission.target.eid,
+        invocationTarget,
+      );
+      if (!before.visible) {
+        throw new OperationRuntimeFault(
+          "admission",
+          new Error("admitted target has no pre-commit authorization witness"),
+        );
+      }
+      const authorizationReadSet = Object.freeze(before.observations
+        // The target's disappearance is fenced separately. Keep consumed-ref
+        // observations: sampling them as absent after this exact commit lets
+        // an exact retry pass while any later resurrection changes the digest.
+        .filter((observation) => observation.eid !== admission.target!.eid)
+        .map(observationReadKey));
+      const authorizationDigest = await authorizationReadSetDigest(
+        admission.context.principal,
+        dbAfter,
+        admission.target.eid,
+        invocationTarget,
+        authorizationReadSet,
+      );
+      target = Object.freeze({
+        ...admission.target,
+        referenceEid,
+        postCommit: Object.freeze({
+          kind: "absent" as const,
+          authorizationDigest,
+          authorizationReadSet,
+        }),
+      });
+    } else {
+      const authorization = await targetAuthorizationState(
+        admission.resolved.deployed.definition,
+        admission.context.principal,
+        dbAfter,
+        admission.target.eid,
+        invocationTarget,
+      );
+      target = Object.freeze({
+        ...admission.target,
+        referenceEid,
+        postCommit: authorization.visible
+          ? Object.freeze({ kind: "visible" as const })
+          : Object.freeze({
+            kind: "hidden" as const,
+            authorizationDigest: authorization.digest,
+          }),
+      });
+    }
+  }
+  return Object.freeze({
+    version: 1,
+    ...(target === undefined ? {} : { target }),
+    consumedRefs: Object.freeze(consumedRefs),
+  });
 };
 
 const resolveReportEntity = async (
@@ -1083,13 +1474,19 @@ const validateSubjectChecks = async (
   }
 };
 
-/** Execute one invocation while the Transactor's serialized writer owns the basis. */
-export const executeCatalogOperation = async (
+/**
+ * Re-run every current-basis admission check without invoking the native
+ * operation body. Completed receipts use this before replay, so a receipt is
+ * never an authorization cache after a target or data-derived view is revoked.
+ */
+const authorizeCatalogOperationOnDb = async (
   connection: Connection,
   runtime: OperationRuntime,
   invocation: OperationInvocation,
+  currentDb: Db,
   resolvedCatalog?: ResolvedOperationCatalog,
-): Promise<OperationExecution> => {
+  replayFence?: InvocationReplayFenceV1,
+): Promise<CatalogOperationAdmission> => {
   const authorizationCaller = invocation.caller;
   // Admission finishes before native code runs. Keep the later lease fences
   // on this primitive snapshot; body-visible claims are intentionally ordinary
@@ -1126,13 +1523,13 @@ export const executeCatalogOperation = async (
         routeDatabase: invocation.database,
         catalogKey: invocation.catalogKey,
         unitHash: invocation.unitHash,
-        currentDb: () => Effect.succeed(connection.db()),
+        currentDb: () => Effect.succeed(currentDb),
       }, authorizationCaller)
       : constructAuthorizedResolvedRequestContext({
         authenticate: Effect.succeed(authorizationCaller),
         bindings: runtime.bindings,
         route: resolved.route,
-        currentDb: () => Effect.succeed(connection.db()),
+        currentDb: () => Effect.succeed(currentDb),
       }, authorizationCaller),
   );
   if (!operationGrantAllows(
@@ -1145,12 +1542,90 @@ export const executeCatalogOperation = async (
   let target: { readonly eid: number; readonly type: string } | undefined;
   if (descriptor.id.target === "required") {
     if (invocation.target === undefined) throw deny();
-    target = await resolveVisibleTarget(context, invocation.target);
+    if (replayFence !== undefined) {
+      const fenced = replayFence.target;
+      if (fenced === undefined) {
+        throw new OperationRuntimeFault(
+          "admission",
+          new Error("durable replay target fence does not match operation"),
+        );
+      }
+      const currentReferenceEid = typeof invocation.target === "number"
+        ? invocation.target
+        : await context.currentDb.entid(invocation.target) ?? null;
+      if (
+        (typeof invocation.target === "number" &&
+          invocation.target !== fenced.eid) ||
+        (typeof invocation.target !== "number" &&
+          currentReferenceEid !== fenced.referenceEid) ||
+        !typeCompatible(
+          deployed.definition,
+          descriptor.id.owner,
+          fenced.type,
+        )
+      ) throw deny();
+
+      // Always inspect the originally resolved eid directly. A lookup that no
+      // longer resolves or now resolves to the exact post-commit replacement
+      // must not substitute that row as the operation subject.
+      const fencedExists = await context.currentDb.exists(fenced.eid);
+      switch (fenced.postCommit.kind) {
+        case "visible": {
+          target = await resolveVisibleTarget(context, invocation.target);
+          if (
+            !fencedExists ||
+            target === undefined ||
+            target.eid !== fenced.eid
+          ) throw deny();
+          break;
+        }
+        case "absent":
+          if (fencedExists) throw deny();
+          {
+            const currentDigest = await authorizationReadSetDigest(
+              context.principal,
+              context.currentDb,
+              fenced.eid,
+              invocation.target,
+              fenced.postCommit.authorizationReadSet,
+            );
+            if (currentDigest !== fenced.postCommit.authorizationDigest) {
+              throw deny();
+            }
+          }
+          target = { eid: fenced.eid, type: fenced.type };
+          break;
+        case "hidden": {
+          if (!fencedExists) throw deny();
+          const authorization = await targetAuthorizationState(
+            deployed.definition,
+            context.principal,
+            context.currentDb,
+            fenced.eid,
+            invocation.target,
+          );
+          if (
+            authorization.visible ||
+            authorization.digest !== fenced.postCommit.authorizationDigest
+          ) throw deny();
+          target = { eid: fenced.eid, type: fenced.type };
+          break;
+        }
+      }
+    } else {
+      target = await resolveVisibleTarget(context, invocation.target);
+      if (target === undefined) throw deny();
+    }
     if (target === undefined || !typeCompatible(deployed.definition, descriptor.id.owner, target.type)) {
       throw deny();
     }
   } else if (invocation.target !== undefined) {
     throw deny();
+  } else if (replayFence?.target !== undefined) {
+    throw new OperationRuntimeFault(
+      "admission",
+      new Error("durable replay target fence does not match operation"),
+    );
   }
 
   let decoded: unknown;
@@ -1164,13 +1639,99 @@ export const executeCatalogOperation = async (
     }
     throw new OperationRuntimeFault("input", cause);
   }
+  const exemptions = replayFence === undefined
+    ? undefined
+    : replayRefExemptions(replayFence, descriptor.input, decoded);
   await validateAuthoritativeRefs(
     deployed.definition,
     descriptor.input,
     decoded,
     context.currentDb,
     target?.type ?? (descriptor.id.owner.kind === "entity" ? descriptor.id.owner.name : undefined),
+    exemptions,
   );
+
+  return Object.freeze({
+    [OPERATION_ADMISSION]: { connection, runtime, invocation },
+    resolved,
+    binding,
+    descriptor,
+    context,
+    decoded,
+    expiresAtSeconds,
+    authoritativeNowMs,
+    ...(target === undefined ? {} : { target }),
+  });
+};
+
+export const authorizeCatalogOperation = async (
+  connection: Connection,
+  runtime: OperationRuntime,
+  invocation: OperationInvocation,
+  resolvedCatalog?: ResolvedOperationCatalog,
+): Promise<CatalogOperationAdmission> =>
+  authorizeCatalogOperationOnDb(
+    connection,
+    runtime,
+    invocation,
+    connection.db(),
+    resolvedCatalog,
+  );
+
+/** Current-basis, no-body admission for an exact completed receipt replay. */
+export const authorizeCatalogOperationReplay = async (
+  connection: Connection,
+  runtime: OperationRuntime,
+  invocation: OperationInvocation,
+  replayFence: InvocationReplayFenceV1,
+  resolvedCatalog?: ResolvedOperationCatalog,
+): Promise<void> => {
+  await authorizeCatalogOperationOnDb(
+    connection,
+    runtime,
+    invocation,
+    connection.db(),
+    resolvedCatalog,
+    replayFence,
+  );
+};
+
+/** Execute one invocation while the Transactor's serialized writer owns the basis. */
+export const executeCatalogOperation = async (
+  connection: Connection,
+  runtime: OperationRuntime,
+  invocation: OperationInvocation,
+  resolvedCatalog?: ResolvedOperationCatalog,
+  admitted?: CatalogOperationAdmission,
+): Promise<OperationExecution> => {
+  const admission = admitted ?? await authorizeCatalogOperation(
+    connection,
+    runtime,
+    invocation,
+    resolvedCatalog,
+  );
+  const owner = admission[OPERATION_ADMISSION];
+  if (
+    owner.connection !== connection || owner.runtime !== runtime ||
+    owner.invocation !== invocation
+  ) {
+    throw new OperationRuntimeFault(
+      "admission",
+      new Error("operation admission belongs to a different invocation"),
+    );
+  }
+  const {
+    authoritativeNowMs,
+    binding,
+    context,
+    decoded,
+    descriptor,
+    expiresAtSeconds,
+    resolved,
+    target,
+  } = admission;
+  const authorizationCaller = invocation.caller;
+  const deployed = resolved.deployed;
 
   const collector = createCollector({
     definition: deployed.definition,
@@ -1225,7 +1786,11 @@ export const executeCatalogOperation = async (
       } catch (cause) {
         throw new OperationRuntimeFault("output", cause);
       }
-      return encoded;
+      const replayFence = await captureInvocationReplayFence(
+        admission,
+        report.dbAfter,
+      );
+      return { output: encoded, replayFence };
     },
     authoritativeNowMs,
     // Synchronous Connection pre-apply hook: every body/effect/read/output
@@ -1234,7 +1799,8 @@ export const executeCatalogOperation = async (
   );
   return {
     report: staged.report,
-    output: staged.value,
+    output: staged.value.output,
+    replayFence: staged.value.replayFence,
     assertFresh: () => requireFreshAuthorization(runtime, expiresAtSeconds, descriptor),
   };
 };

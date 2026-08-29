@@ -18,6 +18,12 @@ import {
 
 export const OPERATION_DATABASES = Object.freeze([
   "operations-static",
+  "operations-idempotent-concurrent",
+  "operations-idempotent-disconnect",
+  "operations-idempotent-authorization",
+  "operations-idempotent-indeterminate",
+  "operations-idempotent-revocation",
+  "operations-idempotent-self-delete",
   "operations-targeted",
   "operations-expiry",
   "operations-response-expiry",
@@ -97,6 +103,15 @@ export const Item = Entity("nativeItem", {
       run(op, input) {
         op.self.set(Item.title, input.title);
         return { id: op.self, title: input.title };
+      },
+    }),
+    deleteAndEchoTitle: Operation({
+      input: EffectSchema.Struct({}),
+      output: EffectSchema.Struct({ title: EffectSchema.String }),
+      async run(op) {
+        const row = await op.pull(op.self.eid, [":nativeItem/title"]) as Record<string, unknown>;
+        op.self.delete();
+        return { title: (row[":nativeItem/title"] as string).toUpperCase() };
       },
     }),
     deleteHiddenOther: Operation({
@@ -207,6 +222,7 @@ const policy = await Effect.runPromise(Policy.compileReadAuthorization({
       Policy.hasClass("member"),
       Policy.hasClass("operator"),
     )),
+    Policy.invoke(Item[OwnedOperations].deleteAndEchoTitle).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].deleteHiddenOther).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].crash).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].inputCrash).when(Policy.hasClass("member")),

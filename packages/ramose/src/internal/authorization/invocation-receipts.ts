@@ -1,0 +1,707 @@
+/**
+ * Durable, transport-neutral receipts for authoritative operation invocations.
+ *
+ * The per-database Transactor owns persistence and execution. This module owns
+ * only the canonical identity, pure state machine, replay decision, and sealed
+ * public projection shared by every transport that invokes that writer.
+ */
+
+import * as Effect from "effect/Effect";
+import { InvalidRequest } from "../../db/Errors.ts";
+import { sha256Hex } from "../core/bytes.ts";
+import { toJson } from "../core/json.ts";
+import { canonicalizeJson } from "./canonical-json.ts";
+import type { JsonValue } from "./json.ts";
+import type { OperationInvocation } from "./operations-runtime.ts";
+
+export const INVOCATION_RECEIPT_VERSION = 1 as const;
+export const MAX_INVOCATION_ID_LENGTH = 256;
+
+/** Receipt wrapper around the existing authoritative operation input. */
+export type AuthoritativeOperationInvocation = OperationInvocation & {
+  readonly invocationId: string;
+};
+
+const INVOCATION_SCOPE_DIGEST_DOMAIN =
+  "ramose/authoritative-invocation-scope/v1\0";
+const INVOCATION_DIGEST_DOMAIN = "ramose/authoritative-invocation/v1\0";
+const UTF8 = new TextEncoder();
+const DIGEST_RE = /^[0-9a-f]{64}$/;
+
+export type InvocationReceiptStatus =
+  | "completed"
+  | "rejected"
+  | "failed"
+  | "indeterminate";
+
+/** The complete receipt visible to callers. Internal scope and digests stay sealed. */
+export type PublicInvocationReceiptV1 = {
+  readonly version: typeof INVOCATION_RECEIPT_VERSION;
+  readonly invocationId: string;
+  readonly status: InvocationReceiptStatus;
+};
+
+/** A deterministic caller-visible refusal, stored without private engine detail. */
+export type SealedInvocationRejection =
+  | { readonly kind: "unauthorized" }
+  | { readonly kind: "invalid_request" }
+  | { readonly kind: "request_rejected" }
+  | {
+    readonly kind: "operation_rejected";
+    readonly message: string;
+    readonly operation: string;
+    readonly step?: string;
+    readonly reason?: string;
+  };
+
+type InvocationReceiptIdentity = {
+  readonly version: typeof INVOCATION_RECEIPT_VERSION;
+  /** Stable verified JWT subject. The database is supplied by the owning DO. */
+  readonly principalId: string;
+  readonly invocationId: string;
+  /**
+   * Database, graph derivation, verified subject/attrs, and classes. Renewable
+   * JWT envelope metadata (token, key, issuer, audience, iat, exp) is excluded.
+   */
+  readonly scopeDigest: string;
+  /** Operation identity/version, target, input, and deployed-catalog preconditions. */
+  readonly invocationDigest: string;
+};
+
+export type ClaimedInvocationReceipt = InvocationReceiptIdentity & {
+  readonly status: "claimed";
+};
+
+export type InvocationReplayFenceV1 = {
+  readonly version: 1;
+  /** Original resolved target plus its exact post-commit admission state. */
+  readonly target?: {
+    readonly eid: number;
+    readonly type: string;
+    /** Resolution of the original numeric/ident/lookup ref after the commit. */
+    readonly referenceEid: number | null;
+    readonly postCommit:
+      | { readonly kind: "visible" }
+      | {
+        readonly kind: "absent";
+        readonly authorizationDigest: string;
+        /** Non-target policy observations admitted before self-deletion. */
+        readonly authorizationReadSet: readonly (
+          | { readonly kind: "type" | "exists"; readonly eid: number }
+          | {
+            readonly kind: "field";
+            readonly eid: number;
+            readonly ident: string;
+          }
+        )[];
+      }
+      | {
+        readonly kind: "hidden";
+        /** Digest of every database observation used by read-policy denial. */
+        readonly authorizationDigest: string;
+      };
+  };
+  /** Original input-ref slots made absent by this invocation. */
+  readonly consumedRefs: readonly {
+    readonly path: readonly (string | number)[];
+    readonly eid: number;
+    readonly type: string;
+  }[];
+};
+
+export type CompletedInvocationReceipt = InvocationReceiptIdentity & {
+  readonly status: "completed";
+  /** Private writer position used only for cache invalidation. Never public. */
+  readonly committedT: number;
+  /** Exact JSON output materialized by the deployed operation codec before commit. */
+  readonly output: unknown;
+  /** Private, data-only exemption for absences caused by this exact commit. */
+  readonly replayFence: InvocationReplayFenceV1;
+};
+
+export type RejectedInvocationReceipt = InvocationReceiptIdentity & {
+  readonly status: "rejected";
+  readonly rejection: SealedInvocationRejection;
+};
+
+export type FailedInvocationReceipt = InvocationReceiptIdentity & {
+  readonly status: "failed";
+};
+
+export type IndeterminateInvocationReceipt = InvocationReceiptIdentity & {
+  readonly status: "indeterminate";
+};
+
+export type TerminalInvocationReceipt =
+  | CompletedInvocationReceipt
+  | RejectedInvocationReceipt
+  | FailedInvocationReceipt
+  | IndeterminateInvocationReceipt;
+
+export type StoredInvocationReceipt =
+  | ClaimedInvocationReceipt
+  | TerminalInvocationReceipt;
+
+export type PreparedInvocationReceipt = InvocationReceiptIdentity;
+
+export type InvocationReceiptDecision =
+  | {
+    readonly _tag: "Claim";
+    readonly receipt: ClaimedInvocationReceipt;
+  }
+  | {
+    readonly _tag: "Replay";
+    readonly receipt: TerminalInvocationReceipt;
+  }
+  | {
+    readonly _tag: "Recover";
+    readonly receipt: IndeterminateInvocationReceipt;
+  }
+  | { readonly _tag: "Conflict" };
+
+export type InvocationReceiptEvent =
+  | {
+    readonly _tag: "Complete";
+    readonly committedT: number;
+    readonly output: unknown;
+    readonly replayFence: InvocationReplayFenceV1;
+  }
+  | {
+    readonly _tag: "Reject";
+    readonly rejection: SealedInvocationRejection;
+  }
+  | { readonly _tag: "Fail" }
+  | { readonly _tag: "Recover" };
+
+export type InvocationReceiptOutcome =
+  | {
+    readonly _tag: "Completed";
+    readonly receipt: PublicInvocationReceiptV1 & { readonly status: "completed" };
+    readonly committedT: number;
+    readonly output: unknown;
+  }
+  | {
+    readonly _tag: "Rejected";
+    readonly receipt: PublicInvocationReceiptV1 & { readonly status: "rejected" };
+    readonly rejection: SealedInvocationRejection;
+  }
+  | {
+    readonly _tag: "Failed";
+    readonly receipt: PublicInvocationReceiptV1 & { readonly status: "failed" };
+  }
+  | {
+    readonly _tag: "Indeterminate";
+    readonly receipt: PublicInvocationReceiptV1 & { readonly status: "indeterminate" };
+  };
+
+export type AuthoritativeInvocationResult =
+  | InvocationReceiptOutcome
+  | { readonly _tag: "Conflict" };
+
+const invalid = (message: string): InvalidRequest =>
+  new InvalidRequest({ message });
+
+/** Invocation IDs are opaque caller data, bounded only for durable key safety. */
+export const requireInvocationId = (value: unknown): string => {
+  if (
+    typeof value !== "string" || value.length === 0 ||
+    value.length > MAX_INVOCATION_ID_LENGTH
+  ) {
+    throw invalid(
+      `invocationId must be a non-empty string of at most ${MAX_INVOCATION_ID_LENGTH} characters`,
+    );
+  }
+  return value;
+};
+
+/** Verified JWT admission requires this subject; receipts never fall back to roles. */
+export const invocationPrincipalId = (
+  invocation: Pick<AuthoritativeOperationInvocation, "caller">,
+): string => {
+  const subject = invocation.caller.claims.sub;
+  if (typeof subject !== "string" || subject.length === 0) {
+    throw invalid("operation invocation requires a verified principal subject");
+  }
+  return subject;
+};
+
+/**
+ * Pure authorization claim view; ordinary JWT renewal leaves it unchanged.
+ * Class order and duplicates are preserved because trusted operation code sees
+ * the first verified class as `op.principal.class`.
+ */
+export const invocationScopeMaterial = (
+  invocation: AuthoritativeOperationInvocation,
+): JsonValue => ({
+  version: INVOCATION_RECEIPT_VERSION,
+  database: invocation.database,
+  principal: {
+    claims: invocation.caller.claims,
+    classes: [...invocation.caller.classes],
+  },
+  graph: invocation.routeDerivation === undefined
+    ? null
+    : {
+      rootDatabase: invocation.routeDerivation.rootDatabase,
+      graphs: invocation.routeDerivation.graphs.map((graph) => ({
+        graphEntity: graph.graphEntity,
+        catalogKey: graph.catalogKey,
+      })),
+    },
+});
+
+/** Pure canonical invocation material. No callback/source/executable can enter it. */
+export const invocationDigestMaterial = (
+  invocation: AuthoritativeOperationInvocation,
+): JsonValue => ({
+  version: INVOCATION_RECEIPT_VERSION,
+  operation: {
+    catalogKey: invocation.catalogKey,
+    unitHash: invocation.unitHash,
+    owner: {
+      kind: invocation.owner.kind,
+      name: invocation.owner.name,
+    },
+    localName: invocation.localName,
+  },
+  target: invocation.target === undefined
+    ? null
+    : toJson(invocation.target) as JsonValue,
+  input: invocation.input === undefined
+    ? { present: false }
+    : { present: true, value: invocation.input as JsonValue },
+});
+
+const hashCanonical = Effect.fn("Authorization.hashInvocationReceiptMaterial")(
+  function* (domain: string, material: JsonValue) {
+    return yield* Effect.tryPromise({
+      try: () => sha256Hex(
+        UTF8.encode(`${domain}${canonicalizeJson(material)}`),
+      ),
+      catch: () => invalid("operation invocation must contain canonical JSON data"),
+    });
+  },
+);
+
+/** Canonicalize and hash the exact scope and invocation before a durable claim. */
+export const prepareInvocationReceipt = Effect.fn(
+  "Authorization.prepareInvocationReceipt",
+)(function* (
+  invocation: AuthoritativeOperationInvocation,
+): Effect.fn.Return<PreparedInvocationReceipt, InvalidRequest> {
+  const invocationId = requireInvocationId(invocation.invocationId);
+  const principalId = invocationPrincipalId(invocation);
+  const [scopeDigest, invocationDigest] = yield* Effect.all([
+    hashCanonical(INVOCATION_SCOPE_DIGEST_DOMAIN, invocationScopeMaterial(invocation)),
+    hashCanonical(INVOCATION_DIGEST_DOMAIN, invocationDigestMaterial(invocation)),
+  ]);
+  return Object.freeze({
+    version: INVOCATION_RECEIPT_VERSION,
+    principalId,
+    invocationId,
+    scopeDigest,
+    invocationDigest,
+  });
+});
+
+const sameIdentity = (
+  stored: StoredInvocationReceipt,
+  prepared: PreparedInvocationReceipt,
+): boolean =>
+  stored.version === prepared.version &&
+  stored.principalId === prepared.principalId &&
+  stored.invocationId === prepared.invocationId &&
+  stored.scopeDigest === prepared.scopeDigest &&
+  stored.invocationDigest === prepared.invocationDigest;
+
+const hasExactKeys = (
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): boolean => {
+  const expected = new Set(keys);
+  return Object.keys(value).length === expected.size &&
+    Object.keys(value).every((key) => expected.has(key));
+};
+
+const isReplayTargetPostCommit = (
+  value: unknown,
+): value is NonNullable<InvocationReplayFenceV1["target"]>["postCommit"] => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.kind === "visible") {
+    return hasExactKeys(record, ["kind"]);
+  }
+  if (
+    record.kind === "absent" &&
+    typeof record.authorizationDigest === "string" &&
+    DIGEST_RE.test(record.authorizationDigest) &&
+    Array.isArray(record.authorizationReadSet) &&
+    isAuthorizationReadSet(record.authorizationReadSet)
+  ) {
+    return hasExactKeys(record, [
+      "kind",
+      "authorizationDigest",
+      "authorizationReadSet",
+    ]);
+  }
+  return record.kind === "hidden" &&
+    typeof record.authorizationDigest === "string" &&
+    DIGEST_RE.test(record.authorizationDigest) &&
+    hasExactKeys(record, ["kind", "authorizationDigest"]);
+};
+
+const isAuthorizationReadSet = (value: readonly unknown[]): boolean => {
+  const keys = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      return false;
+    }
+    const record = item as Record<string, unknown>;
+    if (!Number.isSafeInteger(record.eid) || (record.eid as number) < 0) {
+      return false;
+    }
+    let key: string;
+    if (record.kind === "type" || record.kind === "exists") {
+      if (!hasExactKeys(record, ["kind", "eid"])) return false;
+      key = `${record.kind}:${record.eid as number}`;
+    } else if (
+      record.kind === "field" && typeof record.ident === "string" &&
+      record.ident.length > 0 && hasExactKeys(record, ["kind", "eid", "ident"])
+    ) {
+      key = `field:${record.eid as number}:${record.ident}`;
+    } else {
+      return false;
+    }
+    if (keys.has(key)) return false;
+    keys.add(key);
+  }
+  return true;
+};
+
+const isFenceEntity = (value: unknown): value is NonNullable<
+  InvocationReplayFenceV1["target"]
+> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return Number.isSafeInteger(record.eid) && (record.eid as number) >= 0 &&
+    typeof record.type === "string" && record.type.length > 0 &&
+    (record.referenceEid === null ||
+      (Number.isSafeInteger(record.referenceEid) &&
+        (record.referenceEid as number) >= 0)) &&
+    isReplayTargetPostCommit(record.postCommit) &&
+    hasExactKeys(record, ["eid", "type", "referenceEid", "postCommit"]);
+};
+
+const isInvocationReplayFence = (
+  value: unknown,
+): value is InvocationReplayFenceV1 => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.version !== 1 || !Array.isArray(record.consumedRefs) ||
+    (record.target !== undefined && !isFenceEntity(record.target)) ||
+    !hasExactKeys(record, [
+      "version",
+      ...(record.target === undefined ? [] : ["target"]),
+      "consumedRefs",
+    ])
+  ) return false;
+  const paths = new Set<string>();
+  for (const item of record.consumedRefs) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      return false;
+    }
+    const consumed = item as Record<string, unknown>;
+    if (
+      !Array.isArray(consumed.path) ||
+      !consumed.path.every((segment) =>
+        (typeof segment === "string" && segment.length > 0) ||
+        (typeof segment === "number" &&
+          Number.isSafeInteger(segment) && segment >= 0)
+      ) ||
+      !Number.isSafeInteger(consumed.eid) || (consumed.eid as number) < 0 ||
+      typeof consumed.type !== "string" || consumed.type.length === 0 ||
+      !hasExactKeys(consumed, ["path", "eid", "type"])
+    ) return false;
+    const key = JSON.stringify(consumed.path);
+    if (paths.has(key)) return false;
+    paths.add(key);
+  }
+  return true;
+};
+
+const snapshotInvocationReplayFence = (
+  value: InvocationReplayFenceV1,
+): InvocationReplayFenceV1 => {
+  if (!isInvocationReplayFence(value)) {
+    throw new TypeError("completed invocation receipt needs a valid replay fence");
+  }
+  return Object.freeze({
+    version: 1,
+    ...(value.target === undefined
+      ? {}
+      : {
+        target: Object.freeze({
+          eid: value.target.eid,
+          type: value.target.type,
+          referenceEid: value.target.referenceEid,
+          postCommit: value.target.postCommit.kind === "absent"
+            ? Object.freeze({
+              kind: "absent" as const,
+              authorizationDigest: value.target.postCommit.authorizationDigest,
+              authorizationReadSet: Object.freeze(
+                value.target.postCommit.authorizationReadSet.map((entry) =>
+                  Object.freeze({ ...entry })
+                ),
+              ),
+            })
+            : Object.freeze({ ...value.target.postCommit }),
+        }),
+      }),
+    consumedRefs: Object.freeze(value.consumedRefs.map((ref) =>
+      Object.freeze({
+        path: Object.freeze([...ref.path]),
+        eid: ref.eid,
+        type: ref.type,
+      })
+    )),
+  });
+};
+
+/** Pure claim/replay/conflict/recovery decision for one durable key. */
+export const decideInvocationReceipt = (
+  stored: StoredInvocationReceipt | undefined,
+  prepared: PreparedInvocationReceipt,
+): InvocationReceiptDecision => {
+  if (stored === undefined) {
+    return {
+      _tag: "Claim",
+      receipt: Object.freeze({ ...prepared, status: "claimed" }),
+    };
+  }
+  if (!sameIdentity(stored, prepared)) return { _tag: "Conflict" };
+  if (stored.status === "claimed") {
+    return {
+      _tag: "Recover",
+      receipt: Object.freeze({ ...stored, status: "indeterminate" }),
+    };
+  }
+  return { _tag: "Replay", receipt: stored };
+};
+
+/**
+ * Apply one receipt event. Terminal receipts are sealed: later events return
+ * the exact existing value instead of changing a completed decision.
+ */
+export const transitionInvocationReceipt = (
+  receipt: StoredInvocationReceipt,
+  event: InvocationReceiptEvent,
+): TerminalInvocationReceipt => {
+  if (receipt.status !== "claimed") return receipt;
+  switch (event._tag) {
+    case "Complete":
+      if (!Number.isSafeInteger(event.committedT) || event.committedT < 0) {
+        throw new TypeError("completed invocation receipt needs a valid writer position");
+      }
+      return Object.freeze({
+        ...receipt,
+        status: "completed",
+        committedT: event.committedT,
+        output: event.output,
+        replayFence: snapshotInvocationReplayFence(event.replayFence),
+      });
+    case "Reject":
+      return Object.freeze({
+        ...receipt,
+        status: "rejected",
+        rejection: event.rejection,
+      });
+    case "Fail":
+      return Object.freeze({ ...receipt, status: "failed" });
+    case "Recover":
+      return Object.freeze({ ...receipt, status: "indeterminate" });
+  }
+};
+
+export const publicInvocationReceipt = (
+  receipt: TerminalInvocationReceipt,
+): PublicInvocationReceiptV1 => Object.freeze({
+  version: INVOCATION_RECEIPT_VERSION,
+  invocationId: receipt.invocationId,
+  status: receipt.status,
+});
+
+/** Project a durable terminal record into the one transport-neutral outcome. */
+export const invocationReceiptOutcome = (
+  receipt: TerminalInvocationReceipt,
+): InvocationReceiptOutcome => {
+  const publicReceipt = publicInvocationReceipt(receipt);
+  switch (receipt.status) {
+    case "completed":
+      return {
+        _tag: "Completed",
+        receipt: publicReceipt as PublicInvocationReceiptV1 & {
+          readonly status: "completed";
+        },
+        committedT: receipt.committedT,
+        output: receipt.output,
+      };
+    case "rejected":
+      return {
+        _tag: "Rejected",
+        receipt: publicReceipt as PublicInvocationReceiptV1 & {
+          readonly status: "rejected";
+        },
+        rejection: receipt.rejection,
+      };
+    case "failed":
+      return {
+        _tag: "Failed",
+        receipt: publicReceipt as PublicInvocationReceiptV1 & {
+          readonly status: "failed";
+        },
+      };
+    case "indeterminate":
+      return {
+        _tag: "Indeterminate",
+        receipt: publicReceipt as PublicInvocationReceiptV1 & {
+          readonly status: "indeterminate";
+        },
+      };
+  }
+};
+
+const isIdentity = (value: Record<string, unknown>): boolean =>
+  value.version === INVOCATION_RECEIPT_VERSION &&
+  typeof value.principalId === "string" && value.principalId.length > 0 &&
+  typeof value.invocationId === "string" && value.invocationId.length > 0 &&
+  typeof value.scopeDigest === "string" && DIGEST_RE.test(value.scopeDigest) &&
+  typeof value.invocationDigest === "string" &&
+  DIGEST_RE.test(value.invocationDigest);
+
+const IDENTITY_KEYS = Object.freeze([
+  "version",
+  "principalId",
+  "invocationId",
+  "scopeDigest",
+  "invocationDigest",
+  "status",
+] as const);
+
+const isRejection = (value: unknown): value is SealedInvocationRejection => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.kind === "unauthorized" || record.kind === "invalid_request" ||
+    record.kind === "request_rejected"
+  ) return hasExactKeys(record, ["kind"]);
+  return record.kind === "operation_rejected" &&
+    typeof record.message === "string" &&
+    typeof record.operation === "string" &&
+    (record.step === undefined || typeof record.step === "string") &&
+    (record.reason === undefined || typeof record.reason === "string") &&
+    hasExactKeys(record, [
+      "kind",
+      "message",
+      "operation",
+      ...(record.step === undefined ? [] : ["step"]),
+      ...(record.reason === undefined ? [] : ["reason"]),
+    ]);
+};
+
+/** Fail closed on malformed durable rows; never reinterpret corruption as a miss. */
+export const parseStoredInvocationReceipt = (
+  value: unknown,
+): StoredInvocationReceipt => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("invalid durable invocation receipt");
+  }
+  const record = value as Record<string, unknown>;
+  if (!isIdentity(record)) throw new TypeError("invalid durable invocation receipt");
+  if (
+    (record.status === "claimed" || record.status === "failed" ||
+      record.status === "indeterminate") &&
+    hasExactKeys(record, IDENTITY_KEYS)
+  ) {
+    return record as StoredInvocationReceipt;
+  }
+  if (
+    record.status === "completed" &&
+    Number.isSafeInteger(record.committedT) && (record.committedT as number) >= 0 &&
+    Object.hasOwn(record, "output") &&
+    isInvocationReplayFence(record.replayFence) &&
+    hasExactKeys(record, [
+      ...IDENTITY_KEYS,
+      "committedT",
+      "output",
+      "replayFence",
+    ])
+  ) return record as StoredInvocationReceipt;
+  if (
+    record.status === "rejected" && isRejection(record.rejection) &&
+    hasExactKeys(record, [...IDENTITY_KEYS, "rejection"])
+  ) {
+    return record as StoredInvocationReceipt;
+  }
+  throw new TypeError("invalid durable invocation receipt");
+};
+
+const hasPublicReceipt = (
+  value: unknown,
+  invocationId: string,
+  status: InvocationReceiptStatus,
+): boolean => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const receipt = value as Record<string, unknown>;
+  return receipt.version === INVOCATION_RECEIPT_VERSION &&
+    receipt.invocationId === invocationId && receipt.status === status &&
+    Object.keys(receipt).length === 3;
+};
+
+/** Validate the private Transactor result without admitting extra metadata. */
+export const parseAuthoritativeInvocationResult = (
+  value: unknown,
+  invocationId: string,
+): AuthoritativeInvocationResult => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("invalid authoritative invocation result");
+  }
+  const result = value as Record<string, unknown>;
+  if (
+    result._tag === "Conflict" && hasExactKeys(result, ["_tag"])
+  ) return { _tag: "Conflict" };
+  if (
+    result._tag === "Completed" &&
+    hasPublicReceipt(result.receipt, invocationId, "completed") &&
+    Number.isSafeInteger(result.committedT) && (result.committedT as number) >= 0 &&
+    Object.hasOwn(result, "output") &&
+    hasExactKeys(result, ["_tag", "receipt", "committedT", "output"])
+  ) return result as AuthoritativeInvocationResult;
+  if (
+    result._tag === "Rejected" &&
+    hasPublicReceipt(result.receipt, invocationId, "rejected") &&
+    isRejection(result.rejection) &&
+    hasExactKeys(result, ["_tag", "receipt", "rejection"])
+  ) return result as AuthoritativeInvocationResult;
+  if (
+    result._tag === "Failed" &&
+    hasPublicReceipt(result.receipt, invocationId, "failed") &&
+    hasExactKeys(result, ["_tag", "receipt"])
+  ) return result as AuthoritativeInvocationResult;
+  if (
+    result._tag === "Indeterminate" &&
+    hasPublicReceipt(result.receipt, invocationId, "indeterminate") &&
+    hasExactKeys(result, ["_tag", "receipt"])
+  ) return result as AuthoritativeInvocationResult;
+  throw new TypeError("invalid authoritative invocation result");
+};
