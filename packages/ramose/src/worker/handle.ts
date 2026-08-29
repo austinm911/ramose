@@ -15,7 +15,7 @@ import {
   toJson,
 } from "../internal/core/index.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
-import { testHooksEnabled } from "../internal/test-hooks.ts";
+import { checkpoint, testHooksEnabled } from "../internal/test-hooks.ts";
 import { isUnrecognizedWrites } from "../writes.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -52,11 +52,21 @@ import {
 } from "./errors.ts";
 import { JwtVerifier, fromEnv } from "./jwt.ts";
 import { watchBasisChanges } from "./peer.ts";
+import {
+  invokeAuthoritativeOperation,
+  parseOperationRequest,
+} from "./authorized-operation.ts";
+import {
+  deployedOperationCatalogs,
+  type OperationCatalogs,
+} from "./operation-catalogs.ts";
 
 export interface ServerOptions {
   readonly operations?: AnyOperations;
   /** Deployed catalog registry assembled from reachable code. Missing = deny. */
   readonly catalogs?: DeployedCatalogs;
+  /** Concrete route database -> exact private runnable catalog definition. */
+  readonly operationCatalogs?: OperationCatalogs;
 }
 
 const plog = componentLogger("peer");
@@ -116,12 +126,13 @@ export interface RequestInfo {
   route: Route;
 }
 
-const respond = (err: RamoseError): Response => {
+/** Pure HTTP restatement used by the request boundary and unit tests. */
+export const respond = (err: RamoseError): Response => {
   const h = toHttp(err);
   if (h.raw !== undefined) {
     return new Response(h.raw, {
       status: h.status,
-      headers: h.headers ?? { "content-type": "application/json", ...CORS },
+      headers: { "content-type": "application/json", ...h.headers, ...CORS },
     });
   }
   return json(h.body ?? {}, h.status);
@@ -268,7 +279,49 @@ export const handle = (
     if (!isDatabaseName(db)) {
       return yield* new BadRequest({ message: "invalid database name" });
     }
-    if (peer.catalogs === undefined) return yield* new Unauthorized({});
+    const deployedOperations = peer.operationCatalogs === undefined
+      ? undefined
+      : deployedOperationCatalogs(peer.operationCatalogs);
+    const catalogs = deployedOperations?.catalogs ?? peer.catalogs;
+    if (rest === "/op" && request.method === "POST") {
+      if (peer.operationCatalogs === undefined) {
+        return yield* new Unauthorized({ status: 403 });
+      }
+      const parsed = yield* parseOperationRequest(request);
+      const caller = callerFromVerified(verified);
+      const ack = yield* Effect.tryPromise({
+        try: () => invokeAuthoritativeOperation(
+          env,
+          db,
+          parsed,
+          caller,
+        ),
+        catch: (cause) => isRamoseError(cause) ? cause : fromThrown(cause, {
+          stacks: env.RAMOSE_STAGE !== "prod",
+        }),
+      });
+      // The Transactor fences expiry before commit and acknowledgement. This
+      // final Worker checkpoint is after that awaited hop; once released, the
+      // exact-expiry check and response construction are synchronous.
+      yield* Effect.tryPromise({
+        try: () => checkpoint("operation.response"),
+        catch: (cause) => isRamoseError(cause) ? cause : fromThrown(cause, {
+          stacks: env.RAMOSE_STAGE !== "prod",
+        }),
+      });
+      if (!Number.isSafeInteger(caller.exp) || caller.exp * 1_000 <= Date.now()) {
+        return yield* new Unauthorized({ status: 403 });
+      }
+      // The Worker retains the internal ack basis for invalidation, but an
+      // ordinary operation grant does not authorize transaction metadata.
+      // The Transactor already committed only after materializing exact JSON.
+      // Do not run codec-owned output through the generic Ramose value encoder.
+      return new Response(JSON.stringify({ result: ack.output }), {
+        status: 200,
+        headers: { "content-type": "application/json", ...CORS },
+      });
+    }
+    if (catalogs === undefined) return yield* new Unauthorized({});
     if (
       !((rest === "/query" || rest === "/pull" || rest === "/live") && request.method === "POST") &&
       !(/^\/entity\/\d+$/.test(rest) && request.method === "GET")
@@ -292,7 +345,7 @@ export const handle = (
         basisChanges: liveWatch.changes,
         admissionCurrentDb,
       }),
-      catalogs: peer.catalogs,
+      catalogs,
       routeDatabase: DatabaseId.make(db),
       catalogKey: parsed.catalogKey,
       unitHash: parsed.unitHash,

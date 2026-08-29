@@ -59,6 +59,15 @@ import { type SocketLike, type TransactorHost } from "./host.ts";
 import { Indexer } from "./indexer.ts";
 import { TxMetrics } from "./observability.ts";
 import { checkpoint, checkpointSync } from "../test-hooks.ts";
+import {
+  executeCatalogOperation,
+  OperationRuntimeFault,
+  opaqueOperationDenial,
+  resolveDeployedCatalogDefinition,
+  type OperationInvocation,
+  type OperationRuntime,
+} from "../authorization/index.ts";
+import * as Result from "effect/Result";
 
 export { TransactorDeadError };
 
@@ -93,6 +102,11 @@ export interface TxAck {
   clientTxId?: string;
   /** Encoded operation output; present when this ack is an operation replay. */
   output?: unknown;
+}
+
+export interface OperationAck {
+  readonly t: number;
+  readonly output: unknown;
 }
 
 export interface TransactorStats {
@@ -134,7 +148,9 @@ interface Pending {
    * raw-transact data deny (schema / superuser only).
    */
   fromOperation?: boolean | undefined;
-  resolve: (r: TxAck) => void;
+  /** Native deployed invocation; mutually exclusive with raw `tx`. */
+  operation?: OperationInvocation | undefined;
+  resolve: (r: TxAck | OperationAck) => void;
   reject: (e: unknown) => void;
 }
 
@@ -198,7 +214,10 @@ export class Transactor {
     | { readonly unitHash: string; readonly index: CompositionIndex }
     | undefined;
 
-  constructor(readonly host: TransactorHost) {
+  constructor(
+    readonly host: TransactorHost,
+    private readonly operationRuntime?: OperationRuntime,
+  ) {
     this.log = componentLogger("transactor", () => ({ db: safeName(host) }));
     this.metrics = new TxMetrics(host.analytics);
   }
@@ -389,7 +408,27 @@ export class Transactor {
         opOutput: extras?.opOutput,
         system: extras?.system || undefined,
         fromOperation: extras?.fromOperation || undefined,
-        resolve,
+        resolve: resolve as (result: TxAck | OperationAck) => void,
+        reject,
+      });
+      if (!this.committing) {
+        this.committing = true;
+        void this.commitLoop();
+      }
+    });
+  }
+
+  /** Submit one exact deployed-catalog invocation to the serialized writer. */
+  invoke(invocation: OperationInvocation): Promise<OperationAck> {
+    if (this.dead !== undefined) return Promise.reject(new TransactorDeadError(this.dead));
+    if (this.operationRuntime === undefined) {
+      return Promise.reject(opaqueOperationDenial());
+    }
+    return new Promise<OperationAck>((resolve, reject) => {
+      this.queue.push({
+        tx: [],
+        operation: invocation,
+        resolve: resolve as (result: TxAck | OperationAck) => void,
         reject,
       });
       if (!this.committing) {
@@ -432,10 +471,14 @@ export class Transactor {
 
   private takeBatch(): Pending[] {
     const max = this.host.config.maxBatch;
-    if (max > 0 && this.queue.length > max) return this.queue.splice(0, max);
-    const b = this.queue;
-    this.queue = [];
-    return b;
+    // An operation carries a short-lived authorization lease through native
+    // awaited work. Keep it in a one-entry durable batch so a pre-commit
+    // expiry can discard this DO instance without rejecting unrelated writes.
+    if (this.queue[0]?.operation !== undefined) return this.queue.splice(0, 1);
+    const operationAt = this.queue.findIndex((pending) => pending.operation !== undefined);
+    const available = operationAt < 0 ? this.queue.length : operationAt;
+    const count = max > 0 ? Math.min(available, max) : available;
+    return this.queue.splice(0, count);
   }
 
   private async commitLoop(): Promise<void> {
@@ -464,7 +507,11 @@ export class Transactor {
         const tLoop = performance.now();
         const batch = this.takeBatch();
         const entries: LogEntry[] = [];
-        const acks: { p: Pending; ack: TxAck }[] = [];
+        const acks: {
+          p: Pending;
+          ack: TxAck | OperationAck;
+          assertFresh?: () => void;
+        }[] = [];
         const batchAcks = new Map<string, TxAck>();
         const tResolve = performance.now();
         for (const p of batch) {
@@ -477,22 +524,63 @@ export class Transactor {
             }
           }
           try {
-            if (!p.system) await this.applyProvision(p, entries);
-            const tx = await this.authorize(p);
-            const rep = await this.conn.transact(tx);
+            let rep;
+            let ack: TxAck | OperationAck;
+            let assertFresh: (() => void) | undefined;
+            if (p.operation !== undefined) {
+              if (this.operationRuntime === undefined) {
+                throw opaqueOperationDenial();
+              }
+              const resolved = resolveDeployedCatalogDefinition(
+                this.operationRuntime.catalogs,
+                {
+                  database: p.operation.database,
+                  catalogKey: p.operation.catalogKey,
+                  unitHash: p.operation.unitHash,
+                },
+              );
+              if (Result.isFailure(resolved)) {
+                throw opaqueOperationDenial();
+              }
+              const deployed = resolved.success;
+              this.bindComposition(
+                deployed.definition.unitHash,
+                deployed.definition.composition,
+              );
+              const executed = await executeCatalogOperation(
+                this.conn,
+                this.operationRuntime,
+                p.operation,
+              );
+              rep = executed.report;
+              ack = { t: rep.t, output: executed.output };
+              assertFresh = executed.assertFresh;
+            } else {
+              if (!p.system) await this.applyProvision(p, entries);
+              const tx = await this.authorize(p);
+              rep = await this.conn.transact(tx);
+              ack = {
+                t: rep.t,
+                txEid: rep.txEid,
+                tempids: rep.tempids,
+                datoms: await this.ackDatoms(rep.txData, p.principal),
+                ...(p.clientTxId !== undefined ? { clientTxId: p.clientTxId } : {}),
+                ...(p.opOutput !== undefined ? { output: p.opOutput } : {}),
+              };
+            }
             const txInstant = rep.txData[0]?.v as number; // :db/txInstant is first
             entries.push({ t: rep.t, txInstant, datoms: rep.txData });
-            const ack: TxAck = {
-              t: rep.t,
-              txEid: rep.txEid,
-              tempids: rep.tempids,
-              datoms: await this.ackDatoms(rep.txData, p.principal),
-              ...(p.clientTxId !== undefined ? { clientTxId: p.clientTxId } : {}),
-              ...(p.opOutput !== undefined ? { output: p.opOutput } : {}),
-            };
-            if (p.clientTxId !== undefined) batchAcks.set(clientTxReplayKey(p.principal, p.clientTxId), ack);
-            acks.push({ p, ack });
+            if (p.clientTxId !== undefined && p.operation === undefined) {
+              batchAcks.set(clientTxReplayKey(p.principal, p.clientTxId), ack as TxAck);
+            }
+            acks.push({ p, ack, ...(assertFresh === undefined ? {} : { assertFresh }) });
           } catch (err) {
+            if (err instanceof OperationRuntimeFault) {
+              this.log.error("operation.failed", {
+                stage: err.stage,
+                error: err.detail instanceof Error ? err.detail.message : String(err.detail),
+              });
+            }
             const e = this.scrub(err, p);
             this.stats.rejected++;
             this.log.warn("tx.rejected", { code: (e as any)?.code, error: e instanceof Error ? e.message : String(e) });
@@ -507,6 +595,10 @@ export class Transactor {
         const tWrite = performance.now();
         try {
           await checkpoint("transactor.commit");
+          // Fresh clocks after the final async checkpoint and immediately
+          // before the irreversible storage transaction. Operation batches
+          // are isolated, so expiry can abort/rebuild without collateral loss.
+          for (const pending of acks) pending.assertFresh?.();
           // ONE storage write for the whole batch (group commit).
           this.host.transactionSync(() => {
             checkpointSync("transactor.commit.write");
@@ -544,7 +636,17 @@ export class Transactor {
         this.resolveLatency.observe(resolveMs);
         this.log.debug("tx.commit", { t: this.conn.t, batch: entries.length, datoms: entries.reduce((n, e) => n + e.datoms.length, 0), writeMs: round(writeMs), queued: this.queue.length, txsSinceIndex: this.txSinceIndex });
         for (const [id, ack] of batchAcks) this.rememberAck(id, ack, ack.output !== undefined);
-        for (const a of acks) a.p.resolve(a.ack);
+        for (const a of acks) {
+          try {
+            // A post-commit expiry cannot undo an authorized atomic write, but
+            // REV-5 still forbids emitting its result under an expired lease.
+            a.assertFresh?.();
+            a.p.resolve(a.ack);
+          } catch (err) {
+            this.stats.rejected++;
+            a.p.reject(err);
+          }
+        }
         // dequeue → ack wall clock; "other" = loopMs - resolveMs - commitMs
         const loopMs = performance.now() - tLoop;
         this.stats.loopMs += loopMs;
@@ -583,12 +685,12 @@ export class Transactor {
     return;
   }
 
-  /** Writes are raw storage. Operation authorization is #417. */
+  /** Internal/admin transaction path. The public Worker never routes raw application writes here. */
   private async authorize(p: Pending): Promise<TxData> {
     return p.tx;
   }
 
-  /** Application acks are not filtered here. Filtered `Db` lands in #421/#423. */
+  /** Internal transaction acks; public operation responses expose only declared output. */
   private async ackDatoms(datoms: Datom[], _principal?: Principal): Promise<WireDatom[]> {
     return datoms.map(toWireDatom);
   }
@@ -723,6 +825,8 @@ export class Transactor {
       Effect.tryPromise({ try: () => this.route(request, url), catch: toHttpError }).pipe(
         Effect.catchTags({
           TxRejected: (e) => Effect.sync(() => errorResponse(e)),
+          Unauthorized: (e) => Effect.sync(() => errorResponse(e)),
+          OperationRejected: (e) => Effect.sync(() => errorResponse(e)),
           TransactorDead: (e) => Effect.sync(() => errorResponse(e)),
           BadRequest: (e) => Effect.sync(() => errorResponse(e)),
           NotFound: (e) => Effect.sync(() => errorResponse(e)),
@@ -734,6 +838,29 @@ export class Transactor {
 
   private async route(request: Request, url: URL): Promise<Response> {
     const path = url.pathname;
+    if (path === "/invoke" && request.method === "POST") {
+      const body = await request.json() as { invocation?: unknown };
+      const raw = body?.invocation;
+      const invocation = typeof raw === "object" && raw !== null && !Array.isArray(raw)
+        ? {
+          ...raw,
+          ...(Object.hasOwn(raw, "target")
+            ? { target: fromJson((raw as { readonly target?: unknown }).target) }
+            : {}),
+        } as OperationInvocation
+        : undefined;
+      if (
+        invocation === undefined || invocation.database !== safeName(this.host)
+      ) {
+        throw new BadRequest({ message: "invalid deployed operation invocation" });
+      }
+      // Operation output was already materialized as exact JSON before the
+      // commit. Native serialization preserves codec-owned object shapes;
+      // the generic Ramose encoder would reinterpret `{ vt, v }` here.
+      return new Response(JSON.stringify(await this.invoke(invocation)), {
+        headers: { "content-type": "application/json" },
+      });
+    }
     if (path === "/op-ack" && request.method === "POST") {
       const body = fromJson(await request.json()) as {
         clientOpId?: unknown;

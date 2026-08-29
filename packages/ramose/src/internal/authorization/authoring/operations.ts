@@ -65,6 +65,15 @@ export type DeployedOperationRun = (
   input: unknown,
 ) => unknown | Promise<unknown>;
 
+export type DeployedEntityRuntimeDefinition = {
+  readonly ns: string;
+  readonly fields: Readonly<Record<string, {
+    readonly ident: string;
+    readonly cardinality: "one" | "many";
+    readonly unique?: "upsert" | "strict";
+  }>>;
+};
+
 export type DeployedOperationDefinition = {
   readonly id: OperationDescriptorType["id"];
   readonly owner: OwnerRef;
@@ -78,6 +87,8 @@ export type DeployedOperationDefinition = {
   readonly doc: string | undefined;
   /** Build-artifact identity of the executable paired during assembly. */
   readonly implementationHash: DigestHex;
+  /** All deployed entity definitions retained only in deployed memory. */
+  readonly entityDefinitions: readonly DeployedEntityRuntimeDefinition[];
   /** Original function from the deployed application module. Never serialized. */
   readonly run: DeployedOperationRun;
 };
@@ -88,6 +99,7 @@ export type DeployedOperationBinding = {
   readonly input: DeployedOperationCodec;
   readonly output: DeployedOperationCodec;
   readonly run: DeployedOperationRun;
+  readonly entityDefinitions: readonly DeployedEntityRuntimeDefinition[];
 };
 
 export type LoweredOwnedOperations = {
@@ -119,6 +131,7 @@ export type OwnedOperationSnapshot = {
   readonly doc: string | undefined;
   readonly run: DeployedOperationRun;
   readonly implementationHashMaterial: JsonValue;
+  readonly entityDefinitions: readonly DeployedEntityRuntimeDefinition[];
 };
 
 const invalid = (message: string): InvalidIR => new InvalidIR({ message });
@@ -222,6 +235,7 @@ export const pairDeployedOperations = (
         input: definition.input,
         output: definition.output,
         run: definition.run,
+        entityDefinitions: definition.entityDefinitions,
       }));
     }
 
@@ -542,6 +556,7 @@ export const lowerOperationSchema = (
   const record = schema as Schema.Top & {
     readonly fields?: Readonly<Record<PropertyKey, Schema.Top>>;
     readonly value?: Schema.Top;
+    readonly to?: Schema.Top;
   };
   if (record.fields !== undefined) {
     const keys = Reflect.ownKeys(record.fields);
@@ -565,6 +580,13 @@ export const lowerOperationSchema = (
       _tag: "array",
       items: lowerOperationSchema(catalog, record.value, next),
     };
+  }
+  // Effect transformations expose their decoded schema as `to`. Operation
+  // bodies and the authoritative ref filter both work on that decoded value;
+  // the original codec remains responsible for the potentially different
+  // wire representation.
+  if (record.to !== undefined && record.to !== schema) {
+    return lowerOperationSchema(catalog, record.to, next);
   }
   if (astContainsSuspend(schema.ast)) {
     throw new Error(
@@ -623,6 +645,19 @@ const hashOperationSchema = Effect.fn("Authorization.hashOperationSchema")(
 
 const freeze = <T extends object>(value: T): Readonly<T> => Object.freeze(value);
 
+const runtimeEntityDefinition = (
+  entity: AnyEntity,
+): DeployedEntityRuntimeDefinition => Object.freeze({
+  ns: entity.ns,
+  fields: Object.freeze(Object.fromEntries(
+    Object.entries(entity.fields).map(([key, field]) => [key, Object.freeze({
+      ident: field.ident,
+      cardinality: field.cardinality,
+      ...(field.unique === undefined ? {} : { unique: field.unique }),
+    })]),
+  )),
+});
+
 const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
   if ((typeof value !== "object" && typeof value !== "function") || value === null) {
     return value;
@@ -641,6 +676,10 @@ export const snapshotOwnedOperations = (
 ): Result.Result<readonly OwnedOperationSnapshot[], InvalidIR> =>
   Result.gen(function* () {
     const drafts = yield* collectDrafts(schemas);
+    const { entities } = yield* collectOwners(schemas);
+    const entityDefinitions = Object.freeze(
+      entities.map(runtimeEntityDefinition),
+    );
     const snapshots: OwnedOperationSnapshot[] = [];
     for (const draft of drafts) {
       const operation = draft.operation;
@@ -707,6 +746,7 @@ export const snapshotOwnedOperations = (
         outputCodec: deepFreeze(outputSchemaBinding.codec),
         doc: operation.doc,
         run: operation.run as DeployedOperationRun,
+        entityDefinitions,
         implementationHashMaterial: deepFreeze({
           artifactHash,
           operation: id,
@@ -774,6 +814,7 @@ export const lowerOwnedOperationSnapshots = Effect.fn(
           doc: snapshot.doc,
           implementationHash,
           run: snapshot.run,
+          entityDefinitions: snapshot.entityDefinitions,
         }) as DeployedOperationDefinition,
       );
     }
