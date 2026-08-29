@@ -1,6 +1,7 @@
 /** Browser transport primitives for the versioned replication stream. */
 
 import * as Result from "effect/Result";
+import type { ReadCompatibilityHash } from "../authorization/identities.ts";
 import {
   MAX_REPLICATION_FRAME_BYTES,
   REPLICATION_PROTOCOL_VERSION,
@@ -8,6 +9,7 @@ import {
   encodeActivationRequest,
   type OpaqueReplicationId,
   type ReplicationFrame,
+  type TerminalError,
 } from "./protocol.ts";
 
 const CREDENTIAL_BINDING_DOMAIN = "ramose:replication:credential-binding:v1";
@@ -98,6 +100,7 @@ export const replicationCredentialFingerprint = async (
 export type OpenReplicationInput = {
   readonly activation: ReplicationActivationAddress;
   readonly credential: string;
+  readonly readCompatibilityHash: ReadCompatibilityHash;
   readonly resumeRevision?: OpaqueReplicationId;
   readonly signal: AbortSignal;
 };
@@ -118,6 +121,7 @@ export const openReplicationResponse = (
     protocol: REPLICATION_PROTOCOL_VERSION,
     graphPath: input.activation.graphPath,
     scope: { type: "database" },
+    readCompatibilityHash: input.readCompatibilityHash,
     ...(input.resumeRevision === undefined
       ? {}
       : { resumeRevision: input.resumeRevision }),
@@ -180,7 +184,30 @@ export async function* readReplicationFrames(
     }
   })();
   try {
-    yield* decodeReplicationNdjson(chunks, signal);
+    const decoded = decodeReplicationNdjson(chunks, signal);
+    if (response.status === 409) {
+      let terminal: TerminalError | undefined;
+      for await (const frame of decoded) {
+        if (terminal !== undefined) {
+          fail("replication conflict must contain exactly one allowed terminal frame");
+        }
+        if (frame.type !== "TerminalError" || !("code" in frame)) {
+          fail("replication conflict must contain exactly one allowed terminal frame");
+        }
+        const candidate = frame as TerminalError;
+        if (candidate.identity !== undefined || candidate.code === "closed") {
+          fail("replication conflict must contain exactly one allowed terminal frame");
+        }
+        terminal = candidate;
+      }
+      if (terminal === undefined) {
+        fail("replication conflict must contain exactly one allowed terminal frame");
+      }
+      // Do not expose even the terminal until EOF proves that no data frame follows it.
+      yield terminal as ReplicationFrame;
+      return;
+    }
+    yield* decoded;
   } finally {
     try {
       await reader.cancel();
