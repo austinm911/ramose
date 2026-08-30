@@ -29,6 +29,7 @@ import {
 import {
   replicaDatabaseKey,
   replicaDatabaseScopeOf,
+  type ReplicaDatabaseScope,
 } from "../internal/replication/replica-lifecycle.ts";
 import {
   ReplicationSession,
@@ -378,6 +379,16 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private releaseOverlay: (() => void) | undefined;
   private identity: ReplicationIdentity | undefined;
   private committed: Db | undefined;
+  /**
+   * The sealed-handle binding of the committed value currently published, and
+   * its inverse, recomputed together whenever that value is replaced.
+   *
+   * Empty whenever there is no publishable value — a fenced, transitioned, or
+   * closed database holds no handles, so nothing can address a mutation at a
+   * row it is no longer allowed to read.
+   */
+  private handles: ReadonlyMap<string, number> = new Map();
+  private reverse: Map<number, string> | undefined;
   private viewValue: Db | undefined;
   /** The generation {@link viewValue} was computed under. */
   private viewGeneration = 0;
@@ -584,15 +595,25 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       }
       this.identity = identity;
       this.context.onConfirmed(identity);
-      void this.bindReconciler(identity);
+      // Fire and forget, and *observed*: binding is best-effort here — the
+      // committed replica publishes with or without its layers — but an
+      // unobserved rejection is an unhandled rejection in the page, which a
+      // close that raced this bind produces routinely.
+      void this.bindReconciler(identity).catch(() => undefined);
     }
     this.lastSession = snapshot;
     const disposition = readSessionSnapshot(snapshot);
     this.stale = value === undefined ? true : value.stale;
-    this.committed =
-      !disposition.publishes || value === undefined || this.catalog === undefined
-        ? undefined
-        : value.db.withComposition(this.catalog.composition);
+    const catalog = this.catalog;
+    if (!disposition.publishes || value === undefined || catalog === undefined) {
+      this.committed = undefined;
+      this.forgetHandles();
+    } else {
+      this.committed = value.db.withComposition(catalog.composition);
+      // The binding travels with the value it describes, and goes when it goes.
+      this.handles = value.handles;
+      this.reverse = undefined;
+    }
     this.publishStatus(this.statusOf(snapshot));
     void this.recompute();
   }
@@ -608,6 +629,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.closed = true;
     this.generation++;
     this.committed = undefined;
+    this.forgetHandles();
     this.viewValue = undefined;
     this.viewGeneration = this.generation;
     this.releaseOverlay?.();
@@ -644,6 +666,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private transition(): void {
     this.generation++;
     this.committed = undefined;
+    this.forgetHandles();
     this.viewValue = undefined;
     this.viewGeneration = this.generation;
     this.reconciler = undefined;
@@ -754,7 +777,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       return this.reconcilerPending;
     }
     this.reconcilerKey = key;
-    this.reconcilerPending = (async () => {
+    const pending = (async () => {
       const storage = await this.context.storage();
       const catalog = await this.context.catalog();
       const reconciler = new OptimisticReconciler(
@@ -769,21 +792,67 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       this.reconciler = reconciler;
       this.releaseOverlay = reconciler.observe((state) => this.overlay(state));
       return reconciler;
-    })();
-    return this.reconcilerPending;
+    })().catch((cause: unknown): never => {
+      // A memo of a failure is worse than no memo: every later activation of
+      // this same database would be handed the rejection instead of trying
+      // again. The commonest cause is entirely ordinary — the storage handle
+      // closed while this bind was in flight — and the next activation opens
+      // its own.
+      //
+      // Cleared by *promise* identity, not by the key. A partition transition
+      // between two binds can leave the key equal while the pending promise is
+      // a different one: an earlier bind rejecting late would then strip a
+      // healthy successor's memo and make every reader rebuild it.
+      if (this.reconcilerPending === pending) {
+        this.reconcilerKey = undefined;
+        this.reconcilerPending = undefined;
+      }
+      throw cause;
+    });
+    this.reconcilerPending = pending;
+    return pending;
   }
 
   /**
    * The lookups the overlay cannot perform itself.
    *
-   * `entity` — the committed replica's sealed-handle to local-id binding — is
-   * deliberately absent: logical replication does not yet carry the sealed
-   * `EntityId` for a replicated row, so a layer addressed by a handle this
-   * replica holds is refused rather than invented. This is the one seam the
-   * opaque entity surface fills; nothing here decides what it will contain.
+   * `entity` is the committed replica's sealed-handle → local-id binding, read
+   * on every call rather than captured: the reconciler outlives any one
+   * committed value, and a layer must resolve a handle against the value it is
+   * being projected onto. A handle this replica does not hold still resolves to
+   * `undefined`, which the overlay refuses rather than inventing a row for.
    */
   private reconciliationOptions(): ReconciliationOptions {
-    return {};
+    return { entity: (id) => this.handles.get(id) };
+  }
+
+  /** Drop the binding along with the value it describes. */
+  private forgetHandles(): void {
+    this.handles = new Map();
+    this.reverse = undefined;
+  }
+
+  /**
+   * The sealed handle for one local id in the currently published value.
+   *
+   * The inverse of the binding above, and built lazily because most databases
+   * never need it: only a graph resolution and the entity surface ask "what is
+   * this row's opaque identity?", and both ask about a handful of rows.
+   */
+  sealedHandleOf(eid: number): string | undefined {
+    if (this.reverse === undefined) {
+      const reverse = new Map<number, string>();
+      for (const [handle, local] of this.handles) reverse.set(local, handle);
+      this.reverse = reverse;
+    }
+    return this.reverse.get(eid);
+  }
+
+  /** The stable `{ server, principal, database }` scope this database confirmed. */
+  confirmedScope(): ReplicaDatabaseScope | undefined {
+    return this.identity === undefined
+      ? undefined
+      : replicaDatabaseScopeOf(this.identity);
   }
 
   private overlay(state: OptimisticOverlayState): void {
@@ -833,6 +902,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.reconciler = undefined;
     this.reconcilerPending = undefined;
     this.committed = undefined;
+    this.forgetHandles();
     this.viewValue = undefined;
     // Reset, then drop — the same order `fence` takes. A held subscription
     // must not keep answering with the value a closed client is no longer

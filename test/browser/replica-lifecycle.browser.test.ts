@@ -26,6 +26,7 @@ import {
   testRuntimeBoundaries,
 } from "../../packages/ramose/src/internal/test-hooks.ts";
 import { browserTest } from "./fixtures.ts";
+import { snapshotChunk } from "../../packages/ramose/test/replication-fixtures.ts";
 
 const opaque = (character: string): string => character.repeat(43);
 
@@ -115,7 +116,7 @@ const scopeOf = (selected: ReplicationIdentity) => replicaScopeOf(selected);
 const databaseOf = (selected: ReplicationIdentity) => replicaDatabaseScopeOf(selected);
 
 const scopePrefix = (selected: ReplicationIdentity): string =>
-  ["ramose-replica-v2", selected.server, selected.principal, ""].join(":");
+  ["ramose-replica-v3", selected.server, selected.principal, ""].join(":");
 
 const snapshotDatom = (value: string): SnapshotDatom => ({
   entity: opaque("x"),
@@ -134,10 +135,10 @@ const installSnapshot = async (
   await storage.startSnapshot({
     type: "SnapshotStart", protocol: 1, identity: selected, snapshot, revision,
   });
-  await storage.stageSnapshotChunk({
+  await storage.stageSnapshotChunk(snapshotChunk({
     type: "SnapshotChunk", protocol: 1, identity: selected, snapshot, index: 0,
     datoms: [snapshotDatom(value)],
-  });
+  }));
   expect(await storage.commitSnapshot({
     type: "SnapshotCommit", protocol: 1, identity: selected, snapshot, revision, chunks: 1,
   }, attributes)).toBeDefined();
@@ -388,10 +389,10 @@ browserTest("a fenced lease cannot repopulate a cleared scope or write nodes aft
       type: "SnapshotStart", protocol: 1, identity: left,
       snapshot: opaque("q"), revision: opaque("2"),
     }, { lease: renewed });
-    await writer.stageSnapshotChunk({
+    await writer.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk", protocol: 1, identity: left, snapshot: opaque("q"), index: 0,
       datoms: [snapshotDatom("reinstalled")],
-    }, { lease: renewed });
+    }), { lease: renewed });
 
     // Evicting the database bumps only its own generation. The renewed lease
     // now loses it and is refused while materializing content nodes, so no
@@ -401,10 +402,10 @@ browserTest("a fenced lease cannot repopulate a cleared scope or write nodes aft
       type: "SnapshotStart", protocol: 1, identity: left,
       snapshot: opaque("q"), revision: opaque("2"),
     }, { lease: writer.lease() });
-    await writer.stageSnapshotChunk({
+    await writer.stageSnapshotChunk(snapshotChunk({
       type: "SnapshotChunk", protocol: 1, identity: left, snapshot: opaque("q"), index: 0,
       datoms: [snapshotDatom("reinstalled")],
-    });
+    }));
     await expect(writer.commitSnapshot({
       type: "SnapshotCommit", protocol: 1, identity: left,
       snapshot: opaque("q"), revision: opaque("2"), chunks: 1,
@@ -558,7 +559,7 @@ browserTest("a replica stored before generations existed stays clearable", async
   const name = `ramose-lifecycle-backfill-${browser.uniqueId}`;
   const left = identity();
   const partition = [
-    "ramose-replica-v2", left.server, left.principal, left.database, left.readView,
+    "ramose-replica-v3", left.server, left.principal, left.database, left.readView,
     left.readCompatibilityHash,
   ].join(":");
   let storage: IndexedDbReplicaStorage | undefined;
@@ -578,7 +579,7 @@ browserTest("a replica stored before generations existed stays clearable", async
       "readwrite",
     );
     seed.objectStore("replica-committed-v1").put({
-      partition, storageVersion: 2, identity: left,
+      partition, storageVersion: 3, identity: left,
       readCompatibilityHash: left.readCompatibilityHash, revision: opaque("1"),
       datoms: [], attributes: [], entityIds: [], attributeIds: [], roots: {}, nextLocalId: 1000,
     });
@@ -617,10 +618,18 @@ browserTest("a replica stored before generations existed stays clearable", async
     }]);
 
     // The owner of a pre-generation replica can still delete their own data.
+    //
+    // The stored *value* is already gone by the time the clear runs: an origin
+    // this old predates storage version 3, whose upgrade resets every manifest
+    // written without a sealed-handle binding (#477). The backfill above is
+    // what survives it — the generation records, and the ownership it wrote
+    // onto the ownerless observation — and those are what this clear has to
+    // reach. Reaching them is the whole claim: an ownerless observation the
+    // reset left behind would otherwise be unremovable by anyone.
     const outcome = await storage.clearScope(scopeOf(left));
-    expect(outcome.partitions).toBe(1);
-    expect(outcome.nodes).toBe(1);
-    expect(outcome.bindings).toBe(1);
+    expect(outcome.partitions).toBe(0);
+    expect(outcome.nodes).toBe(0);
+    expect(outcome.bindings).toBe(0);
     expect(outcome.generation).toBe(2);
     const cleared = await dump(name);
     expect(cleared["replica-committed-v1"]).toEqual([]);

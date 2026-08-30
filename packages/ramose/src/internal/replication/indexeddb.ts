@@ -24,6 +24,7 @@ import {
 import {
   REPLICA_STORAGE_VERSION,
   type Change,
+  type EntityHandleBinding,
   type ReplicationIdentity,
   type SnapshotChunk,
   type SnapshotCommit,
@@ -141,18 +142,33 @@ const LIFECYCLE_DATABASE_VERSION = 6;
  */
 const MUTATION_INDEX_DATABASE_VERSION = 9;
 /**
- * Version 10 adds #476's optimistic-layer family.
+ * Version 10 added #476's optimistic-layer family.
  *
  * A new store needs an `upgradeneeded` transaction to exist at all, and the
  * bump is also what makes {@link createMutationStores} run again over a
- * database an earlier build of this unreleased format already created.
+ * database an earlier build of this unreleased format already created. Kept as
+ * a named boundary the migration below reasons about: an origin at 10 holds
+ * queued invocations and durable fence state, so the version-3 reset has to be
+ * narrower than the version-2 one that predates both.
  */
 const OPTIMISTIC_LAYER_DATABASE_VERSION = 10;
+/**
+ * Version 11 is replica storage version 3: the persisted sealed-`EntityId`
+ * binding (#477).
+ *
+ * A manifest written before it has no binding, so a row it holds could be read
+ * and never addressed — which is exactly what carrying the handle exists to
+ * prevent. There is no gradual adapter, so those manifests are reset, and the
+ * bump is what makes an `upgradeneeded` transaction exist to do it: an origin
+ * already at version 10 fires no upgrade at all, so a storage-version constant
+ * alone would have left the old records in place and unreadable.
+ */
+const MANIFEST_V3_DATABASE_VERSION = OPTIMISTIC_LAYER_DATABASE_VERSION + 1;
 /**
  * The version this build opens at. Exported so a test that inspects the raw
  * database cannot pin a stale number and start failing on the next bump.
  */
-export const REPLICA_DATABASE_VERSION = OPTIMISTIC_LAYER_DATABASE_VERSION;
+export const REPLICA_DATABASE_VERSION = MANIFEST_V3_DATABASE_VERSION;
 const DATABASE_VERSION = REPLICA_DATABASE_VERSION;
 const COMMITTED = "replica-committed-v1";
 const COMMITTED_HEADS = REPLICA_COMMITTED_HEADS_STORE;
@@ -180,6 +196,34 @@ const REPLICA_STORE_FAMILIES = [
   ROUTE_SLOTS,
   GENERATIONS,
 ] as const;
+
+/**
+ * The families a *manifest-format* reset clears: everything that describes or
+ * selects one stored committed value.
+ *
+ * {@link GENERATIONS} is deliberately absent. It holds lifecycle fence state —
+ * the generation a scope or a stable database is currently at — which a
+ * replica reset has no business moving: clearing it would recreate every
+ * generation at 1, silently unfencing work a completed `clearLocalData()` had
+ * already fenced off. The mutation families are absent for the same reason
+ * they are absent from {@link PARTITION_KEYED_FAMILIES}: unsubmitted work does
+ * not expire because the committed value's storage shape changed.
+ */
+const REPLICA_VALUE_FAMILIES = REPLICA_STORE_FAMILIES.filter(
+  (family) => family !== GENERATIONS,
+);
+
+/**
+ * The sweep-bookkeeping prefix storage version 2 wrote.
+ *
+ * Sweep records are keyed by the replica partition key, which moves with the
+ * manifest version — so once version 3's partitions replace them, the version-2
+ * rows name partitions that no longer exist and nothing will ever read or
+ * delete them again. They are pure garbage-collection bookkeeping, never fence
+ * state, so the migration removes exactly this prefix and nothing else in
+ * {@link GENERATIONS}.
+ */
+const STORAGE_V2_SWEEP_PREFIX = "ramose-replica-sweep-v2:";
 
 /**
  * Families keyed by the replica partition key alone.
@@ -236,6 +280,8 @@ type StagingChunkRecord = {
   readonly partition: string;
   readonly index: number;
   readonly datoms: readonly SnapshotDatom[];
+  /** The chunk's sealed-handle bindings, staged with the datoms they name. */
+  readonly handles: readonly EntityHandleBinding[];
 };
 
 type NodeRecord = {
@@ -366,6 +412,15 @@ const committedHead = (record: CommittedRecord): CommittedHeadRecord => ({
 export type RestoredReplica = {
   readonly db: Db;
   readonly revision: string;
+  /**
+   * The sealed `EntityId` → partition-local eid binding for this value.
+   *
+   * The whole point of carrying the handle on the wire: a row read out of
+   * {@link RestoredReplica.db} is numbered by a local allocator, and this is
+   * the only thing that can turn that number back into the opaque identity a
+   * mutation may target — or resolve a handle an optimistic layer names.
+   */
+  readonly handles: ReadonlyMap<string, number>;
   /**
    * Release this value's claim on the nodes it reads.
    *
@@ -765,6 +820,16 @@ const materialize = async (
     datoms: Object.freeze([...committed.datoms]),
     attributes: Object.freeze(specs),
     entityIds: Object.freeze([...entities]),
+    // Exactly the entities this value names, in the order they were numbered,
+    // so the stored binding and the stored id map describe one set.
+    entityHandles: Object.freeze(
+      [...entities.keys()].flatMap((entity) => {
+        const handle = committed.handles.get(entity);
+        return handle === undefined
+          ? []
+          : [Object.freeze([entity, handle] as const)];
+      }),
+    ),
     attributeIds: Object.freeze([...attributeIds]),
     roots,
     nextLocalId,
@@ -783,6 +848,25 @@ const materialize = async (
       nextEid: nextLocalId,
     }),
   };
+};
+
+/**
+ * The sealed-handle binding one stored manifest describes.
+ *
+ * Composed from the two stored maps rather than persisted a third time: the
+ * manifest binds wire identity → sealed handle and wire identity → local eid,
+ * and the value every caller wants is their join.
+ */
+const recordHandles = (
+  record: CommittedRecord,
+): ReadonlyMap<string, number> => {
+  const entities = new Map(record.entityIds);
+  const handles = new Map<string, number>();
+  for (const [identity, handle] of record.entityHandles) {
+    const eid = entities.get(identity);
+    if (eid !== undefined) handles.set(handle, eid);
+  }
+  return handles;
 };
 
 const dbFromRecord = (
@@ -1161,6 +1245,28 @@ export class IndexedDbReplicaStorage {
         oldVersion < LIFECYCLE_DATABASE_VERSION && request.transaction !== null
       ) {
         seedConfirmedGenerations(request.transaction);
+      }
+      if (
+        oldVersion > 0 && oldVersion < MANIFEST_V3_DATABASE_VERSION &&
+        request.transaction !== null
+      ) {
+        // Storage version 3's own reset. A manifest written before it carries
+        // no sealed-handle binding, so a row it holds could be read and never
+        // addressed; there is no gradual adapter, so every record describing or
+        // selecting a stored value goes, in the same upgrade transaction.
+        //
+        // Separate from the version-2 branch above rather than folded into it,
+        // and narrower: that one predates the mutation queue entirely and may
+        // clear the whole format, while this one runs against origins holding
+        // queued invocations and durable fence state. Neither the mutation
+        // families nor the generation records may be touched, and the lifecycle
+        // key space is versioned independently precisely so this reset cannot
+        // re-key them either.
+        const upgrade = request.transaction;
+        for (const store of REPLICA_VALUE_FAMILIES) upgrade.objectStore(store).clear();
+        // The one thing in `GENERATIONS` that this reset does own: sweep
+        // bookkeeping for partitions that no longer exist.
+        upgrade.objectStore(GENERATIONS).delete(prefixRange(STORAGE_V2_SWEEP_PREFIX));
       }
     });
     const database = await requestResult(request);
@@ -2290,6 +2396,7 @@ export class IndexedDbReplicaStorage {
     return replicaRestored({
       db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
       revision: validated.replica.record.revision,
+      handles: recordHandles(validated.replica.record),
       release: validated.replica.release,
     });
   }
@@ -2386,6 +2493,7 @@ export class IndexedDbReplicaStorage {
       identity: candidate.identity,
       db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
       revision: validated.replica.record.revision,
+      handles: recordHandles(validated.replica.record),
       release: validated.replica.release,
     });
   }
@@ -2543,6 +2651,7 @@ export class IndexedDbReplicaStorage {
       identity: binding.identity,
       db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
       revision: validated.replica.record.revision,
+      handles: recordHandles(validated.replica.record),
       release: validated.replica.release,
     });
   }
@@ -2681,6 +2790,7 @@ export class IndexedDbReplicaStorage {
           partition,
           index: frame.index,
           datoms: frame.datoms,
+          handles: frame.handles,
         } satisfies StagingChunkRecord);
         await commitTransaction(transaction);
         this.meter.stagingChunks++;
@@ -2723,6 +2833,11 @@ export class IndexedDbReplicaStorage {
         snapshot: staging.snapshot,
         index: chunk.index,
         datoms: chunk.datoms,
+        // A chunk staged before this storage version carries none, so the
+        // replay leaves the entities it names unbound and the commit refuses
+        // rather than installing a value with no mutation targets. The version
+        // bump drops those records anyway; this is the belt-and-braces path.
+        handles: chunk.handles ?? [],
       });
     }
     return { state: transition(state, frame), baseRevision: staging.baseRevision };
@@ -2909,6 +3024,7 @@ export class IndexedDbReplicaStorage {
     return {
       db: built.db,
       revision: built.record.revision,
+      handles: recordHandles(built.record),
       release: this.retainRoots(frame.identity, built.record.roots),
     };
   }
@@ -2939,7 +3055,11 @@ export class IndexedDbReplicaStorage {
     if (prior === undefined) return undefined;
     const state = transition({
       identity: prior.identity,
-      committed: { revision: prior.revision, datoms: prior.datoms },
+      committed: {
+        revision: prior.revision,
+        datoms: prior.datoms,
+        handles: new Map(prior.entityHandles),
+      },
       closed: false,
     }, frame);
     if (state.committed === undefined || state.committed.revision === prior.revision) {
@@ -2970,6 +3090,7 @@ export class IndexedDbReplicaStorage {
       return {
         db: dbFromRecord(this.database, prior, frame.identity.readCompatibilityHash),
         revision: prior.revision,
+        handles: recordHandles(prior),
         release: this.retainRoots(frame.identity, prior.roots),
       };
     }
@@ -3047,6 +3168,7 @@ export class IndexedDbReplicaStorage {
     return {
       db: built.db,
       revision: built.record.revision,
+      handles: recordHandles(built.record),
       release: this.retainRoots(frame.identity, built.record.roots),
     };
   }
