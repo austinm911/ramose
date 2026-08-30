@@ -311,6 +311,121 @@ before the atomic database commit.
 **WR-7.** Cross-catalog and stale operation handles fail without executing
 user operation code.
 
+### Sealed entity targets and exact allocation mappings (#475)
+
+**WR-8.** An invocation may name its target as an opaque sealed `EntityId`
+instead of a numeric eid or a lookup ref. The Worker derives the stable
+`{ server, principal, database }` scope from the *authenticated* request —
+never from the body — and the authoritative adapter resolves the handle with
+`openEntityId` under exactly that scope. Resolution is a decrypt, not a
+lookup: bounded, no scan, no mapping table.
+
+**WR-9.** Resolution grants nothing. The resolved eid replaces the invocation
+target *before* the #487 primitive sees it, and every ordinary check then runs
+against it unchanged: current visibility (**REF-3**, **REF-4**), type
+compatibility (**WR-3**), and operation admission (**WR-2**). A target whose
+visibility was revoked after the handle was minted fails exactly as a numeric
+eid naming the same entity would.
+
+**WR-10.** Sealed-target failure taxonomy. An unreadable codec version or a
+replaced key epoch is the typed, data-free `invocation_update_required`
+outcome, decided from the envelope preamble before any key is derived.
+Everything else — malformed, tampered, wrong scope, wrong key material —
+collapses into the ordinary sealed denial (**FC-1**, #419), indistinguishable
+from not-found and unauthorized.
+
+The edge applies **no shape check of its own** before the resolver. The
+preamble is version-first by design, so a handle minted by a newer codec —
+whatever its envelope length — must reach the resolver and come back
+`update-required`; a v1-shaped gate would turn the one signal that lets a
+client recover into a permanent denial of its durable work. The cost is that
+any canonical base64url whose first byte is not this codec's version reads as a
+newer codec. That is harmless: both answers are effect-free, neither names an
+entity, and a durable queue cannot produce one, because only a well-formed
+sealed handle is ever stored as an entity target.
+
+**WR-11.** An operation that declares named allocation slots binds each slot
+to a typed entity-reference path in its own declared output. The authoritative
+edge reads the slot's eid out of the *materialized authoritative output* at
+that declared path, and only where the deployed `OperationDescriptor`'s output
+shape says the position is a `ref`. Nothing is inferred from a transaction
+tempid name, a callback's source, or the shape of a raw output number. A slot
+whose path is absent, is not a ref position, or does not hold a resolved eid
+fails the invocation rather than producing a partial mapping.
+
+**WR-11b.** A slot may name only an entity *this* transaction allocated, and
+only one that still exists after it. `allocates` means what it says: the client
+minted a fresh `ClientRef` for an entity it intends to create, and the mapping
+it gets back is durable and immutable, resolving every later queued dependency.
+An operation returning an entity it did not allocate — `op.self`, an input ref,
+a literal eid — would silently bind that fresh identity to a pre-existing row
+and redirect all of the client's subsequent offline writes onto it, which
+nothing after the commit can repair.
+
+**WR-11a.** A slot's eid is sealed inside the same pre-commit validator that
+read it. A sealing failure therefore aborts the staged transaction rather than
+leaving the writer's in-memory state past a commit the durable log never
+receives, and no numeric eid exists outside that validator.
+
+**WR-12.** The completed #487 receipt durably stores exact
+`{ clientRef, entityId }` mappings — sealed handles only, never numeric eids —
+as a versioned extension of the one receipt row and state machine. There is no
+second receipt table, digest, or replay path. The canonical invocation digest
+covers the ordered `{ slot, clientRef }` binding the caller supplied, so the
+same invocation id reused with a different binding is the ordinary
+`invocation_conflict`, and an exact replay returns byte-identical mappings
+without a second commit. The replay fence (**self-delete and lost-ack**)
+is unchanged by any of this.
+
+**WR-13.** Stored mappings record the sealing key epoch and the stable scope
+they were minted under, because the receipt's own identity covers neither the
+public origin nor the server key. A replay whose current epoch or scope
+disagrees — or whose stored handles were written by an entity-id codec this
+build cannot read — returns the typed data-free update-required rather than
+handles the caller could never open. A client must never durably persist a
+client-ref mapping it cannot resolve, and a durable row a newer codec wrote is
+recognized and answered, never treated as corruption.
+
+**WR-14. Sealing-root epoch coherence.** Every scope component is a PRF of the
+durable identity root, and every sealed handle is ciphertext under a key
+derived from it with the scope as additional data, so a scope and a handle from
+different epochs name nothing. The participants do not share an isolate, and a
+root replacement can leave any pair of them disagreeing. One rule covers all of
+them: **carry the epoch you derived under, compare before acting, and answer
+the typed data-free quarantine on disagreement** — never a sealed denial, and
+never a 500/503 inconsistency for the same dependency failure.
+
+`EpochBoundScope` is what makes the rule hard to forget: a scope cannot be
+passed anywhere without the epoch that produced it, and `decideEpoch` is the
+single comparison.
+
+| participant | carries | compares against | on disagreement |
+|---|---|---|---|
+| Worker scope derivation | `entityIdScope` + `entityIdKeyId` from its cached root | — (it *is* the claim) | root unreachable → 503 + `retry-after` |
+| Writer sealing-key acquisition | its own cached root | — | root unreachable → 503 + `retry-after` (same answer, either side) |
+| Writer epoch gate (`decideInvocationEpoch`) | the carried `{keyId, scope}` | its own `sealing.keyId` | `invocation_update_required` |
+| Sealed-target resolution | the token's own preamble | the writer's key id, inside the codec | `update-required` (epoch/codec) or the sealed denial (everything else) |
+| Allocation sealing | the agreed `{keyId, scope}` | — (agreement already established) | unreachable by construction |
+| Durable receipt mappings | recorded `keyId` + `scope`, and each handle's own preamble | the replaying caller's `EpochBoundScope` | `invocation_update_required` |
+
+A stored mapping's recorded epoch is never believed on its own — the same rule
+the client's durable mapping store applies. Each handle's preamble must itself
+name this codec version and this key id, so neither a rewritten `keyId` nor a
+newer codec that kept the envelope *length* can present handles the caller
+could not open.
+
+Coverage boundary, stated honestly: the local lane exercises a cold Worker
+isolate re-deriving against the live root, and both quarantine reasons for a
+handle from a foreign epoch or codec. Forcing the Worker and the writer to hold
+*different* live roots would need a root-replacement hook that does not exist;
+that seam is covered at the unit level, over `decideEpoch` and
+`allocationMappingsResolvable` directly.
+
+**WR-15.** A momentarily unreachable sealing root is a transient dependency
+failure, not an engine defect and not a denial: 503 with `retry-after`, from
+whichever side observes it. A 500 would be indistinguishable, to a durable
+offline queue, from a permanent failure of an invocation that never ran.
+
 ## 11. Live queries and session replication
 
 **LIVE-1.** Initial live results and every subsequent delta are built from

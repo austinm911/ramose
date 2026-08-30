@@ -7,6 +7,7 @@ import {
   MAX_INVOCATION_ID_LENGTH,
   OperationVersion,
   parseAuthoritativeInvocationResult,
+  parseInvocationAllocations,
   type AuthoritativeInvocationResult,
   type AuthoritativeOperationInvocation,
   type AuthenticatedCaller,
@@ -14,8 +15,11 @@ import {
   type OperationInvocation,
 } from "../internal/authorization/index.ts";
 import { fromJson, toJson } from "../internal/core/json.ts";
+import type { EntityIdScope } from "../internal/replication/entity-id.ts";
+import { makeEntityIdScope } from "../internal/replication/identity.ts";
 import { internalHeaders } from "../internal/transactor/index.ts";
 import type { RamoseEnv } from "../RamoseEnv.ts";
+import { serverSealingKey } from "./server-identity.ts";
 import {
   BadRequest,
   OperationRejected,
@@ -31,7 +35,12 @@ import { invalidateBasis } from "./peer.ts";
 
 export type ParsedOperationRequest = Omit<
   OperationInvocation,
-  "database" | "caller" | "catalogKey" | "unitHash" | "routeDerivation"
+  | "database"
+  | "caller"
+  | "catalogKey"
+  | "unitHash"
+  | "routeDerivation"
+  | "entityIdScope"
 > & {
   readonly path: readonly string[];
   readonly invocationId: string;
@@ -178,7 +187,19 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
       "operationVersion must be a canonical operation version digest",
     );
   }
-  const target = body.target === undefined ? undefined : fromJson(body.target);
+  // An opaque sealed handle is the offline queue's durable target (#475).
+  //
+  // *Every* string target is one, well-formed or not, and is recognized before
+  // `fromJson` so a handle is never mistaken for an ordinary opaque scalar. A
+  // truncated, respelled, or forged handle must be indistinguishable from a
+  // wrong-scope one and from an unauthorized one, so it goes to the
+  // authoritative resolver and comes back as the same sealed denial rather
+  // than as a shape complaint here. It is mutually exclusive with the
+  // numeric/lookup form: two targets are two different invocations.
+  const sealedTarget = typeof body.target === "string" ? body.target : undefined;
+  const target = body.target === undefined || sealedTarget !== undefined
+    ? undefined
+    : fromJson(body.target);
   if (
     target !== undefined &&
     !(
@@ -186,7 +207,15 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
     ) &&
     !(Array.isArray(target) && isEntityRef(target))
   ) {
-    return yield* bad("operation target must be an eid or lookup ref");
+    return yield* bad(
+      "operation target must be an entity id, an eid, or a lookup ref",
+    );
+  }
+  const allocations = parseInvocationAllocations(body.allocations);
+  if (allocations === undefined) {
+    return yield* bad(
+      "allocations must be unique { slot, clientRef } pairs",
+    );
   }
   return {
     ...proof,
@@ -200,21 +229,83 @@ export const parseOperationRequest = Effect.fn("parseOperationRequest")(function
     ...(target === undefined ? {} : {
       target: target as Exclude<OperationInvocation["target"], undefined>,
     }),
+    ...(sealedTarget === undefined ? {} : { sealedTarget }),
+    ...(allocations.length === 0 ? {} : { allocations }),
     input: body.input,
   };
 });
 
+/**
+ * The stable `{ server, principal, database }` scope an opaque handle is bound
+ * to, derived from the *authenticated* request and never from its body.
+ *
+ * It is exactly the scope logical replication derives, so a handle minted by
+ * one and resolved by the other names the same entity. Derived only when this
+ * invocation actually uses opaque handles: every other operation keeps its
+ * previous cost, including the durable-root lookup it never performed.
+ */
+const invocationEntityIdScope = async (
+  env: RamoseEnv,
+  database: string,
+  origin: string,
+  parsed: RoutedOperationRequest,
+  caller: AuthenticatedCaller,
+): Promise<
+  { readonly scope: EntityIdScope; readonly keyId: string } | undefined
+> => {
+  if (
+    parsed.sealedTarget === undefined &&
+    (parsed.allocations === undefined || parsed.allocations.length === 0)
+  ) return undefined;
+  let sealing;
+  try {
+    sealing = await serverSealingKey(env);
+  } catch {
+    // The root lives in another Durable Object, so a cold Worker isolate has to
+    // fetch it. That is the identical dependency the Transactor answers 503
+    // for; classifying it as an internal 500 here only because the Worker
+    // happened to notice first would tell a client its invocation failed when
+    // it never ran, and a client that retries only 503/429 would abandon it.
+    throw privateFailure(503, { "retry-after": "1" });
+  }
+  return {
+    // The key id this scope was derived under travels with it. Every component
+    // of the scope is a PRF of the root, so a handle sealed under a *different*
+    // epoch but scoped by these strings could never be opened again — and the
+    // client would already have stored the mapping durably. The writer refuses
+    // that mismatch rather than minting one.
+    keyId: sealing.keyId,
+    scope: await makeEntityIdScope(sealing, {
+      origin,
+      caller,
+      database: DatabaseId.make(database),
+    }),
+  };
+};
+
 export const invokeAuthoritativeOperation = async (
   env: RamoseEnv,
   database: string,
+  origin: string,
   parsed: RoutedOperationRequest,
   caller: AuthenticatedCaller,
   routeDerivation?: DatabaseRouteDerivation,
 ): Promise<AuthoritativeInvocationResult> => {
+  const sealingScope = await invocationEntityIdScope(
+    env,
+    database,
+    origin,
+    parsed,
+    caller,
+  );
   const invocation: AuthoritativeOperationInvocation = {
     ...parsed,
     database: DatabaseId.make(database),
     caller,
+    ...(sealingScope === undefined ? {} : {
+      entityIdScope: sealingScope.scope,
+      entityIdKeyId: sealingScope.keyId,
+    }),
     ...(routeDerivation === undefined ? {} : { routeDerivation }),
   };
   const stub = env.TRANSACTOR.get(env.TRANSACTOR.idFromName(database));
@@ -292,7 +383,14 @@ export const publicOperationResult = (
   if (result._tag === "Completed") {
     return {
       status: 200,
-      body: { result: result.output, receipt: result.receipt },
+      body: {
+        result: result.output,
+        receipt: result.receipt,
+        // Exact `{ clientRef, entityId }` mappings for the slots this caller
+        // bound, sealed. Absent when nothing was bound; an exact replay
+        // returns the identical list without a second commit (#475).
+        ...(result.mappings === undefined ? {} : { mappings: result.mappings }),
+      },
     };
   }
   if (result._tag === "Failed") {
