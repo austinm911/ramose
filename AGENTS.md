@@ -7,6 +7,18 @@ Use `README.md` for the product overview and `CONTRIBUTING.md` for development
 commands. Public documentation is published at [ramose.ai](https://ramose.ai)
 from `website/src/content/docs`.
 
+## Code Review Rules
+
+Before reviewing, examine linked issues for the intended scope and expected
+behavior. Apply the rule below and any more specific rules in the closest
+nested `AGENTS.md`. Other guidance is not an additional review checklist.
+
+### One-way doors
+
+Prioritize issues that would become unsafe or materially more expensive to
+correct after merge. If a small follow-up can safely revisit the decision,
+favor shipping and iterating.
+
 ## Checks
 
 ```sh

@@ -3,6 +3,22 @@
 Ramose uses Bun workspaces. The published package is `packages/ramose`, examples
 are in `examples`, and public documentation is in `website/src/content/docs`.
 
+## Reviewable changes
+
+Keep each review unit narrow enough for one complete review. Around 1,200
+hand-written additions, including tests, is a planning signal rather than a
+quota: split before coding when a change is likely to exceed it or spans
+unrelated risk boundaries.
+
+Request review after the implementation and relevant checks are stable.
+Automated review runs on every push to a ready pull request, so keep the pull
+request in draft while implementing and while batching a review round's
+root-cause fixes; mark it ready for one verification review rather than one
+review per corrective commit. If a second re-review uncovers another
+independent blocker class, pause and split or redesign the change. Describe the
+primary outcome, intentional public API additions, and relevant test lane in
+the pull request.
+
 ## Setup and checks
 
 ```sh
@@ -25,6 +41,10 @@ Use the test lane that owns the behavior:
 | Browser | `bun run test:browser` | Chromium and browser APIs |
 | Local | `bun run test:local` | Worker, Durable Object, R2, cache, WebSocket, and authentication integration |
 | Cloudflare | `bun run test:e2e:cf` | Edge and deployment behavior |
+
+Regression tests protect stable invariants, not individual review comments.
+Group pure cases in table-driven unit tests; use browser or local tests only for
+boundary behavior that those lanes uniquely prove.
 
 Do not introduce mocks, fake platform services, scripted peers, in-memory
 infrastructure substitutes, DOM shims, or fake IndexedDB. `bun run test:doubles`
