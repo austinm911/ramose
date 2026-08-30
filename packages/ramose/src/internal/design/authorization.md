@@ -344,6 +344,14 @@ newer codec. That is harmless: both answers are effect-free, neither names an
 entity, and a durable queue cannot produce one, because only a well-formed
 sealed handle is ever stored as an entity target.
 
+The resolver judges exactly one length before the version byte, and it is not a
+shape gate: a token too short to carry the frozen `version ‖ keyId` preamble is
+denied rather than quarantined, because no version's envelope can be shorter
+than the bytes every version is required to spend. That bound belongs to the
+codec, which publishes it, so a caller that must decide *without a key* whether
+a string could be a handle at all can be exactly as permissive as the resolver
+— which is what **WR-17c** needs.
+
 **WR-11.** An operation that declares named allocation slots binds each slot
 to a typed entity-reference path in its own declared output. The authoritative
 edge reads the slot's eid out of the *materialized authoritative output* at
@@ -456,15 +464,98 @@ two handles for one thing. A projection that cannot complete after the commit is
 the ordinary private 500, which a durable queue reads as "ask again" and
 recovers through the exact replay — never a raw eid published instead.
 
-Known gap, stated honestly, and not introduced here: entity-reference positions
-of operation *input* still accept only numeric eids. The deployed codec decodes
-an `EntityId` slot as a number and `validateAuthoritativeRefs` requires one, so
-a sealed handle is accepted as the invocation `target` and nowhere else. The
-offline queue already substitutes handles at declared input positions, so this
-blocks it independently of anything above; closing it needs the same treatment
-the target gets — open at the authoritative edge before admission, under a scope
-the Worker derives whenever the request body could carry a handle at all — and
-it is tracked as its own change rather than folded in here.
+**WR-17. Sealed handles at declared input entity-ref positions.** An invocation
+may also name an entity as a sealed `EntityId` at any position the *deployed*
+`OperationDescriptor`'s input shape declares a `ref`. The authoritative edge
+opens each one under the same scope it opens a target with, replaces it with
+the private eid *before* the #487 primitive sees the invocation, and every
+ordinary check then runs against a numeric input exactly as it always did:
+existence, the entity-type compatibility that ref position declares, and the
+replay-fence exemptions. A sealed target keeps **WR-9**'s treatment unchanged,
+including the target readability **WR-3** establishes; nothing about that moves
+here. The target and input positions are one mechanism with one scope,
+one epoch comparison, and one failure taxonomy — a dependent offline invocation
+that targets a created entity and one that passes it as an argument are the
+same thing to the writer.
+
+Only *declared* positions are opened. A handle-shaped string anywhere else in
+the input is data: it is never decrypted, never inspected, and fails — or
+succeeds — through the deployed codec exactly as any other string does. The
+shape is what makes the position real, the same reason **WR-11** reads
+allocation slots against the declared output shape rather than off a raw
+number.
+
+Opening grants nothing here either (**WR-9**). Input refs are deliberately not
+target-visibility checked — an admitted operation is trusted server code whose
+reads are not filtered by caller read policy (**WR-5**, **WR-6**) — and that is
+unchanged, because a resolved handle is indistinguishable from the numeric eid
+naming the same entity. The channel in fact *narrows*: any caller could always
+supply an arbitrary numeric eid at such a position, whereas a handle only opens
+under the scope that minted it, so a caller can name only entities this
+server already handed that principal in that database.
+
+**WR-17a. The canonical digest covers the resolved eid, not the handle.**
+Substitution happens before `prepareInvocationReceipt`, so the target and every
+input ref digest as the private eid — which is precisely what the target
+position has always done (**WR-9**). Three properties follow, and they are the
+reason for the choice:
+
+- an exact replay of the same sealed inputs resolves to the same eids and so
+  reproduces the digest byte for byte;
+- the same logical invocation submitted with numeric inputs and with sealed
+  ones is the *same* invocation, not an `invocation_conflict` — so this is
+  additive, not a digest migration, and no receipt already stored changes;
+- a handle re-minted for the same entity under a new epoch still digests
+  identically, and the receipt's own recorded epoch (**WR-13**) remains the
+  thing that quarantines stale mappings.
+
+Digesting the submitted handle instead would make numeric and sealed forms of
+one invocation collide as a conflict, and would tie a durable receipt's
+identity to the sealing epoch, which **WR-13** already covers separately.
+
+**WR-17b. Failure taxonomy, identical to the target position.** An unreadable
+codec version or a replaced key epoch at an input position is the typed,
+data-free `invocation_update_required` (**WR-10**, **WR-14**). Malformed,
+tampered, wrong-scope, and wrong-key handles collapse into the ordinary sealed
+denial. A string at a declared ref position that no codec version could have
+produced is that same denial — it is not a shape complaint, and it is not a
+quarantine.
+
+The edge applies no shape gate before the resolver here either, so the same
+frozen consequence as **WR-10** holds: a canonical base64url string at a
+declared ref position whose first byte is not this codec's version reads as a
+newer codec and answers `update-required`. Both answers are effect-free and
+neither names an entity.
+
+**WR-17c. Deriving the scope without the descriptor.** The Worker decides
+whether to derive the `{ server, principal, database }` scope *before* it can
+see the deployed input shape, so it cannot know which positions are refs. It
+therefore over-approximates: a sealed target, a bound allocation slot, or an
+input containing any string that *could* be an envelope of any codec version —
+canonical unpadded base64url, no shorter than the frozen `version ‖ keyId`
+preamble. That floor is the codec's own published bound (**WR-10**), not a
+guess and not v1's length, so the predicate accepts exactly the strings the
+resolver would answer something other than a denial for — including a handle
+from a future codec whose envelope is *shorter* than v1's. The predicate is a
+provisioning decision and carries no semantics: nothing is opened because of
+it, and nothing is refused because of it.
+
+Precision is recovered inside the writer, which does have the descriptor. The
+epoch comparison and the resolver run only when a *declared* ref position
+actually holds a string, so a false positive costs one isolate-cached root read
+and changes no answer — in particular it can never turn an ordinary operation
+into `update-required` during a root replacement. A false *negative* is
+impossible for anything a codec could have minted; a string below the preamble floor or not
+canonical base64url is not a handle of any version — the resolver denies it too
+— and it reaches the writer with no scope, where it is the ordinary sealed
+denial. The two bounds are one constant, and a unit test walks every envelope
+length across it rather than trusting that they agree.
+
+The cost of the over-approximation is bounded and stated plainly: while the
+sealing root is unreachable, an operation whose input merely contains a long
+base64url-shaped string answers 503 with `retry-after` instead of running.
+That is **WR-15**'s answer, it is retryable, and it never claims an invocation
+failed that might have run.
 
 ## 11. Live queries and session replication
 
