@@ -6,7 +6,11 @@ import {
   type ReplicationFrame,
   type ReplicationIdentity,
 } from "../../packages/ramose/src/internal/replication/index.ts";
-import { decodeReplicationNdjson } from "./replication.ts";
+import {
+  collectCommittedSnapshot,
+  decodeReplicationNdjson,
+  readReplicationNdjson,
+} from "./replication.ts";
 
 const opaque = (character: string): string => character.repeat(43);
 const identity: ReplicationIdentity = {
@@ -52,4 +56,54 @@ test("replication NDJSON decoder bounds coalesced transport data per frame", asy
     decoded.push(observed.frame);
   }
   expect(decoded).toEqual(Array.from({ length: frameCount }, () => frame));
+});
+
+test("a stream cut mid-frame is a truncation, not a malformed frame", async () => {
+  const wire = encodeReplicationFrame({
+    type: "KeepAlive",
+    protocol: 1,
+    identity,
+  });
+  const bytes = new TextEncoder().encode(`${wire}\n${wire.slice(0, 20)}`);
+  const chunks = (async function* () {
+    yield bytes;
+  })();
+
+  const decoded: ReplicationFrame[] = [];
+  const consume = async () => {
+    for await (const observed of decodeReplicationNdjson(chunks)) {
+      decoded.push(observed.frame);
+    }
+  };
+
+  // The Worker writes every frame newline-terminated, so an unterminated tail
+  // can only be a dropped connection. Reporting it as the product's own
+  // `malformed` protocol error would blame a real transport failure on the
+  // frame codec.
+  await expect(consume()).rejects.toThrow(
+    "replication stream ended without a newline",
+  );
+  expect(decoded).toHaveLength(1);
+});
+
+test("a stalled snapshot cancels its reader so cleanup does not queue behind it", async () => {
+  // A body that opens and then never produces a chunk — the shape a wedged
+  // transport presents. `ReadableStream`/`Response` are platform primitives,
+  // not substitutes for any Ramose component.
+  const stalled = new ReadableStream<Uint8Array>({ start() {} });
+  const stream = readReplicationNdjson(new Response(stalled));
+
+  const started = Date.now();
+  await expect(collectCommittedSnapshot(stream, undefined, 100))
+    .rejects.toThrow("replication snapshot did not commit within 100ms");
+
+  // The point of the cancel: `return()` resolves instead of queueing behind
+  // the read that is still notionally pending inside the generator.
+  await expect(
+    Promise.race([
+      stream.return(undefined).then(() => "closed" as const),
+      Bun.sleep(2_000).then(() => "hung" as const),
+    ]),
+  ).resolves.toBe("closed");
+  expect(Date.now() - started).toBeLessThan(2_000);
 });

@@ -66,6 +66,15 @@ export const post = (body: unknown, token?: string) => ({
   ...(token === undefined ? {} : { token }),
 });
 
+/**
+ * A 502 the Alchemy dev proxy produced before the Worker saw the request.
+ *
+ * The product itself answers 502 in two places
+ * (`worker/authorized-operation.ts`, `worker/peer.ts`), always as
+ * `{"error": "<string>"}`. Those must never retry, so a 502 only counts as a
+ * proxy blip when its body is not an object, carries an explicit `ProxyError`
+ * tag, or has no `error` key at all.
+ */
 const isProxyBlip = (status: number, body: unknown): boolean => {
   if (status !== 502) return false;
   if (body === null || typeof body !== "object") return true;
@@ -73,11 +82,99 @@ const isProxyBlip = (status: number, body: unknown): boolean => {
   return err?._tag === "ProxyError" || err === undefined;
 };
 
+/**
+ * Retry budget for a dev-proxy blip, shared by every local call site.
+ *
+ * PR #530 measured this against the same proxy and settled on six bounded
+ * exponential attempts (~1.5s total). `json` had kept a much smaller
+ * three-attempt, 150ms budget, and a 502 that outlasts 150ms is exactly what
+ * failed `replication.ts:494` in nine of fourteen recent conformance runs —
+ * that call site already routes through `json` (#545) and still lost. One
+ * constant so the two budgets cannot drift apart again.
+ */
+const PROXY_BLIP_ATTEMPTS = 6;
+
+const proxyBlipBackoffMs = (attempt: number): number => 50 * 2 ** attempt;
+
+/**
+ * Codes Bun attaches when the Alchemy dev proxy drops a connection before it
+ * produces a response. `fetch` only rejects while it is still establishing
+ * the exchange — a reset *during* a streamed body rejects the body reader
+ * instead — so a rejection here proves no response was produced and no bytes
+ * were consumed.
+ */
+const PRE_RESPONSE_CODES: ReadonlySet<string> = new Set([
+  "ConnectionRefused",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ConnectionClosed",
+]);
+
+const isPreResponseFailure = (error: unknown): boolean => {
+  const code = (error as { readonly code?: unknown } | null)?.code;
+  return typeof code === "string" && PRE_RESPONSE_CODES.has(code);
+};
+
+/**
+ * Issue a request whose response `json` must not drain: a long-lived stream
+ * (`/replicate`, `/live`) the caller consumes frame by frame, or a probe a
+ * recording transport has to observe directly.
+ *
+ * Retries only failures that prove the Worker never answered:
+ *
+ *   - HTTP 502 — these routes answer 200, 401, 403, 404 or 409 and never
+ *     502, so unlike the routes `json` covers there is no product 502 to
+ *     confuse with the proxy's own.
+ *   - a `fetch` rejection carrying a transport code — `fetch` only rejects
+ *     while still establishing the exchange, so nothing was read and no
+ *     frame was lost. A reset *inside* an open stream surfaces on the body
+ *     reader and is never retried here.
+ *
+ * Any status the Worker actually produced is returned untouched on the first
+ * attempt, so no product answer can be masked. Only safe, read-only requests
+ * may use this: re-issuing one that commits would double-apply it.
+ */
+export const fetchPastProxyBlip = async (
+  url: string,
+  init: RequestInit,
+  label: string,
+  fetcher: typeof fetch = fetch,
+): Promise<Response> => {
+  let last: unknown;
+  for (let attempt = 0; attempt < PROXY_BLIP_ATTEMPTS; attempt++) {
+    if (attempt > 0) await Bun.sleep(proxyBlipBackoffMs(attempt - 1));
+    init.signal?.throwIfAborted();
+    try {
+      const response = await fetcher(url, init);
+      if (response.status !== 502) return response;
+      await response.body?.cancel().catch(() => undefined);
+      last = new Error(`${label}: dev proxy answered 502`);
+    } catch (error) {
+      if (!isPreResponseFailure(error)) throw error;
+      last = error;
+    }
+  }
+  throw last;
+};
+
+/**
+ * Ceiling on one `json` request/response exchange.
+ *
+ * Nothing `json` carries is a long poll — the whole suite finishes in under a
+ * minute — so anything still outstanding at this point is wedged. Without a
+ * ceiling a wedged request silently consumed the caller's entire 90s default
+ * test budget and reported only "timed out after 90000ms": that is how a
+ * hung `/op` on a parked replication stream (see the PR body) presented, with
+ * the request's own identity lost. This is a deadline, never a retry: the
+ * request is abandoned and the failure names the path that hung.
+ */
+const REQUEST_DEADLINE_MS = 45_000;
+
 export const json = async (
   base: string,
   path: string,
   init: RequestInit & { token?: string } = {},
-): Promise<{ status: number; body: any; res: Response }> => {
+): Promise<{ status: number; body: any; text: string; res: Response }> => {
   const { token, ...rest } = init;
   const headers = new Headers(rest.headers);
   if (token !== undefined) headers.set("authorization", `Bearer ${token}`);
@@ -86,19 +183,43 @@ export const json = async (
   }
   const url = `${base.replace(/\/+$/, "")}${path}`;
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(url, { ...rest, headers });
-    const text = await res.text();
+    // Callers never pass their own signal today; honour one if they start to.
+    const deadline = rest.signal === undefined
+      ? AbortSignal.timeout(REQUEST_DEADLINE_MS)
+      : undefined;
+    let res: Response;
+    let text: string;
+    try {
+      res = await fetch(url, {
+        ...rest,
+        headers,
+        ...(deadline === undefined ? {} : { signal: deadline }),
+      });
+      // Inside the same guard: the signal keeps running after the headers
+      // arrive, so a body that stalls aborts here rather than hanging, and
+      // reports the same way as a request that never answered at all.
+      text = await res.text();
+    } catch (error) {
+      if (deadline?.aborted === true) {
+        throw new Error(
+          `${rest.method ?? "GET"} ${path} did not answer within ${REQUEST_DEADLINE_MS}ms`,
+        );
+      }
+      throw error;
+    }
     let body: any;
     try {
       body = text ? JSON.parse(text) : null;
     } catch {
       body = text;
     }
-    if (attempt < 2 && isProxyBlip(res.status, body)) {
-      await Bun.sleep(50 * (attempt + 1));
+    if (
+      attempt < PROXY_BLIP_ATTEMPTS - 1 && isProxyBlip(res.status, body)
+    ) {
+      await Bun.sleep(proxyBlipBackoffMs(attempt));
       continue;
     }
-    return { status: res.status, body, res };
+    return { status: res.status, body, text, res };
   }
 };
 
