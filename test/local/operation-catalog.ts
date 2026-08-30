@@ -12,8 +12,12 @@ import {
   OwnedOperations,
   Ref,
   Schema,
+  Trait,
+  bytes,
   stored,
   string,
+  timestamp,
+  uuid,
 } from "ramose/db";
 
 export const OPERATION_DATABASES = Object.freeze([
@@ -42,6 +46,11 @@ export const OPERATION_DATABASES = Object.freeze([
   "operations-sealed-cold",
   "operations-client-submission",
   "operations-client-answers",
+  "operations-mcp-describe",
+  "operations-mcp-query",
+  "operations-mcp-mutate",
+  "operations-mcp-expiry",
+  "operations-mcp-budget",
 ]);
 
 const CrashingInputValue = EffectSchema.String.pipe(EffectSchema.decodeTo(
@@ -275,11 +284,98 @@ export const Item = Entity("nativeItem", {
   }),
 });
 
-export const OperationSchema = Schema({ nativeItem: Item, nativeOther: Other });
+/** Composed by `nativeEncoded` and granted to nobody: its field is unreadable. */
+export const SealedTrait = Trait("nativeSealed", { sealedNote: string() });
+
+const encodedRow = (label: string) => ({
+  sealedNote: "trait-hidden",
+  label,
+  at: new Date(1_700_000_000_000),
+  blob: new Uint8Array([1, 2, 3, 250]),
+  key: "8f14e45f-ceea-467a-9c8b-4e2f9b7c1a30",
+  secret: "policy-hidden",
+  tenantOnly: "acme-only",
+  rowScoped: "row-scoped",
+});
+
+/**
+ * Field types JSON cannot represent natively, so a transport that forgets the
+ * engine's canonical `$inst` / `$uuid` / `$bytes` encoding is caught rather
+ * than silently mangling the value.
+ */
+export const Encoded = Entity("nativeEncoded", {
+  label: string(),
+  at: timestamp(),
+  blob: bytes(),
+  key: uuid(),
+  /** Declared on a readable entity but denied to `member` by policy. */
+  secret: string(),
+  /** Readable only by a principal whose `tenant` claim is `acme`. */
+  tenantOnly: string(),
+  /**
+   * Readable only where the row's own `label` matches the caller's `tenant`
+   * claim — decidable per row, never from the principal alone, so the static
+   * layer must defer it to the deployed filter.
+   */
+  rowScoped: string(),
+}, {
+  traits: [SealedTrait],
+  operations: (Operation) => ({
+    /**
+     * An `Unknown` output contract proves nothing about its interior, so
+     * whatever it carries has to be withheld.
+     *
+     * The returned number stands in for a storage id: the Transactor refuses
+     * to transport a live entity handle through an undeclared output at all
+     * ("operation output changes during JSON transport"), so an id can only
+     * reach an opaque contract as a plain number like this one. The exact
+     * value is immaterial — the projection is contract-only and never reads
+     * it; the unit tests pin the `{ principalEid: <eid> }` shape directly.
+     */
+    opaqueOutcome: Operation({
+      self: false,
+      input: EffectSchema.Struct({ label: EffectSchema.String }),
+      output: EffectSchema.Unknown,
+      run(op, input) {
+        op.create(encodedRow(input.label));
+        return { principalEid: 4099 };
+      },
+    }),
+    create: Operation({
+      self: false,
+      input: EffectSchema.Struct({ label: EffectSchema.String }),
+      output: EffectSchema.Struct({ id: OperationEntityId }),
+      run(op, input) {
+        return { id: op.create(encodedRow(input.label)) };
+      },
+    }),
+    /**
+     * Same reference-shaped output, published under a codec-renamed key. The
+     * declared shape says `id`; the wire says `wire_id`.
+     */
+    createRenamed: Operation({
+      self: false,
+      input: EffectSchema.Struct({ label: EffectSchema.String }),
+      output: EffectSchema.Struct({ id: OperationEntityId }).pipe(
+        EffectSchema.encodeKeys({ id: "wire_id" }),
+      ),
+      run(op, input) {
+        return { id: op.create(encodedRow(input.label)) };
+      },
+    }),
+  }),
+});
+
+export const OperationSchema = Schema({
+  nativeItem: Item,
+  nativeOther: Other,
+  nativeEncoded: Encoded,
+});
 
 const policy = await Effect.runPromise(Policy.compileReadAuthorization({
   schema: OperationSchema,
   classes: ["member", "reader", "operator"],
+  claims: [{ key: "tenant", optional: true, shape: { _tag: "scalar", valueType: "string" } }],
   rules: [
     Policy.read(Item).when(Policy.any(Policy.hasClass("member"), Policy.hasClass("reader"))),
     Policy.read(Other).when(Policy.hasClass("reader")),
@@ -303,6 +399,22 @@ const policy = await Effect.runPromise(Policy.compileReadAuthorization({
     Policy.invoke(Item[OwnedOperations].echoExactWireValues).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].reject).when(Policy.hasClass("member")),
     Policy.invoke(Other[OwnedOperations].create).when(Policy.hasClass("member")),
+    Policy.read(Encoded).when(Policy.hasClass("member")),
+    Policy.read(Encoded.secret).deny(Policy.hasClass("member")),
+    // Decidable from the principal alone: no row is consulted to know whether
+    // this caller's `tenant` claim is `acme`.
+    Policy.read(Encoded.tenantOnly).when(
+      Policy.eq(Policy.claim("tenant"), "acme"),
+    ),
+    // Row-dependent: no label in this fixture ever equals a caller's claim,
+    // so the field is hidden on every row while remaining undecidable from
+    // the principal alone.
+    Policy.read(Encoded.rowScoped).when(
+      Policy.eq(Encoded.label, Policy.claim("tenant")),
+    ),
+    Policy.invoke(Encoded[OwnedOperations].create).when(Policy.hasClass("member")),
+    Policy.invoke(Encoded[OwnedOperations].createRenamed).when(Policy.hasClass("member")),
+    Policy.invoke(Encoded[OwnedOperations].opaqueOutcome).when(Policy.hasClass("member")),
   ],
 }));
 

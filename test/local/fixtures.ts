@@ -35,6 +35,7 @@ export type LocalUrls = {
   readonly policyClosedUrl: string;
   readonly policySchemaUrl: string;
   readonly nativeOperationsUrl: string;
+  readonly mcpBudgetUrl: string;
   readonly graphPathsUrl: string;
   readonly conformanceUrl: string;
   readonly seededUrl: string;
