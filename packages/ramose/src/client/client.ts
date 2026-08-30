@@ -1,11 +1,20 @@
 import { isCatalogDefinition, type CatalogDefinition } from "../Catalog.ts";
-import { IndexedDbReplicaStorage } from "../internal/replication/indexeddb.ts";
+import {
+  DEFAULT_REPLICA_DATABASE_NAME,
+  IndexedDbReplicaStorage,
+} from "../internal/replication/indexeddb.ts";
 import type { ReplicationIdentity } from "../internal/replication/protocol.ts";
 import {
   replicaDatabaseKey,
+  replicaDatabaseScopeOf,
   replicaScopeOf,
   type ReplicaDatabaseScope,
 } from "../internal/replication/replica-lifecycle.ts";
+import {
+  platformLocks,
+  replicaLeaderKey,
+  SyncLeadership,
+} from "../internal/replication/leadership.ts";
 import type { MutationEndpoint } from "../internal/replication/submission.ts";
 import { replicationActivationAddress } from "../internal/replication/transport.ts";
 import { completeSchema } from "../internal/authorization/read-tables.ts";
@@ -86,7 +95,10 @@ class RamoseClient implements Client {
   private operations: ClientOperations | undefined;
   private compositionIndex: CompositionIndex | undefined;
   private submissionLoop: SubmissionLoop | undefined;
+  private leadership: SyncLeadership | undefined;
+  private leaderName: string | undefined;
   private terminal: "closed" | "cleared" | "fenced" | undefined;
+  private termination: Promise<void> | undefined;
   private clearing = false;
 
   constructor(
@@ -122,6 +134,7 @@ class RamoseClient implements Client {
       onSyncChange: () => this.refreshSync(),
       onConfirmed: (identity) => {
         this.confirmed = identity;
+        this.elect(identity);
       },
       onFenced: () => {
         void this.terminate(this.clearing ? "cleared" : "fenced");
@@ -161,9 +174,42 @@ class RamoseClient implements Client {
     this.submissionLoop?.close();
   }
 
+  /**
+   * Stand for the leadership of the confirmed root scope. Every tab of one
+   * storage namespace, server, root, and principal stands for the same one,
+   * and only the tab holding it submits. A confirmation that names another
+   * scope gives the leadership of the previous one back.
+   */
+  private elect(identity: ReplicationIdentity): void {
+    if (this.terminal !== undefined) return;
+    const scope = replicaScopeOf(identity);
+    const name = replicaLeaderKey(
+      replicaDatabaseScopeOf(identity),
+      this.storageName(),
+    );
+    if (this.leaderName === name) return;
+    this.leaderName = name;
+    const stood = this.leadership;
+    if (stood !== undefined) void stood.release();
+    const leadership = SyncLeadership.begin({
+      name,
+      locks: platformLocks(),
+      claim: async () => (await this.storage()).claimLeadership(name, scope),
+      onLeading: () => {
+        if (this.terminal === undefined) this.submissions().request(scope);
+      },
+    });
+    this.leadership = leadership;
+    void this.storage().then(
+      (storage) => storage.onInvalidated(() => void leadership.release()),
+      () => undefined,
+    );
+  }
+
   private submissions(): SubmissionLoop {
     this.submissionLoop ??= new SubmissionLoop({
       storage: () => this.storage(),
+      leadership: () => this.leadership,
       credential: () => this.credential(),
       endpoint: (receiver, credential) => this.endpointFor(receiver, credential),
       reconcile: async (receiver, progress) => {
@@ -236,10 +282,12 @@ class RamoseClient implements Client {
     return this.catalogBuild;
   }
 
+  private storageName(): string {
+    return this.options.storageName ?? DEFAULT_REPLICA_DATABASE_NAME;
+  }
+
   private storage(): Promise<IndexedDbReplicaStorage> {
-    this.storageHandle ??= this.options.storageName === undefined
-      ? IndexedDbReplicaStorage.open()
-      : IndexedDbReplicaStorage.open(this.options.storageName);
+    this.storageHandle ??= IndexedDbReplicaStorage.open(this.storageName());
     return this.storageHandle;
   }
 
@@ -318,10 +366,17 @@ class RamoseClient implements Client {
   private async terminate(
     reason: "closed" | "cleared" | "fenced",
   ): Promise<void> {
-    if (this.terminal !== undefined) return;
+    this.termination ??= this.shutdown(reason);
+    await this.termination;
+  }
+
+  private async shutdown(
+    reason: "closed" | "cleared" | "fenced",
+  ): Promise<void> {
     this.terminal = reason;
     this.closeSubmissions();
     await this.submissionLoop?.settled();
+    await this.leadership?.release();
     await this.graph?.close();
     await this.root?.close();
     await this.storageHandle?.then(
