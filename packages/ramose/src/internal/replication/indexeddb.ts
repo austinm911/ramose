@@ -5,7 +5,7 @@ import type { ReadCompatibilityHash } from "../authorization/identities.ts";
 import { ALL_INDEXES, type Datom } from "../core/datom.ts";
 import { buildRoots } from "../core/conn.ts";
 import { sha256Hex } from "../core/bytes.ts";
-import { Db, rootFor } from "../core/db.ts";
+import { Db, type Roots, rootFor } from "../core/db.ts";
 import { Novelty } from "../core/novelty.ts";
 import { FIRST_USER_EID, type AttributeSpec, Schema } from "../core/schema.ts";
 import { deserializeNode, gzipCodec, serializeNode } from "../core/store.ts";
@@ -54,6 +54,17 @@ import {
   MUTATION_STORE_FAMILIES,
 } from "./outbox-storage.ts";
 import {
+  classifyReplicaStorageFailure,
+  replicaQuotaRecovery,
+  replicaSweepKey,
+  replicaSweepPrefix,
+  ReplicaQuotaExhaustedError,
+  ReplicaReachability,
+  stagingIsSweepable,
+  unreachableNodeHashes,
+  type ReplicaGcOutcome,
+} from "./replica-gc.ts";
+import {
   identityInDatabase,
   identityInScope,
   REPLICA_GENERATIONS_STORE,
@@ -61,12 +72,14 @@ import {
   replicaDatabasePartitionPrefix,
   replicaDatabaseScopeOf,
   replicaPartitionKey,
+  replicaPartitionScopeKey,
   replicaScopeKey,
   replicaScopeOf,
   replicaScopePartitionPrefix,
   withConfirmedScope,
   withoutConfirmedScope,
   ReplicaDatabaseActiveError,
+  ReplicaFencedError,
   ReplicaLease,
   ReplicaScopeClearedError,
   ReplicaScopeUnconfirmedError,
@@ -78,6 +91,7 @@ import {
   emptyReplicaIndexDigest,
   expectedReplicaContents,
   replicaAbsent,
+  replicaContended,
   replicaManifestFingerprint,
   replicaManifestIdentity,
   replicaRestored,
@@ -166,6 +180,11 @@ export const DEFAULT_REPLICA_DATABASE_NAME = "ramose-replicas";
 
 /** Authenticator and catalog rotation do not create another stored partition. */
 export { replicaPartitionKey } from "./replica-lifecycle.ts";
+export {
+  ReplicaQuotaExhaustedError,
+  replicaSweepKey,
+  type ReplicaGcOutcome,
+} from "./replica-gc.ts";
 
 /**
  * The manifest shape lives in `replica-integrity.ts` because validating it is
@@ -243,7 +262,12 @@ type RouteSlotRecord = {
  */
 type GenerationRecord = {
   readonly key: string;
-  readonly kind: "scope" | "database";
+  /**
+   * `partition` records are the sweep generation reachability GC bumps. They
+   * are guarded by the restore publish fence alone, never by an install, so a
+   * sweep of superseded roots leaves every live session running.
+   */
+  readonly kind: "scope" | "database" | "partition";
   /** Owning scope key; a scope record owns itself. */
   readonly scope: string;
   readonly generation: number;
@@ -319,6 +343,27 @@ const committedHead = (record: CommittedRecord): CommittedHeadRecord => ({
 export type RestoredReplica = {
   readonly db: Db;
   readonly revision: string;
+  /**
+   * Release this value's claim on the nodes it reads.
+   *
+   * A `Db` holds its roots and its node store directly, so a reachability
+   * sweep that reclaimed those roots would turn it into a value that throws
+   * mid-query. Every value handed out here is therefore already retained when
+   * the caller receives it — taken synchronously, before the transaction that
+   * cleared it to be handed out, which is the only ordering under which the
+   * publish fence and a sweep's own synchronous re-check compose.
+   *
+   * The caller owns exactly one release per value and must call it when it
+   * drops the value; a leaked release pins that value's nodes for the life of
+   * the storage handle. Closing the handle releases whatever is left.
+   */
+  readonly release: () => void;
+};
+
+/** A validated manifest and the retention taken for it before its fence. */
+type RetainedRecord = {
+  readonly record: CommittedRecord;
+  readonly release: () => void;
 };
 
 export type BoundRestoredReplica = RestoredReplica & {
@@ -395,6 +440,19 @@ export type ReplicaScopeParticipant = {
 type LifecycleRegistry = {
   readonly pins: Map<string, number>;
   readonly participants: Set<ReplicaScopeParticipant>;
+  /**
+   * Root sets an in-process holder still reads, by partition. A sweep keeps
+   * every node reachable from one of these, which is how a published `Db`
+   * survives a sweep that reclaims the roots it superseded — and how a stale
+   * value published over a quarantined partition keeps working.
+   */
+  readonly retained: Map<string, Map<number, readonly string[]>>;
+  /**
+   * Partitions with a materialization in flight. A sweep skips them entirely:
+   * their fresh nodes have no roots yet, so no reachability statement can
+   * describe them.
+   */
+  readonly materializing: Map<string, number>;
 };
 
 /**
@@ -473,7 +531,12 @@ const seedConfirmedGenerations = (upgrade: IDBTransaction): void => {
 const lifecycleRegistry = (name: string): LifecycleRegistry => {
   const existing = LIFECYCLE_REGISTRIES.get(name);
   if (existing !== undefined) return existing;
-  const created: LifecycleRegistry = { pins: new Map(), participants: new Set() };
+  const created: LifecycleRegistry = {
+    pins: new Map(),
+    participants: new Set(),
+    retained: new Map(),
+    materializing: new Map(),
+  };
   LIFECYCLE_REGISTRIES.set(name, created);
   return created;
 };
@@ -492,6 +555,10 @@ const transition = (
   if (Result.isFailure(result)) throw result.failure;
   return result.success;
 };
+
+/** The four index root addresses of one committed value. */
+const rootHashes = (roots: Roots): readonly string[] =>
+  ALL_INDEXES.map((index) => rootFor(roots, index).hash);
 
 /** The durable generation records one write must still be leasing. */
 type ReplicaFence = {
@@ -811,13 +878,15 @@ const verifyNodeRecord = async (
 const validateReachableNodes = async (
   database: IDBDatabase,
   manifest: ReplicaManifest,
+  /** Filled with every address the walk reached, for a caller that needs the set. */
+  reached?: Set<string>,
 ): Promise<ReplicaIntegrityFailure | undefined> => {
   // A bulk build slices one strictly sorted datom list into disjoint leaves and
   // groups those into disjoint directories, and the index tag is part of every
   // body, so no two reachable nodes of one committed value can share an
   // address. A repeat is therefore not sharing to deduplicate — it is a link
   // into a subtree that already has a parent, which also bounds the walk.
-  const seen = new Set<string>();
+  const seen = reached ?? new Set<string>();
   const expected = expectedReplicaContents(manifest);
   if (Result.isFailure(expected)) return expected.failure;
   const digests: ReplicaIndexDigests = {
@@ -866,6 +935,113 @@ const validateReachableNodes = async (
   }
   return validateReplicaContents(manifest.roots, digests, expected.success);
 };
+
+/**
+ * Reach every node one set of roots depends on, without validating any of it.
+ *
+ * A sweep asks a different question than a restore: not "is this value intact"
+ * but "which addresses must survive". It does not classify damage — that is the
+ * restore walk's job, and the only path that can act on it — but it must still
+ * refuse to *believe* a record it cannot authenticate, because a body believed
+ * wrongly under-reports children and would turn intact descendants into
+ * garbage.
+ *
+ * The content address is exactly the check that makes belief safe, and it is
+ * sufficient on its own. A body that hashes to the address it is filed under is
+ * the node that address names, so the children it lists are that node's real
+ * children; a body that does not — a valid leaf stored under a directory's
+ * address, a half-written record, anything at all — is refused, and the walk is
+ * incomplete. An incomplete walk sweeps nothing, so no amount of damage can
+ * become deletion.
+ */
+const reachableFromRoots = async (
+  database: IDBDatabase,
+  partition: string,
+  roots: readonly string[],
+): Promise<ReplicaReachability> => {
+  const walk = new ReplicaReachability(roots);
+  while (walk.pending) {
+    const batch = walk.next(VALIDATION_BATCH);
+    const records = await readNodeRecords(database, partition, batch);
+    for (let i = 0; i < batch.length; i++) {
+      const record = records[i];
+      if (record === undefined || !(record.body instanceof Uint8Array)) {
+        walk.fail();
+        return walk;
+      }
+      if (await sha256Hex(record.body) !== batch[i]) {
+        walk.fail();
+        return walk;
+      }
+      try {
+        const decoded = decodeNode(await gzipCodec.decompress(record.body));
+        walk.expand(
+          decoded.node.kind === NodeKind.Leaf
+            ? []
+            : decoded.node.refs.map((ref) => ref.hash),
+        );
+      } catch {
+        walk.fail();
+        return walk;
+      }
+    }
+  }
+  return walk;
+};
+
+/**
+ * The compatibility hash a stored manifest claims, read defensively.
+ *
+ * A sweep has no client catalog to compare against and does not need one: it
+ * decides what is reachable, not what this client may read. Passing the
+ * record's own claim makes that one comparison inside
+ * {@link validateReplicaManifest} tautological and leaves every other check —
+ * the ones that decide whether these roots describe a real value — in force.
+ */
+const storedReadCompatibilityHash = (
+  record: unknown,
+): ReadCompatibilityHash | undefined =>
+  typeof record === "object" && record !== null &&
+    typeof (record as { readonly readCompatibilityHash?: unknown })
+        .readCompatibilityHash === "string"
+    ? (record as { readonly readCompatibilityHash: ReadCompatibilityHash })
+      .readCompatibilityHash
+    : undefined;
+
+const storedRevision = (record: unknown): string | null =>
+  typeof record === "object" && record !== null &&
+    typeof (record as { readonly revision?: unknown }).revision === "string"
+    ? (record as { readonly revision: string }).revision
+    : null;
+
+/** One partition as the survey found it, before anything is decided about it. */
+type SurveyedPartition = {
+  /** Every content address stored under this partition. */
+  readonly hashes: readonly string[];
+  /** The committed manifest as of the survey; absent manifests fingerprint too. */
+  readonly fingerprint: string;
+  /** The stored manifest record, or `undefined` when none is stored. */
+  readonly record: unknown;
+};
+
+/** Distinguishes one retention from another without leaking the roots it holds. */
+let retentionToken = 0;
+
+/**
+ * This attempt read a record that is no longer the stored one, or walked nodes
+ * a sweep has since reclaimed. Either way it describes the attempt, not the
+ * partition — so it is not a restore outcome and never reaches a caller; the
+ * record is read again and walked again instead.
+ */
+const RECORD_MOVED = Symbol("replica.record-moved");
+
+/**
+ * How many times a restore re-reads and re-walks a partition that moved under
+ * it. Installs and sweeps are bounded events and each attempt is a whole walk,
+ * so a small constant both keeps ordinary concurrency invisible and stops a
+ * pathologically busy neighbour from making a restore unbounded.
+ */
+const REPLICA_SWEEP_RESTORE_ATTEMPTS = 3;
 
 export class IndexedDbReplicaStorage {
   /**
@@ -1052,6 +1228,64 @@ export class IndexedDbReplicaStorage {
   }
 
   /**
+   * Keep every content node reachable from one value's roots alive.
+   *
+   * A `Db` holds its roots and its node store directly and stops depending on
+   * the manifest the moment it exists, so a reachability sweep that reclaimed
+   * superseded roots would turn a published value into one that throws
+   * mid-query. A session therefore retains the roots of the value it currently
+   * publishes; the returned callback releases them and is idempotent, and
+   * closing this handle releases every retention it took.
+   *
+   * A value older than the one its holder currently publishes is deliberately
+   * not retained. Superseded roots are where the garbage comes from — one
+   * changed datom orphans most of a replica — so reclaiming them is the point,
+   * and a holder that needs an older value to stay readable must say so.
+   */
+  retainRoots(identity: ReplicationIdentity, roots: Roots): () => void {
+    const partition = replicaPartitionKey(identity);
+    const held = this.registry.retained;
+    const entries = held.get(partition) ?? new Map<number, readonly string[]>();
+    held.set(partition, entries);
+    const token = ++retentionToken;
+    entries.set(token, rootHashes(roots));
+    return this.register(() => {
+      entries.delete(token);
+      if (entries.size === 0) held.delete(partition);
+    });
+  }
+
+  /**
+   * Mark one partition as materializing for the duration of an install.
+   *
+   * Nodes written before their manifest exists are reachable from nothing, so
+   * no reachability statement can describe them. The mark is taken
+   * synchronously before the first node transaction and released only after the
+   * install transaction settles; a sweep reads it and creates its own
+   * transaction in one synchronous block, so it either skips this partition or
+   * is ordered before every node transaction this install goes on to create.
+   *
+   * Unlike a pin or a retention this is deliberately not released by
+   * {@link IndexedDbReplicaStorage.close}. Closing an IndexedDB connection lets
+   * the transactions it has already created run to completion, so a handle
+   * closed mid-install still commits its manifest — and releasing the mark
+   * there would let another handle's sweep slip between the last node write and
+   * that commit. Only the install's own `finally` clears it.
+   */
+  private markMaterializing(partition: string): () => void {
+    const marks = this.registry.materializing;
+    marks.set(partition, (marks.get(partition) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const held = (marks.get(partition) ?? 1) - 1;
+      if (held > 0) marks.set(partition, held);
+      else marks.delete(partition);
+    };
+  }
+
+  /**
    * Enroll a live session so destructive maintenance closes it before
    * returning. The durable generation is what actually prevents an
    * old-generation write; closing makes the outcome observable and
@@ -1151,6 +1385,10 @@ export class IndexedDbReplicaStorage {
     for (const family of PARTITION_PREFIXED_FAMILIES) {
       transaction.objectStore(family).delete(compoundPrefixRange(prefix));
     }
+    // The sweep generations guarding exactly the partitions just deleted. They
+    // are named after those partitions, so nothing would ever remove them once
+    // the partitions are gone.
+    generations.delete(prefixRange(replicaSweepPrefix(prefix)));
     const bindingStore = transaction.objectStore(CREDENTIAL_BINDINGS);
     const candidateStore = transaction.objectStore(CACHE_CANDIDATES);
     const routeStore = transaction.objectStore(ROUTE_SLOTS);
@@ -1273,6 +1511,10 @@ export class IndexedDbReplicaStorage {
     for (const family of PARTITION_PREFIXED_FAMILIES) {
       transaction.objectStore(family).delete(compoundPrefixRange(prefix));
     }
+    // The sweep generations guarding exactly the partitions just deleted. They
+    // are named after those partitions, so nothing would ever remove them once
+    // the partitions are gone.
+    generations.delete(prefixRange(replicaSweepPrefix(prefix)));
     const bindingStore = transaction.objectStore(CREDENTIAL_BINDINGS);
     const candidateStore = transaction.objectStore(CACHE_CANDIDATES);
     const [bindingRecords, candidateRecords] = await Promise.all([
@@ -1309,6 +1551,287 @@ export class IndexedDbReplicaStorage {
       bindings,
       candidates,
     });
+  }
+
+  /**
+   * Reclaim every content node and staged snapshot nothing can reach.
+   *
+   * Reachability is partition-local: node records are keyed by
+   * `[partition, hash]`, so no partition can keep another's node alive, and the
+   * live root sets of one partition are its committed manifest's roots plus
+   * every root set an in-process holder retained. A partition with a
+   * materialization in flight is skipped outright, a partition whose manifest
+   * moved under the pass is skipped by the fingerprint CAS, and a partition
+   * whose reachability walk could not complete is skipped because damage must
+   * never become deletion.
+   *
+   * Nothing here writes a manifest, a head, a credential binding, or a cache
+   * candidate, so no install identifier can be dropped or minted by a sweep and
+   * no selection changes. The #475 mutation families are not merely skipped but
+   * structurally out of reach: no transaction below names those stores, so
+   * IndexedDB itself would refuse a write to one. Content is re-fetchable; a
+   * durable operation identity is not, and storage pressure is no reason to
+   * discard work the user has not yet had acknowledged. A sweep that removed at least one node bumps that
+   * partition's sweep generation, which is the record the restore publish fence
+   * re-observes; live sessions do not lease it, so reclaiming the roots they
+   * superseded leaves them running.
+   *
+   * Passing a scope restricts the pass to that server/principal realm.
+   */
+  async collectGarbage(
+    options: { readonly scope?: ReplicaScope | undefined } = {},
+  ): Promise<ReplicaGcOutcome> {
+    let prefix: string | undefined;
+    if (options.scope !== undefined) {
+      this.assertScopeLive(options.scope);
+      prefix = replicaScopePartitionPrefix(options.scope);
+    }
+    const survey = await this.surveyPartitions(prefix);
+    let partitions = 0;
+    let swept = 0;
+    let skipped = 0;
+    let nodes = 0;
+    let retained = 0;
+    let staging = 0;
+    for (const [partition, hashes] of survey) {
+      const scopeKey = replicaPartitionScopeKey(partition);
+      // A scope this handle cleared is terminal for it: the handle may not read
+      // it, and it certainly may not write a generation record into it.
+      if (scopeKey !== undefined && this.clearedScopes.has(scopeKey)) continue;
+      partitions++;
+      // One manifest at a time. A committed record carries the whole logical
+      // journal, so reading every partition's at once would put the entire
+      // stored corpus in memory; the sweep needs no more than one.
+      const stored = await this.surveyManifest(partition, hashes);
+      const live = await this.liveNodeHashes(partition, stored);
+      if (live === undefined) {
+        skipped++;
+        continue;
+      }
+      const garbage = unreachableNodeHashes(stored.hashes, live);
+      // The boundary between computing what this partition may lose and acting
+      // on it — the last point at which a manifest can move or a holder can
+      // retain roots without the sweep noticing. Inert in production; the
+      // source-only testing assembly parks here to prove both re-checks.
+      await this.boundaries.checkpoint("replica.gc.planned");
+      const outcome = await this.sweepPartition(partition, stored, garbage, live);
+      if (outcome === undefined) {
+        skipped++;
+        continue;
+      }
+      retained += stored.hashes.length - outcome.nodes;
+      nodes += outcome.nodes;
+      staging += outcome.staging;
+      if (outcome.nodes > 0 || outcome.staging > 0) swept++;
+    }
+    return Object.freeze({ partitions, swept, skipped, nodes, retained, staging });
+  }
+
+  /**
+   * Every partition that holds a content node, a staged snapshot, or a
+   * committed manifest, with the addresses stored under it.
+   *
+   * Only keys are read here. A committed record carries the whole logical
+   * journal, so pulling every one of them into memory to find four root
+   * addresses would cost more than the sweep saves; each manifest is read on
+   * its own when its partition's turn comes.
+   */
+  private async surveyPartitions(
+    prefix: string | undefined,
+  ): Promise<ReadonlyMap<string, string[]>> {
+    const transaction = this.database.transaction([COMMITTED, NODES, STAGING], "readonly");
+    const keysOf = (store: string, compound: boolean): Promise<IDBValidKey[]> =>
+      requestResult<IDBValidKey[]>(
+        prefix === undefined
+          ? transaction.objectStore(store).getAllKeys()
+          : transaction.objectStore(store).getAllKeys(
+            compound ? compoundPrefixRange(prefix) : prefixRange(prefix),
+          ),
+      );
+    const [manifestKeys, nodeKeys, stagingKeys] = await Promise.all([
+      keysOf(COMMITTED, false),
+      keysOf(NODES, true),
+      keysOf(STAGING, false),
+    ]);
+    await transactionDone(transaction);
+    const survey = new Map<string, string[]>();
+    const at = (partition: string): string[] => {
+      const existing = survey.get(partition);
+      if (existing !== undefined) return existing;
+      const created: string[] = [];
+      survey.set(partition, created);
+      return created;
+    };
+    for (const key of nodeKeys) {
+      if (!Array.isArray(key) || typeof key[0] !== "string" || typeof key[1] !== "string") {
+        continue;
+      }
+      at(key[0]).push(key[1]);
+    }
+    for (const keys of [stagingKeys, manifestKeys]) {
+      for (const key of keys) if (typeof key === "string") at(key);
+    }
+    return survey;
+  }
+
+  /**
+   * One partition's committed manifest as it stands right now.
+   *
+   * The fingerprint recorded here is what the sweep transaction re-confirms; an
+   * absent manifest fingerprints too, so a partition that gains one mid-pass is
+   * skipped exactly like one whose manifest was replaced. The record itself is
+   * whatever structured clone returned and is read defensively — unreadable
+   * roots make the partition unsweepable rather than empty.
+   */
+  private async surveyManifest(
+    partition: string,
+    hashes: string[],
+  ): Promise<SurveyedPartition> {
+    const transaction = this.database.transaction(COMMITTED, "readonly");
+    const record = await requestResult<unknown>(
+      transaction.objectStore(COMMITTED).get(partition),
+    );
+    await transactionDone(transaction);
+    return { hashes, fingerprint: replicaManifestFingerprint(record), record };
+  }
+
+  /**
+   * The addresses one partition must keep, or `undefined` when that cannot be
+   * established — an unreadable manifest, or a walk that hit a node it could
+   * not read or decode. An unknown live set sweeps nothing.
+   */
+  private async liveNodeHashes(
+    partition: string,
+    stored: SurveyedPartition,
+  ): Promise<ReadonlySet<string> | undefined> {
+    const live = new Set<string>();
+    if (stored.record !== undefined) {
+      // A content address authenticates a node: a body that hashes to the
+      // address its parent filed it under is that node, so the children it
+      // lists are the real ones. A manifest authenticates nothing — it is an
+      // ordinary stored record, and its four roots are just hashes. Damage that
+      // swapped one for another correctly stored node of the same index and
+      // count would still pass every address check and hand the sweep a live
+      // set describing some other value, which would then delete the current
+      // one. The manifest therefore gets the full restore-strength validation,
+      // ending in the digest fold that proves the walked trees are the ones
+      // this manifest's own journal describes; nothing less separates a real
+      // root from a plausible one.
+      const expected = storedReadCompatibilityHash(stored.record);
+      if (expected === undefined) return undefined;
+      const manifest = validateReplicaManifest(stored.record, {
+        partition,
+        readCompatibilityHash: expected,
+      });
+      if (Result.isFailure(manifest)) return undefined;
+      if (await validateReachableNodes(this.database, manifest.success, live) !== undefined) {
+        return undefined;
+      }
+    }
+    // Retained roots are values this process restored through that same walk or
+    // materialized itself, so following them needs only the address check.
+    const retained = this.retainedRoots(partition);
+    if (retained.length > 0) {
+      const walk = await reachableFromRoots(this.database, partition, retained);
+      if (!walk.complete) return undefined;
+      for (const hash of walk.reachable) live.add(hash);
+    }
+    return live;
+  }
+
+  /** Every root address an in-process holder currently retains for a partition. */
+  private retainedRoots(partition: string): readonly string[] {
+    const roots: string[] = [];
+    for (const held of this.registry.retained.get(partition)?.values() ?? []) {
+      roots.push(...held);
+    }
+    return roots;
+  }
+
+  /**
+   * Remove one partition's unreachable nodes and impossible staging in a single
+   * transaction, or nothing at all.
+   *
+   * The in-process checks and the transaction creation are one synchronous
+   * block on purpose. Either this pass saw the materialization mark and left
+   * the partition alone, or the install had not yet created a node transaction
+   * — and IndexedDB serializes overlapping `readwrite` transactions in creation
+   * order, so every node it writes afterwards lands after these deletes rather
+   * than being erased by them.
+   *
+   * Retention is re-read in the same block, because a restore that validated an
+   * older manifest publishes after this pass computed its live set: the session
+   * retains those roots synchronously as it publishes, and the manifest CAS
+   * below cannot see it, since the manifest never moved. A root that has
+   * appeared since and is not already live is exactly that case, so the
+   * partition is skipped and the next pass computes a live set that includes
+   * it. A root that has *gone* is harmless — the live set was merely more
+   * generous than it needed to be — so it does not skip anything.
+   */
+  private async sweepPartition(
+    partition: string,
+    stored: SurveyedPartition,
+    garbage: readonly string[],
+    live: ReadonlySet<string>,
+  ): Promise<{ readonly nodes: number; readonly staging: number } | undefined> {
+    if (this.registry.materializing.has(partition)) return undefined;
+    if (this.retainedRoots(partition).some((hash) => !live.has(hash))) return undefined;
+    const transaction = this.database.transaction(
+      [COMMITTED, NODES, STAGING, STAGING_CHUNKS, GENERATIONS],
+      "readwrite",
+    );
+    let sweptStaging = false;
+    try {
+      const sweepKey = replicaSweepKey(partition);
+      const [current, staged, sweep] = await Promise.all([
+        requestResult<unknown>(transaction.objectStore(COMMITTED).get(partition)),
+        requestResult<StagingRecord | undefined>(
+          transaction.objectStore(STAGING).get(partition),
+        ),
+        requestResult<GenerationRecord | undefined>(
+          transaction.objectStore(GENERATIONS).get(sweepKey),
+        ),
+      ]);
+      // The manifest the live set was computed against must still be the stored
+      // one, install identifier included, or this pass is describing a value it
+      // never examined.
+      if (replicaManifestFingerprint(current) !== stored.fingerprint) {
+        await abortTransaction(transaction);
+        return undefined;
+      }
+      sweptStaging = stagingIsSweepable(staged, storedRevision(current));
+      if (garbage.length === 0 && !sweptStaging) {
+        await transactionDone(transaction);
+        return { nodes: 0, staging: 0 };
+      }
+      const nodes = transaction.objectStore(NODES);
+      for (const hash of garbage) nodes.delete([partition, hash]);
+      if (sweptStaging) {
+        transaction.objectStore(STAGING).delete(partition);
+        transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(partition));
+      }
+      if (garbage.length > 0) {
+        transaction.objectStore(GENERATIONS).put({
+          key: sweepKey,
+          kind: "partition",
+          // A quarantined partition has no manifest left to name its identity,
+          // so the owning scope is recovered from the partition key itself.
+          scope: replicaPartitionScopeKey(partition) ?? "",
+          generation: (sweep?.generation ?? 0) + 1,
+          confirmedAt: sweep?.confirmedAt ?? Date.now(),
+          fencedAt: Date.now(),
+        } satisfies GenerationRecord);
+      }
+      // The last boundary before this sweep becomes durable. Inert in
+      // production; the source-only testing assembly arms it to cut here, and
+      // the partition then stays exactly as it was.
+      await this.boundaries.checkpoint("replica.sweep");
+    } catch (error) {
+      await abortTransaction(transaction);
+      throw error;
+    }
+    await commitTransaction(transaction);
+    return { nodes: garbage.length, staging: sweptStaging ? 1 : 0 };
   }
 
   /**
@@ -1446,6 +1969,15 @@ export class IndexedDbReplicaStorage {
    * that survives both is handed to `dbFromRecord`, so a walk that stops
    * half-way yields no `Db` at all rather than one over the datoms it did
    * manage to read.
+   *
+   * Two endings say nothing about the partition and only about the attempt: a
+   * sweep landing in the walk's window, and a refusal whose withdrawal lost its
+   * CAS because the stored manifest had already moved on. Both are the ordinary
+   * shape of a concurrent install followed by a reclaim of the roots it
+   * superseded — the partition commonly holds exactly the value the caller
+   * asked for — and reporting an absence would strand an offline restore that
+   * has no other way to obtain it. The record is therefore read again and
+   * walked again, a bounded number of times, before anything is concluded.
    */
   private async validated(
     record: unknown,
@@ -1453,7 +1985,41 @@ export class IndexedDbReplicaStorage {
     attributes: readonly AttributeSpec[],
     readCompatibilityHash: ReadCompatibilityHash,
     fingerprint?: string,
-  ): Promise<ReplicaRestoreOutcome<CommittedRecord>> {
+  ): Promise<ReplicaRestoreOutcome<RetainedRecord>> {
+    let current = record;
+    for (let attempt = 1; attempt <= REPLICA_SWEEP_RESTORE_ATTEMPTS; attempt++) {
+      const outcome = await this.validatedOnce(
+        current,
+        identity,
+        attributes,
+        readCompatibilityHash,
+        fingerprint,
+      );
+      if (outcome !== RECORD_MOVED) return outcome;
+      current = await this.committed(identity);
+      if (current === undefined) return replicaAbsent();
+      const stored = replicaManifestIdentity(current);
+      if (stored !== undefined && !sameReplicationIdentity(stored, identity)) {
+        return replicaAbsent();
+      }
+    }
+    // The partition kept moving under every attempt. Nothing is damaged and
+    // nothing was withdrawn, and something is certainly stored — so this is
+    // reported as contention rather than as an absence the caller would read
+    // as an empty partition worth re-snapshotting from scratch.
+    return replicaContended(
+      replicaPartitionKey(identity),
+      REPLICA_SWEEP_RESTORE_ATTEMPTS,
+    );
+  }
+
+  private async validatedOnce(
+    record: unknown,
+    identity: ReplicationIdentity,
+    attributes: readonly AttributeSpec[],
+    readCompatibilityHash: ReadCompatibilityHash,
+    fingerprint?: string,
+  ): Promise<ReplicaRestoreOutcome<RetainedRecord> | typeof RECORD_MOVED> {
     const partition = replicaPartitionKey(identity);
     const expect = replicaManifestFingerprint(record);
     // The generations guarding this partition as they stood when the record was
@@ -1462,10 +2028,15 @@ export class IndexedDbReplicaStorage {
     // caller registers only once it has a value — so the walk has to carry the
     // fence itself rather than rely on being visible to maintenance.
     const lease = await this.leaseFor(identity);
+    // Reachability GC is the second writer that deletes content nodes, and it
+    // deliberately moves no scope or database generation, so the walk records
+    // this partition's sweep generation as well and re-reads it before
+    // anything derived from the walk can be published.
+    const sweep = await this.sweepGeneration(partition);
     const quarantine = async (
       reason: Parameters<typeof replicaUnusable>[1],
       detail: string,
-    ): Promise<ReplicaRestoreOutcome<CommittedRecord>> => {
+    ): Promise<ReplicaRestoreOutcome<RetainedRecord> | typeof RECORD_MOVED> => {
       // The boundary between deciding to refuse and removing anything. Inert in
       // production; the source-only testing assembly parks here to let another
       // session install a replacement and prove the removal is conditional.
@@ -1476,12 +2047,14 @@ export class IndexedDbReplicaStorage {
         ...(fingerprint === undefined ? {} : { fingerprint }),
       });
       // A concurrent install replaced the manifest this restore refused, so
-      // nothing was removed and nothing here describes what is stored now. The
-      // caller selects again from scratch rather than acting on a stale
-      // refusal.
+      // nothing was removed and this refusal describes nothing that is stored.
+      // It is the same situation as a sweep landing under the walk — the
+      // attempt is stale, not the partition — and a sweep that reclaimed the
+      // refused manifest's now-superseded nodes is exactly how a healthy
+      // partition reaches this branch. Read the record again and walk that.
       return removed
-        ? replicaUnusable<CommittedRecord>(partition, reason, detail)
-        : replicaAbsent<CommittedRecord>();
+        ? replicaUnusable<RetainedRecord>(partition, reason, detail)
+        : RECORD_MOVED;
     };
     if (identity.readCompatibilityHash !== readCompatibilityHash) {
       return quarantine(
@@ -1516,8 +2089,74 @@ export class IndexedDbReplicaStorage {
     // be published. Inert in production; the source-only testing assembly parks
     // here to run a clear against a replica that has just validated.
     await this.boundaries.checkpoint("replica.validated");
-    await this.confirmGuardingGenerations(lease, identity);
-    return replicaRestored(manifest.success);
+    // Retain before the fence transaction exists, synchronously, with no await
+    // in between — this is what makes the fence and the sweep's own
+    // synchronous re-check compose rather than pass each other.
+    //
+    // A sweep decides in one synchronous block: read the retentions, then
+    // create its transaction. So exactly one of two orders can hold. If the
+    // sweep's block ran before this line, its transaction was created before
+    // the fence's, IndexedDB orders the generation bump ahead of the fence's
+    // read, and the fence sees it and refuses. If it runs after, it sees this
+    // retention covering the very roots it was about to reclaim and skips the
+    // partition. There is no third interleaving: without this line the sweep
+    // could plan while nothing was retained and still transact after a fence
+    // that had already read a generation of zero, and the published value
+    // would be left reading nodes the sweep then deleted.
+    //
+    // The retention outlives this method on the success path and belongs to
+    // whoever receives the value; every failure path below releases it here.
+    const retention = this.retainRoots(identity, manifest.success.roots);
+    if (!await this.confirmGuardingGenerations(lease, identity, sweep)) {
+      // A sweep removed nodes from this partition while the walk was running.
+      // Nothing is damaged and nothing was withdrawn — the reclaimed roots were
+      // superseded by an install this walk did not see — but the manifest this
+      // walk read is no longer safe to construct a `Db` over. The caller reads
+      // the stored record again and walks it again.
+      retention();
+      return RECORD_MOVED;
+    }
+    return replicaRestored({ record: manifest.success, release: retention });
+  }
+
+  /**
+   * Re-confirm, inside the transaction that installs, that no sweep has
+   * reclaimed nodes from this partition since materialization began.
+   *
+   * The realm-local materialization mark keeps an in-process sweep away from
+   * an install's fresh nodes, so in one realm this value cannot move inside
+   * that window and no live session is ever fenced by it. Another tab has no
+   * view of that mark, and its sweep would see nodes reachable from nothing —
+   * because the manifest naming them is not committed yet — and could delete
+   * them while the base-revision CAS still passes. The sweep generation is the
+   * durable trace such a sweep leaves, so re-reading it here turns that into a
+   * refused install rather than a manifest committed over deleted nodes. #478's
+   * all-tab barrier replaces the mark; this record is what makes the interval
+   * safe until it does.
+   */
+  private async confirmNoSweep(
+    transaction: IDBTransaction,
+    partition: string,
+    observed: number,
+  ): Promise<void> {
+    const key = replicaSweepKey(partition);
+    const record = await requestResult<GenerationRecord | undefined>(
+      transaction.objectStore(GENERATIONS).get(key),
+    );
+    const current = record?.generation ?? 0;
+    if (current === observed) return;
+    await abortTransaction(transaction);
+    throw new ReplicaFencedError({ key, expected: observed, observed: current });
+  }
+
+  /** The sweep generation guarding one partition; absent reads as zero. */
+  private async sweepGeneration(partition: string): Promise<number> {
+    const transaction = this.database.transaction(GENERATIONS, "readonly");
+    const record = await requestResult<GenerationRecord | undefined>(
+      transaction.objectStore(GENERATIONS).get(replicaSweepKey(partition)),
+    );
+    await transactionDone(transaction);
+    return record?.generation ?? 0;
   }
 
   /**
@@ -1547,15 +2186,31 @@ export class IndexedDbReplicaStorage {
    *   - a snapshot start re-confirms that the base its staging recorded is
    *     still committed, and rebases when it is not;
    *   - a snapshot commit and a change apply re-confirm their base revision
-   *     inside the very transaction that installs.
+   *     inside the very transaction that installs;
+   *   - a restored replica also re-confirms the partition's sweep generation,
+   *     because reachability GC deletes nodes without moving a manifest or a
+   *     scope/database generation. Installs deliberately do not lease that
+   *     record: a sweep may reclaim the roots a running session superseded,
+   *     and fencing the session for it would defeat the whole pass.
+   *
+   * Returns false when the sweep generation moved. A lost scope or database
+   * generation is still the ordinary thrown fence error, because that means the
+   * realm itself was cleared or evicted out from under the caller.
    */
   private async confirmGuardingGenerations(
     lease: ReplicaLease,
     identity: ReplicationIdentity,
-  ): Promise<void> {
+    sweep: number,
+  ): Promise<boolean> {
     const transaction = this.database.transaction(GENERATIONS, "readonly");
     await enforceFence(transaction, replicaFence(lease, identity));
+    const record = await requestResult<GenerationRecord | undefined>(
+      transaction.objectStore(GENERATIONS).get(
+        replicaSweepKey(replicaPartitionKey(identity)),
+      ),
+    );
     await transactionDone(transaction);
+    return (record?.generation ?? 0) === sweep;
   }
 
   /** Remove one stale exact binding without touching its shared partition. */
@@ -1595,8 +2250,9 @@ export class IndexedDbReplicaStorage {
     );
     if (validated._tag !== "restored") return validated;
     return replicaRestored({
-      db: dbFromRecord(this.database, validated.replica, readCompatibilityHash),
-      revision: validated.replica.revision,
+      db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
+      revision: validated.replica.record.revision,
+      release: validated.replica.release,
     });
   }
 
@@ -1684,11 +2340,15 @@ export class IndexedDbReplicaStorage {
     // The candidate nominated one exact revision and the response confirmed
     // that revision; a manifest that moved underneath is a concurrent install,
     // not damage, and this path simply fails closed.
-    if (validated.replica.revision !== candidate.revision) return replicaAbsent();
+    if (validated.replica.record.revision !== candidate.revision) {
+      validated.replica.release();
+      return replicaAbsent();
+    }
     return replicaRestored({
       identity: candidate.identity,
-      db: dbFromRecord(this.database, validated.replica, readCompatibilityHash),
-      revision: validated.replica.revision,
+      db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
+      revision: validated.replica.record.revision,
+      release: validated.replica.release,
     });
   }
 
@@ -1843,8 +2503,9 @@ export class IndexedDbReplicaStorage {
     if (validated._tag !== "restored") return validated;
     return replicaRestored({
       identity: binding.identity,
-      db: dbFromRecord(this.database, validated.replica, readCompatibilityHash),
-      revision: validated.replica.revision,
+      db: dbFromRecord(this.database, validated.replica.record, readCompatibilityHash),
+      revision: validated.replica.record.revision,
+      release: validated.replica.release,
     });
   }
 
@@ -2029,24 +2690,122 @@ export class IndexedDbReplicaStorage {
     return { state: transition(state, frame), baseRevision: staging.baseRevision };
   }
 
+  /**
+   * Run one install, and if native storage is exhausted reclaim once and try
+   * again exactly once.
+   *
+   * The pass runs between the two attempts — after the first released its
+   * materialization mark, before the retry takes one — so the partition that
+   * needs the space is not the one partition a sweep skips, and the failed
+   * attempt's own nodes are reachable from nothing and are reclaimed with the
+   * superseded roots. The pass is unscoped because storage pressure belongs to
+   * the origin, not to one principal, and it can still only delete what is
+   * provably unreachable: no active or root data is ever evicted to make room.
+   *
+   * A second exhaustion is a typed outcome, not another pass. Nothing was
+   * installed — materialization writes only content nodes and the install is
+   * one atomic transaction — so the previously committed manifest is exactly as
+   * it was and the old-or-new guarantee holds.
+   */
+  private async installWithQuotaRecovery<A>(
+    partition: string,
+    signal: AbortSignal | undefined,
+    install: () => Promise<A>,
+  ): Promise<A> {
+    let reclaimedNodes = 0;
+    for (let attempt = 1;; attempt++) {
+      try {
+        return await install();
+      } catch (error) {
+        const recovery = replicaQuotaRecovery(attempt, classifyReplicaStorageFailure(error));
+        if (recovery === "propagate") throw error;
+        if (recovery === "exhausted") {
+          throw new ReplicaQuotaExhaustedError({ partition, reclaimedNodes });
+        }
+        // An aborted install has no business reclaiming or retrying: the
+        // session that asked for it is gone.
+        signal?.throwIfAborted();
+        // The boundary between classifying an exhaustion and reclaiming for it.
+        await this.boundaries.checkpoint("replica.quota");
+        try {
+          reclaimedNodes = (await this.collectGarbage()).nodes;
+        } catch (sweepError) {
+          // Storage so full that even the sweep's own bookkeeping cannot be
+          // written. The install still gets its one retry — it may need less
+          // room than the sweep did — and the caller still hears about the
+          // exhaustion rather than about the pass. Anything else is a real
+          // fault and must not be hidden behind a quota outcome.
+          if (classifyReplicaStorageFailure(sweepError) !== "quota") throw sweepError;
+        }
+      }
+    }
+  }
+
   async commitSnapshot(
     frame: SnapshotCommit,
     attributes: readonly AttributeSpec[],
     options: ReplicaInstallOptions = {},
   ): Promise<RestoredReplica | undefined> {
     this.assertScopeLive(replicaScopeOf(frame.identity));
+    return this.installWithQuotaRecovery(
+      replicaPartitionKey(frame.identity),
+      options.signal,
+      () => this.commitSnapshotOnce(frame, attributes, options),
+    );
+  }
+
+  private async commitSnapshotOnce(
+    frame: SnapshotCommit,
+    attributes: readonly AttributeSpec[],
+    options: ReplicaInstallOptions,
+  ): Promise<RestoredReplica | undefined> {
     const fence = replicaFence(options.lease, frame.identity);
     const [staged, prior] = await Promise.all([
       this.stagedState(frame),
       this.priorManifest(frame.identity),
     ]);
-    const state = staged.state;
-    if (state.committed?.revision !== frame.revision) return undefined;
+    const committed = staged.state.committed;
+    if (committed?.revision !== frame.revision) return undefined;
     if ((prior?.revision ?? null) !== staged.baseRevision) return undefined;
+    // Held across the build and the install: until the manifest exists, the
+    // nodes below are reachable from nothing and a sweep must not judge them.
+    const partition = replicaPartitionKey(frame.identity);
+    const materializing = this.markMaterializing(partition);
+    try {
+      // What the mark cannot cover: a sweep in another realm. Recorded here and
+      // re-confirmed inside the install transaction.
+      const sweep = await this.sweepGeneration(partition);
+      return await this.installSnapshot(
+        frame,
+        attributes,
+        options,
+        committed,
+        staged.baseRevision,
+        prior,
+        fence,
+        partition,
+        sweep,
+      );
+    } finally {
+      materializing();
+    }
+  }
+
+  private async installSnapshot(
+    frame: SnapshotCommit,
+    attributes: readonly AttributeSpec[],
+    options: ReplicaInstallOptions,
+    committed: CommittedReplica,
+    baseRevision: string | null,
+    prior: CommittedRecord | undefined,
+    fence: ReplicaFence | undefined,
+    partition: string,
+    sweep: number,
+  ): Promise<RestoredReplica | undefined> {
     const built = await materialize(
       this.database,
       frame.identity,
-      state.committed,
+      committed,
       attributes,
       prior,
       options.signal,
@@ -2054,15 +2813,21 @@ export class IndexedDbReplicaStorage {
       this.meter,
     );
     options.signal?.throwIfAborted();
+    // The boundary between having written the nodes and opening the
+    // transaction that names them — the window in which they are reachable
+    // from nothing. Inert in production; the source-only testing assembly
+    // parks here to leave the durable trace another tab's sweep would.
+    await this.boundaries.checkpoint("replica.installing");
+    // The generation store is always in scope: even an unfenced install has to
+    // re-confirm that no sweep reclaimed the nodes it has just written.
     const transaction = this.database.transaction(
-      fence === undefined
-        ? [COMMITTED, COMMITTED_HEADS, STAGING, STAGING_CHUNKS]
-        : [COMMITTED, COMMITTED_HEADS, STAGING, STAGING_CHUNKS, GENERATIONS],
+      [COMMITTED, COMMITTED_HEADS, STAGING, STAGING_CHUNKS, GENERATIONS],
       "readwrite",
     );
     const removeAbort = abortWithSignal(transaction, options.signal);
     try {
       await enforceFence(transaction, fence);
+      await this.confirmNoSweep(transaction, partition, sweep);
       const current = await requestResult<StagingRecord | undefined>(
         transaction.objectStore(STAGING).get(built.record.partition),
       );
@@ -2073,7 +2838,7 @@ export class IndexedDbReplicaStorage {
         current === undefined || current.snapshot !== frame.snapshot ||
         current.revision !== frame.revision ||
         !sameReplicationIdentity(current.identity, frame.identity) ||
-        (currentCommitted?.revision ?? null) !== staged.baseRevision
+        (currentCommitted?.revision ?? null) !== baseRevision
       ) {
         await abortTransaction(transaction);
         return undefined;
@@ -2082,13 +2847,32 @@ export class IndexedDbReplicaStorage {
       transaction.objectStore(COMMITTED_HEADS).put(committedHead(built.record));
       transaction.objectStore(STAGING).delete(built.record.partition);
       transaction.objectStore(STAGING_CHUNKS).delete(chunkRange(built.record.partition));
+      // The last boundary before an install becomes durable. Inert in
+      // production; the source-only testing assembly arms it to fail here with
+      // a real native error, which is how bounded quota recovery is exercised
+      // without filling the origin's real storage.
+      await this.boundaries.checkpoint("replica.install");
       await commitTransaction(transaction);
       this.meter.manifests++;
       this.meter.heads++;
+    } catch (error) {
+      // IndexedDB auto-commits a transaction with no pending request, so a
+      // failure between the puts above and the commit — an exhausted quota, or
+      // an armed boundary standing in for one — must roll them back explicitly
+      // or a half-install would become durable.
+      await abortTransaction(transaction);
+      throw error;
     } finally {
       removeAbort();
     }
-    return { db: built.db, revision: built.record.revision };
+    // Retained before this method returns, so the value is never momentarily
+    // unclaimed: an install that supersedes it immediately afterwards makes
+    // these roots garbage, and the caller has not had a chance to retain yet.
+    return {
+      db: built.db,
+      revision: built.record.revision,
+      release: this.retainRoots(frame.identity, built.record.roots),
+    };
   }
 
   async applyChange(
@@ -2096,6 +2880,17 @@ export class IndexedDbReplicaStorage {
     options: ReplicaInstallOptions = {},
   ): Promise<RestoredReplica | undefined> {
     this.assertScopeLive(replicaScopeOf(frame.identity));
+    return this.installWithQuotaRecovery(
+      replicaPartitionKey(frame.identity),
+      options.signal,
+      () => this.applyChangeOnce(frame, options),
+    );
+  }
+
+  private async applyChangeOnce(
+    frame: Change,
+    options: ReplicaInstallOptions,
+  ): Promise<RestoredReplica | undefined> {
     const fence = replicaFence(options.lease, frame.identity);
     const partition = replicaPartitionKey(frame.identity);
     const read = this.database.transaction(COMMITTED, "readonly");
@@ -2129,15 +2924,50 @@ export class IndexedDbReplicaStorage {
       // materialized — never a record taken off disk unverified. Damage that
       // appears afterwards is found by the next restore's walk, which is where
       // every other stored-node failure is found too.
+      //
+      // This value is derived from a manifest read a moment ago rather than
+      // from one this call installed, so it is retained here for the same
+      // reason a restore retains before its fence: a sweep that planned while
+      // nothing held these roots must find them claimed before it transacts.
       return {
         db: dbFromRecord(this.database, prior, frame.identity.readCompatibilityHash),
         revision: prior.revision,
+        release: this.retainRoots(frame.identity, prior.roots),
       };
     }
+    // Held across the build and the install, for the same reason a snapshot
+    // commit holds one: the rebuilt nodes are reachable from nothing until the
+    // manifest naming them is committed.
+    const materializing = this.markMaterializing(partition);
+    try {
+      const sweep = await this.sweepGeneration(partition);
+      return await this.installChange(
+        frame,
+        options,
+        state.committed,
+        prior,
+        fence,
+        partition,
+        sweep,
+      );
+    } finally {
+      materializing();
+    }
+  }
+
+  private async installChange(
+    frame: Change,
+    options: ReplicaInstallOptions,
+    committed: CommittedReplica,
+    prior: CommittedRecord,
+    fence: ReplicaFence | undefined,
+    partition: string,
+    sweep: number,
+  ): Promise<RestoredReplica | undefined> {
     const built = await materialize(
       this.database,
       frame.identity,
-      state.committed,
+      committed,
       prior.attributes,
       prior,
       options.signal,
@@ -2145,15 +2975,15 @@ export class IndexedDbReplicaStorage {
       this.meter,
     );
     options.signal?.throwIfAborted();
+    await this.boundaries.checkpoint("replica.installing");
     const write = this.database.transaction(
-      fence === undefined
-        ? [COMMITTED, COMMITTED_HEADS]
-        : [COMMITTED, COMMITTED_HEADS, GENERATIONS],
+      [COMMITTED, COMMITTED_HEADS, GENERATIONS],
       "readwrite",
     );
     const removeAbort = abortWithSignal(write, options.signal);
     try {
       await enforceFence(write, fence);
+      await this.confirmNoSweep(write, partition, sweep);
       const current = await requestResult<CommittedRecord | undefined>(
         write.objectStore(COMMITTED).get(partition),
       );
@@ -2163,12 +2993,23 @@ export class IndexedDbReplicaStorage {
       }
       write.objectStore(COMMITTED).put(built.record);
       write.objectStore(COMMITTED_HEADS).put(committedHead(built.record));
+      await this.boundaries.checkpoint("replica.install");
       await commitTransaction(write);
       this.meter.manifests++;
       this.meter.heads++;
+    } catch (error) {
+      await abortTransaction(write);
+      throw error;
     } finally {
       removeAbort();
     }
-    return { db: built.db, revision: built.record.revision };
+    // Retained before this method returns, so the value is never momentarily
+    // unclaimed: an install that supersedes it immediately afterwards makes
+    // these roots garbage, and the caller has not had a chance to retain yet.
+    return {
+      db: built.db,
+      revision: built.record.revision,
+      release: this.retainRoots(frame.identity, built.record.roots),
+    };
   }
 }
