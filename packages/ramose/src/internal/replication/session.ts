@@ -10,6 +10,12 @@ import {
   type ReplicaCacheCandidateKey,
   type RestoredReplica,
 } from "./indexeddb.ts";
+import {
+  ReplicaCorruptError,
+  replicaRefused,
+  restoredReplica,
+  type ReplicaRestoreOutcome,
+} from "./replica-integrity.ts";
 import { sameReplicationIdentity } from "./state.ts";
 import {
   replicaDatabaseKey,
@@ -269,10 +275,16 @@ export class ReplicationSession {
     const candidateKey: ReplicaCacheCandidateKey | undefined = selector === undefined
       ? undefined
       : { selector, routeSlot };
-    const restored = await options.storage.restoreBound(
-      fingerprint,
-      options.attributes,
-      options.readCompatibilityHash,
+    // A corrupt or incompatible partition has already been quarantined by the
+    // time this returns, and it publishes nothing. The session then simply
+    // opens with no resume revision, so the server replaces the whole replica
+    // with a fresh snapshot into the very same scope.
+    const restored = restoredReplica(
+      await options.storage.restoreBoundOutcome(
+        fingerprint,
+        options.attributes,
+        options.readCompatibilityHash,
+      ),
     );
     // Register before the next await. Destructive maintenance that begins in
     // the gap between reading this replica and constructing its session must
@@ -492,6 +504,51 @@ export class ReplicationSession {
   }
 
   /**
+   * A candidate the current response already confirmed, or a typed failure.
+   *
+   * There is no in-band recovery here: the server has acknowledged a revision
+   * this client can no longer produce, and the partition that held it has just
+   * been quarantined. Failing the session with the classification is what lets
+   * a reconnect start with no resume revision and take a fresh snapshot,
+   * instead of publishing a value assembled from storage that was refused.
+   */
+  /**
+   * The one entry point through which a metadata-only candidate becomes a
+   * validated partition.
+   *
+   * A candidate is the first time this session touches its partition, and the
+   * storage only walks a partition when it is asked to restore one. Every
+   * first-authenticated-frame branch therefore goes through here — including
+   * the ones that discard the value and continue the partition instead of
+   * publishing it, because continuing an unwalked journal is exactly how a
+   * drifted one would reach a published `Db`.
+   */
+  private async confirmedCandidate(
+    prior: Pick<ReplicaCacheCandidate, "identity" | "revision">,
+  ): Promise<BoundRestoredReplica> {
+    return this.confirmed(
+      await this.storage.restoreCandidateOutcome(
+        prior,
+        this.attributes,
+        this.readCompatibilityHash,
+      ),
+    );
+  }
+
+  private confirmed<A>(outcome: ReplicaRestoreOutcome<A>): A {
+    const replica = restoredReplica(outcome);
+    if (replica !== undefined) return replica;
+    if (replicaRefused(outcome)) {
+      throw new ReplicaCorruptError({
+        partition: outcome.partition,
+        reason: outcome.reason,
+        detail: outcome.detail,
+      });
+    }
+    throw new Error("authenticated cache candidate changed before restore");
+  }
+
+  /**
    * Consume the first authenticated frame without ever publishing the
    * metadata-only candidate that nominated its resume revision.
    */
@@ -511,21 +568,22 @@ export class ReplicationSession {
         ) {
           throw new Error("authenticated resume has no cached replica candidate");
         }
-        const restored = await this.storage.restoreConfirmedCandidate(
-          prior,
-          this.attributes,
-          this.readCompatibilityHash,
-        );
-        if (restored === undefined) {
-          throw new Error("authenticated cache candidate changed before restore");
-        }
+        const restored = await this.confirmedCandidate(prior);
         this.publishReplica(restored.identity, restored, false, generation);
         return false;
       }
       case "change": {
-        if (frame.type !== "Change") {
+        if (frame.type !== "Change" || prior === undefined) {
           throw new Error("authenticated candidate action disagrees with its frame");
         }
+        // `applyChange` continues the stored partition without re-reading it
+        // through the integrity walk, because the steady-state path has always
+        // validated at open. This path has not: a metadata-only candidate is
+        // the first time this partition is touched, and the change is about to
+        // be combined with a journal nothing has checked. Validate it first —
+        // the result is discarded, since the change supersedes it.
+        await this.confirmedCandidate(prior);
+        if (!this.current(generation)) return false;
         const installed = await this.storage.applyChange(frame, {
           signal: this.controller.signal,
           lease: this.lease,
@@ -545,13 +603,25 @@ export class ReplicationSession {
         ) {
           throw new Error("authenticated candidate action disagrees with its frame");
         }
+        // Validate — and if it comes to it, quarantine — the committed value
+        // before this frame stages its replacement. Quarantine removes the
+        // partition's staging along with everything else, so running it
+        // afterwards would delete the staging record this very snapshot is
+        // being written into, and its commit could never install. Doing it
+        // first also lets the new staging record observe the absent committed
+        // revision as its base, so the commit is unconditionally installable.
+        const restored = restoredReplica(
+          await this.storage.restoreOutcome(
+            frame.identity,
+            this.attributes,
+            this.readCompatibilityHash,
+          ),
+        );
+        if (!this.current(generation)) return false;
         const terminal = await this.accept(frame, generation);
         if (terminal || !this.current(generation)) return terminal;
-        const restored = await this.storage.restore(
-          frame.identity,
-          this.attributes,
-          this.readCompatibilityHash,
-        );
+        // A quarantined partition simply publishes nothing here; the snapshot
+        // this response is already sending replaces it.
         if (restored !== undefined) {
           this.publishStale(frame.identity, restored, generation);
         }
@@ -561,14 +631,7 @@ export class ReplicationSession {
         if (prior === undefined || frame.type !== "KeepAlive") {
           throw new Error("authenticated candidate action disagrees with its frame");
         }
-        const restored = await this.storage.restoreConfirmedCandidate(
-          prior,
-          this.attributes,
-          this.readCompatibilityHash,
-        );
-        if (restored === undefined) {
-          throw new Error("authenticated cache candidate changed before restore");
-        }
+        const restored = await this.confirmedCandidate(prior);
         this.publishStale(frame.identity, restored, generation);
         return false;
       }

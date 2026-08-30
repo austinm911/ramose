@@ -338,6 +338,137 @@ staging, and content nodes. Candidate selection reads only those two bounded
 stores. Future outbox, receipt, ClientRef, and optimistic-layer stores remain
 independently clearable and are never part of candidate lookup or rebinding.
 
+## Integrity validation and corruption recovery
+
+Every restore path — cold restore, confirmed-candidate restore, and exact
+credential-bound restore — validates the whole partition before any `Db` can
+exist.
+
+First the committed manifest. It must be this storage version, be filed under
+the partition its own identity derives, state a complete identity (nothing may
+be compared against a half-identity, which would throw before anything could
+classify the record), agree with itself and the installed client about the
+confirmed compatibility hash, carry four well-formed index roots whose counts
+are consistent, and describe a value it can actually materialize: every stored
+attribute well formed and numbered, every partition-local id in the user range
+and below the allocator, no id claimed twice across the entity and attribute
+maps, and every kept fact an assertion with a complete value whose entity,
+field, and referent all have local ids. The journal is held to the same standard
+as the value, because the next `Change` rebuilds the whole committed set from
+it.
+
+Then every node reachable from those four roots: it must exist in this
+partition's node store, hash to the content address it is filed under, decode,
+and sit in a position its own body agrees with — the index it was encoded for,
+the referenced node kind, the referenced subtree count, the directory's
+key/child arity, index order within a leaf and across a directory's keys, and
+the separator its parent filed it under, which is always the smallest datom of
+its own subtree. A bulk build gives every reachable node of one value a distinct
+address, so a repeated address is itself a structural failure and also bounds
+the walk.
+
+Finally the conclusions only a completed walk can reach. A manifest keeps two
+descriptions of one value — a logical journal of authorized facts, and four
+physical index roots built from it — and the local id maps and stored schema sit
+between them. The roots are the one part no content address covers, so a damaged
+manifest can pair one index's current root with a superseded root of the same
+size, and a drifted journal is invisible to the first restore but rebuilds a
+different value at the next `Change`. Restore therefore replays the shared
+logical-to-physical projection the install used, folding a commutative digest
+over the bootstrap datoms, the stored schema datoms, and every journal fact,
+partitioned by each index's own membership rule. Each walked tree must equal the
+tree the manifest describes. Comparing whole datom sets would need both sides
+resident; the fold costs one hash per fact and holds four fixed-size digests.
+It also carries the largest transaction number, which must equal the manifest's
+claimed basis: that value becomes the restored `basisT`, and lowering it filters
+intact facts out of every read.
+
+The walk is depth-first, so it costs one read, one digest, and one decode per
+reachable node, plus one comparison and one fold step per datom, and holds a
+bounded batch of node bodies at a time. A walk that stops part-way yields no
+value at all; a partial `Db` is never constructed.
+
+Missing node, hash mismatch, structural invariant violation, and undecodable
+record are classified separately for diagnosis and collapse to one caller
+outcome: this partition must be replaced by a fresh snapshot. An intact replica
+whose compatibility hash or replica schema disagrees with the installed client
+is the other outcome: the client must update first. Both are returned as typed
+outcomes rather than thrown, and wrong-generation interactions keep surfacing
+the ordinary typed fence errors.
+
+Quarantine withdraws exactly one
+server/principal/database/read-view/compatibility partition from selection: its
+committed manifest, its head, and the exact credential binding and cache
+candidate that would nominate it again. Nothing can restore or resume it
+afterwards. Its content nodes are deliberately left to reachability GC, and its
+staging with them: a `Db` another session has already published holds its own
+roots and node store and no longer depends on the manifest, so deleting the
+nodes underneath it would turn a stale value into one that throws mid-query,
+while leaving them costs only space until the sweep. They are inert in the
+meantime — unreachable from any manifest — and re-installing the same value
+rewrites each node under its own address, repairing a damaged body in passing.
+
+Sibling read views, sibling databases, other principals, other servers, the
+scope's durable confirmation and generation, its route observations, and the
+future outbox, receipt, ClientRef, and optimistic families are all preserved — a
+corrupt committed read value is never a reason to discard a durable operation
+identity. Because withdrawal is still destructive it is generation-fenced like
+clearing and eviction, and the whole quarantine is one IndexedDB transaction, so
+a crash cut leaves the corrupt partition exactly as it was and a retry completes
+it.
+
+### The publish fence
+
+Reading a partition and acting on it are never one atomic step. A walk takes as
+long as reading the replica, and a staged snapshot outlives the connection that
+began it. Destructive maintenance in another handle sees neither — a restore
+holds no pin until its caller has a value, and staging is not a participant — so
+rather than widen what maintenance can see, every path states one invariant:
+
+> Nothing derived from an earlier read of a partition may become observable or
+> durable until, in one IndexedDB transaction at the moment it becomes
+> load-bearing, the derivation re-confirms both the durable generations guarding
+> that partition and the committed state it assumed.
+
+The generations are what a clear or an eviction moves, and only those two delete
+content nodes, so re-observing them is exactly what separates "the value I
+validated is still mine to publish" from "its nodes were deleted while I was
+reading them". An ordinary install moves the committed state instead, and leaves
+a validated manifest and its nodes entirely intact — publishing it is the older
+of the old-or-new complete values a caller is promised, not a mixture — so each
+path re-confirms only the part of the committed state its own derivation
+depended on. Every path derives from the one invariant:
+
+- a **restored replica** re-confirms the generations in `validated`, the single
+  place cold restore, bound restore, and confirmed-candidate restore all funnel
+  through, after the walk and before the manifest can be handed back;
+- a **quarantine** re-confirms the exact manifest it refused, by revision, root
+  addresses, basis, allocator, and stored-map sizes;
+- a **snapshot start** re-confirms that the base revision its staging recorded
+  is still the committed one, and rebases the staging when it is not — a
+  snapshot identity is a deterministic function of identity and revision, so a
+  reconnect resumes the very same staging, and a base its commit can never
+  satisfy again would strand the partition on every following attempt;
+- a **snapshot commit** and a **change apply** re-confirm their base revision
+  inside the very transaction that installs.
+
+A failed generation re-check surfaces the ordinary typed fence error; a failed
+committed-state re-check reports that nothing is selected, so the caller chooses
+again from what is actually stored.
+
+Validating a partition takes as long as reading it, so another session may
+install a complete replacement while a walk is still running. Withdrawal is
+therefore conditional on the refused manifest still being the stored one,
+compared by revision, the four root addresses, the basis, the allocator, and the
+size of every stored map — a re-install of the same revision rebuilds identical
+roots, so the rest of the record's shape is what separates the manifest that was
+refused from a repaired one written in its place. A refusal that loses that
+comparison withdraws nothing and reports that nothing is selected, rather than
+acting on a value it never examined. For the same reason a restore that ran
+after a snapshot had begun streaming would quarantine underneath the replacement
+being received, so the session validates the committed value before it stages
+that snapshot's first frame.
+
 ## Authorization and noninterference
 
 Initial admission and every fixed lease renewal rerun the complete ordered Graph
