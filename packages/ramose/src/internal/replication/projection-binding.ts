@@ -74,12 +74,6 @@ export const projectionIdentity = (
     build: projectionBuild(build),
   });
 
-export const sameProjectionIdentity = (
-  left: ProjectionIdentity,
-  right: ProjectionIdentity,
-): boolean =>
-  left.revision === right.revision && left.build === right.build;
-
 export const makeClientProjectionCatalog = (
   build: string,
   installed: readonly InstalledProjection[],
