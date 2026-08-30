@@ -31,6 +31,7 @@ import {
   replicationActivationAddress,
   replicationCacheSelector,
   replicationCredentialFingerprint,
+  ReplicationUnauthorizedError,
   type ReplicationActivationInput,
 } from "./transport.ts";
 import {
@@ -53,6 +54,15 @@ export type ReplicationSessionSnapshot = {
   readonly value?: ReplicationSessionValue;
   /** Present for a protocol terminal; absent for clean unexpected EOF. */
   readonly terminalCode?: "closed" | "incompatible-version" | "update-required";
+  /**
+   * Why a `failed` session failed.
+   *
+   * `unauthorized` is the server's own answer — the credential was refused —
+   * and is the one failure a caller must not read as an unreachable server. An
+   * unreachable server leaves a confirmed replica readable; a refusal fences
+   * the partition that credential used to open.
+   */
+  readonly failure?: "unauthorized" | "transport";
 };
 
 export type ReplicationSessionObserver = (snapshot: ReplicationSessionSnapshot) => void;
@@ -461,9 +471,21 @@ export class ReplicationSession {
             ...(session.state.value === undefined ? {} : { value: session.state.value }),
           });
         } catch (error) {
+          if (error instanceof ReplicationUnauthorizedError) {
+            // The server refused this exact credential, so the binding minted
+            // for it must stop selecting: without this, the next start would
+            // restore and publish the refused principal's rows offline through
+            // a binding the server has already rejected. Best effort — a
+            // withdrawal that cannot be written must not mask the refusal.
+            await options.storage.unbindCredential(fingerprint)
+              .catch(() => undefined);
+          }
           if (session.controller.signal.aborted || !session.current(generation)) return;
           session.publish({
             status: "failed",
+            failure: error instanceof ReplicationUnauthorizedError
+              ? "unauthorized"
+              : "transport",
             ...(session.state.value === undefined ? {} : { value: session.state.value }),
           });
           session.controller.abort(error);
