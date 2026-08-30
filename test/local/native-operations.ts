@@ -11,7 +11,20 @@ import {
   Schema,
   string,
 } from "ramose/db";
+import { invocationId, type EntityId } from "../../packages/ramose/src/db/refs.ts";
 import { base64Url } from "../../packages/ramose/src/internal/replication/server-identity.ts";
+import {
+  buildOutboxRecord,
+  mappingKey,
+  type OutboxDraft,
+  type OutboxRecord,
+} from "../../packages/ramose/src/internal/replication/outbox.ts";
+import {
+  buildMutationRequest,
+  classifyMutationResponse,
+  substituteMutationRefs,
+} from "../../packages/ramose/src/internal/replication/submission.ts";
+import { submitMutation } from "../../packages/ramose/src/internal/replication/transport.ts";
 import { lowerOwnedOperations } from "../../packages/ramose/src/internal/authorization/authoring/index.ts";
 import {
   CatalogId,
@@ -1634,5 +1647,280 @@ export const registerNativeOperations = (ctx: { urls: () => LocalUrls }) => {
         expect(rows.body.result).toEqual([]);
       });
     });
+
+    /**
+     * The offline client's own submission path, end to end.
+     *
+     * The record is a real durable outbox row, built by the same canonical
+     * builder the browser queue writes through; the request is the one
+     * `buildMutationRequest` produces; the transport is the real `submitMutation`
+     * over `fetch`; and the answers are the real deployed Worker's. Nothing is
+     * scripted, so the classification table is proven against the responses the
+     * server actually sends rather than against an imagined vocabulary.
+     */
+    describe("offline client submission through the real transport", () => {
+      const RECEIVER = Object.freeze({
+        server: "s".repeat(43),
+        principal: "p".repeat(43),
+        database: "d".repeat(43),
+      });
+
+      const endpointFor = (base: string, database: string, token: string) =>
+        Object.freeze({
+          origin: new URL(base).origin,
+          database,
+          graphPath: [] as readonly string[],
+          credential: token,
+          catalog: operationProof.catalog,
+          unitHash: operationProof.unitHash,
+        });
+
+      const queued = (
+        version: string,
+        overrides: Partial<OutboxDraft> = {},
+      ): OutboxRecord =>
+        buildOutboxRecord({
+          invocation: invocationId(),
+          receiver: RECEIVER,
+          operation: {
+            catalog: operationProof.catalog as never,
+            owner: { kind: "entity", name: "nativeItem" },
+            localName: "createAllocating",
+          },
+          operationVersion: version as never,
+          target: { type: "none" },
+          input: { title: "Queued offline" },
+          allocations: [],
+          inputRefs: [],
+          enqueuedAt: 1_700_000_000_000,
+          ...overrides,
+        }, "scope", 1);
+
+      /**
+       * The classification, and the raw answer it came from.
+       *
+       * The raw answer is kept so an unexpected classification names the status
+       * and body the server actually sent. A bare "expected Committed, received
+       * Retry" says nothing about which 5xx produced it, and a `/op` answer this
+       * contract did not anticipate is exactly the thing worth seeing.
+       */
+      const submitRaw = async (
+        record: OutboxRecord,
+        endpoint: ReturnType<typeof endpointFor>,
+        handles: ReadonlyMap<string, EntityId> = new Map(),
+      ) => {
+        const substituted = substituteMutationRefs(record, handles);
+        expect(substituted).toBeDefined();
+        const response = await submitMutation(
+          buildMutationRequest(record, endpoint, substituted!),
+        );
+        return {
+          acknowledgement: classifyMutationResponse(record, response),
+          raw: JSON.stringify(response),
+        };
+      };
+
+      const submit = async (
+        record: OutboxRecord,
+        endpoint: ReturnType<typeof endpointFor>,
+        handles: ReadonlyMap<string, EntityId> = new Map(),
+      ) => (await submitRaw(record, endpoint, handles)).acknowledgement;
+
+      /**
+       * Submit until the queue reaches an answer it would act on.
+       *
+       * `Retry` is *defined* as non-terminal: the record stays queued and the
+       * driver asks again. A test that demanded a terminal answer from the
+       * first attempt would be asserting something stronger than the contract,
+       * and would fail on any transient the contract already covers — a
+       * momentarily unreachable sealing root, a restarting Durable Object. What
+       * the contract does promise is that the answer eventually reached is
+       * exact and idempotent, which is what the callers below assert.
+       */
+      const submitUntilTerminal = async (
+        record: OutboxRecord,
+        endpoint: ReturnType<typeof endpointFor>,
+        handles: ReadonlyMap<string, EntityId> = new Map(),
+      ) => {
+        const seen: string[] = [];
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const result = await submitRaw(record, endpoint, handles);
+          seen.push(result.raw);
+          if (result.acknowledgement._tag !== "Retry") {
+            return { ...result, seen: seen.join(" | ") };
+          }
+          await Bun.sleep(100);
+        }
+        throw new Error(`submission never left Retry: ${seen.join(" | ")}`);
+      };
+
+      test("a queued create commits, and the lost-ack retry returns the identical mappings", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-client-submission";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_client_submit");
+        const endpoint = endpointFor(base, database, token);
+        const version = (await otherDeploymentVersions())
+          .get("nativeItem/createAllocating")!;
+        const ref = clientRef();
+        const record = queued(version, {
+          allocations: [{ slot: "item", clientRef: ref }],
+        });
+
+        const first = await submitUntilTerminal(record, endpoint);
+        const committed = first.acknowledgement;
+        expect([first.seen, committed._tag]).toEqual([first.seen, "Committed"]);
+        if (committed._tag !== "Committed") throw new Error("expected a commit");
+        expect(committed.mappings).toHaveLength(1);
+        expect(committed.mappings[0]!.clientRef).toBe(ref);
+        expect(isEntityId(committed.mappings[0]!.entityId)).toBe(true);
+
+        const receiptsBefore = await operationReceiptCount(base, database);
+        // The acknowledgement this client never received: resubmitting the same
+        // durable row consumes #487's exact replay. However many times it takes
+        // to get an answer, the answer is byte-identical and commits nothing
+        // further — that idempotence is the whole contract.
+        const replayed = await submitUntilTerminal(record, endpoint);
+        expect([replayed.seen, replayed.acknowledgement])
+          .toEqual([replayed.seen, committed]);
+        expect(await operationReceiptCount(base, database)).toBe(receiptsBefore);
+        const rows = await testAdmin(base, database, "/query", {
+          query: '[:find ?e :where [?e :nativeItem/title "Queued offline"]]',
+        });
+        expect(rows.body.result.length).toBe(1);
+
+        // A dependent record submits the sealed handle in place of the ref,
+        // exactly as the queue would once the mapping is durable.
+        const dependent = buildOutboxRecord({
+          invocation: invocationId(),
+          receiver: RECEIVER,
+          operation: {
+            catalog: operationProof.catalog as never,
+            owner: { kind: "entity", name: "nativeItem" },
+            localName: "rename",
+          },
+          operationVersion: (await otherDeploymentVersions())
+            .get("nativeItem/rename")! as never,
+          target: { type: "client-ref", clientRef: ref },
+          input: { title: "Renamed through the queue" },
+          allocations: [],
+          inputRefs: [],
+          enqueuedAt: 1_700_000_000_001,
+        }, "scope", 2);
+        expect(substituteMutationRefs(dependent, new Map())).toBeUndefined();
+        const renamed = await submitUntilTerminal(
+          dependent,
+          endpoint,
+          new Map([[
+            mappingKey(dependent.partition, ref),
+            committed.mappings[0]!.entityId as EntityId,
+          ]]),
+        );
+        expect([renamed.seen, renamed.acknowledgement]).toMatchObject([
+          renamed.seen,
+          { _tag: "Committed", output: { title: "Renamed through the queue" } },
+        ]);
+      });
+
+      test("every non-terminal and terminal answer classifies from the real Worker", async () => {
+        const base = ctx.urls().nativeOperationsUrl;
+        const database = "operations-client-answers";
+        await install(base, database);
+        const token = await signToken(database, "member", "user_client_answers");
+        const endpoint = endpointFor(base, database, token);
+        const versions = await otherDeploymentVersions();
+        const version = versions.get("nativeItem/createAllocating")!;
+        const ref = clientRef();
+        const record = queued(version, {
+          allocations: [{ slot: "item", clientRef: ref }],
+        });
+        expect((await submitUntilTerminal(record, endpoint)).acknowledgement._tag).toBe("Committed");
+
+        // Same id, a different durable client identity for the slot.
+        const rebound = buildOutboxRecord({
+          invocation: record.invocation,
+          receiver: RECEIVER,
+          operation: record.operation,
+          operationVersion: record.operationVersion,
+          target: { type: "none" },
+          input: record.input,
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+          inputRefs: [],
+          enqueuedAt: 1_700_000_000_002,
+        }, "scope", 1);
+        expect((await submitUntilTerminal(rebound, endpoint)).acknowledgement)
+          .toEqual({ _tag: "Rejected", code: "invocation_conflict" });
+
+        // A queued invocation pinned to a contract the deployment has moved
+        // past: non-terminal, typed, and never a silent drop.
+        const stale = queued(versions.get("nativeItem/create")!, {
+          allocations: [{ slot: "item", clientRef: clientRef() }],
+        });
+        expect((await submitUntilTerminal(stale, endpoint)).acknowledgement)
+          .toEqual({ _tag: "UpdateRequired", reason: "operation-changed" });
+
+        // An unreadable sealing epoch reaches the same non-terminal state
+        // through a different code, and still commits nothing.
+        const quarantined = buildOutboxRecord({
+          invocation: invocationId(),
+          receiver: RECEIVER,
+          operation: {
+            catalog: operationProof.catalog as never,
+            owner: { kind: "entity", name: "nativeItem" },
+            localName: "rename",
+          },
+          operationVersion: versions.get("nativeItem/rename")! as never,
+          target: {
+            type: "entity",
+            entityId: unreadableEntityId("key-epoch") as EntityId,
+          },
+          input: { title: "Should never land" },
+          allocations: [],
+          inputRefs: [],
+          enqueuedAt: 1_700_000_000_003,
+        }, "scope", 3);
+        expect((await submitUntilTerminal(quarantined, endpoint)).acknowledgement).toEqual({
+          _tag: "UpdateRequired",
+          reason: "invocation-update-required",
+        });
+
+        // A refusal the server bound to a durable receipt is terminal: the
+        // operation body refused, after the claim, so replaying returns the
+        // same answer forever.
+        const refused = buildOutboxRecord({
+          invocation: invocationId(),
+          receiver: RECEIVER,
+          operation: {
+            catalog: operationProof.catalog as never,
+            owner: { kind: "entity", name: "nativeItem" },
+            localName: "reject",
+          },
+          operationVersion: versions.get("nativeItem/reject")! as never,
+          target: { type: "none" },
+          input: {},
+          allocations: [],
+          inputRefs: [],
+          enqueuedAt: 1_700_000_000_004,
+        }, "scope", 4);
+        expect((await submitUntilTerminal(refused, endpoint)).acknowledgement)
+          .toEqual({ _tag: "Rejected", code: "operation_rejected" });
+
+        // A refusal the server reached *before* writing any receipt carries
+        // none, and must never remove durable work — the same shape the Worker
+        // answers when a lease expires between the commit and the response.
+        const unproven = await submit(queued(version), {
+          ...endpoint,
+          credential: await signToken(database, "reader", "user_client_reader"),
+        });
+        expect(unproven._tag).toBe("Retry");
+
+        // And an unreachable peer is the one answer that must be asked again.
+        expect(await submit(queued(version), {
+          ...endpoint,
+          origin: "http://127.0.0.1:1",
+        })).toEqual({ _tag: "Retry", reason: "unreachable" });
+      });
+    });
+
   });
 };

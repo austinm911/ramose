@@ -280,14 +280,31 @@ const reject = (reason: string): never => {
  * restart, holding its own partition. The snapshot is what is validated,
  * what the declared positions are read from, and what is persisted.
  */
-const jsonSnapshot = (value: unknown, at: string, seen: Set<object>): JsonValue => {
+const jsonSnapshot = (
+  value: unknown,
+  at: string,
+  seen: Set<object>,
+  /**
+   * Whether this value must also survive RFC 8785 canonicalization.
+   *
+   * A queued *input* must: it enters the canonical invocation digest, so a
+   * value the canonicalizer refuses could never be submitted and would make
+   * even an identical retry throw instead of matching.
+   *
+   * An authoritative *output* must not be held to that rule. It is application
+   * data the server already committed, it is never digested here, and refusing
+   * to store it would leave the invocation queued and resubmitting forever
+   * against a receipt that replays the same output every time — a wedged queue
+   * for a string the operation was entitled to return.
+   */
+  canonical: boolean,
+): JsonValue => {
   if (value === null) return null;
   switch (typeof value) {
     case "string":
-      // RFC 8785 rejects a lone surrogate, so a string carrying one could
-      // never enter the canonical invocation digest — and would make even an
-      // identical retry throw instead of matching. It never becomes durable.
-      if (hasLoneSurrogate(value)) reject(`input at ${at} has a lone surrogate`);
+      if (canonical && hasLoneSurrogate(value)) {
+        reject(`input at ${at} has a lone surrogate`);
+      }
       return value;
     case "boolean":
       return value;
@@ -310,7 +327,7 @@ const jsonSnapshot = (value: unknown, at: string, seen: Set<object>): JsonValue 
       // by `forEach` but becomes `null` the moment the value is serialized for
       // the wire, which would change the invocation digest after the fact.
       if (!(index in object)) reject(`input at ${at}[${index}] is a hole`);
-      items.push(jsonSnapshot(object[index], `${at}[${index}]`, seen));
+      items.push(jsonSnapshot(object[index], `${at}[${index}]`, seen, canonical));
     }
     snapshot = Object.freeze(items);
   } else {
@@ -324,8 +341,10 @@ const jsonSnapshot = (value: unknown, at: string, seen: Set<object>): JsonValue 
     // against.
     const fields: (readonly [string, JsonValue])[] = [];
     for (const [key, item] of Object.entries(object)) {
-      if (hasLoneSurrogate(key)) reject(`input at ${at} has a lone surrogate in a key`);
-      fields.push([key, jsonSnapshot(item, `${at}.${key}`, seen)]);
+      if (canonical && hasLoneSurrogate(key)) {
+        reject(`input at ${at} has a lone surrogate in a key`);
+      }
+      fields.push([key, jsonSnapshot(item, `${at}.${key}`, seen, canonical)]);
     }
     snapshot = Object.freeze(Object.fromEntries(fields));
   }
@@ -464,6 +483,24 @@ export const buildOutboxRecord = (
   scopeKey: string,
   sequence: number,
 ): OutboxRecord => {
+  // Read exactly once, exactly as the input and the mappings are. Everything
+  // below — the partition key, the reversibility check, and the stored row —
+  // reads this snapshot, so an accessor cannot answer one receiver to the key
+  // and another to the record filed under it.
+  const receiver = Object.freeze({
+    server: draft.receiver.server,
+    principal: draft.receiver.principal,
+    database: draft.receiver.database,
+  });
+  const partition = mutationPartitionKey(receiver);
+  // The same reversibility every other mutation family requires. A receiver
+  // component carrying the separator would produce a key that names a
+  // different realm when it is read back, so the row is refused here rather
+  // than committed and then found unreadable — or, worse, found readable as
+  // some other database's queue.
+  if (parseMutationPartitionKey(partition) === undefined) {
+    reject("the receiver database does not form a reversible partition key");
+  }
   if (!isInvocationId(draft.invocation)) {
     reject("the invocation id is not a durable client invocation id");
   }
@@ -496,7 +533,7 @@ export const buildOutboxRecord = (
   }
   // Validated and materialized once. Everything below reads this snapshot,
   // and it is what becomes durable.
-  const input = jsonSnapshot(draft.input, "input", new Set());
+  const input = jsonSnapshot(draft.input, "input", new Set(), true);
 
   const slots = new Set<string>();
   const allocated = new Set<string>();
@@ -548,11 +585,11 @@ export const buildOutboxRecord = (
   const sealing = embedded as SealingEpoch | null;
 
   const record: OutboxRecord = Object.freeze({
-    partition: mutationPartitionKey(draft.receiver),
+    partition,
     sequence,
     invocation: draft.invocation,
     scope: scopeKey,
-    receiver: Object.freeze({ ...draft.receiver }),
+    receiver,
     operation: Object.freeze({
       catalog: draft.operation.catalog,
       owner: Object.freeze({ ...draft.operation.owner }),
@@ -953,7 +990,7 @@ export const decodeOutboxRecord = (value: unknown): OutboxRecord | undefined => 
   }
   let input: JsonValue;
   try {
-    input = jsonSnapshot(value.input, "input", new Set());
+    input = jsonSnapshot(value.input, "input", new Set(), true);
   } catch {
     return undefined;
   }
@@ -1048,11 +1085,19 @@ export const decodeClientRefMapping = (
  * ─────────────────────────────────────────────────────────────────────── */
 
 /**
- * Refuse to persist anything the reader cannot read back.
+ * Refuse to persist anything the reader cannot read back, and return exactly
+ * what the reader will see.
  *
  * `structuredClone` is the exact transformation IndexedDB applies, so this
  * catches accessors, prototypes, holes, and unclonable values as well as every
  * field-level disagreement between a builder and its decoder.
+ *
+ * The *decoded* value is what is returned, never the caller's own object. The
+ * durable row and the value handed back are then the same value by
+ * construction, so a caller comparing its intent against a durable row is
+ * comparing like with like — and a retry whose draft carries harmless extra own
+ * properties on a sub-object is recognized as the same intent rather than
+ * refused as reuse.
  */
 const durable = <T>(
   record: T,
@@ -1065,10 +1110,11 @@ const durable = <T>(
   } catch {
     return reject(`a ${kind} record cannot be stored by structured clone`);
   }
-  if (decode(stored) === undefined) {
+  const decoded = decode(stored);
+  if (decoded === undefined) {
     reject(`a ${kind} record does not survive its own durable decoder`);
   }
-  return record;
+  return decoded!;
 };
 
 const decodeReceiverScope = (
@@ -1103,12 +1149,22 @@ const isCodecVersion = (value: unknown): value is number =>
 /** The durable FIFO cursor of one receiver database. */
 export const buildQueueCursor = (
   record: QueueCursorRecord,
-): QueueCursorRecord =>
-  durable(
+): QueueCursorRecord => {
+  const receiver = Object.freeze({
+    server: record.receiver.server,
+    principal: record.receiver.principal,
+    database: record.receiver.database,
+  });
+  // Symmetric with `buildOutboxRecord`: the cursor names the same realm its
+  // queue does, so it refuses a non-reversible key on the same terms.
+  if (parseMutationPartitionKey(mutationPartitionKey(receiver)) === undefined) {
+    reject("the receiver database does not form a reversible partition key");
+  }
+  return durable(
     Object.freeze({
       partition: record.partition,
       scope: record.scope,
-      receiver: Object.freeze({ ...record.receiver }),
+      receiver,
       nextSequence: record.nextSequence,
       sealing: record.sealing === null ? null : Object.freeze({ ...record.sealing }),
       updatedAt: record.updatedAt,
@@ -1116,6 +1172,7 @@ export const buildQueueCursor = (
     decodeQueueCursor,
     "queue cursor",
   );
+};
 
 export const decodeQueueCursor = (
   value: unknown,
@@ -1196,7 +1253,7 @@ export const decodeReceipt = (value: unknown): ReceiptRecord | undefined => {
   let output: JsonValue | null = null;
   if (value.output !== null) {
     try {
-      output = jsonSnapshot(value.output, "output", new Set());
+      output = jsonSnapshot(value.output, "output", new Set(), false);
     } catch {
       return undefined;
     }

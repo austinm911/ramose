@@ -343,6 +343,110 @@ partition, so a read-view change or a database eviction leaves them intact.
 They are never part of candidate lookup or rebinding, and only an explicit
 scoped clear removes them, in the same transaction as the replicas.
 
+### Submission and acknowledgement (#475 slice 2)
+
+One pass drives at most one head per receiver database, and only the head.
+Databases are decided independently and driven concurrently, so a blocked,
+quarantined, or unreadable head holds its own queue and no other; within a
+database, moving only the head is what preserves FIFO across a restart.
+
+A record naming an unmapped `ClientRef` waits exactly where it is. Once its
+mapping is durable, the *submitted* body carries the sealed handle in the
+target and at each declared input position — computed fresh at submission time
+from the mappings that exist then. The durable row is never rewritten: it
+records what the client actually intended, and the canonical invocation digest
+is over that intent.
+
+The plan and the handles its ready records will submit are read in **one**
+readonly transaction. Read separately, an acknowledgement committing in between
+would let the plan report a head blocked on a ref that is already resolved, or
+report a record ready whose own row the same acknowledgement has removed.
+
+Every terminal answer is persisted in exactly one client transaction: the
+receipt with its output and mappings, the removal of the submitted outbox row,
+and — for a commit — the internal `committed-unobserved` marker. The
+independent replication stream is deliberately *not* in that transaction, which
+is precisely why the marker exists: the commit is durable here and the causally
+fresh activation that observes it is a separate, later event (#476, slice 3).
+A crash cut anywhere leaves the invocation queued, and the next pass consumes
+#487's exact replay — the same receipt, the same mappings, no second commit.
+
+Non-terminal answers change nothing durable and surface as typed queue states.
+`operation_changed` and `invocation_update_required` are never silent drops:
+the record stays queued at its head and the reason is reported. A transport
+failure and an answer this build cannot interpret are both `Retry`, never a
+silent commit.
+
+**Every terminal answer needs proof.** Acting on one is irreversible: it
+removes the durable outbox row, and for an allocating invocation it is also the
+only chance to recover the authoritative mappings — miss it and every dependent
+record blocks on a ref nothing can resolve. A commit is accepted only with the
+durable `completed` receipt for that exact invocation, so an object-shaped 200
+from an incompatible server mid-rollout, a proxy, or a captive portal stays
+queued rather than being read as a commit. A refusal is terminal only when the
+server bound it to a durable receipt, or when it is `invocation_conflict`, which
+says a *different* receipt already owns this id.
+
+A status code alone is never enough in either direction. The Worker
+deliberately answers a bare, receipt-free 403 when the caller's lease expires
+between the authoritative commit and the response, and that invocation *did*
+commit. A 409 code this build does not recognize is non-terminal for the same
+reason: a newer server may name an outcome an older client has never heard of,
+and the client must not answer that by destroying durable work. An absent
+`result` on an otherwise valid 200 is malformed rather than `null`: recording
+it would corrupt the output and remove the only copy that could be replayed.
+
+### Queue liveness
+
+The invariant every durable transition preserves: **after any transaction
+commits, every non-terminal row is progressable** — its database's FIFO head
+can eventually submit, become terminal, or be unblocked by a mapping some live
+path can still produce, or it is reported with a typed non-terminal state that
+names what must change — and no removed or terminal row strands ownership
+(client refs, slots, FIFO sequences) that new work could need.
+
+| transition | effect | why the invariant holds |
+|---|---|---|
+| enqueue | adds a row | refuses a dependency with no local allocator, one owned by another database, one it allocates itself, and one whose allocator was already rejected. An allocator always precedes its dependents in FIFO order by construction: the ownership row must already exist, so it was enqueued earlier — a dependent can never wait on a record behind it. It also refuses an invocation id any receipt already owns, in any database. |
+| acknowledge `Committed` | mappings + receipt + row removal | every allocated slot must come back mapped, so no registered ref is stranded; an unreadable mapping row is repaired rather than skipped; dependents unblock on the mapping. |
+| acknowledge `Rejected` | receipt + row removal + cascade | the refused slots can never map, so every transitively dependent row becomes terminal in the same transaction; the ownership rows survive as history and new work behind them is refused at enqueue. |
+| cascade `dependency_rejected` | receipt + row removal | same cut, and confined to one database — a cross-database dependency cannot exist, because enqueue refuses one. |
+| re-acknowledge (converged) | row removal only | the terminal answer must match exactly — state, failure code, mappings, and the output, compared canonically — so two passes that disagree conflict instead of one silently keeping the other's result; the receipt and its `observation` are left untouched, so a fence that already advanced is not reset. |
+| `blocked` | nothing durable | the allocator is queued ahead of it, so a mapping is still producible. |
+| `update-required`, `unreadable` | nothing durable | deliberately holds its own database and is *reported*; never silently cleared, never re-executed. Client action is what clears it. |
+| `clearScope` | removes all five families by prefix | everything in the scope goes together, so nothing survives to be stranded. |
+
+Global invocation ownership lives on the receipt store, not the outbox. The
+outbox's own index only holds while its row does, and an acknowledgement
+removes the row — so without a receipt-side index the same globally unique
+invocation id could be queued again for a sibling database, miss the old
+receipt under its own `[partition, invocation]` key, and execute one intent
+twice. Receipts outlive their rows and are removed only by a scoped clear, so
+they are what can say "this id is spoken for" for as long as it matters.
+
+A property test drives random dependency graphs across two databases through
+random accept/refuse interleavings against real IndexedDB, asserting the end
+state directly: nothing queued, nothing blocked, every invocation terminal. It
+also asserts that the sweep actually produced a cascade, so it cannot pass
+vacuously.
+
+**A rejection is a cut through the dependency graph, not one record.** A
+refused invocation's allocation slots can never be mapped — the one queued
+record that could have produced them is the one being removed — so everything
+depending on those refs, and on *their* allocations transitively, becomes
+terminal in the same transaction with a typed `dependency_rejected` failure.
+Leaving them queued would make the next one the head, blocked on a ref nothing
+can resolve, holding its database forever. Independent work in the same
+database is untouched, and new work may not be enqueued behind a ref whose
+allocating invocation was already rejected.
+
+Every reader of the mapping store goes through its decoder, including the
+acknowledgement. A row that *looks* right but does not decode would otherwise
+be treated as already installed and skipped, while planning drops it — dependents
+blocked forever, with the record that could have replayed already removed. The
+acknowledgement is the authoritative answer for exactly that ref, so it repairs
+such a row rather than refusing.
+
 ## Integrity validation and corruption recovery
 
 Every restore path — cold restore, confirmed-candidate restore, and exact
