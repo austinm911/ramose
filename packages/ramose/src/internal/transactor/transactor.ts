@@ -71,15 +71,19 @@ import {
 } from "../runtime-boundaries.ts";
 import {
   authorizeCatalogOperation,
+  authorizeCatalogOperationGrant,
   authorizeCatalogOperationReplay,
   catalogProvisioningAttributes,
   decideInvocationReceipt,
+  deployedOperationVersion,
   executeCatalogOperation,
   invocationReceiptOutcome,
+  isLegacyInvocationReceiptRow,
   OperationRuntimeFault,
   opaqueOperationDenial,
   parseStoredInvocationReceipt,
   prepareInvocationReceipt,
+  requireSuppliedOperationVersion,
   resolveOperationCatalog,
   transitionInvocationReceipt,
   type AuthoritativeInvocationResult,
@@ -88,6 +92,7 @@ import {
   type ClaimedInvocationReceipt,
   type InstalledCatalogDefinition,
   type InvocationReceiptEvent,
+  type LegacyInvocationReceiptRow,
   type OperationRuntime,
   type PreparedInvocationReceipt,
   type SealedInvocationRejection,
@@ -332,7 +337,7 @@ export class Transactor {
   private readInvocationReceipt(
     principalId: string,
     invocationId: string,
-  ): StoredInvocationReceipt | undefined {
+  ): StoredInvocationReceipt | LegacyInvocationReceiptRow | undefined {
     const row = this.host.sql.exec(
       `SELECT status, receipt FROM operation_receipts
        WHERE principal_id = ? AND invocation_id = ?`,
@@ -341,6 +346,9 @@ export class Transactor {
     ).toArray()[0];
     if (row === undefined) return undefined;
     const receipt = parseStoredInvocationReceipt(JSON.parse(row.receipt as string));
+    // A pre-correction row keeps its stored bytes untouched; only the current
+    // generation is checked against the status column.
+    if (isLegacyInvocationReceiptRow(receipt)) return receipt;
     if (row.status !== receipt.status) {
       throw new TypeError("durable invocation receipt status mismatch");
     }
@@ -418,14 +426,16 @@ export class Transactor {
   }
 
   private assertClaimIdentity(
-    stored: StoredInvocationReceipt | undefined,
+    stored: StoredInvocationReceipt | LegacyInvocationReceiptRow | undefined,
     claim: ClaimedInvocationReceipt,
   ): asserts stored is ClaimedInvocationReceipt {
     if (
-      stored?.status !== "claimed" || stored.version !== claim.version ||
+      stored === undefined || isLegacyInvocationReceiptRow(stored) ||
+      stored.status !== "claimed" || stored.version !== claim.version ||
       stored.principalId !== claim.principalId ||
       stored.invocationId !== claim.invocationId ||
       stored.scopeDigest !== claim.scopeDigest ||
+      stored.operationVersion !== claim.operationVersion ||
       stored.invocationDigest !== claim.invocationDigest
     ) {
       throw new Error("durable invocation claim changed before completion");
@@ -712,10 +722,68 @@ export class Transactor {
           if (p.operation !== undefined) {
             let claim: ClaimedInvocationReceipt | undefined;
             try {
-              const prepared = await Effect.runPromise(
-                prepareInvocationReceipt(p.operation),
+              // The compatibility digest is operation-scoped, so the deployed
+              // operation must be resolved before the receipt is prepared.
+              // Resolution failures stay the ordinary sealed denial.
+              if (this.operationRuntime === undefined) {
+                throw opaqueOperationDenial();
+              }
+              const supplied = requireSuppliedOperationVersion(
+                p.operation.operationVersion,
               );
+              const resolved = await Effect.runPromise(
+                resolveOperationCatalog(this.operationRuntime, p.operation),
+              );
+              this.bindComposition(
+                resolved.deployed.definition.unitHash,
+                resolved.deployed.definition.composition,
+              );
+              const operationVersion = deployedOperationVersion(
+                resolved,
+                p.operation.owner,
+                p.operation.localName,
+              );
+              if (operationVersion === undefined) throw opaqueOperationDenial();
+              // Every effect-free compatibility answer is disclosed only to a
+              // caller who may still invoke the operation as it stands now.
+              // Grant-only admission deliberately stops before the target and
+              // input checks — those are exactly what a changed operation
+              // moves — and its sealed denial wins over the answer (#419).
+              const operationRuntime = this.operationRuntime;
+              const operation = p.operation;
+              const resolveCompatibility = async (
+                tag: "OperationChanged" | "UpdateRequired",
+              ) => {
+                await authorizeCatalogOperationGrant(
+                  this.conn,
+                  operationRuntime,
+                  operation,
+                  resolved,
+                );
+                this.stats.rejected++;
+                p.resolve({ _tag: tag });
+              };
+              // Prepared first so a malformed invocation id or an unverified
+              // principal keeps its ordinary invalid-request answer.
+              const prepared = await Effect.runPromise(
+                prepareInvocationReceipt(p.operation, operationVersion),
+              );
+              // A pin the caller supplied and the deployment no longer has
+              // decides before the durable row is read at all: an explicit
+              // expectation is never satisfied by a receipt minted under a
+              // different version.
+              if (supplied !== undefined && supplied !== operationVersion) {
+                await resolveCompatibility("OperationChanged");
+                continue;
+              }
               const inspected = this.inspectInvocationReceipt(prepared);
+              if (
+                inspected._tag === "OperationChanged" ||
+                inspected._tag === "UpdateRequired"
+              ) {
+                await resolveCompatibility(inspected._tag);
+                continue;
+              }
               if (inspected._tag === "Conflict") {
                 this.stats.rejected++;
                 p.resolve({ _tag: "Conflict" });
@@ -723,6 +791,13 @@ export class Transactor {
               }
               if (inspected._tag === "Recover") {
                 const recovered = this.recoverInvocationReceipt(prepared);
+                if (
+                  recovered._tag === "OperationChanged" ||
+                  recovered._tag === "UpdateRequired"
+                ) {
+                  await resolveCompatibility(recovered._tag);
+                  continue;
+                }
                 if (recovered._tag === "Conflict") {
                   this.stats.rejected++;
                   p.resolve({ _tag: "Conflict" });
@@ -735,16 +810,8 @@ export class Transactor {
                 // A missing row cannot normally race inside one serialized DO,
                 // but if storage changed, continue through fresh admission.
               }
-              if (this.operationRuntime === undefined) {
-                throw opaqueOperationDenial();
-              }
-              const resolved = await Effect.runPromise(
-                resolveOperationCatalog(this.operationRuntime, p.operation),
-              );
-              this.bindComposition(
-                resolved.deployed.definition.unitHash,
-                resolved.deployed.definition.composition,
-              );
+              // An exact replay keeps PR #527's behavior byte for byte. The
+              // fenced admission below is unchanged and still runs first.
               if (inspected._tag === "Replay") {
                 if (inspected.receipt.status === "completed") {
                   await authorizeCatalogOperationReplay(
@@ -777,9 +844,13 @@ export class Transactor {
               // Missing keys are admitted without writes. Only now, directly
               // before native execution, atomically recheck and insert.
               const decision = this.claimInvocationReceipt(prepared);
-              if (decision._tag === "Conflict") {
+              if (
+                decision._tag === "Conflict" ||
+                decision._tag === "OperationChanged" ||
+                decision._tag === "UpdateRequired"
+              ) {
                 this.stats.rejected++;
-                p.resolve({ _tag: "Conflict" });
+                p.resolve({ _tag: decision._tag });
                 continue;
               }
               if (decision._tag === "Replay" || decision._tag === "Recover") {
