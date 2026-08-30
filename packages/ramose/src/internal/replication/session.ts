@@ -182,6 +182,8 @@ export class ReplicationSession {
   private trackedDatabase: string | undefined;
   private releaseRetention: (() => void) | undefined;
   private retainedDb: Db | undefined;
+  private confirmedIdentity: ReplicationIdentity | undefined;
+  private refreshing: Promise<void> = Promise.resolve();
   private fenced = false;
 
   private constructor(
@@ -200,6 +202,7 @@ export class ReplicationSession {
     this.lease = lease;
     this.releaseRetention = retention;
     this.retainedDb = initial?.db;
+    this.confirmedIdentity = initial?.identity;
     this.state = Object.freeze({
       status: "connecting",
       ...(initial === undefined
@@ -213,9 +216,65 @@ export class ReplicationSession {
     this.loop = run(this, this.generation);
   }
 
+  /**
+   * Re-read the durable committed head this session's confirmed identity names
+   * and publish it when it has moved past the value this session is holding.
+   *
+   * A holder installs a replica before it publishes one, so the durable head of
+   * one identity only ever advances: a revision that differs from the published
+   * one is a later revision another tab of this scope installed. A session
+   * whose own response is still delivering ignores this — its stream is the
+   * fresher path and the one that keeps the change chain continuous — so this
+   * is what a tab reads when its own stream has ended.
+   *
+   * Refreshes run one at a time. Two notices about consecutive writes would
+   * otherwise read two revisions concurrently, and the reader that finished
+   * second could publish the older of them: the durable head advances, but a
+   * read of it is only as fresh as the moment it ran.
+   */
+  refreshFromDurable(): Promise<boolean> {
+    const next = this.refreshing.then(
+      () => this.readDurableHead(),
+      () => this.readDurableHead(),
+    );
+    this.refreshing = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
+  private async readDurableHead(): Promise<boolean> {
+    const status = this.state.status;
+    if (status !== "failed" && status !== "terminal") return false;
+    const identity = this.state.value?.identity ?? this.confirmedIdentity;
+    if (identity === undefined) return false;
+    const generation = this.generation;
+    const restored = restoredReplica(
+      await this.storage.restoreOutcome(
+        identity,
+        this.attributes,
+        this.readCompatibilityHash,
+      ),
+    );
+    if (restored === undefined) return false;
+    const held = this.state.value;
+    if (!this.current(generation) || restored.revision === held?.revision) {
+      restored.release();
+      return false;
+    }
+    this.adopt(restored);
+    this.publish(Object.freeze({
+      ...this.state,
+      value: valueFrom(identity, restored, held?.stale ?? true),
+    }));
+    return true;
+  }
+
   private track(identity: ReplicationIdentity): void {
     const database = replicaDatabaseScopeOf(identity);
     const key = replicaDatabaseKey(database);
+    this.confirmedIdentity = identity;
     if (this.trackedDatabase === key) return;
     this.untrack();
     const registration = sessionRegistration(this.storage, identity, () => this.close());
