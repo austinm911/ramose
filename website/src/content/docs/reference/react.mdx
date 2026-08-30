@@ -9,7 +9,7 @@ import Next from "../../../components/Next.astro";
 *New here? Start with [React and offline UX](/guides/react/).*
 
 :::note[Available today]
-`RamoseProvider`, `useDb`, `useQuery`, and `useSyncState` ship now. Entity handles (`.data` / `.local` / `.mutate`), `useReceipt`, and the Suspense-compatible option arrive with the public mutation and receipt surfaces; they are documented here as the shape they will take.
+`RamoseProvider`, `useDb`, `useQuery`, `useReceipt`, and `useSyncState` ship now. A Suspense-compatible option does not: on React 19, `receipt.committed` is a promise `use()` already suspends on, and React 18 has no `use()`.
 :::
 
 ```tsx
@@ -78,15 +78,36 @@ Entity results expose `.data`, `.local`, and `.mutate`. Components rerender when
 />
 ```
 
-Use stable entity ids as React keys. Until entity handles land, a row's `id` is a *local* identifier that is not portable across replicas or sessions: key on a unique field instead, and never persist it or put it in a route.
+Use a row's `id` as its React key. It is an opaque `EntityId`, stable for the same server, principal, and database, so it survives reloads and is safe in a route; another principal or database resolves it as denied. An entity created offline carries a `ClientRef` until its `EntityId` arrives, so a row keyed on `id` remounts once at that swap.
 
 ## useReceipt
 
 ```tsx
+const [receipt, setReceipt] = useState<Receipt | null>(null)
 const state = useReceipt(receipt)
+
+<button onClick={() => setReceipt(db.mutate.createTask({ title }))}>Save</button>
 ```
 
-Observes one invocation through `queued`, `committed`, or `rejected`. Passing `null` returns an idle state suitable for components that have not invoked anything yet. Use this hook when output or rejection drives UI; use `entity.local.pending` for quiet row feedback.
+Observes one invocation, returning `ReceiptView`:
+
+```ts
+type ReceiptView =
+  | { status: "idle" }
+  | { status: "pending" }
+  | { status: "queued" }
+  | { status: "committed" }
+  | { status: "rejected"; error: MutationRejectedError }
+  | { status: "failed"; error: Error }
+```
+
+Every member but `idle` is the client's `ReceiptState`, unchanged: React adds no second mutation state machine.
+
+`idle` is what a component reads before it holds a receipt — `null` and `undefined` both give it — so the hook can be called unconditionally. `pending` means a real invocation has not reached the outbox; `failed` means it never will.
+
+Hold the receipt in state: rebuilding it during render would invoke once per render. Unmounting cancels nothing — a queued invocation is durable and proceeds without an observer.
+
+Use this hook when output or rejection drives UI; use `entity.local.pending` for quiet row feedback.
 
 ## useSyncState
 
