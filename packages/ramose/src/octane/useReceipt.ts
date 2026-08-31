@@ -34,15 +34,19 @@ const readIdle = (): ReceiptView => IDLE;
  * without an observer. A later component handed the same receipt reads whatever
  * state it reached meanwhile, terminal states included.
  */
-export const useReceipt: (
-  receipt?: Receipt | null,
-  ...rest: [slot?: symbol]
-) => ReceiptView = (receipt, ...rest) => {
-  const [, slot] = splitSlot(rest);
+export function useReceipt(receipt?: Receipt | null): ReceiptView;
+export function useReceipt(
+  // Every argument is optional, so a compiled call site with no arguments puts
+  // the slot in `receipt`'s position. Counting from the end is the only exact
+  // way to find it, and no argument this hook takes is a `symbol`.
+  ...args: [receipt?: Receipt | null, slot?: symbol]
+): ReceiptView {
+  const [rest, slot] = splitSlot(args);
+  const receipt = rest[0] as Receipt | null | undefined;
   return useSyncExternalStore<ReceiptView>(
     receipt?.subscribe ?? observeNothing,
     receipt?.getSnapshot ?? readIdle,
     receipt?.getSnapshot ?? readIdle,
     subSlot(slot, "receipt:store"),
   );
-};
+}

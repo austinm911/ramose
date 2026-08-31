@@ -1,133 +1,202 @@
 /**
- * `useQuery` — the one-shot read as `Async`:
+ * `useQuery` — one query observed as component state:
  *
- * - one `q` per view; a fresh-but-equal inline `db.asOf(t)` is not a re-run
- *   (and, transitively, not a render loop);
- * - a `t` change re-runs; the in-flight state is `loading: true` over the
- *   previous `data` (no flash to `undefined` on scrub);
- * - a slower answer to an older run is dropped — last-write-wins by issue
- *   order, not by resolution order;
- * - a terminal failure lands as the `Cause`, with the last `data` kept.
+ * - `pending` until a local answer arrives, then `ready` / `stale` / `error`;
+ * - a reconnect that flips staleness keeps `data` identity;
+ * - two readers asking the same question share one observation;
+ * - rebuilding an equal query every render selects that same observation;
+ * - an explicit `database` works with no provider in the tree;
+ * - the last unmount releases the observation.
  */
 
-import { render, waitFor } from "@octanejs/testing-library";
-import * as Cause from "effect/Cause";
-import * as Ramose from "ramose/db";
-import type { Async } from "ramose/octane";
+import { act, render } from "@octanejs/testing-library";
+import type { QueryState } from "ramose/octane";
 import { describe, expect, test } from "vitest";
-import { QueryRows } from "../fixtures/reads.tsrx";
-import { capture, fakePeer, type FakePeer, sleep, Todos } from "../support/world.ts";
+import {
+  QueryDirect,
+  QueryInline,
+  QueryRows,
+  TwoQueryReaders,
+} from "../fixtures/reads.tsrx";
+import {
+  capture,
+  heldStoreCount,
+  titles,
+  todoWorld,
+} from "../support/world.ts";
 
-/** Rows for one title, in the wire shape a select query comes back as. */
-const rowsFor = (title: string) => [[{ title }]];
-
-/** A peer whose `q` answers depend on the frame's `asOf` coordinate. */
-const scrubPeer = (
-  byAsOf: Record<number, { title: string; delay?: number; status?: number }>,
-): FakePeer =>
-  fakePeer({
-    answer: (frame) => {
-      if (frame.op !== "q") return { body: { t: 1, result: [] } };
-      const spec = byAsOf[frame.asOf as number];
-      if (spec === undefined) return { body: { t: 1, result: [] } };
-      if (spec.status !== undefined) {
-        return { status: spec.status, body: { error: spec.title } };
-      }
-      return {
-        body: { t: frame.asOf, result: rowsFor(spec.title) },
-        delay: spec.delay,
-      };
-    },
-  });
-
-const dbOver = (peer: FakePeer) =>
-  Ramose.connect({
-    url: "https://peer.example.com",
-    fetch: peer.fetch,
-    webSocket: peer.webSocket,
-  }).db("todos", Todos);
+const rows = [{ title: "milk" }] as const;
 
 describe("useQuery", () => {
-  test("one q per view: rows land, and equal inline views never re-run", async () => {
-    const peer = scrubPeer({ 1: { title: "one" } });
-    const box = capture<Async<unknown, unknown>>();
-    const props = { db: dbOver(peer), t: 1, report: box.report };
+  test("reports pending, then ready once an answer is published", async () => {
+    const world = todoWorld();
+    const box = capture<QueryState<unknown>>();
 
-    const { container, rerender } = render(QueryRows, { props });
-    expect(box.last()).toEqual({
-      data: undefined,
-      error: undefined,
-      loading: true,
+    const { container } = render(QueryRows, {
+      props: { client: world.client, query: titles, report: box.report },
     });
-    expect(container.querySelector(".data")!.getAttribute("data-loading")).toBe(
-      "true",
+
+    expect(box.last()).toEqual({ status: "pending" });
+    expect(container.querySelector(".query")!.getAttribute("data-status")).toBe(
+      "pending",
     );
 
-    await waitFor(() => expect(box.last().loading).toBe(false));
-    expect(box.last().data).toEqual([{ title: "one" }]);
-    expect(container.querySelector(".data")!.textContent).toBe(
-      JSON.stringify([{ title: "one" }]),
+    await act(() => {
+      world.answer(titles, rows);
+    });
+
+    expect(box.last()).toEqual({ status: "ready", data: rows });
+    expect(container.querySelector(".query")!.textContent).toBe(
+      JSON.stringify(rows),
     );
-
-    rerender({ props });
-    rerender({ props });
-    await sleep();
-    expect(peer.frameOps("q")).toHaveLength(1);
   });
 
-  test("a scrub keeps the previous data while loading, and drops the stale slower answer", async () => {
-    const peer = scrubPeer({
-      1: { title: "one", delay: 80 },
-      2: { title: "two" },
-      3: { title: "three" },
+  test("answerStale with the same data reference keeps data identity", async () => {
+    const world = todoWorld();
+    const box = capture<QueryState<unknown>>();
+    const data = [{ title: "milk" }];
+
+    render(QueryRows, {
+      props: { client: world.client, query: titles, report: box.report },
     });
-    const db = dbOver(peer);
-    const box = capture<Async<unknown, unknown>>();
-    const props = (t: number) => ({ db, t, report: box.report });
 
-    const { rerender } = render(QueryRows, { props: props(2) });
-    await waitFor(() => expect(box.last().data).toEqual([{ title: "two" }]));
+    await act(() => {
+      world.answer(titles, data);
+    });
+    const ready = box.last();
+    expect(ready).toEqual({ status: "ready", data });
 
-    // scrub to the slow coordinate: in flight over the old rows, no flash
-    rerender({ props: props(1) });
-    expect(box.last().loading).toBe(true);
-    expect(box.last().data).toEqual([{ title: "two" }]);
-
-    // scrub again before it answers; the newer run wins
-    rerender({ props: props(3) });
-    await waitFor(() => expect(box.last().data).toEqual([{ title: "three" }]));
-    expect(box.last().loading).toBe(false);
-
-    // ...and stays won when the slower answer finally arrives
-    await sleep(120);
-    expect(box.last().data).toEqual([{ title: "three" }]);
-    expect(box.last().error).toBeUndefined();
-    expect(peer.frameOps("q").map((frame) => frame.asOf)).toEqual([2, 1, 3]);
+    await act(() => {
+      world.answerStale(titles, data);
+    });
+    const stale = box.last();
+    expect(stale.status).toBe("stale");
+    if (stale.status !== "stale" || ready.status !== "ready") {
+      throw new Error("expected ready then stale");
+    }
+    expect(stale.data).toBe(ready.data);
+    expect(stale.data).toBe(data);
   });
 
-  test("a terminal failure lands as the Cause, over the last data", async () => {
-    const peer = scrubPeer({
-      2: { title: "two" },
-      4: { title: "bad basis", status: 400 },
-    });
-    const db = dbOver(peer);
-    const box = capture<Async<unknown, unknown>>();
-    const props = (t: number) => ({ db, t, report: box.report });
+  test("failQuery yields error carrying that exact Error", async () => {
+    const world = todoWorld();
+    const box = capture<QueryState<unknown>>();
+    const failure = new Error("cannot answer");
 
-    const { rerender } = render(QueryRows, { props: props(2) });
-    await waitFor(() => expect(box.last().data).toEqual([{ title: "two" }]));
-
-    rerender({ props: props(4) });
-    await waitFor(() => expect(box.last().error).toBeDefined());
-    expect(box.last().loading).toBe(false);
-    expect(box.last().data).toEqual([{ title: "two" }]);
-    expect(Cause.squash(box.last().error!)).toMatchObject({
-      _tag: "InvalidRequest",
+    render(QueryRows, {
+      props: { client: world.client, query: titles, report: box.report },
     });
 
-    // a new run clears the error
-    rerender({ props: props(2) });
-    await waitFor(() => expect(box.last().error).toBeUndefined());
-    expect(box.last().data).toEqual([{ title: "two" }]);
+    await act(() => {
+      world.failQuery(titles, failure);
+    });
+
+    const failed = box.last();
+    expect(failed).toEqual({ status: "error", error: failure });
+    if (failed.status !== "error") throw new Error("expected error");
+    expect(failed.error).toBe(failure);
+  });
+
+  test("resetQuery returns the reader to pending", async () => {
+    const world = todoWorld();
+    const box = capture<QueryState<unknown>>();
+
+    render(QueryRows, {
+      props: { client: world.client, query: titles, report: box.report },
+    });
+
+    await act(() => {
+      world.answer(titles, rows);
+    });
+    expect(box.last().status).toBe("ready");
+
+    await act(() => {
+      world.resetQuery(titles);
+    });
+    expect(box.last()).toEqual({ status: "pending" });
+  });
+
+  test("two readers asking the same question share one observation", () => {
+    const world = todoWorld();
+    const a = capture<QueryState<unknown>>();
+    const b = capture<QueryState<unknown>>();
+
+    render(TwoQueryReaders, {
+      props: {
+        client: world.client,
+        query: titles,
+        reportA: a.report,
+        reportB: b.report,
+      },
+    });
+
+    expect(a.last().status).toBe("pending");
+    expect(b.last().status).toBe("pending");
+    expect(heldStoreCount(world.db)).toBe(1);
+    expect(world.observers(titles)).toBe(2);
+  });
+
+  test("rebuilding an equal query inline still selects one observation", async () => {
+    const world = todoWorld();
+    const box = capture<QueryState<unknown>>();
+
+    const { rerender } = render(QueryInline, {
+      props: { client: world.client, report: box.report },
+    });
+
+    expect(world.observers(titles)).toBe(1);
+    expect(heldStoreCount(world.db)).toBe(1);
+
+    rerender({ props: { client: world.client, report: box.report } });
+    rerender({ props: { client: world.client, report: box.report } });
+
+    expect(world.observers(titles)).toBe(1);
+    expect(heldStoreCount(world.db)).toBe(1);
+
+    await act(() => {
+      world.answer(titles, rows);
+    });
+    expect(box.last()).toEqual({ status: "ready", data: rows });
+  });
+
+  test("an explicit database works with no provider in the tree", async () => {
+    const world = todoWorld();
+    const box = capture<QueryState<unknown>>();
+
+    const { container } = render(QueryDirect, {
+      props: {
+        database: world.db,
+        query: titles,
+        report: box.report,
+      },
+    });
+
+    expect(box.last()).toEqual({ status: "pending" });
+
+    await act(() => {
+      world.answer(titles, rows);
+    });
+
+    expect(box.last()).toEqual({ status: "ready", data: rows });
+    expect(container.querySelector(".query")!.getAttribute("data-status")).toBe(
+      "ready",
+    );
+  });
+
+  test("unmounting the last reader releases the observation", () => {
+    const world = todoWorld();
+    const box = capture<QueryState<unknown>>();
+
+    const { unmount } = render(QueryRows, {
+      props: { client: world.client, query: titles, report: box.report },
+    });
+
+    expect(world.observers(titles)).toBe(1);
+    expect(heldStoreCount(world.db)).toBe(1);
+
+    unmount();
+
+    expect(world.observers(titles)).toBe(0);
+    expect(heldStoreCount(world.db)).toBe(0);
   });
 });

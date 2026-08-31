@@ -11,7 +11,8 @@
  * - concurrent runs settle independently: the last settler wins `error`;
  * - an unmounted component touches no state when a late run settles, but
  *   `onError` still fires (the toast host outlives the form);
- * - `errorMessage` is `e.message ?? e._tag ?? String(e)`.
+ * - the `error` a failure lands renders through `errorMessage` (which
+ *   `useReceipt.vitest.ts` pins on its own).
  *
  * Octane's `act` is always async (`act<T>(fn): Promise<T>`), so every
  * boundary here is awaited — unlike React's dual sync/async form.
@@ -21,7 +22,7 @@ import { act, render } from "@octanejs/testing-library";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import { Unauthorized } from "ramose/db";
-import { errorMessage, type Transact } from "ramose/octane";
+import type { Transact } from "ramose/octane";
 import { describe, expect, test } from "vitest";
 import { TransactHost } from "../fixtures/writes.tsrx";
 import { capture } from "../support/world.ts";
@@ -215,24 +216,5 @@ describe("useTransact", () => {
     expect(Exit.isFailure(exit)).toBe(true);
     expect(seen).toEqual([denied]); // the toast still happens
     expect(box.renders.length).toBe(renders);
-  });
-});
-
-describe("errorMessage", () => {
-  test("a DbError's message wins", () => {
-    const denied = new Unauthorized({
-      message: "retract denied on :issue/status",
-    });
-    expect(errorMessage(denied)).toBe("retract denied on :issue/status");
-  });
-
-  test("a _tag-only error falls back to the tag", () => {
-    expect(errorMessage({ _tag: "TxRejected" })).toBe("TxRejected");
-  });
-
-  test("anything else goes through String", () => {
-    expect(errorMessage("boom")).toBe("boom");
-    expect(errorMessage(7)).toBe("7");
-    expect(errorMessage(new Error("plain"))).toBe("plain");
   });
 });

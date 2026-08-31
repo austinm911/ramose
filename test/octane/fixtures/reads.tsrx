@@ -1,130 +1,128 @@
 /**
  * Read-hook fixtures. Every one reports its state out of the render *and*
- * serialises it into the DOM: the report is how a test asserts on a `Cause`
- * or an object identity, the DOM is the proof a consumer would actually see.
+ * serialises it into the DOM: the report is how a test asserts on an object
+ * identity or an Error, the DOM is the proof a consumer would actually see.
  *
- * The pinned variants apply `asOf` / build the subject **inline**, on purpose
- * — a fresh-but-equal view object every render is exactly the case these
- * hooks key structurally, and a fixture that hoisted it would test nothing.
+ * The inline variant rebuilds an equal query every render on purpose: the
+ * hooks key by canonical identity, and a fixture that hoisted the query would
+ * not prove that.
  */
 
-import type * as Stream from "effect/Stream";
-import { useEffect } from "octane";
-import type { QueryObject, ReadDb } from "ramose/db";
-import * as Ramose from "ramose/db";
+import { Suspense } from "octane";
+import type { Client, ClientDatabase } from "ramose/client";
+import { Query, type QueryObject } from "ramose/db";
 import {
-	type Async,
-	type Live,
-	useBasis,
-	useLive,
-	usePull,
+	RamoseProvider,
 	useQuery,
+	useSuspenseQuery,
+	type QueryState,
 } from "ramose/octane";
-import { shape, titles, Todo, Todos } from "../support/world.ts";
+import { Todo } from "../support/world.ts";
 
-type Todos = ReadDb<typeof Todos>;
-type Rows = QueryObject<{ readonly id: number }>;
-type Reported = (live: Live<unknown, unknown>) => void;
+type Reported = (state: QueryState<unknown>) => void;
 
 const text = (value: unknown): string => JSON.stringify(value ?? null);
 
-/** `useLive`, query form, live view. */
-export function LiveRows(props: { db: Todos; query: Rows; report: Reported }) @{
-	const live = useLive(props.db, props.query);
-	props.report(live);
-	<div class="rows" data-ticks={String(live.ticks)}>{text(live.rows)}</div>
-}
+const body = (state: QueryState<unknown>): string => {
+	switch (state.status) {
+		case "ready":
+		case "stale":
+			return text(state.data);
+		case "error":
+			return state.error.message;
+		case "pending":
+			return "empty-offline";
+	}
+};
 
-/** `useLive` over an inline `db.asOf(t)`. */
-export function LiveAsOf(props: {
-	db: Todos;
-	query: Rows;
-	t: number;
-	report: Reported;
-}) @{
-	const live = useLive(props.db.asOf(props.t), props.query);
-	props.report(live);
-	<div class="rows" data-ticks={String(live.ticks)}>{text(live.rows)}</div>
-}
-
-/** `useLive` with a render-fresh `limit(n)` — same AST must not re-subscribe. */
-export function LiveLimited(props: {
-	db: Todos;
-	n: number;
-	report: Reported;
-}) @{
-	const live = useLive(props.db, Ramose.Query.from(Todo).ids().limit(props.n));
-	props.report(live);
-	<div class="rows">{text(live.rows)}</div>
-}
-
-/** `useLive`, stream form: no db, no provider. */
-export function LiveStream(props: {
-	stream: Stream.Stream<unknown, unknown>;
-	report: Reported;
-}) @{
-	const live = useLive(props.stream);
-	props.report(live);
-	<div class="rows" data-ticks={String(live.ticks)}>{text(live.rows)}</div>
-}
-
-/** `useQuery` over an inline `db.asOf(t)`. */
+/** `useQuery` under a provider, observing a query the test hands in. */
 export function QueryRows(props: {
-	db: Todos;
-	t: number;
-	report: (async: Async<unknown, unknown>) => void;
-}) @{
-	const async = useQuery(props.db.asOf(props.t), titles);
-	props.report(async);
-	<div class="data" data-loading={String(async.loading)}>{text(async.data)}</div>
-}
-
-/** `usePull` with the subject written inline. */
-export function PullRow(props: { db: Todos; id: number; report: Reported }) @{
-	const live = usePull(props.db, { id: props.id }, shape);
-	props.report(live);
-	<div class="pull" data-ticks={String(live.ticks)}>{text(live.rows)}</div>
-}
-
-/** `usePull` over an inline pinned view, subject written inline too. */
-export function PullAsOf(props: {
-	db: Todos;
-	t: number;
-	id: number;
+	client: Client;
+	query: QueryObject<unknown, unknown>;
 	report: Reported;
 }) @{
-	const live = usePull(props.db.asOf(props.t), { id: props.id }, shape);
-	props.report(live);
-	<div class="pull" data-ticks={String(live.ticks)}>{text(live.rows)}</div>
+	<RamoseProvider client={props.client}>
+		<QueryReader query={props.query} report={props.report} />
+	</RamoseProvider>
+}
+
+/** The bare reader, used alone under a wrapper or twice under one provider. */
+export function QueryReader(props: {
+	query: QueryObject<unknown, unknown>;
+	report: Reported;
+	database?: ClientDatabase;
+}) @{
+	const state = useQuery(props.query, props.database);
+	props.report(state);
+	<div class="query" data-status={state.status}>{body(state)}</div>
 }
 
 /**
- * `useBasis` on a live view, plus one read — a `basis()` alone answers over
- * HTTPS, and it takes an open session socket for a `{ op: "tx" }` frame to
- * reach the wake subscription at all.
+ * Rebuilds an equal `titles` query every render. Same observation key as the
+ * hoisted `titles` value, so answering through `titles` reaches this reader.
  */
-export function BasisWatching(props: {
-	db: Todos;
-	report: (t: number | undefined) => void;
+export function QueryInline(props: {
+	client: Client;
+	report: Reported;
 }) @{
-	const t = useBasis(props.db);
-	props.report(t);
-	useEffect(() => {
-		void props.db.query(titles).catch(() => {});
-	}, [props.db]);
-	<div class="basis">{t === undefined ? "-" : String(t)}</div>
+	<RamoseProvider client={props.client}>
+		<QueryInlineReader report={props.report} />
+	</RamoseProvider>
+}
+
+export function QueryInlineReader(props: { report: Reported }) @{
+	const state = useQuery(Query.from(Todo).select({ title: Todo.title }));
+	props.report(state);
+	<div class="query" data-status={state.status}>{body(state)}</div>
+}
+
+/** `useQuery` with an explicit database and no provider in the tree. */
+export function QueryDirect(props: {
+	database: ClientDatabase;
+	query: QueryObject<unknown, unknown>;
+	report: Reported;
+}) @{
+	const state = useQuery(props.query, props.database);
+	props.report(state);
+	<div class="query" data-status={state.status}>{body(state)}</div>
+}
+
+/** Two readers asking the same question under one provider. */
+export function TwoQueryReaders(props: {
+	client: Client;
+	query: QueryObject<unknown, unknown>;
+	reportA: Reported;
+	reportB: Reported;
+}) @{
+	<RamoseProvider client={props.client}>
+		<QueryReader query={props.query} report={props.reportA} />
+		<QueryReader query={props.query} report={props.reportB} />
+	</RamoseProvider>
 }
 
 /**
- * `useBasis` over a view chosen per render: `t` pinned answers from the
- * coordinate with no request at all, `t` absent asks the peer.
+ * `useSuspenseQuery` under a Suspense boundary. The fallback is what shows
+ * while the session could still produce a first local answer; once a local
+ * value exists (or the session cannot produce one), the reader commits.
  */
-export function BasisSwitching(props: {
-	db: Todos;
-	t?: number;
-	report: (t: number | undefined) => void;
+export function SuspenseQuery(props: {
+	client: Client;
+	query: QueryObject<unknown, unknown>;
+	report: Reported;
 }) @{
-	const basis = useBasis(props.t === undefined ? props.db : props.db.asOf(props.t));
-	props.report(basis);
-	<div class="basis">{basis === undefined ? "-" : String(basis)}</div>
+	<RamoseProvider client={props.client}>
+		<Suspense fallback={<div class="fallback">waiting</div>}>
+			<SuspenseReader query={props.query} report={props.report} />
+		</Suspense>
+	</RamoseProvider>
+}
+
+export function SuspenseReader(props: {
+	query: QueryObject<unknown, unknown>;
+	report: Reported;
+	database?: ClientDatabase;
+}) @{
+	const state = useSuspenseQuery(props.query, props.database);
+	props.report(state);
+	<div class="suspense" data-status={state.status}>{body(state)}</div>
 }

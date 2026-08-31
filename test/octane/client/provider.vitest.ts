@@ -1,128 +1,137 @@
 /**
- * The provider contract:
+ * The provider contract under the ported binding:
  *
  * - `useRamose` outside a provider throws, and the message says what to do.
- * - `useDb` identity is stable across renders and changes with `name`.
- * - A provider prop change closes the old client (the fake peer records the
- *   close on the session socket the old client had opened).
- * - Re-rendering with identical props does not churn the client.
- *
- * Octane has no `StrictMode`, so the react suite's double-mount cases have no
- * counterpart here; `RamoseProvider`'s mount → close → mount recovery still
- * exists for renderers that double-invoke, it just has nothing to trigger it
- * in this suite. What is pinned instead is the invariant that recovery serves:
- * at steady state the tree holds exactly one open client.
+ * - `useRamose` inside returns the exact client object that was passed in.
+ * - `useDb` returns the client's interned root handle — same object across
+ *   re-renders and across sibling components.
+ * - Swapping the `client` prop moves the tree to the new client and handle.
+ * - A terminal client throws from `useDb` into the component.
+ * - Unmounting the provider leaves the client usable: the provider never owned
+ *   its lifetime.
  */
 
-import { render, waitFor } from "@octanejs/testing-library";
-import * as Ramose from "ramose/db";
-import type { Client, Db } from "ramose/db";
+import { render } from "@octanejs/testing-library";
+import { ClientClosedError, type Client, type ClientDatabase } from "ramose/client";
 import { describe, expect, test } from "vitest";
-import { BareRamose, ProvidedDb, Reading } from "../fixtures/provider.tsrx";
 import {
-  capture,
-  fakePeer,
-  type FakePeer,
-  providerProps,
-  Todos,
-} from "../support/world.ts";
+  BareRamose,
+  ProvidedBoth,
+  ProvidedClient,
+  ProvidedDb,
+  ProvidedSiblingDbs,
+} from "../fixtures/provider.tsrx";
+import { capture, todoWorld } from "../support/world.ts";
 
 describe("useRamose", () => {
   test("outside a provider it throws, and the message names RamoseProvider", () => {
     expect(() => render(BareRamose)).toThrow(/RamoseProvider/);
     expect(() => render(BareRamose)).toThrow(/useRamose/);
+    expect(() => render(BareRamose)).toThrow(/client=\{…\}/);
+  });
+
+  test("inside a provider it returns the exact client that was passed in", () => {
+    const world = todoWorld();
+    const box = capture<Client>();
+
+    render(ProvidedClient, {
+      props: { client: world.client, report: box.report },
+    });
+
+    expect(box.last()).toBe(world.client);
   });
 });
 
 describe("useDb", () => {
-  test("identity is stable across renders, and changes with name", () => {
-    const peer = fakePeer();
-    const client = providerProps(peer);
-    const box = capture<Db<typeof Todos>>();
-    const props = (name: string) => ({ ...client, name, report: box.report });
+  test("returns the client's interned root handle across re-renders", () => {
+    const world = todoWorld();
+    const box = capture<ClientDatabase>();
+    const props = { client: world.client, report: box.report };
 
-    const { rerender } = render(ProvidedDb, { props: props("todos") });
-    const first = box.last();
+    const { rerender } = render(ProvidedDb, { props });
+    expect(box.last()).toBe(world.db);
 
-    rerender({ props: props("todos") });
-    expect(box.last()).toBe(first);
+    rerender({ props });
+    rerender({ props });
 
-    rerender({ props: props("other") });
-    expect(box.last()).not.toBe(first);
+    expect(box.renders.length).toBeGreaterThan(1);
+    expect(box.renders.every((db) => db === world.db)).toBe(true);
+  });
+
+  test("returns the same handle from sibling components", () => {
+    const world = todoWorld();
+    const left = capture<ClientDatabase>();
+    const right = capture<ClientDatabase>();
+
+    render(ProvidedSiblingDbs, {
+      props: {
+        client: world.client,
+        reportLeft: left.report,
+        reportRight: right.report,
+      },
+    });
+
+    expect(left.last()).toBe(world.db);
+    expect(right.last()).toBe(world.db);
+    expect(left.last()).toBe(right.last());
+  });
+
+  test("a terminal client throws ClientClosedError into the component", () => {
+    const world = todoWorld();
+    const box = capture<ClientDatabase>();
+    const props = { client: world.client, report: box.report };
+
+    const { rerender } = render(ProvidedDb, { props });
+    expect(box.last()).toBe(world.db);
+
+    world.close();
+    expect(() => rerender({ props })).toThrow(ClientClosedError);
   });
 });
 
 describe("RamoseProvider", () => {
-  /** Provider props plus a client-identity recorder. */
-  const reading = (
-    peer: FakePeer,
-    box: { report: (client: Client) => void },
-    url = "https://peer.example.com",
-    token?: Ramose.TokenSource,
-  ) => ({ props: { ...providerProps(peer, url), token, report: box.report } });
+  test("swapping the client prop moves the tree to the new client", () => {
+    const first = todoWorld();
+    const second = todoWorld();
+    const clients = capture<Client>();
+    const dbs = capture<ClientDatabase>();
 
-  test("a prop change closes the old client and connects the new one", async () => {
-    const peer = fakePeer();
-    const box = capture<Client>();
+    const { rerender } = render(ProvidedBoth, {
+      props: {
+        client: first.client,
+        reportClient: clients.report,
+        reportDb: dbs.report,
+      },
+    });
 
-    const { rerender } = render(
-      Reading,
-      reading(peer, box, "https://a.example.com"),
-    );
-    await waitFor(() => expect(peer.sockets.length).toBe(1));
-    expect(peer.sockets[0]!.url).toContain("a.example.com");
-    expect(peer.sockets[0]!.closed).toBe(false);
+    expect(clients.last()).toBe(first.client);
+    expect(dbs.last()).toBe(first.db);
 
-    rerender(reading(peer, box, "https://b.example.com"));
-    await waitFor(() => expect(peer.sockets[0]!.closed).toBe(true));
-    await waitFor(() => expect(peer.sockets.length).toBe(2));
-    expect(peer.sockets[1]!.url).toContain("b.example.com");
-    expect(peer.sockets[1]!.closed).toBe(false);
+    rerender({
+      props: {
+        client: second.client,
+        reportClient: clients.report,
+        reportDb: dbs.report,
+      },
+    });
+
+    expect(clients.last()).toBe(second.client);
+    expect(dbs.last()).toBe(second.db);
+    expect(clients.last()).not.toBe(first.client);
+    expect(dbs.last()).not.toBe(first.db);
   });
 
-  test("a token identity change closes the old client too", async () => {
-    const peer = fakePeer();
-    const box = capture<Client>();
-    const url = "https://peer.example.com";
+  test("unmounting the provider leaves the client usable", () => {
+    const world = todoWorld();
+    const box = capture<ClientDatabase>();
 
-    const { rerender } = render(
-      Reading,
-      reading(peer, box, url, Ramose.token.static("a")),
-    );
-    await waitFor(() => expect(peer.sockets.length).toBe(1));
-    expect(peer.sockets[0]!.url).toContain("token=a");
-
-    rerender(reading(peer, box, url, Ramose.token.static("b")));
-    await waitFor(() => expect(peer.sockets[0]!.closed).toBe(true));
-    await waitFor(() => expect(peer.sockets.length).toBe(2));
-    expect(peer.sockets[1]!.url).toContain("token=b");
-    expect(peer.sockets[1]!.closed).toBe(false);
-  });
-
-  test("re-rendering with the same props keeps the one client", async () => {
-    const peer = fakePeer();
-    const box = capture<Client>();
-
-    const { rerender } = render(Reading, reading(peer, box));
-    await waitFor(() => expect(peer.sockets.length).toBe(1));
-    const client = box.last();
-
-    rerender(reading(peer, box));
-    rerender(reading(peer, box));
-    await waitFor(() => expect(box.renders.length).toBeGreaterThan(2));
-
-    expect(box.last()).toBe(client);
-    expect(peer.sockets.filter((socket) => !socket.closed)).toHaveLength(1);
-  });
-
-  test("unmount closes the client", async () => {
-    const peer = fakePeer();
-    const box = capture<Client>();
-
-    const { unmount } = render(Reading, reading(peer, box));
-    await waitFor(() => expect(peer.sockets.length).toBe(1));
+    const { unmount } = render(ProvidedDb, {
+      props: { client: world.client, report: box.report },
+    });
+    expect(box.last()).toBe(world.db);
 
     unmount();
-    expect(peer.sockets[0]!.closed).toBe(true);
+
+    expect(world.client.open()).toBe(world.db);
   });
 });

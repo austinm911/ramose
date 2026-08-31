@@ -1,20 +1,28 @@
 /**
- * SSR: the read hooks render synchronously with no DOM and subscribe to
- * nothing.
+ * SSR: every server-reachable hook renders synchronously under `octane/server`,
+ * with no DOM and no subscriptions.
  *
- * The peer is the assertion. Every subscription in this entry lives in an
- * effect, and octane's server hooks do not run effects — so a server render
- * must produce zero sockets and zero HTTPS calls, not merely "eventually
- * consistent" output. `useBasis` on a pinned view is the one read that has an
- * answer without asking, and it must still give it here.
+ * Bare `octane` is aliased to `octane/server` by `vitest.ssr.config.ts`, so the
+ * hooks under test are the server twins — the ones that never run effects.
+ * Query hooks must land on `pending`; `useSuspenseQuery` must do the same
+ * outside a browser. If that guard regresses, every SSR render of a consuming
+ * app hangs, and nothing else in this suite would catch it.
  */
 
 import * as octaneRuntime from "octane";
 import { renderToStaticMarkup } from "octane/server";
-import * as Ramose from "ramose/db";
-import { describe, expect, test, vi } from "vitest";
-import { ServerPinned, ServerReads } from "../fixtures/server.tsrx";
-import { fakePeer, Todos } from "../support/world.ts";
+import { describe, expect, test } from "vitest";
+import {
+  BareRamose,
+  ServerDb,
+  ServerQuery,
+  ServerRamose,
+  ServerReceiptIdle,
+  ServerReceiptSettled,
+  ServerSuspenseQuery,
+  ServerSync,
+} from "../fixtures/server.tsrx";
+import { invocation, todoWorld } from "../support/world.ts";
 
 describe("ramose/octane on the server", () => {
   test("the binding's bare `octane` import is the server runtime", () => {
@@ -25,47 +33,76 @@ describe("ramose/octane on the server", () => {
     expect("createRoot" in octaneRuntime).toBe(false);
   });
 
-  test("every read hook renders synchronously, and nothing subscribes", () => {
+  test("there is no DOM in this environment", () => {
     expect(typeof document).toBe("undefined");
-
-    const peer = fakePeer();
-    const webSocket = vi.fn(peer.webSocket);
-    const client = Ramose.connect({
-      url: "https://peer.example.com",
-      fetch: peer.fetch,
-      webSocket: webSocket as unknown as typeof WebSocket,
-    });
-
-    const { html, css } = renderToStaticMarkup(ServerReads, {
-      db: client.db("todos", Todos),
-    });
-
-    // `useLive` has no rows and no ticks, `useQuery` is loading with no data,
-    // `useBasis` has no answer: the whole surface is its initial state.
-    expect(html).toBe('<p id="server-state">null/0/true/null/-</p>');
-    expect(css).toBe("");
-
-    expect(webSocket).not.toHaveBeenCalled();
-    expect(peer.sockets).toHaveLength(0);
-    expect(peer.frames).toHaveLength(0);
-    expect(peer.calls).toHaveLength(0);
   });
 
-  test("a pinned view answers its coordinate without asking the peer", () => {
-    const peer = fakePeer();
-    const client = Ramose.connect({
-      url: "https://peer.example.com",
-      fetch: peer.fetch,
-      webSocket: peer.webSocket,
+  test("useQuery renders pending and does not read data", () => {
+    const world = todoWorld("live");
+    const { html, css } = renderToStaticMarkup(ServerQuery, {
+      client: world.client,
     });
 
-    const { html } = renderToStaticMarkup(ServerPinned, {
-      db: client.db("todos", Todos),
-      t: 12,
+    expect(html).toBe('<p id="query">pending</p>');
+    expect(css).toBe("");
+  });
+
+  test("useSuspenseQuery does not suspend on the server — it renders pending", () => {
+    // The valuable case: `typeof document !== "undefined"` must keep this
+    // render completing. A regression hangs or throws every SSR consumer.
+    const world = todoWorld("live");
+    const { html } = renderToStaticMarkup(ServerSuspenseQuery, {
+      client: world.client,
     });
 
-    expect(html).toBe('<p id="pinned-basis">12</p>');
-    expect(peer.sockets).toHaveLength(0);
-    expect(peer.calls).toHaveLength(0);
+    expect(html).toBe('<p id="suspense">pending</p>');
+  });
+
+  test("useDb opens the root during a server render without activating storage", () => {
+    const world = todoWorld("live");
+    const { html } = renderToStaticMarkup(ServerDb, {
+      client: world.client,
+    });
+
+    expect(html).toBe('<p id="db">open</p>');
+  });
+
+  test("useRamose returns the provided client on the server", () => {
+    const world = todoWorld("live");
+    const { html } = renderToStaticMarkup(ServerRamose, {
+      client: world.client,
+    });
+
+    expect(html).toBe('<p id="ramose">provided</p>');
+  });
+
+  test("useRamose throws with no provider", () => {
+    expect(() => renderToStaticMarkup(BareRamose)).toThrow(/RamoseProvider/);
+  });
+
+  test("useSyncState reads the client's current status synchronously", () => {
+    const world = todoWorld("live");
+    const { html } = renderToStaticMarkup(ServerSync, {
+      client: world.client,
+    });
+
+    expect(html).toBe('<p id="sync">live</p>');
+  });
+
+  test("useReceipt(null) is idle on the server", () => {
+    const { html } = renderToStaticMarkup(ServerReceiptIdle);
+
+    expect(html).toBe('<p id="receipt">idle</p>');
+  });
+
+  test("useReceipt reads a settled receipt's terminal state on the server", () => {
+    const call = invocation();
+    call.commit();
+
+    const { html } = renderToStaticMarkup(ServerReceiptSettled, {
+      receipt: call.receipt,
+    });
+
+    expect(html).toBe('<p id="receipt">committed</p>');
   });
 });
