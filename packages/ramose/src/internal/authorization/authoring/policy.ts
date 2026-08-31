@@ -406,17 +406,26 @@ const sessionFor = <
     });
   }
 
-  return Object.freeze({
+  // Bind the literal before freezing. `Object.freeze`'s first overload is
+  // `<T extends Function>(f: T): T`, and a literal whose only own methods are
+  // shorthand can select it under a stricter `lib`/`strictFunctionTypes`
+  // combination than this package's own tsconfig uses — at which point the
+  // cast below is a `Function` -> `PolicySession` conversion and TS rejects it.
+  // A named const gives the freeze an unambiguous object type. The cast itself
+  // stays: `claimOperands` and `rolePredicates` are filled dynamically, so
+  // neither satisfies the precise `ClaimOperands`/`RolePredicates` mapping.
+  const session = {
     subject: policyOperand<"subject", string>({ _tag: "subject" }),
     claims: Object.freeze(claimOperands),
     roles: Object.freeze(rolePredicates),
-    hasRole(role: Roles[number]) {
+    hasRole: (role: Roles[number]): AuthExpr => {
       if (!declaredRoles.has(role)) {
         throw new Error(`ramose/policy: undeclared role ${JSON.stringify(role)}`);
       }
       return hasClass(role);
     },
-  }) as PolicySession<Roles, Claims>;
+  };
+  return Object.freeze(session) as PolicySession<Roles, Claims>;
 };
 
 const snapshotClaim = (descriptor: ClaimDescriptor): ClaimDescriptor => {
