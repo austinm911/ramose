@@ -1,6 +1,6 @@
 import { expect } from "vitest";
 import { ReadCompatibilityHash } from "../../packages/ramose/src/internal/authorization/identities.ts";
-import { Index } from "../../packages/ramose/src/internal/core/datom.ts";
+import { Index, ValueTag, datom } from "../../packages/ramose/src/internal/core/datom.ts";
 import type { Db } from "../../packages/ramose/src/internal/core/db.ts";
 import type { AttributeSpec } from "../../packages/ramose/src/internal/core/schema.ts";
 import {
@@ -8,14 +8,34 @@ import {
   replicaPartitionKey,
   type ReplicaWriteCounts,
 } from "../../packages/ramose/src/internal/replication/indexeddb.ts";
+import { entityIdScopeOf } from "../../packages/ramose/src/internal/replication/identity.ts";
+import {
+  makeLogicalIdentityEncoder,
+  projectLogicalValueParts,
+} from "../../packages/ramose/src/internal/replication/logical.ts";
+import {
+  generateServerIdentityRoot,
+  sealingKeyOf,
+} from "../../packages/ramose/src/internal/replication/server-identity.ts";
 import {
   MAX_REPLICATION_DATOMS_PER_CHANGE,
   MAX_REPLICATION_DATOMS_PER_SNAPSHOT_CHUNK,
+  MAX_REPLICATION_FRAME_BYTES,
+  type EntityHandleBinding,
   type ReplicationIdentity,
   type SnapshotDatom,
 } from "../../packages/ramose/src/internal/replication/protocol.ts";
+import {
+  armCheckpointThrow,
+  resetTestHooks,
+  testRuntimeBoundaries,
+} from "../../packages/ramose/src/internal/test-hooks.ts";
 import { browserTest } from "./fixtures.ts";
-import { snapshotChunk, changeFrame } from "../../packages/ramose/test/replication-fixtures.ts";
+import {
+  changeFrame,
+  sealedHandle,
+  snapshotChunk,
+} from "../../packages/ramose/test/replication-fixtures.ts";
 
 const BUDGET_10K_COLD_MS = 15_000;
 
@@ -260,7 +280,7 @@ const withStorage = async <A>(
   name: string,
   run: (storage: IndexedDbReplicaStorage) => Promise<A>,
 ): Promise<A> => {
-  const storage = await IndexedDbReplicaStorage.open(name);
+  const storage = await IndexedDbReplicaStorage.open(name, testRuntimeBoundaries);
   try {
     return await run(storage);
   } finally {
@@ -271,6 +291,102 @@ const withStorage = async <A>(
 const budgetHeadroom = (label: string, ms: number, budget: number): void => {
   expect(ms, `${label} exceeded its #480 budget of ${budget}ms`).toBeLessThan(budget);
 };
+
+const HALF_MEGABYTE = 512 * 1024;
+
+const utf8Length = (value: string): number =>
+  new TextEncoder().encode(value).byteLength;
+
+const largeUtf8Text = (bytes: number): string => {
+  const unit = "aé☃";
+  const repeated = unit.repeat(Math.floor(bytes / utf8Length(unit)));
+  return repeated + "x".repeat(bytes - utf8Length(repeated));
+};
+
+const largeBytes = (length: number): Uint8Array => {
+  const value = new Uint8Array(length);
+  let state = 0x9e3779b9;
+  for (let index = 0; index < length; index++) {
+    state = (Math.imul(state ^ (state >>> 15), 0x85ebca6b) + index) >>> 0;
+    value[index] = state & 0xff;
+  }
+  return value;
+};
+
+const PARTS_PER_CHUNK = 4;
+
+const CRASH_SCALES = [
+  { label: "10k", count: SCALE_10K },
+  { label: "100k", count: SCALE_100K },
+] as const;
+
+const stageSnapshot = async (
+  storage: IndexedDbReplicaStorage,
+  selected: ReplicationIdentity,
+  snapshot: string,
+  revision: string,
+  datoms: readonly SnapshotDatom[],
+): Promise<number> => {
+  await storage.startSnapshot({
+    type: "SnapshotStart",
+    protocol: 1,
+    identity: selected,
+    snapshot,
+    revision,
+  });
+  let index = 0;
+  for (
+    let offset = 0;
+    offset < datoms.length;
+    offset += MAX_REPLICATION_DATOMS_PER_SNAPSHOT_CHUNK
+  ) {
+    await storage.stageSnapshotChunk(snapshotChunk({
+      type: "SnapshotChunk",
+      protocol: 1,
+      identity: selected,
+      snapshot,
+      index: index++,
+      datoms: datoms.slice(offset, offset + MAX_REPLICATION_DATOMS_PER_SNAPSHOT_CHUNK),
+    }));
+  }
+  return index;
+};
+
+const writtenNodes = async (
+  storage: IndexedDbReplicaStorage,
+): Promise<number> => {
+  for (let attempt = 0; attempt < 20_000; attempt++) {
+    const written = storage.writeCounts().nodes;
+    if (written > 0) return written;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return storage.writeCounts().nodes;
+};
+
+type ExposedValue = {
+  readonly revision: string;
+  readonly entity: string;
+  readonly name: string;
+};
+
+const completeAt = async (
+  storageName: string,
+  selected: ReplicationIdentity,
+  exposed: ExposedValue,
+): Promise<void> =>
+  await withStorage(storageName, async (storage) => {
+    const restored = await storage.restore(selected, attributes, READ_COMPATIBILITY);
+    expect(restored).toBeDefined();
+    expect(restored!.revision).toBe(exposed.revision);
+    const subject = restored!.handles.get(sealedHandle(exposed.entity));
+    expect(subject).toBeDefined();
+    const facts = await restored!.db.datomsArray(Index.EAVT, { e: subject! });
+    expect(facts).toHaveLength(FIELDS_PER_ENTITY);
+    const nameAttribute = restored!.db.requireAttr(":item/name");
+    expect(facts.find((fact) => fact.a === nameAttribute.id)?.v)
+      .toBe(exposed.name);
+    await representativeQuery(restored!.db);
+  });
 
 browserTest(
   "10k datoms: cold snapshot, atomic install, reopen and one query stay inside the 15s budget",
@@ -371,8 +487,10 @@ browserTest(
       expect(afterRestore.manifest).toBe(installed.manifest);
       budgetHeadroom("100k persisted restore", restore.ms, BUDGET_100K_RESTORE_MS);
 
-      const target = datoms[0];
+      const target = datoms[0]!;
       expect(target.field).toBe(":item/name");
+      expect(target.value.type).toBe("string");
+      const targetName = (target.value as { readonly value: string }).value;
       const change = await timed(async () =>
         await withStorage(name, async (storage) => {
           storage.resetWriteCounts();
@@ -385,15 +503,24 @@ browserTest(
             datoms: [{
               entity: target.entity,
               field: ":item/name",
+              value: { type: "string", value: targetName },
+              op: "retract",
+            }, {
+              entity: target.entity,
+              field: ":item/name",
               value: { type: "string", value: "one changed datom" },
               op: "add",
             }],
           }));
           expect(applied).toBeDefined();
 
+          const subject = applied!.handles.get(sealedHandle(target.entity));
+          expect(subject).toBeDefined();
+          const facts = await applied!.db.datomsArray(Index.EAVT, { e: subject! });
+          expect(facts).toHaveLength(FIELDS_PER_ENTITY);
           const nameAttribute = applied!.db.requireAttr(":item/name");
-          const changed = await applied!.db.datomsArray(Index.AEVT, { a: nameAttribute.id });
-          expect(changed.some((datom) => datom.v === "one changed datom")).toBe(true);
+          expect(facts.find((fact) => fact.a === nameAttribute.id)?.v)
+            .toBe("one changed datom");
           const query = await representativeQuery(applied!.db);
           return { matched: query.matched, writes: storage.writeCounts() };
         })
@@ -430,3 +557,316 @@ browserTest(
     }
   },
 );
+
+browserTest(
+  "half-megabyte string and byte values persist and restore byte-exactly",
+  { timeout: 300_000 },
+  async ({ browser }) => {
+    const name = `ramose-scale-large-${browser.uniqueId}`;
+    const selected = identity();
+    const sealing = sealingKeyOf(generateServerIdentityRoot(Date.now()));
+    const encoder = makeLogicalIdentityEncoder(
+      sealing,
+      "ramose-large-values",
+      entityIdScopeOf(selected),
+    );
+    const subject = await encoder.entity(4_242);
+    const handles: readonly EntityHandleBinding[] = [
+      { entity: subject.identity, handle: subject.handle },
+    ];
+    const body = largeUtf8Text(HALF_MEGABYTE);
+    const blob = largeBytes(HALF_MEGABYTE);
+    expect(utf8Length(body)).toBe(HALF_MEGABYTE);
+    expect(blob.byteLength).toBe(HALF_MEGABYTE);
+
+    const largeAttributes: readonly AttributeSpec[] = [
+      { ident: ":item/body", valueType: ":db.type/string", cardinality: "one" },
+      { ident: ":item/blob", valueType: ":db.type/bytes", cardinality: "one" },
+    ];
+
+    const valueParts = async (
+      field: string,
+      tag: ValueTag,
+      value: string | Uint8Array,
+    ): Promise<readonly SnapshotDatom[]> => {
+      const parts: SnapshotDatom[] = [];
+      for await (
+        const part of projectLogicalValueParts(
+          datom(4_242, 1, tag, value, 1),
+          encoder,
+        )
+      ) {
+        parts.push({ entity: subject.identity, field, value: part, op: "add" });
+      }
+      return parts;
+    };
+
+    const datoms = [
+      ...await valueParts(":item/body", ValueTag.Str, body),
+      ...await valueParts(":item/blob", ValueTag.Bytes, blob),
+    ];
+    expect(datoms.filter((item) => item.value.type === "string-part").length)
+      .toBeGreaterThan(1);
+    expect(datoms.filter((item) => item.value.type === "bytes-part").length)
+      .toBeGreaterThan(1);
+
+    try {
+      const snapshot = opaque("m");
+      const revision = opaque("1");
+      let widestFrameBytes = 0;
+      const installed = await timed(async () =>
+        await withStorage(name, async (storage) => {
+          await storage.startSnapshot({
+            type: "SnapshotStart",
+            protocol: 1,
+            identity: selected,
+            snapshot,
+            revision,
+          });
+          let index = 0;
+          for (
+            let offset = 0;
+            offset < datoms.length;
+            offset += PARTS_PER_CHUNK
+          ) {
+            const frame = {
+              type: "SnapshotChunk" as const,
+              protocol: 1 as const,
+              identity: selected,
+              snapshot,
+              index: index++,
+              datoms: datoms.slice(offset, offset + PARTS_PER_CHUNK),
+              handles,
+            };
+            widestFrameBytes = Math.max(
+              widestFrameBytes,
+              utf8Length(JSON.stringify(frame)),
+            );
+            await storage.stageSnapshotChunk(frame);
+          }
+          const committed = await storage.commitSnapshot({
+            type: "SnapshotCommit",
+            protocol: 1,
+            identity: selected,
+            snapshot,
+            revision,
+            chunks: index,
+          }, largeAttributes);
+          expect(committed).toBeDefined();
+          return { chunks: index, writes: storage.writeCounts() };
+        })
+      );
+
+      expect(widestFrameBytes).toBeLessThanOrEqual(MAX_REPLICATION_FRAME_BYTES);
+
+      const restored = await timed(async () =>
+        await withStorage(name, async (storage) => {
+          const replica = await storage.restore(
+            selected,
+            largeAttributes,
+            READ_COMPATIBILITY,
+          );
+          expect(replica).toBeDefined();
+          const db = replica!.db;
+          const anchor = await db.datomsArray(Index.AEVT, {
+            a: db.requireAttr(":item/body").id,
+          });
+          expect(anchor).toHaveLength(1);
+          const facts = await db.datomsArray(Index.EAVT, { e: anchor[0]!.e });
+          const stored = new Map(
+            facts.map((fact) => [db.attr(fact.a)!.ident, fact.v]),
+          );
+          return {
+            body: stored.get(":item/body"),
+            blob: stored.get(":item/blob"),
+            writes: storage.writeCounts(),
+          };
+        })
+      );
+
+      expect(restored.body).toBe(body);
+      expect(restored.blob).toBeInstanceOf(Uint8Array);
+      const restoredBlob = restored.blob as Uint8Array;
+      expect(restoredBlob.byteLength).toBe(blob.byteLength);
+      let identicalBytes = true;
+      for (let index = 0; index < blob.length; index++) {
+        if (restoredBlob[index] !== blob[index]) {
+          identicalBytes = false;
+          break;
+        }
+      }
+      expect(identicalBytes).toBe(true);
+      expect(restored.writes).toEqual({
+        nodes: 0,
+        manifests: 0,
+        heads: 0,
+        staging: 0,
+        stagingChunks: 0,
+      });
+
+      const image = await imageOf(name, replicaPartitionKey(selected));
+      report("512KiB string+bytes install", installed.ms, BUDGET_10K_COLD_MS, {
+        chunks: installed.chunks,
+        widestFrameBytes,
+        nodes: image.nodeCount,
+        nodeKiB: Math.round(image.nodeBytes / 1024),
+        nodeWrites: installed.writes.nodes,
+      });
+      report("512KiB string+bytes restore", restored.ms, BUDGET_100K_RESTORE_MS, {
+        nodeWrites: restored.writes.nodes,
+      });
+      budgetHeadroom("512KiB value install", installed.ms, BUDGET_10K_COLD_MS);
+      budgetHeadroom("512KiB value restore", restored.ms, BUDGET_100K_RESTORE_MS);
+    } finally {
+      await deleteDatabase(name);
+    }
+  },
+);
+
+for (const scale of CRASH_SCALES) {
+  browserTest(
+    `${scale.label} crash cuts before and during install expose only the old or new value`,
+    { timeout: 600_000 },
+    async ({ browser }) => {
+      const name = `ramose-scale-crash-${scale.label}-${browser.uniqueId}`;
+      const selected = identity();
+      const base = scaleDatoms(scale.count);
+      const subject = base[0]!;
+      expect(subject.field).toBe(":item/name");
+      expect(subject.value.type).toBe("string");
+      const originalName = (subject.value as { readonly value: string }).value;
+      const replacement = [
+        { ...subject, value: { type: "string" as const, value: "replaced" } },
+        ...base.slice(1),
+      ];
+      const first = opaque("1");
+      const second = opaque("2");
+      const third = opaque("3");
+      const atFirst: ExposedValue = {
+        revision: first,
+        entity: subject.entity,
+        name: originalName,
+      };
+      const atSecond: ExposedValue = {
+        revision: second,
+        entity: subject.entity,
+        name: "replaced",
+      };
+      const atThird: ExposedValue = {
+        revision: third,
+        entity: subject.entity,
+        name: "changed once",
+      };
+      try {
+        await withStorage(name, async (storage) => {
+          await installSnapshot(storage, selected, first, base);
+        });
+        await completeAt(name, selected, atFirst);
+
+        const chunks = await withStorage(
+          name,
+          (storage) =>
+            stageSnapshot(storage, selected, opaque("q"), second, replacement),
+        );
+        const commit = (
+          storage: IndexedDbReplicaStorage,
+          signal?: AbortSignal,
+        ) =>
+          storage.commitSnapshot({
+            type: "SnapshotCommit",
+            protocol: 1,
+            identity: selected,
+            snapshot: opaque("q"),
+            revision: second,
+            chunks,
+          }, attributes, signal === undefined ? {} : { signal });
+
+        const partialNodes = await withStorage(name, async (storage) => {
+          storage.resetWriteCounts();
+          const controller = new AbortController();
+          const cut = commit(storage, controller.signal);
+          const written = await writtenNodes(storage);
+          controller.abort();
+          await expect(cut).rejects.toBeDefined();
+          return written;
+        });
+        expect(partialNodes).toBeGreaterThan(0);
+        await completeAt(name, selected, atFirst);
+
+        for (const checkpoint of ["replica.installing", "replica.install"]) {
+          try {
+            armCheckpointThrow(checkpoint, { error: `cut at ${checkpoint}` });
+            await withStorage(name, async (storage) => {
+              await expect(commit(storage)).rejects.toBeDefined();
+            });
+          } finally {
+            resetTestHooks();
+          }
+          await completeAt(name, selected, atFirst);
+        }
+
+        const completeNodes = await withStorage(name, async (storage) => {
+          storage.resetWriteCounts();
+          expect((await commit(storage))?.revision).toBe(second);
+          return storage.writeCounts().nodes;
+        });
+        expect(partialNodes).toBeLessThan(completeNodes);
+        await completeAt(name, selected, atSecond);
+
+        const change = changeFrame({
+          type: "Change",
+          protocol: 1,
+          identity: selected,
+          from: second,
+          revision: third,
+          datoms: [{
+            entity: subject.entity,
+            field: ":item/name",
+            value: { type: "string", value: "replaced" },
+            op: "retract",
+          }, {
+            entity: subject.entity,
+            field: ":item/name",
+            value: { type: "string", value: "changed once" },
+            op: "add",
+          }],
+        });
+
+        const partialChangeNodes = await withStorage(name, async (storage) => {
+          storage.resetWriteCounts();
+          const controller = new AbortController();
+          const cut = storage.applyChange(change, { signal: controller.signal });
+          const written = await writtenNodes(storage);
+          controller.abort();
+          await expect(cut).rejects.toBeDefined();
+          return written;
+        });
+        expect(partialChangeNodes).toBeGreaterThan(0);
+        await completeAt(name, selected, atSecond);
+
+        for (const checkpoint of ["replica.installing", "replica.install"]) {
+          try {
+            armCheckpointThrow(checkpoint, { error: `cut at ${checkpoint}` });
+            await withStorage(name, async (storage) => {
+              await expect(storage.applyChange(change)).rejects.toBeDefined();
+            });
+          } finally {
+            resetTestHooks();
+          }
+          await completeAt(name, selected, atSecond);
+        }
+
+        const completeChangeNodes = await withStorage(name, async (storage) => {
+          storage.resetWriteCounts();
+          expect((await storage.applyChange(change))?.revision).toBe(third);
+          return storage.writeCounts().nodes;
+        });
+        expect(partialChangeNodes).toBeLessThan(completeChangeNodes);
+        await completeAt(name, selected, atThird);
+      } finally {
+        resetTestHooks();
+        await deleteDatabase(name);
+      }
+    },
+  );
+}
