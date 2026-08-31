@@ -189,7 +189,18 @@ const rejectionCode = (
   body: Record<string, unknown> | undefined,
 ): string => {
   if (typeof body?.code === "string") return body.code;
-  if (body?.tag === "OperationRejected") return "operation_rejected";
+  // An `OperationRejected` body carries the body's own `reason`, and that is the
+  // only part of a rejection a caller can act on: two rejections from the same
+  // operation are told apart by it and nothing else. Collapsing every one to
+  // `"operation_rejected"` left an application unable to distinguish, say, a
+  // stale head from a duplicate entity, so the reason is preferred when present.
+  //
+  // Read here rather than mirrored into `code` on the wire: `code` carries
+  // protocol outcomes (`invocation_conflict`, `operation_changed`), and a domain
+  // reason is not one of those.
+  if (body?.tag === "OperationRejected") {
+    return typeof body.reason === "string" ? body.reason : "operation_rejected";
+  }
   if (status === 400) return "invalid_request";
   if (status === 401 || status === 403) return "unauthorized";
   return "request_rejected";

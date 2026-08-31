@@ -316,6 +316,26 @@ describe("classifyMutationResponse", () => {
       receipt: rejectedReceipt(plain.invocation),
     }))).toEqual({ _tag: "Rejected", code: "operation_rejected" });
 
+    // The body's own `reason` is what tells two rejections of the same operation
+    // apart, so it becomes the code when the server sent one. Without this an
+    // application sees `operation_rejected` for every domain refusal and cannot
+    // tell a stale head from a duplicate entity.
+    expect(classifyMutationResponse(plain, response(409, {
+      tag: "OperationRejected",
+      message: "domain refused",
+      reason: "revision/stale-head",
+      receipt: rejectedReceipt(plain.invocation),
+    }))).toEqual({ _tag: "Rejected", code: "revision/stale-head" });
+
+    // A non-string `reason` is not a code. Falling back keeps a malformed body
+    // from becoming an unrecognisable code an application would switch on.
+    expect(classifyMutationResponse(plain, response(409, {
+      tag: "OperationRejected",
+      message: "domain refused",
+      reason: { code: "revision/stale-head" },
+      receipt: rejectedReceipt(plain.invocation),
+    }))).toEqual({ _tag: "Rejected", code: "operation_rejected" });
+
     expect(classifyMutationResponse(plain, response(500, {
       code: "invocation_failed",
       receipt: { version: 2, invocationId: plain.invocation, status: "failed" },
