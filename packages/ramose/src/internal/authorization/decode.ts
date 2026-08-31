@@ -2,6 +2,8 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import {
+  MAX_CATALOG_JSON_ENCODED_BYTES,
+  MAX_CATALOG_JSON_NODES,
   MAX_COLLECTION_SIZE,
   MAX_JSON_DEPTH,
   MAX_JSON_ENCODED_BYTES,
@@ -94,6 +96,8 @@ export const decodeLegacyInstalledCatalogUnitV1Result = (
     Schema.decodeUnknownResult(LegacyInstalledCatalogUnitV1, STRICT),
     (rule) => encodedJson(Schema.encodeUnknownSync(CanonicalAuthorizationRule)(rule)),
     input,
+    MAX_CATALOG_JSON_NODES,
+    MAX_CATALOG_JSON_ENCODED_BYTES,
   );
 
 export const decodeInstalledCatalogUnitResult = (
@@ -103,6 +107,8 @@ export const decodeInstalledCatalogUnitResult = (
     Schema.decodeUnknownResult(InstalledCatalogUnit, STRICT),
     (rule) => encodedJson(Schema.encodeUnknownSync(CanonicalAuthorizationRule)(rule)),
     input,
+    MAX_CATALOG_JSON_NODES,
+    MAX_CATALOG_JSON_ENCODED_BYTES,
   );
   if (Result.isSuccess(current)) return current;
   const legacy = decodeLegacyInstalledCatalogUnitV1Result(input);
@@ -310,9 +316,11 @@ const decodeDocument = <A>(
   decode: (input: unknown) => Result.Result<A, Schema.SchemaError>,
   encodeRule: (rule: unknown) => JsonValue,
   input: unknown,
+  maxNodes?: number,
+  maxBytes?: number,
 ): Result.Result<A, InvalidIR> =>
   Result.gen(function* () {
-    const hostile = inspectRawJson(input);
+    const hostile = inspectRawJson(input, maxNodes, maxBytes);
     if (hostile !== undefined) {
       return yield* Result.fail(new InvalidIR({ message: hostile }));
     }
@@ -552,6 +560,8 @@ const ownJsonField = (encoded: JsonValue, key: string): JsonValue => {
 type Work = {
   nodes: number;
   bytes: number;
+  readonly maxNodes: number;
+  readonly maxBytes: number;
 };
 
 type WalkFrame = {
@@ -561,8 +571,12 @@ type WalkFrame = {
   readonly depth: number;
 };
 
-const inspectRawJson = (input: unknown): string | undefined => {
-  const work: Work = { nodes: 0, bytes: 0 };
+const inspectRawJson = (
+  input: unknown,
+  maxNodes = MAX_JSON_NODES,
+  maxBytes = MAX_JSON_ENCODED_BYTES,
+): string | undefined => {
+  const work: Work = { nodes: 0, bytes: 0, maxNodes, maxBytes };
   const root = jsonLeafViolation(input, work);
   if (root !== undefined) return root;
   if (typeof input !== "object" || input === null) return undefined;
@@ -594,7 +608,7 @@ const inspectRawJson = (input: unknown): string | undefined => {
 const charge = (work: Work, nodes: number, bytes: number): string | undefined => {
   work.nodes += nodes;
   work.bytes += bytes;
-  if (work.nodes > MAX_JSON_NODES || work.bytes > MAX_JSON_ENCODED_BYTES) {
+  if (work.nodes > work.maxNodes || work.bytes > work.maxBytes) {
     return "rejected oversized document";
   }
   return undefined;
