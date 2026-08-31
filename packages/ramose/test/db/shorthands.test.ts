@@ -1,8 +1,3 @@
-/**
- * Value shorthands: runtime lowering, option bag, Field.many / Field.unique /
- * Field.owned, and the advanced Field(schema) form.
- */
-
 import { describe, expect, test } from "bun:test";
 import * as Schema from "effect/Schema";
 import {
@@ -23,8 +18,6 @@ import {
   timestamp,
   uuid,
 } from "../../src/db/internal.ts";
-import { query } from "../../src/internal/core/index.ts";
-import { attribute, Harness } from "../internal/transactor/harness.ts";
 
 const User = Entity("user", {
   name: Field.unique(string({ doc: "display name" }), "upsert"),
@@ -50,7 +43,7 @@ const Issue = Entity("issue", {
   author: Ref(User),
 });
 
-const Catalog = DbSchema({ user: User, label: Label, issue: Issue });
+const Catalog = DbSchema("shorthands", { user: User, label: Label, issue: Issue });
 
 describe("shorthand schemaTx", () => {
   test("lowers branded shorthands to :db.type/*", () => {
@@ -143,10 +136,10 @@ describe("advanced Field(schema)", () => {
   test("raw Effect Schema still installs when inference holds", () => {
     const Note = Entity("note", {
       body: Field(Schema.String),
-      n: Field(Schema.Number),
+      n: Field(Schema.Finite),
       ok: Field(Schema.Boolean),
     });
-    expect(schemaTx(DbSchema({ note: Note }))).toEqual([
+    expect(schemaTx(DbSchema("shorthand-note", { note: Note }))).toEqual([
       {
         ":db/ident": ":note/body",
         ":db/valueType": ":db.type/string",
@@ -169,7 +162,7 @@ describe("advanced Field(schema)", () => {
     const Flag = Entity("flag", {
       state: Field(stored(Schema.Literals(["on", "off"]), "string")),
     });
-    expect(schemaTx(DbSchema({ flag: Flag }))[0]).toMatchObject({
+    expect(schemaTx(DbSchema("shorthand-flag", { flag: Flag }))[0]).toMatchObject({
       ":db/ident": ":flag/state",
       ":db/valueType": ":db.type/string",
     });
@@ -179,20 +172,40 @@ describe("advanced Field(schema)", () => {
     const Bad = Entity("bad", {
       state: Field(Schema.Literals(["on", "off"]) as never),
     });
-    expect(() => schemaTx(DbSchema({ bad: Bad }))).toThrow(
+    expect(() => schemaTx(DbSchema("shorthand-bad", { bad: Bad }))).toThrow(
       /cannot infer value type from this Schema \(ast\._tag=Union\)/,
     );
   });
 });
 
 describe("uuid public type", () => {
-  test("is a string schema, not a { vt, v } struct", () => {
+  test("accepts strings and rejects record-shaped values", () => {
     expect(User.token.valueType).toBe("uuid");
-    expect(User.token.schema.ast._tag).toBe("String");
+    expect(Schema.is(User.token.schema)("550e8400-e29b-41d4-a716-446655440000"))
+      .toBe(true);
+    expect(Schema.is(User.token.schema)({ vt: "uuid", v: "550e8400" }))
+      .toBe(false);
   });
 });
 
 describe("Field composition merge", () => {
+  test("documentation survives direct fields, refs, and combinators and can be removed", () => {
+    const direct = string({ doc: "Direct text." });
+    const ref = Ref(User, { doc: "The related user." });
+    const many = Field.many(ref);
+    const unique = Field.unique(direct, "strict");
+    const owned = Field.owned(Field(Ref.self, { doc: "Owned child." }));
+
+    expect(direct.doc).toBe("Direct text.");
+    expect(ref.doc).toBe("The related user.");
+    expect(many.doc).toBe("The related user.");
+    expect(unique.doc).toBe("Direct text.");
+    expect(owned.doc).toBe("Owned child.");
+    expect(Field(many, { doc: "Replacement." }).doc).toBe("Replacement.");
+    expect(Field(many, { doc: " \n" }).doc).toBeUndefined();
+    expect(string({ doc: "" }).doc).toBeUndefined();
+  });
+
   test("composition cannot change valueType; stored() brands the schema", () => {
     expect(Field.unique(string(), "upsert").valueType).toBe("string");
     expect(Field.many(Field.owned(string())).valueType).toBe("string");
@@ -262,9 +275,7 @@ describe("Field composition merge", () => {
     expect(string().isOptional).toBe(false);
     expect(string({ optional: true }).isOptional).toBe(true);
     expect(Field(Schema.String).isOptional).toBe(false);
-    // Type-level Opt stays false unless `{ optional: true }` — unchanged.
-    // Runtime still reads the AST. Widen through boolean so tsc does not
-    // fight the existing OptionalOf inference.
+
     const runtimeOptional = (field: { readonly isOptional: boolean }): boolean =>
       field.isOptional;
     expect(runtimeOptional(Field(stored(Schema.UndefinedOr(Schema.String), "string")))).toBe(
@@ -294,23 +305,5 @@ describe("Field composition merge", () => {
     expect(enumMembersOf(composed.schema)).toEqual(["low", "med"]);
     expect(composed.doc).toBe("priority");
     expect(composed.valueType).toBe("string");
-  });
-});
-
-describe("uuid through the server", () => {
-  test("a plain string writes and a string comes back from query", async () => {
-    const h = new Harness();
-    await h.transactor.init();
-    await h.transactor.transact([attribute(":item/uid", "uuid")]);
-    const ack = await h.transactor.transact([
-      { ":db/id": "item", ":item/uid": "3F333DF6-90A4-4FDA-8DD3-9485D27CEE36" },
-    ]);
-    const uid = await query(
-      h.transactor.connection.db(),
-      `[:find ?uid . :in $ ?e :where [?e :item/uid ?uid]]`,
-      [ack.tempids.item],
-    );
-    expect(uid).toBe("3f333df6-90a4-4fda-8dd3-9485d27cee36");
-    expect(typeof uid).toBe("string");
   });
 });

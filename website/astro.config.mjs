@@ -1,22 +1,20 @@
 // @ts-check
 import starlight from "@astrojs/starlight";
+import { wgslVitePlugin } from "vgpu/client";
 import { defineConfig } from "astro/config";
 import remarkExtractSnippets from "./scripts/remark-extract-snippets.mjs";
 
-// Public canonical origin. The Worker keeps its physical name (`ripple-docs`,
-// see alchemy.run.ts) and its workers.dev hostname; ramose.ai is the custom
-// domain the site is published under.
 const site = "https://ramose.ai";
 
 export default defineConfig({
   site,
+  vite: {
+    plugins: [wgslVitePlugin()],
+  },
   markdown: {
     remarkPlugins: [remarkExtractSnippets],
   },
-  // Old URLs from before the docs overhaul. Astro emits a static
-  // meta-refresh page per entry; fragments are kept in the target URL.
-  // These stubs have no <html> element, so every build Pagefind logs
-  // "7 pages found without an <html> element" and skips them. Expected.
+
   redirects: {
     "/guides/auth/": "/reference/policy/",
     "/concepts/databases-are-names/": "/guides/workspaces/",
@@ -27,17 +25,16 @@ export default defineConfig({
     "/reference/http-api/": "/reference/server/#http-api",
     "/reference/configuration/": "/reference/server/#configuration",
     "/reference/runbook/": "/reference/server/#operations",
-    // Quickstart and "Build your first app" were consolidated into one
-    // Getting started guide, which keeps the /quickstart/ URL.
     "/getting-started/first-app/": "/getting-started/quickstart/",
+    "/guides/workspaces/": "/guides/subgraphs/",
+    "/guides/live-queries/": "/guides/react/",
   },
   integrations: [
     starlight({
       title: "Ramose",
-      // Default meta description for any page without its own (today: /404).
-      // Keep it under 160 characters — Google truncates around there.
+
       description:
-        "The typed, realtime database for Cloudflare. Describe your data in TypeScript, queries update themselves in every tab, users see only what your rules allow.",
+        "One offline-first database for your app and its agents, with generated MCP tools and exactly the same permissions for both.",
       favicon: "/favicon.svg",
       head: [
         {
@@ -54,7 +51,7 @@ export default defineConfig({
           attrs: {
             property: "og:image:alt",
             content:
-              "Ramose — the typed, realtime database for Cloudflare",
+              "Ramose — the database optimized for humans and agents",
           },
         },
         {
@@ -77,6 +74,8 @@ export default defineConfig({
       },
       customCss: [
         "@fontsource-variable/manrope",
+        "@fontsource-variable/space-grotesk",
+        "@fontsource-variable/jetbrains-mono",
         "./src/styles/theme.css",
       ],
       components: {
@@ -85,23 +84,19 @@ export default defineConfig({
         ThemeSelect: "./src/components/ThemeSelect.astro",
       },
       expressiveCode: {
-        // `vesper` — a near-monochrome black theme whose one chromatic accent
-        // is mint/green on white text. It reads as the ramose.ai palette
-        // (deep black surface, green signal) rather than GitHub's blues.
-        // Backgrounds are pinned to the brand's black / dark forest below so
-        // code blocks sit on the same surfaces as the rest of the page.
+
         themes: ["vesper"],
         styleOverrides: {
           borderRadius: "0.625rem",
-          borderColor: "#1c2a21",
+          borderColor: "#282523",
           frames: {
             editorBackground: "#0d0d0d",
             terminalBackground: "#0d0d0d",
-            terminalTitlebarBackground: "#0b1a10",
-            editorTabBarBackground: "#0b1a10",
+            terminalTitlebarBackground: "#111111",
+            editorTabBarBackground: "#111111",
             editorActiveTabBackground: "#0d0d0d",
-            editorActiveTabIndicatorTopColor: "#42d37a",
-            editorTabBarBorderBottomColor: "#1c2a21",
+            editorActiveTabIndicatorTopColor: "#ff6500",
+            editorTabBarBorderBottomColor: "#282523",
             frameBoxShadowCssValue: "none",
           },
           codeBackground: "#0d0d0d",
@@ -110,55 +105,77 @@ export default defineConfig({
       },
       sidebar: [
         {
-          label: "Start",
+          label: "Start here",
           items: [
             { label: "What is Ramose", slug: "getting-started/introduction" },
-            { label: "Getting started", slug: "getting-started/quickstart" },
-            { label: "Tour of Reef", slug: "getting-started/tour-of-reef" },
+            { label: "Mental model", slug: "concepts/mental-model" },
+            { label: "Build a web app", slug: "getting-started/quickstart" },
+            { label: "Connect an agent", slug: "getting-started/connect-an-agent" },
             { label: "How it compares", slug: "getting-started/compare" },
           ],
         },
         {
           label: "Build",
           items: [
-            { label: "Define your data", slug: "guides/catalog" },
-            { label: "Write data", slug: "guides/transactions" },
+            { label: "Schemas and traits", slug: "guides/catalog" },
+            { label: "Graphs and subgraphs", slug: "guides/subgraphs" },
             { label: "Read data", slug: "guides/queries" },
-            { label: "Live queries", slug: "guides/live-queries" },
+            { label: "Mutate data", slug: "guides/transactions" },
+            { label: "React and offline UX", slug: "guides/react" },
             { label: "Permissions", slug: "guides/permissions" },
-            { label: "Sign in and roles", slug: "guides/sign-in" },
-            { label: "One database per customer", slug: "guides/workspaces" },
+            { label: "Authentication", slug: "guides/sign-in" },
+            { label: "Add MCP", slug: "guides/mcp" },
           ],
         },
         {
-          label: "Ship",
+          label: "Deep dives",
+          items: [
+            { label: "Graph of graphs", slug: "concepts/graph-of-graphs" },
+            { label: "Data model", slug: "concepts/data-model" },
+            { label: "Query model", slug: "concepts/queries" },
+            { label: "Operations", slug: "concepts/operations" },
+            { label: "Offline and sync", slug: "concepts/offline" },
+            { label: "Authorization", slug: "concepts/authorization" },
+            { label: "History and time", slug: "concepts/time-travel" },
+            { label: "Architecture", slug: "concepts/architecture" },
+            { label: "Effect (advanced)", slug: "concepts/effect" },
+          ],
+        },
+        {
+          label: "Best practices",
+          items: [
+            { label: "Model domains", slug: "best-practices/data-modeling" },
+            { label: "Graph boundaries", slug: "best-practices/graph-boundaries" },
+            { label: "Query performance", slug: "best-practices/query-performance" },
+            { label: "Operations and offline", slug: "best-practices/operations" },
+            { label: "Security", slug: "best-practices/security" },
+          ],
+        },
+        {
+          label: "Ship and operate",
           items: [
             { label: "Deploy", slug: "guides/deploy" },
             { label: "Use it from a Worker", slug: "guides/workers" },
             { label: "Read on the server", slug: "guides/ssr" },
             { label: "Before production", slug: "guides/before-production" },
-            { label: "Troubleshooting and FAQ", slug: "guides/troubleshooting" },
-            { label: "Effect (advanced)", slug: "concepts/effect" },
-          ],
-        },
-        {
-          label: "Concepts",
-          items: [
-            { label: "How Ramose thinks about data", slug: "concepts/data-model" },
-            { label: "How Ramose works", slug: "concepts/architecture" },
-            { label: "Time travel", slug: "concepts/time-travel" },
-            { label: "Glossary", slug: "concepts/glossary" },
+            { label: "Troubleshooting", slug: "guides/troubleshooting" },
           ],
         },
         {
           label: "Reference",
           items: [
+            { label: "Schema and traits", slug: "reference/schema" },
             { label: "Client API", slug: "reference/client-api" },
-            { label: "The query language", slug: "reference/query-language" },
-            { label: "React hooks", slug: "reference/react" },
+            { label: "Query builder", slug: "reference/query-language" },
+            { label: "QueryDocument v1", slug: "reference/query-document" },
+            { label: "Operations", slug: "reference/operations" },
+            { label: "React", slug: "reference/react" },
+            { label: "Offline limits", slug: "reference/offline-limits" },
+            { label: "MCP", slug: "reference/mcp" },
             { label: "Policy", slug: "reference/policy" },
             { label: "Errors", slug: "reference/errors" },
             { label: "The server", slug: "reference/server" },
+            { label: "Glossary", slug: "concepts/glossary" },
           ],
         },
       ],

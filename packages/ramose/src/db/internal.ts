@@ -1,47 +1,24 @@
-/**
- * @internal Everything `db/` declares, flat.
- *
- * Not a package `exports` entry: the public surface is `./index.ts`
- * (`ramose/db`). This module exists so sibling modules and the tests
- * can reach the inferred / internal names — `AnySchema`, `EntityMap`,
- * `lowerQueryObject`, `makeDatabases`, `Expect`/`Equal` — without each of them
- * naming a dozen files.
- */
-
 export * from "./Field.ts";
+export * from "./Binding.ts";
+export * from "./creation.ts";
+export * from "./reachability.ts";
 export * from "./Schema.ts";
-export * from "./connect.ts";
-export * from "./factory.ts";
-export * from "./Db.ts";
-export {
-  Databases,
-  layer,
-  type EffectClientOptions,
-  type EffectDb,
-  type EffectReadDb,
-  type EffectToken,
-} from "./effect.ts";
-export type { Subscription } from "./subscription.ts";
+export * from "./composition.ts";
+export * from "./Composer.ts";
 export * from "./ensure.ts";
-export * from "./evolution.ts";
 export * from "./equal.ts";
 export * from "./Errors.ts";
-export * from "./SchemaErrors.ts";
-export * from "./http.ts";
 export * from "./idents.ts";
 export * from "./Entity.ts";
-export * from "./shapes.ts";
+export * from "./Trait.ts";
+export * from "./Graph.ts";
 export {
-  assertLoweringPurity,
-  canonicalAstKey,
-  computeAstKey,
-  computePullPatternKey,
-  liveSubscriptionKey,
-  pullPatternKey,
-  queryAstKey,
-  queryStructureKey,
-} from "./astKey.ts";
-export { shareEqualDeep } from "./shareEqualDeep.ts";
+  composerIdent,
+  conflictingFieldName,
+  entityTraitNameClash,
+  traitCycle,
+} from "./compose.ts";
+export * from "./shapes.ts";
 export * from "./Eid.ts";
 export { tempid, type Tempid } from "./entityArg.ts";
 export {
@@ -74,7 +51,6 @@ export {
   pullDefault,
   reshapePullResult,
 } from "./Pull.ts";
-export * as Policy from "./Policy.ts";
 export * as Query from "./query/surface.ts";
 export {
   Q,
@@ -93,13 +69,26 @@ export {
   type Rows,
   type RuleValue,
 } from "./query/index.ts";
-export * from "./session.ts";
-export * from "./token.ts";
 export * from "./Tx.ts";
-export { seedWrite, submitRaw } from "./seed.ts";
+export * from "./allocations.ts";
+export {
+  clientRef,
+  entityIdEnvelope,
+  ENTITY_ID_CODEC,
+  ENTITY_ID_PATTERN,
+  CLIENT_REF_PATTERN,
+  INVOCATION_ID_PATTERN,
+  invocationId,
+  isClientRef,
+  isEntityId,
+  isInvocationId,
+  isMutationRef,
+  unsafeEntityId,
+  type ClientRef,
+  type EntityIdEnvelope,
+  type InvocationId,
+  type MutationRef,
+} from "./refs.ts";
 export * from "./Operation.ts";
 export * from "./valueTypes.ts";
-// Field-returning `Ref` (eager entity / thunk / self) wins over the
-// schema helper of the same name. `Field(Ref(User))` still works because
-// `Field` accepts a Field.
 export { Ref } from "./Field.ts";

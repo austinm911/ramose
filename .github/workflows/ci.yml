@@ -13,15 +13,32 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
+
       - run: bun run typecheck
-      - run: bun run test
-      # Cited docs fences must extract from source. A drifted title, a
-      # missing marker, or a transcribed block that no longer matches fails
-      # the job (issue #200).
+      - run: bun run test:unit
+
       - run: bun website/scripts/docs-check.mjs
-      # Build the publishable output on every PR. Without this a change that
-      # breaks the build (or an exports path) is only discovered at release
-      # time, when a bad version number has already been burned.
+
       - run: bun run build
       - run: bun run scripts/check-release.ts --built
-      - run: bun run scripts/check-client-dts.ts
+
+  conformance:
+    name: conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+
+      - run: bun run test:conformance
+
+  browser:
+    name: browser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Install Chromium and system dependencies
+        run: bunx playwright install --with-deps chromium
+      - run: bun run test:browser

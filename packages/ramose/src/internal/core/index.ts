@@ -1,18 +1,14 @@
-/**
- * The engine — pure TypeScript, no Cloudflare dependencies. Internal to the
- * `ramose` package: nothing public re-exports this barrel.
- */
 export * from "./datom.ts";
 export * from "./bytes.ts";
 export * from "./segment.ts";
 export * from "./tree.ts";
 export * from "./novelty.ts";
+export * from "./composition.ts";
 export * from "./schema.ts";
 export * from "./store.ts";
 export * from "./db.ts";
 export * from "./tx.ts";
 export * from "./conn.ts";
-export * from "./policy/index.ts";
 export * from "./query/ast.ts";
 export * from "./query/edn.ts";
 export * from "./query/parse.ts";

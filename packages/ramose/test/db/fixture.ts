@@ -1,5 +1,3 @@
-/** Shared fixture catalog for the schema tests / compile-time fixtures. */
-
 import * as Schema from "effect/Schema";
 import {
   Field,
@@ -27,4 +25,4 @@ export const Meta = Entity("meta", {
   source: Field(Schema.String),
 });
 
-export const Movies = DbSchema({ user: User, movie: Movie, meta: Meta });
+export const Movies = DbSchema("movies-fixture", { user: User, movie: Movie, meta: Meta });

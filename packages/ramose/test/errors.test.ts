@@ -1,9 +1,3 @@
-/**
- * Error classification: every status / `tag` combination the peer Worker, the
- * Transactor and the QueryReplica can produce must land on exactly one tagged
- * failure — that is the whole point of the capability's error channel.
- */
-
 import { describe, expect, test } from "bun:test";
 import {
   InvalidRequest,
@@ -18,11 +12,7 @@ import {
   Unauthorized,
   OperationRejected,
 } from "../src/db/Errors.ts";
-import {
-  IncompatibleSchema,
-  isDatabaseError as isDatabaseErrorFromBarrel,
-  PolicyError,
-} from "../src/db/index.ts";
+import { isDatabaseError as isDatabaseErrorFromBarrel } from "../src/db/index.ts";
 
 const headers = (h: Record<string, string> = {}) => ({
   get: (name: string) => h[name.toLowerCase()] ?? null,
@@ -90,12 +80,12 @@ describe("fromResponse — the peer's own errors (no tag)", () => {
     const e = fromResponse(413, {
       error: "query budget exceeded",
       code: "query/budget-exceeded",
-      clause: "(policy/doc/owner ?me ?e)",
+      clause: "[?e :doc/title ?t]",
       cells: 9,
       limit: 8,
-      spentBy: "policy",
+      spentBy: "caller",
     }) as QueryBudgetExceeded;
-    expect(e.spentBy).toBe("policy");
+    expect(e.spentBy).toBe("caller");
   });
 
   test("500 → InternalError", () => {
@@ -182,7 +172,7 @@ describe("fromResponse — DO errors passed through (tagged)", () => {
   });
 
   test("the tag wins over the status code", () => {
-    // A DO answered 500 but tagged the failure InvalidRequest: trust the tag.
+
     expect(fromResponse(500, { error: "x", tag: "BadRequest" })._tag).toBe(
       "InvalidRequest",
     );
@@ -238,18 +228,8 @@ describe("isDatabaseError", () => {
     expect(isDatabaseError("TxRejected")).toBe(false);
   });
 
-  test("isDatabaseError and PolicyError are on the ramose/db barrel", () => {
+  test("isDatabaseError is on the ramose/db barrel", () => {
     expect(isDatabaseErrorFromBarrel).toBe(isDatabaseError);
-    expect(new PolicyError({ message: "bad rule" })._tag).toBe("PolicyError");
-    expect(isDatabaseError(new PolicyError({ message: "bad rule" }))).toBe(false);
   });
 
-  test("IncompatibleSchema is on the barrel and is not a DbError", () => {
-    const e = new IncompatibleSchema({
-      message: "flip",
-      changes: [{ ident: ":note/title", kind: "valueType" }],
-    });
-    expect(e._tag).toBe("IncompatibleSchema");
-    expect(isDatabaseError(e)).toBe(false);
-  });
 });

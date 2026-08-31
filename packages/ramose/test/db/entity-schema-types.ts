@@ -1,16 +1,8 @@
-/**
- * Compile-time pin: reserved keys, bad ident names, and Schema key / ns
- * drift are type errors at Entity() / Schema() (issue #184).
- *
- * `bun run typecheck` compiles this file. A mismatch turns `Expect<Equal<…>>`
- * into a type error, or leaves a `@ts-expect-error` unused.
- */
-
 import {
   Entity,
   Schema,
   string,
-  type AnySchema,
+  type CodeDefinition,
   type Equal,
   type Expect,
 } from "../../src/db/internal.ts";
@@ -19,53 +11,68 @@ import { merge } from "../../src/db/internal.ts";
 const Todo = Entity("todo", { title: string(), createdAt: string() });
 const Label = Entity("label", { name: string() });
 
-const ByObject = Schema({ todo: Todo, label: Label });
-const ByArray = Schema([Todo, Label]);
-type _arrayKeys = Expect<
+const ByObject = Schema("by-object", { todo: Todo, label: Label });
+const ByArray = Schema("by-array", [Todo, Label]);
+export const _definition: CodeDefinition = ByObject;
+export type _key = Expect<Equal<typeof ByObject.key, "by-object">>;
+export type _applyPolicyReturn = Expect<
+  Equal<ReturnType<typeof ByObject.applyPolicy>, void>
+>;
+export type _arrayKeys = Expect<
   Equal<keyof (typeof ByArray)["entities"], "todo" | "label">
 >;
-type _objectKeys = Expect<
+export type _objectKeys = Expect<
   Equal<keyof (typeof ByObject)["entities"], "todo" | "label">
 >;
-type _sameTodo = Expect<
+export type _sameTodo = Expect<
   Equal<(typeof ByArray)["entities"]["todo"], typeof Todo>
 >;
 
-// @ts-expect-error reserved field name — id, ns, fields, and _tag are Entity metadata
+// @ts-expect-error
 Entity("post", { id: string() });
-// @ts-expect-error reserved field name — id, ns, fields, and _tag are Entity metadata
+// @ts-expect-error
 Entity("post", { ns: string() });
-// @ts-expect-error reserved field name — id, ns, fields, and _tag are Entity metadata
+// @ts-expect-error
 Entity("post", { fields: string() });
-// @ts-expect-error reserved field name — id, ns, fields, and _tag are Entity metadata
+// @ts-expect-error
 Entity("post", { _tag: string() });
+// @ts-expect-error
+Entity("post", { traits: string() });
+const DocField = Entity("postWithDoc", { doc: string() }, { doc: "Entity docs." });
+DocField.doc.ident;
+const OperationsField = Entity("postWithOperations", { operations: string() });
+OperationsField.operations.ident;
 
-// @ts-expect-error invalid name — must match IDENT_NAME_RE
+// @ts-expect-error
 Entity("my ns/x", { title: string() });
-// @ts-expect-error invalid name — must match IDENT_NAME_RE
+// @ts-expect-error
 Entity("1todo", { title: string() });
-// @ts-expect-error invalid name — must match IDENT_NAME_RE
+// @ts-expect-error
 Entity("todo", { "a b": string() });
-// @ts-expect-error invalid name — must match IDENT_NAME_RE
+// @ts-expect-error
 Entity("todo", { "has/slash": string() });
 
-// @ts-expect-error Schema key must equal the Entity name
-Schema({ todos: Todo });
+// @ts-expect-error
+Schema("drifted", { todos: Todo });
+// @ts-expect-error
+Schema({ todo: Todo });
 
 const OtherTodo = Entity("todo", { done: string() });
-// @ts-expect-error duplicate entity name
-Schema([Todo, OtherTodo]);
+// @ts-expect-error
+Schema("duplicate-todos", [Todo, OtherTodo]);
 
-// @ts-expect-error duplicate entity name
-merge(ByObject, Schema({ todo: OtherTodo }));
+// @ts-expect-error
+merge("duplicate-merge", ByObject, Schema("other-todo", { todo: OtherTodo }));
+// @ts-expect-error
+merge(ByObject, ByArray);
 
-declare const anyLeft: AnySchema;
-declare const anyRight: AnySchema;
-const _wideMerge = merge(anyLeft, anyRight);
-type _wideMergeOk = Expect<Equal<typeof _wideMerge, AnySchema>>;
+declare const anyLeft: Schema.Any;
+declare const anyRight: Schema.Any;
+const _wideMerge = merge("wide", anyLeft, anyRight);
+export type _wideMergeKey = Expect<Equal<typeof _wideMerge.key, "wide">>;
 
 const Ctor = Entity("constructor", { title: string() });
-const CtorSchema = Schema([Ctor]);
-type _ctorKey = Expect<
+const CtorSchema = Schema("constructors", [Ctor]);
+export type _ctorKey = Expect<
   Equal<keyof (typeof CtorSchema)["entities"], "constructor">
 >;

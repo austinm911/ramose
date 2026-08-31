@@ -1,5 +1,4 @@
-/** Lower a schema to ident-datom maps. Ensure is a separate, idempotent schema tx. */
-
+import { fieldIdentOf } from "./compose.ts";
 import { isOptionalField, type AnyField } from "./Field.ts";
 import type { AnySchema } from "./Schema.ts";
 import { inferDbValueType, toWireValueType } from "./valueTypes.ts";
@@ -14,6 +13,8 @@ export interface SchemaAttrTx {
   readonly ":db/optional"?: true;
   readonly ":db/doc"?: string;
 }
+
+export type SchemaTxOp = SchemaAttrTx;
 
 const uniqueWire = {
   upsert: "identity",
@@ -49,13 +50,18 @@ export const attributeTx = (
   return out;
 };
 
-/** One map form per field, in schema / entity / key order. */
-export const schemaTx = (schema: AnySchema): SchemaAttrTx[] => {
+const attributeMaps = (schema: AnySchema): SchemaAttrTx[] => {
   const out: SchemaAttrTx[] = [];
+  const seen = new Set<string>();
   for (const entity of Object.values(schema.entities)) {
     for (const [key, field] of Object.entries(entity.fields)) {
-      out.push(attributeTx(`:${entity.ns}/${key}`, field));
+      const ident = fieldIdentOf(field, `:${entity.ns}/${key}`);
+      if (seen.has(ident)) continue;
+      seen.add(ident);
+      out.push(attributeTx(ident, field));
     }
   }
   return out;
 };
+
+export const schemaTx = (schema: AnySchema): SchemaTxOp[] => attributeMaps(schema);

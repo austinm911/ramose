@@ -1,14 +1,21 @@
 {
+  "$schema": "./node_modules/@effect/tsgo/schema.json",
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
-    "module": "ESNext",
+
+    "module": "preserve",
     "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "verbatimModuleSyntax": true,
+    "rewriteRelativeImportExtensions": true,
+    "incremental": true,
     "strict": true,
     "noUncheckedIndexedAccess": false,
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
-    "exactOptionalPropertyTypes": false,
+    "exactOptionalPropertyTypes": true,
+    "noUnusedLocals": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "allowImportingTsExtensions": true,
@@ -17,43 +24,97 @@
     "jsx": "react-jsx",
     "isolatedModules": true,
     "types": ["bun", "@cloudflare/workers-types"],
-    // The one published package maps to its source here, so `typecheck` reads
-    // the source of truth and never needs a build first: `exports` resolves
-    // `types` to `dist/*.d.ts` for consumers, so without these mappings tsc
-    // would look there and find nothing until `bun run build` had run. The
-    // named entries are the public `exports` map in packages/ramose/package.json
-    // — no wildcard. Engine internals are reached with workspace-relative
-    // paths, not `ramose/internal/*`.
+
     "paths": {
       "ramose": ["./packages/ramose/src/index.ts"],
       "ramose/db": ["./packages/ramose/src/db/index.ts"],
-      "ramose/db/effect": ["./packages/ramose/src/db/effect.ts"],
-      "ramose/worker": ["./packages/ramose/src/worker/index.ts"],
+      "ramose/client": ["./packages/ramose/src/client/index.ts"],
       "ramose/react": ["./packages/ramose/src/react/index.ts"],
+      "ramose/worker": ["./packages/ramose/src/worker/index.ts"],
       "ramose/octane": ["./packages/ramose/src/octane/index.ts"],
-      "ramose/better-auth": ["./packages/ramose/src/better-auth/index.ts"],
-      "ramose/better-auth/client": ["./packages/ramose/src/better-auth/client.ts"],
-      "ramose/effect": ["./packages/ramose/src/effect.ts"]
-    }
+      "ramose/better-auth": ["./packages/ramose/src/better-auth/index.ts"]
+    },
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+
+        "diagnosticSeverity": {
+          "duplicatePackage": "error",
+          "effectFnIife": "error",
+          "effectGenUsesAdapter": "error",
+          "effectInFailure": "error",
+          "effectInVoidSuccess": "error",
+          "genericEffectServices": "error",
+          "globalErrorInEffectCatch": "error",
+          "globalErrorInEffectFailure": "error",
+          "layerMergeAllWithDependencies": "error",
+          "lazyPromiseInEffectSync": "error",
+          "multipleEffectProvide": "error",
+          "outdatedApi": "error",
+          "promiseInEffectSuccess": "error",
+          "scopeInLayerEffect": "error",
+          "unknownInEffectCatch": "error",
+
+          "abortControllerInEffect": "error",
+          "catchAllToMapError": "error",
+          "catchChainToFirstSuccessOf": "error",
+          "catchTagToCatchReason": "error",
+          "catchToIgnore": "error",
+          "catchToOrElseSucceed": "error",
+          "catchUnfailableEffect": "error",
+          "effectFnOpportunity": "error",
+          "effectMapFlatten": "error",
+          "effectMapVoid": "error",
+          "effectSucceedWithVoid": "error",
+          "flatMapToMap": "error",
+          "lazyEffect": "error",
+          "leakingRequirements": "error",
+          "multipleCatchTag": "error",
+          "preferTypedSchemaDecoder": "error",
+          "preferUnsafeConstructor": "error",
+          "redundantMapError": "error",
+          "redundantOrDie": "error",
+          "redundantSchemaTagIdentifier": "error",
+          "returnEffectInGen": "error",
+          "runEffectInsideEffect": "error",
+          "schemaNumber": "error",
+          "schemaStructWithTag": "error",
+          "schemaSyncInEffect": "error",
+          "syncToSucceed": "error",
+          "tryCatchInEffectGen": "error",
+          "unnecessaryEffectGen": "error",
+          "unnecessaryFailYieldableError": "error",
+          "unnecessaryPipe": "error",
+          "unnecessaryPipeChain": "error",
+          "unnecessaryTypeofType": "error"
+        }
+      }
+    ]
   },
   "include": [
     "alchemy.run.ts",
     "e2e-ops.ts",
     "e2e-peer.ts",
+    "vitest.browser.config.ts",
     "website/alchemy.run.ts",
     "packages/ramose/src/**/*.ts",
-    "packages/ramose/src/**/*.tsx",
     "packages/ramose/test/**/*.ts",
-    "packages/ramose/test/**/*.tsx",
     "bench/**/*.ts",
     "test/**/*.ts",
-    "examples/**/*.ts",
-    "examples/**/*.tsx"
+    "test/**/*.tsx",
+    "examples/**/*.ts"
   ],
   // `test/octane` (the `ramose/octane` suite, `bun run test:octane`) authors
   // its component fixtures in TSRX and compiles them with Octane's own Vite
   // plugin. Plain `tsc` cannot read a `.tsrx` file, so the suite stays out of
   // the repo-wide pass; typechecking it needs Octane's `tsrx-tsc`, which this
   // repo does not install.
-  "exclude": ["node_modules", ".alchemy", "dist", "test/octane"]
+  "exclude": [
+    "node_modules",
+    ".alchemy",
+    "dist",
+
+    "examples/reef",
+    "test/octane"
+  ]
 }

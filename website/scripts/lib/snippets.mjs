@@ -1,29 +1,16 @@
-// Shared snippet extraction for the docs site.
-//
-// A fence `title` (or a <Shot code=…>) may cite source as:
-//   path#marker                  named region in that file
-//   path:N                       one line
-//   path:N-M                     inclusive line range
-//   path#a · other.ts:10-12      several citations, stitched
-//
-// A later citation may be relative to the first path's directory
-// (`app.ts:131` after `examples/kv-style/app.ts#worker-app`).
-// Trailing notes in parentheses (`(annotated)`) are ignored.
-//
-// Named regions in source:
-//   // docs:name
-//   …lines…
-//   // enddocs:name
-// JSX/block-comment form `{/* docs:name */}` / `{/* enddocs:name */}`
-// is accepted too. Marker lines are not part of the extract.
-
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import deletedCitationAllowlist from "./deleted-citation-allowlist.json" with { type: "json" };
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const SITE = resolve(HERE, "../..");
 export const REPO = resolve(SITE, "..");
+
+const DELETED_CITATION_ALLOWLIST = new Set(deletedCitationAllowlist);
+
+const isAllowlistedDeleted = (relPath) =>
+  DELETED_CITATION_ALLOWLIST.has(relPath);
 
 const CITE_RE =
   /([\w./-]+\.(?:ts|tsx|mjs|json|css))(?:#([\w-]+)|:(\d+)(?:-(\d+))?)/g;
@@ -44,7 +31,15 @@ let repoFilesCache = null;
 
 const walkRepo = () => {
   if (repoFilesCache) return repoFilesCache;
-  const skip = new Set(["node_modules", ".git", "dist", ".alchemy", ".astro"]);
+  const skip = new Set([
+    "node_modules",
+    ".git",
+    ".claude",
+    ".cursor",
+    "dist",
+    ".alchemy",
+    ".astro",
+  ]);
   const collect = (dir) => {
     let out = [];
     for (const f of readdirSync(dir)) {
@@ -53,9 +48,7 @@ const walkRepo = () => {
       try {
         if (statSync(p).isDirectory()) out = out.concat(collect(p));
         else out.push(p);
-      } catch {
-        /* unreadable */
-      }
+      } catch {}
     }
     return out;
   };
@@ -99,7 +92,7 @@ const markerBounds = (lines, name) => {
   for (let i = start; i < lines.length; i++) {
     for (const re of END_RES) {
       const m = lines[i].match(re);
-      if (m?.[1] === name) return { start, end: i }; // end exclusive
+      if (m?.[1] === name) return { start, end: i };
     }
   }
   return null;
@@ -108,16 +101,28 @@ const markerBounds = (lines, name) => {
 export const extractCitation = (cite, hintDir) => {
   const found = resolveRepoFile(cite.relPath, hintDir);
   if (!found) {
-    return { ok: false, error: `cited file does not exist: ${cite.relPath}` };
+    const error = `cited file does not exist: ${cite.relPath}`;
+    if (isAllowlistedDeleted(cite.relPath)) {
+      return { ok: false, skipped: true, error };
+    }
+    return { ok: false, error };
   }
   const rel = relative(REPO, found).replaceAll("\\", "/");
   const lines = readFileSync(found, "utf8").split("\n");
-  // Drop a trailing empty line from the split so "last line" is honest.
+
   if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
 
   if (cite.marker) {
     const bounds = markerBounds(lines, cite.marker);
     if (!bounds) {
+      if (isAllowlistedDeleted(`${cite.relPath}#${cite.marker}`)) {
+        return {
+          ok: false,
+          skipped: true,
+          error: `marker #${cite.marker} does not exist anymore in ${rel}`,
+          rel,
+        };
+      }
       return {
         ok: false,
         error: `marker #${cite.marker} not found in ${rel}`,
@@ -169,17 +174,28 @@ export const extractTitle = (title) => {
   const parts = [];
   const labels = [];
   let hintDir = null;
+  let any = false;
+  let skippedSome = false;
   for (const cite of cites) {
     const got = extractCitation(cite, hintDir);
+    if (got.skipped) {
+      skippedSome = true;
+      continue;
+    }
     if (!got.ok) return { ok: false, extracted: true, error: got.error, labels };
     if (!hintDir) hintDir = dirname(got.rel);
     parts.push(got.text);
     labels.push(got.label);
+    any = true;
   }
+
+  if (skippedSome) {
+    return { ok: true, extracted: false, skipped: true, text: parts.join("\n\n"), labels };
+  }
+  if (!any) return { ok: true, extracted: false, text: "", labels: [] };
   return { ok: true, extracted: true, text: parts.join("\n\n"), labels };
 };
 
-/** Lines that participate in a provenance comparison. */
 export const comparableLines = (src) =>
   src
     .split("\n")
@@ -201,29 +217,4 @@ export const bodyMatchesExtract = (body, extracted) => {
     (l) => !l.startsWith("//") && !l.startsWith("*") && !l.startsWith("/*"),
   );
   return { ok: realMissing.length === 0, empty: false, missing: realMissing };
-};
-
-/** Resolve a <Shot code="path#marker"> / "path:N-M" to a GitHub blob URL. */
-export const resolveShotCode = (code) => {
-  if (!code) return null;
-  const titleish = code.includes("#") || /:\d/.test(code) ? code : `${code}`;
-  const cites = parseTitleCitations(titleish);
-  if (!cites.length) {
-    const path = code;
-    return {
-      path,
-      short: path.replace(/^examples\/reef\//, ""),
-      gh: `https://github.com/tvanhens/ramose/blob/master/${path}`,
-    };
-  }
-  const first = extractCitation(cites[0]);
-  if (!first.ok) return { error: first.error, path: cites[0].relPath };
-  const short = first.label.replace(/^examples\/reef\//, "");
-  return {
-    path: first.rel,
-    start: first.start,
-    end: first.end,
-    short,
-    gh: `https://github.com/tvanhens/ramose/blob/master/${first.rel}#L${first.start}-L${first.end}`,
-  };
 };

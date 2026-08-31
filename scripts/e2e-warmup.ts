@@ -1,27 +1,33 @@
-/**
- * Post-deploy wait used by `scripts/e2e-cloudflare.sh`.
- *
- * `/health` is the Worker fetch handler only. A write creates the
- * genesis root; admin `/info` then fails closed if either DO is down.
- * Both go through the same Bun `fetch` + `Connection: close` ladder
- * the e2e harness uses. A curl `/info` 200 on one colo used to let
- * the suite start while bun's colo still served "Worker not found"
- * on the first transact.
- */
-import { attrMap, Peer } from "../test/support/ramoseHttp.ts";
-
 const url = process.env.RAMOSE_URL;
 if (url === undefined || url === "") {
   console.error("error: RAMOSE_URL is not set");
   process.exit(1);
 }
 
-const client = new Peer(url, { retryTransientMs: 90_000 });
-const db = client.db("e2e-warmup");
+const base = url.replace(/\/+$/, "");
+const attempts = 30;
+const delayMs = 2_000;
 
-await client.health();
-// A write creates the genesis root. `/info` fetches a replica basis and
-// 503s "no root yet" on a brand-new name — do the write first.
-await db.transact([attrMap(":e2e/warmup", "string")]);
-await db.info();
-console.log(">> warmup write ok");
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+let last = "no attempt";
+for (let i = 0; i < attempts; i++) {
+  try {
+    const health = await fetch(`${base}/health`);
+    if (!health.ok) {
+      last = `warmup /health ${health.status}`;
+    } else {
+      const closed = await fetch(`${base}/db/e2e-warmup/info`);
+      if (closed.status === 401) {
+        console.log(">> warmup fail-closed 401 ok");
+        process.exit(0);
+      }
+      last = `warmup expected /db/*/info 401, got ${closed.status}`;
+    }
+  } catch (error) {
+    last = error instanceof Error ? error.message : String(error);
+  }
+  await sleep(delayMs);
+}
+
+throw new Error(`${last} after ${attempts} attempts`);

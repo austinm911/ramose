@@ -1,8 +1,3 @@
-/**
- * Ops HTTP harness: transient Cloudflare platform errors retry within the
- * `retryTransientMs` budget; application errors propagate immediately; and
- * the workers.dev HTML placeholder never lands verbatim in a test reporter.
- */
 import { describe, expect, test } from "bun:test";
 import {
   HttpError,
@@ -34,8 +29,68 @@ describe("Peer — Cloudflare platform retries", () => {
     });
     expect((await peer.health()).ok).toBe(true);
     expect(n).toBe(3);
-    // first attempt pools; retries evict the suspect socket
+
     expect(connectionHeaders).toEqual([undefined, "close", "close"]);
+  });
+
+  test("does not retry an application HttpError tagged ECONNRESET", async () => {
+    let n = 0;
+    const peer = new Peer("https://example.workers.dev", {
+      retryTransientMs: 10_000,
+      fetch: (async () => {
+        n++;
+        return json(400, { error: "application reset", code: "ECONNRESET" });
+      }) as unknown as typeof fetch,
+    });
+    try {
+      await peer.health();
+      throw new Error("expected throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(HttpError);
+      expect((e as HttpError).status).toBe(400);
+      expect((e as HttpError).code).toBe("ECONNRESET");
+      expect(isTransientCf(e)).toBe(false);
+    }
+    expect(n).toBe(1);
+  });
+
+  test("retries fetch-level ECONNRESET then succeeds", async () => {
+    let n = 0;
+    const peer = new Peer("https://example.workers.dev", {
+      retryTransientMs: 10_000,
+      fetch: (async () => {
+        n++;
+        if (n === 1) {
+          const err = new TypeError(
+            "The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()",
+          );
+          (err as TypeError & { code: string }).code = "ECONNRESET";
+          throw err;
+        }
+        return json(200, { ok: true, stage: "e2e" });
+      }) as unknown as typeof fetch,
+    });
+    expect((await peer.health()).ok).toBe(true);
+    expect(n).toBe(2);
+  });
+
+  test("retries Durable Object storage timeout reset then succeeds", async () => {
+    let n = 0;
+    const peer = new Peer("https://example.workers.dev", {
+      retryTransientMs: 10_000,
+      fetch: (async () => {
+        n++;
+        if (n === 1) {
+          return json(500, {
+            error:
+              "Durable Object storage operation exceeded timeout which caused object to be reset.",
+          });
+        }
+        return json(200, { ok: true, stage: "e2e" });
+      }) as unknown as typeof fetch,
+    });
+    expect((await peer.health()).ok).toBe(true);
+    expect(n).toBe(2);
   });
 
   test("retries error 1104 then succeeds", async () => {
@@ -94,7 +149,7 @@ describe("Peer — Cloudflare platform retries", () => {
       }) as unknown as typeof fetch,
     });
     await expect(peer.health()).rejects.toBeInstanceOf(HttpError);
-    expect(n).toBeGreaterThan(1); // it did retry
+    expect(n).toBeGreaterThan(1);
   });
 
   test("retries replica 503 no root yet then succeeds", async () => {
@@ -109,6 +164,75 @@ describe("Peer — Cloudflare platform retries", () => {
     });
     expect((await peer.db("x").info()).t).toBe(1);
     expect(n).toBe(2);
+  });
+
+  test("retries empty HTTP 502 then succeeds", async () => {
+    let n = 0;
+    const peer = new Peer("https://example.workers.dev", {
+      retryTransientMs: 10_000,
+      fetch: (async () => {
+        n++;
+        if (n === 1) return new Response("", { status: 502 });
+        return json(200, { ok: true, stage: "e2e" });
+      }) as unknown as typeof fetch,
+    });
+    expect((await peer.health()).ok).toBe(true);
+    expect(n).toBe(2);
+  });
+
+  test("retries non-JSON gateway 502 then succeeds", async () => {
+    let n = 0;
+    const peer = new Peer("https://example.workers.dev", {
+      retryTransientMs: 10_000,
+      fetch: (async () => {
+        n++;
+        if (n === 1) return new Response("Bad Gateway", { status: 502 });
+        return json(200, { ok: true, stage: "e2e" });
+      }) as unknown as typeof fetch,
+    });
+    expect((await peer.health()).ok).toBe(true);
+    expect(n).toBe(2);
+  });
+
+  test("transact retries empty 502 with the same clientTxId", async () => {
+    let n = 0;
+    const ids: string[] = [];
+    const peer = new Peer("https://example.workers.dev", {
+      retryTransientMs: 10_000,
+      fetch: (async (_url: string | URL | Request, init?: RequestInit) => {
+        n++;
+        const body = JSON.parse(String(init?.body)) as { clientTxId?: string };
+        if (typeof body.clientTxId === "string") ids.push(body.clientTxId);
+        if (n === 1) return new Response("", { status: 502 });
+        return json(200, { t: 1, txEid: 1, tempids: {}, datoms: [] });
+      }) as unknown as typeof fetch,
+    });
+    await peer.db("x").transact([{ ":user/name": "a" }]);
+    expect(n).toBe(2);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe(ids[1]);
+    expect(ids[0]!.length).toBeGreaterThan(0);
+  });
+
+  test("does not retry an application NetworkError 502", async () => {
+    let n = 0;
+    const peer = new Peer("https://example.workers.dev", {
+      retryTransientMs: 10_000,
+      fetch: (async () => {
+        n++;
+        return json(502, { error: "upstream reset", tag: "NetworkError" });
+      }) as unknown as typeof fetch,
+    });
+    try {
+      await peer.health();
+      throw new Error("expected throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(HttpError);
+      expect((e as HttpError).status).toBe(502);
+      expect((e as HttpError).tag).toBe("NetworkError");
+      expect((e as HttpError).message).toBe("upstream reset");
+    }
+    expect(n).toBe(1);
   });
 
   test("does not retry an application 409", async () => {
@@ -149,10 +273,6 @@ describe("Peer — Cloudflare platform retries", () => {
   });
 });
 
-/**
- * M7 on PR #218 called the envelope method then `toBeGreaterThan(0)`.
- * `queryEnvelope` is the HTTP envelope; `q` unwraps the find scalar.
- */
 const FIND_COUNT = `[:find (count ?e) . :where [?e :user/email]]`;
 
 describe("PeerDb EDN query shapes", () => {
@@ -174,5 +294,23 @@ describe("PeerDb EDN query shapes", () => {
     const scalar = await db.q<number>(FIND_COUNT);
     expect(scalar).toBe(67);
     expect(scalar).toBeGreaterThan(0);
+  });
+
+  test("queryEnvelope forwards x-ramose-min-t when fenced", async () => {
+    let seen: string | undefined;
+    const peer = new Peer("http://peer.test", {
+      fetch: (async (_url: string | URL | Request, init?: RequestInit) => {
+        const headers = init?.headers as Record<string, string> | undefined;
+        seen = headers?.["x-ramose-min-t"];
+        return new Response(JSON.stringify({ t: 71, root: 7, result: 67 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof fetch,
+    });
+    const db = peer.db("e2e");
+    const envelope = await db.queryEnvelope<number>(FIND_COUNT, [], { minT: 71 });
+    expect(seen).toBe("71");
+    expect(envelope.t).toBe(71);
   });
 });

@@ -1,30 +1,3 @@
-/**
- * Transactor — the single writer of one logical Ramose database.
- *
- * Runtime-agnostic (see host.ts): the Durable Object shell and the Bun test
- * harness both drive this class.
- *
- *   validate against schema → resolve tempids / uniques (reads via its own
- *   segment source + own novelty) → assign monotonic `t` → GROUP COMMIT to
- *   the SQL log → ack → broadcast novelty frames → (alarm) incremental index.
- *
- * Group commit: every transaction that arrives while a storage write is in
- * flight (or while the current batch is being resolved) is coalesced into the
- * next single SQL write. `t` is assigned in arrival order and persisted in
- * the same order, so the durable log never has gaps or duplicates: a batch
- * either lands entirely or not at all, and if it does not land the instance
- * is aborted and rebuilt from durable state (in-memory `t` is discarded).
- *
- * HTTP surface (the DO shell forwards `fetch` here; `/subscribe` upgrades are
- * done by the shell, which then calls `onSubscribe`):
- *   POST /transact   { tx: TxData, clientTxId? }   → { t, txEid, tempids, datoms: WireDatom[], clientTxId? }
- *   POST /provision  { principal }                 → { eid, class }  (peer-owned upsert)
- *   GET  /info                        → { t, root, novelty, logWatermark, ... }
- *   GET  /log?from=&to=               → { entries: NoveltyFrameV1[] }
- *   POST /admin/index                 → run the indexer now
- *   POST /admin/gc                    → run GC now
- */
-
 import {
   Connection,
   type Datom,
@@ -33,6 +6,7 @@ import {
   type RootRecord,
   type Roots,
   type TxData,
+  TxError,
   bootstrapDatoms,
   decodeLogChunk,
   emptyRoots,
@@ -44,43 +18,106 @@ import {
   FIRST_USER_EID,
   Histogram,
   type Logger,
-  type Principal,
   type WireDatom,
   RateMeter,
-  TxError,
-  checkTx,
-  publicPolicyOp,
   componentLogger,
-  filterDb,
-  canChangeSchema,
-  isSchemaTx,
-  isSuperuser,
-  provisionTx,
-  resolveProvisionedEid,
-  shouldProvision,
   toWireDatom,
+  VALUE_TYPE_IDENTS,
 } from "../core/index.ts";
-import { FilteredDb } from "../core/policy/filter.ts";
+import type { CompositionIndex } from "../core/composition.ts";
+import type { Principal } from "../../worker/auth.ts";
+import {
+  InvalidRequest,
+  OperationRejected,
+  TxRejected,
+  Unauthorized,
+} from "../../db/Errors.ts";
 import { R2NodeStore, readCurrentRoot, recordToRoots, rootsToRecord } from "../storage/index.ts";
 import * as Effect from "effect/Effect";
-import { BadRequest, NotFound, TransactorDeadError, TxRejected, errorResponse, toHttpError } from "./errors.ts";
+import { BadRequest, NotFound, TransactorDeadError, Unavailable, errorResponse, toHttpError } from "./errors.ts";
 import { type SocketLike, type TransactorHost } from "./host.ts";
-import { asPrincipal } from "./policy.ts";
 import { Indexer } from "./indexer.ts";
 import { TxMetrics } from "./observability.ts";
+import {
+  inertRuntimeBoundaries,
+  type RuntimeBoundaries,
+} from "../runtime-boundaries.ts";
+import {
+  allocationMappingsResolvable,
+  authorizeCatalogOperation,
+  authorizeCatalogOperationGrant,
+  authorizeCatalogOperationReplay,
+  catalogProvisioningAttributes,
+  decideEpoch,
+  decideInvocationReceipt,
+  deployedOperationInputWireShape,
+  deployedOperationOutputShape,
+  deployedOperationVersion,
+  executeCatalogOperation,
+  inputEntityRefHandles,
+  invocationReceiptOutcome,
+  isLegacyInvocationReceiptRow,
+  OperationRuntimeFault,
+  opaqueOperationDenial,
+  outputEntityRefPaths,
+  parseEntityIdScope,
+  parseInvocationAllocations,
+  parseStoredInvocationReceipt,
+  prepareInvocationReceipt,
+  requireSuppliedOperationVersion,
+  resolveOperationCatalog,
+  resolveSealedInputRefs,
+  resolveSealedTarget,
+  transitionInvocationReceipt,
+  type AuthoritativeInvocationResult,
+  type AuthoritativeOperationInvocation,
+  type CatalogOperationAdmission,
+  type ClaimedInvocationReceipt,
+  type InstalledCatalogDefinition,
+  type InvocationReceiptEvent,
+  type InvocationReceiptOutcome,
+  type LegacyInvocationReceiptRow,
+  type OperationRuntime,
+  type PreparedInvocationReceipt,
+  type SealedInvocationRejection,
+  type StoredInvocationReceipt,
+  type TerminalInvocationReceipt,
+} from "../authorization/index.ts";
+import type { EntityIdScope } from "../replication/entity-id.ts";
+import type { ServerSealingKey } from "../replication/server-identity.ts";
 
 export { TransactorDeadError };
+
+function asPrincipal(x: unknown): Principal | undefined {
+  if (typeof x !== "object" || x === null || Array.isArray(x)) return undefined;
+  const o = x as Record<string, unknown>;
+  if (o.kind !== "user" || typeof o.class !== "string") return undefined;
+  const claims =
+    typeof o.claims === "object" && o.claims !== null
+      ? (o.claims as Principal["claims"])
+      : {};
+  const classes = Array.isArray(o.classes)
+    ? o.classes.filter((c): c is string => typeof c === "string")
+    : undefined;
+  return {
+    kind: "user",
+    class: o.class,
+    claims,
+    ...(typeof o.sub === "string" ? { sub: o.sub } : {}),
+    ...(typeof o.eid === "number" ? { eid: o.eid } : {}),
+    ...(classes !== undefined && classes.length > 0 ? { classes } : {}),
+  };
+}
 
 export interface TxAck {
   t: number;
   txEid: number;
   tempids: Record<string, number>;
-  /** facts that landed, already filtered for this principal */
   datoms: WireDatom[];
   clientTxId?: string;
-  /** Encoded operation output; present when this ack is an operation replay. */
-  output?: unknown;
 }
+
+export type OperationAck = AuthoritativeInvocationResult;
 
 export interface TransactorStats {
   txs: number;
@@ -89,55 +126,36 @@ export interface TransactorStats {
   rejected: number;
   indexRuns: number;
   broadcasts: number;
-  /** ms spent inside the storage write (group commit) */
   commitMs: number;
-  /** ms spent resolving txs in memory (validate/tempids/uniques) */
   resolveMs: number;
-  /** ms of wall clock per batch from dequeue to ack ("other" = loopMs - resolveMs - commitMs) */
   loopMs: number;
-  /**
-   * ms measured by the per-batch calibration fence (config.timingYields only;
-   * 0 when off). Each timed section is closed by one such fence, so the fence's
-   * own latency is the bias of resolveMs/commitMs: corrected ≈ x - fenceMs/batches.
-   */
   fenceMs: number;
 }
 
 interface Pending {
   tx: TxData;
-  /** verified by the Worker; trusted metadata (the DO is only reachable behind the internal secret) */
-  principal?: Principal;
-  /** opaque client id; a replay of a recent id returns the original ack */
-  clientTxId?: string;
-  /** Encoded operation output to persist with the ack (effects must not re-run). */
-  opOutput?: unknown;
-  /**
-   * Peer-owned write (principal provisioning). Skips `checkTx` and the
-   * pre-write provision hook — the ops *are* the provision.
-   */
-  system?: boolean;
-  /**
-   * Worker already authorized this tx as a named operation. Skips the
-   * raw-transact data deny (schema / superuser only).
-   */
-  fromOperation?: boolean;
-  resolve: (r: TxAck) => void;
+  principal?: Principal | undefined;
+  clientTxId?: string | undefined;
+  system?: boolean | undefined;
+  operation?: AuthoritativeOperationInvocation | undefined;
+  sealing?: ServerSealingKey | undefined;
+  resolve: (r: TxAck | OperationAck) => void;
   reject: (e: unknown) => void;
 }
 
-interface StoredOpAck {
-  readonly k: string;
-  readonly ack: TxAck;
-}
+type SealingContext = {
+  readonly sealing: ServerSealingKey;
+  readonly scope: EntityIdScope;
+};
 
-/** How many recent `clientTxId`s this instance remembers. FIFO once full. */
+type InputHandlePaths = ReturnType<typeof inputEntityRefHandles>;
+
 const RECENT_CLIENT_TX_LIMIT = 256;
 
-/** Replay keys are per writer: a foreign principal must not see someone else's filtered ack. */
 export function clientTxReplayKey(principal: Principal | undefined, id: string): string {
   if (!principal) return `\0:${id}`;
   const who = principal.sub ?? (principal.eid !== undefined ? `#${principal.eid}` : principal.class);
-  return `${principal.db}\0${principal.kind}\0${who}\0${id}`;
+  return `${principal.kind}\0${who}\0${id}`;
 }
 
 const yieldToEventLoop = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
@@ -164,34 +182,44 @@ export class Transactor {
   private indexer!: Indexer;
   private txSinceIndex = 0;
   private dead: string | undefined;
-  /** recent `clientTxReplayKey(principal, clientTxId)` → original ack; replay must not assign a second `t` */
   private readonly recentAcks = new Map<string, TxAck>();
-  /** persisted operation acks (includes `output`); loaded from `meta.op_acks` */
-  private readonly recentOpAcks = new Map<string, TxAck>();
   readonly stats: TransactorStats = { txs: 0, batches: 0, maxBatch: 0, rejected: 0, indexRuns: 0, broadcasts: 0, commitMs: 0, resolveMs: 0, loopMs: 0, fenceMs: 0 };
-  /** metrics: tx/s over the last 10 s, batch-size and commit-latency distributions */
   readonly txRate = new RateMeter(10_000);
   readonly batchSizes = new Histogram([1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]);
   readonly commitLatency = new Histogram();
-  /** per-batch resolve time and dequeue→ack wall time (commit time is `commitLatency`) */
   readonly resolveLatency = new Histogram();
   readonly loopLatency = new Histogram();
-  /** cost of one event-loop fence, measured once per batch when config.timingYields is on */
   readonly fenceLatency = new Histogram();
-  /** Analytics Engine sink (no-op when the host has no dataset bound) */
   readonly metrics: TxMetrics;
   private readonly log: Logger;
+  private deployedComposition:
+    | { readonly unitHash: string; readonly index: CompositionIndex }
+    | undefined;
 
-  constructor(readonly host: TransactorHost) {
+  constructor(
+    readonly host: TransactorHost,
+    private readonly operationRuntime?: OperationRuntime,
+    private readonly boundaries: RuntimeBoundaries = inertRuntimeBoundaries,
+  ) {
     this.log = componentLogger("transactor", () => ({ db: safeName(host) }));
     this.metrics = new TxMetrics(host.analytics);
   }
 
-  // ---------------------------------------------------------------------------
-  // Boot
-  // ---------------------------------------------------------------------------
+  bindComposition(unitHash: string, index: CompositionIndex): void {
+    const current = this.deployedComposition;
+    if (current !== undefined) {
+      if (current.unitHash !== unitHash) {
+        throw new TxError(
+          "cannot change deployed catalog composition",
+          "tx/system",
+        );
+      }
+      return;
+    }
+    this.deployedComposition = { unitHash, index };
+    if (this.conn !== undefined) this.conn.bindComposition(index);
+  }
 
-  /** Idempotent: load durable state (or bootstrap a fresh database). */
   init(): Promise<void> {
     if (!this.ready) this.ready = this.boot();
     return this.ready;
@@ -201,11 +229,17 @@ export class Transactor {
     const sql = this.host.sql;
     sql.exec(`CREATE TABLE IF NOT EXISTS log (t INTEGER PRIMARY KEY, tx_instant INTEGER NOT NULL, datoms BLOB NOT NULL)`);
     sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS operation_receipts (
+      principal_id TEXT NOT NULL,
+      invocation_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      receipt TEXT NOT NULL,
+      PRIMARY KEY (principal_id, invocation_id)
+    )`);
     this.store = new R2NodeStore(this.host.bucket, { codec: gzipCodec, maxNodes: 4096 });
 
     let rec = this.getMeta<RootRecord>("root") ?? (await readCurrentRoot(this.host.bucket));
     if (!rec) {
-      // Fresh database: empty trees + bootstrap tx at t = 1 in the log.
       const roots = await emptyRoots(this.store);
       const fresh = rootsToRecord(roots, { log_watermark: 0, next_eid: FIRST_USER_EID, codec: gzipCodec.name });
       const boot = bootstrapDatoms();
@@ -221,12 +255,15 @@ export class Transactor {
     const roots: Roots = recordToRoots(rec);
     const nextEid = this.getMeta<number>("next_eid") ?? rec.next_eid;
     const logDatoms = this.readLogDatoms(roots.t);
-    this.conn = await Connection.restore(this.store, roots, logDatoms, nextEid, { now: () => this.host.now() });
-    for (const row of this.getMeta<StoredOpAck[]>("op_acks") ?? []) {
-      this.recentOpAcks.set(row.k, row.ack);
-      this.recentAcks.set(row.k, row.ack);
+    this.conn = await Connection.restore(this.store, roots, logDatoms, nextEid, {
+      now: () => this.host.now(),
+      ...(this.deployedComposition === undefined
+        ? {}
+        : { composition: this.deployedComposition.index }),
+    });
+    if (this.deployedComposition !== undefined) {
+      this.conn.bindComposition(this.deployedComposition.index);
     }
-    // txs already in the log but not yet indexed count toward the next index run
     this.txSinceIndex = Math.max(0, this.conn.t - roots.t);
     const c = this.host.config;
     this.indexer = new Indexer(this, {
@@ -236,14 +273,10 @@ export class Transactor {
       logKeepTxs: c.logKeepTxs,
       gcEveryN: c.gcEveryNIndexes,
       retainRoots: c.retainRoots,
-    });
+    }, this.boundaries);
     if (this.conn.t > roots.t) await this.indexer.schedule();
     this.log.info("boot", { t: this.conn.t, rootT: roots.t, novelty: this.conn.noveltyCount, nextEid: this.conn.nextEntityId, fresh: !this.getMeta("root") });
   }
-
-  // ---------------------------------------------------------------------------
-  // SQL helpers
-  // ---------------------------------------------------------------------------
 
   private getMeta<T>(k: string): T | undefined {
     const row = this.host.sql.exec(`SELECT v FROM meta WHERE k = ?`, k).toArray()[0];
@@ -254,11 +287,129 @@ export class Transactor {
   }
   private appendLogRow(e: LogEntry): void {
     const body = encodeLogChunk([e]);
-    // DO SqlStorage binds ArrayBuffer; bun:sqlite binds Uint8Array. A fresh ArrayBuffer works for both.
     const buf = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer;
     this.host.sql.exec(`INSERT INTO log (t, tx_instant, datoms) VALUES (?, ?, ?)`, e.t, e.txInstant, buf);
   }
-  /** Log entries with from < t <= to (ascending). */
+
+  private readInvocationReceipt(
+    principalId: string,
+    invocationId: string,
+  ): StoredInvocationReceipt | LegacyInvocationReceiptRow | undefined {
+    const row = this.host.sql.exec(
+      `SELECT status, receipt FROM operation_receipts
+       WHERE principal_id = ? AND invocation_id = ?`,
+      principalId,
+      invocationId,
+    ).toArray()[0];
+    if (row === undefined) return undefined;
+    const receipt = parseStoredInvocationReceipt(JSON.parse(row.receipt as string));
+    if (isLegacyInvocationReceiptRow(receipt)) return receipt;
+    if (row.status !== receipt.status) {
+      throw new TypeError("durable invocation receipt status mismatch");
+    }
+    return receipt;
+  }
+
+  private insertInvocationReceipt(receipt: ClaimedInvocationReceipt): void {
+    this.host.sql.exec(
+      `INSERT INTO operation_receipts
+       (principal_id, invocation_id, status, receipt) VALUES (?, ?, ?, ?)`,
+      receipt.principalId,
+      receipt.invocationId,
+      receipt.status,
+      JSON.stringify(receipt),
+    );
+  }
+
+  private replaceInvocationReceipt(receipt: TerminalInvocationReceipt): void {
+    this.host.sql.exec(
+      `UPDATE operation_receipts SET status = ?, receipt = ?
+       WHERE principal_id = ? AND invocation_id = ?`,
+      receipt.status,
+      JSON.stringify(receipt),
+      receipt.principalId,
+      receipt.invocationId,
+    );
+  }
+
+  private claimInvocationReceipt(
+    prepared: PreparedInvocationReceipt,
+  ) {
+    return this.host.transactionSync(() => {
+      const stored = this.readInvocationReceipt(
+        prepared.principalId,
+        prepared.invocationId,
+      );
+      const decision = decideInvocationReceipt(stored, prepared);
+      if (decision._tag === "Claim") {
+        this.insertInvocationReceipt(decision.receipt);
+      } else if (decision._tag === "Recover") {
+        this.replaceInvocationReceipt(decision.receipt);
+      }
+      return decision;
+    });
+  }
+
+  private inspectInvocationReceipt(
+    prepared: PreparedInvocationReceipt,
+  ) {
+    const stored = this.readInvocationReceipt(
+      prepared.principalId,
+      prepared.invocationId,
+    );
+    return decideInvocationReceipt(stored, prepared);
+  }
+
+  private recoverInvocationReceipt(
+    prepared: PreparedInvocationReceipt,
+  ) {
+    return this.host.transactionSync(() => {
+      const stored = this.readInvocationReceipt(
+        prepared.principalId,
+        prepared.invocationId,
+      );
+      const decision = decideInvocationReceipt(stored, prepared);
+      if (decision._tag === "Recover") {
+        this.replaceInvocationReceipt(decision.receipt);
+      }
+      return decision;
+    });
+  }
+
+  private assertClaimIdentity(
+    stored: StoredInvocationReceipt | LegacyInvocationReceiptRow | undefined,
+    claim: ClaimedInvocationReceipt,
+  ): asserts stored is ClaimedInvocationReceipt {
+    if (
+      stored === undefined || isLegacyInvocationReceiptRow(stored) ||
+      stored.status !== "claimed" || stored.version !== claim.version ||
+      stored.principalId !== claim.principalId ||
+      stored.invocationId !== claim.invocationId ||
+      stored.scopeDigest !== claim.scopeDigest ||
+      stored.operationVersion !== claim.operationVersion ||
+      stored.invocationDigest !== claim.invocationDigest
+    ) {
+      throw new Error("durable invocation claim changed before completion");
+    }
+  }
+
+  private finishInvocationReceipt(
+    claim: ClaimedInvocationReceipt,
+    event: InvocationReceiptEvent,
+    insideTransaction = false,
+  ): TerminalInvocationReceipt {
+    const finish = () => {
+      const stored = this.readInvocationReceipt(
+        claim.principalId,
+        claim.invocationId,
+      );
+      this.assertClaimIdentity(stored, claim);
+      const terminal = transitionInvocationReceipt(stored, event);
+      this.replaceInvocationReceipt(terminal);
+      return terminal;
+    };
+    return insideTransaction ? finish() : this.host.transactionSync(finish);
+  }
   readLogEntries(from: number, to = Number.MAX_SAFE_INTEGER, limit = 100_000): LogEntry[] {
     const rows = this.host.sql.exec(`SELECT t, tx_instant, datoms FROM log WHERE t > ? AND t <= ? ORDER BY t LIMIT ?`, from, to, limit).toArray();
     const out: LogEntry[] = [];
@@ -275,7 +426,6 @@ export class Transactor {
     for (const e of this.readLogEntries(afterT)) for (const d of e.datoms) out.push(d);
     return out;
   }
-  /** Lowest t still present in the SQL log (0 if empty). */
   earliestLogT(): number {
     const row = this.host.sql.exec(`SELECT MIN(t) AS t FROM log`).toArray()[0];
     return (row?.t as number | null) ?? 0;
@@ -285,10 +435,6 @@ export class Transactor {
     this.host.sql.exec(`DELETE FROM log WHERE t <= ?`, throughT);
     return before;
   }
-
-  // ---------------------------------------------------------------------------
-  // Accessors (indexer, shell, tests)
-  // ---------------------------------------------------------------------------
 
   get connection(): Connection {
     return this.conn;
@@ -314,7 +460,6 @@ export class Transactor {
   get isDead(): boolean {
     return this.dead !== undefined;
   }
-  /** Called by the indexer after publishing a new root. */
   adoptRoot(rec: RootRecord): void {
     this.rootRecord = rec;
     this.logWatermark = rec.log_watermark;
@@ -324,21 +469,16 @@ export class Transactor {
     this.broadcast({ v: 1, kind: "root", root: rec });
   }
 
-  // ---------------------------------------------------------------------------
-  // Group commit
-  // ---------------------------------------------------------------------------
-
-  /** Submit a transaction. Resolves once it is durably committed. */
   transact(
     tx: TxData,
     principal?: Principal,
     clientTxId?: string,
-    extras?: { readonly opOutput?: unknown; readonly system?: boolean; readonly fromOperation?: boolean },
+    extras?: { readonly system?: boolean },
   ): Promise<TxAck> {
     if (this.dead !== undefined) return Promise.reject(new TransactorDeadError(this.dead));
     if (clientTxId !== undefined) {
       const key = clientTxReplayKey(principal, clientTxId);
-      const hit = this.recentOpAcks.get(key) ?? this.recentAcks.get(key);
+      const hit = this.recentAcks.get(key);
       if (hit) return Promise.resolve(hit);
     }
     return new Promise<TxAck>((resolve, reject) => {
@@ -346,10 +486,8 @@ export class Transactor {
         tx,
         principal,
         clientTxId,
-        opOutput: extras?.opOutput,
         system: extras?.system || undefined,
-        fromOperation: extras?.fromOperation || undefined,
-        resolve,
+        resolve: resolve as (result: TxAck | OperationAck) => void,
         reject,
       });
       if (!this.committing) {
@@ -359,51 +497,225 @@ export class Transactor {
     });
   }
 
-  /**
-   * Upsert the caller's principal row (and role fact) and return the resolved
-   * eid. Idempotent. Anonymous / service principals stay `{ eid: null }`.
-   */
-  async provision(principal?: Principal): Promise<{ eid: number | null; class: string }> {
-    await this.init();
-    if (!principal) return { eid: null, class: "anonymous" };
-    const policy = this.host.policy;
-    if (!policy || !shouldProvision(principal)) return { eid: principal.eid ?? null, class: principal.class };
-    const ops = await provisionTx(policy, principal, this.conn.db());
-    if (ops !== undefined) await this.transact(ops, principal, undefined, { system: true });
-    const eid = await resolveProvisionedEid(policy, principal, this.conn.db());
-    return { eid: eid ?? null, class: principal.class };
+  private replayableMappings(
+    receipt: TerminalInvocationReceipt,
+    context: SealingContext | undefined,
+  ): boolean {
+    if (receipt.status !== "completed" || receipt.allocations === undefined) {
+      return true;
+    }
+    if (context === undefined) return false;
+    return allocationMappingsResolvable(receipt.allocations, {
+      keyId: context.sealing.keyId,
+      scope: context.scope,
+    });
   }
 
-  private rememberAck(id: string, ack: TxAck, persist: boolean): void {
+  private decideInvocationEpoch(
+    p: Pending,
+    inputHandles: InputHandlePaths,
+  ):
+    | { readonly _tag: "Agreed"; readonly context: SealingContext | undefined }
+    | { readonly _tag: "UpdateRequired" }
+  {
+    const operation = p.operation!;
+    if (!this.usesOpaqueHandles(operation, inputHandles)) {
+      return { _tag: "Agreed", context: undefined };
+    }
+    const scope = operation.entityIdScope;
+    const keyId = operation.entityIdKeyId;
+    if (p.sealing === undefined || scope === undefined || keyId === undefined) {
+      throw opaqueOperationDenial();
+    }
+    const decision = decideEpoch({ keyId, scope }, p.sealing);
+    if (decision._tag === "UpdateRequired") return decision;
+    return {
+      _tag: "Agreed",
+      context: { sealing: decision.sealing, scope: decision.scope },
+    };
+  }
+
+  private usesOpaqueHandles(
+    invocation: AuthoritativeOperationInvocation,
+    inputHandles: InputHandlePaths,
+  ): boolean {
+    return invocation.sealedTarget !== undefined ||
+      (invocation.allocations !== undefined && invocation.allocations.length > 0) ||
+      inputHandles.length > 0;
+  }
+
+  private needsSealingKey(
+    invocation: AuthoritativeOperationInvocation,
+  ): boolean {
+    return invocation.sealedTarget !== undefined ||
+      (invocation.allocations !== undefined && invocation.allocations.length > 0) ||
+      invocation.entityIdScope !== undefined;
+  }
+
+  private async resolveInvocationTarget(
+    p: Pending,
+    context: SealingContext | undefined,
+  ): Promise<AuthoritativeOperationInvocation | undefined> {
+    const invocation = p.operation!;
+    if (invocation.sealedTarget === undefined) return invocation;
+    if (invocation.target !== undefined) throw opaqueOperationDenial();
+    if (context === undefined) throw opaqueOperationDenial();
+    const resolution = await resolveSealedTarget(
+      context.sealing,
+      context.scope,
+      invocation.sealedTarget,
+    );
+    if (resolution._tag === "UpdateRequired") return undefined;
+    if (resolution._tag === "Denied") throw opaqueOperationDenial();
+    return Object.freeze({ ...invocation, target: resolution.eid });
+  }
+
+  private async resolveInvocationInput(
+    invocation: AuthoritativeOperationInvocation,
+    context: SealingContext | undefined,
+    inputHandles: InputHandlePaths,
+  ): Promise<AuthoritativeOperationInvocation | undefined> {
+    if (inputHandles.length === 0) return invocation;
+    if (context === undefined) throw opaqueOperationDenial();
+    const resolution = await resolveSealedInputRefs(
+      context.sealing,
+      context.scope,
+      invocation.input,
+      inputHandles,
+    );
+    if (resolution._tag === "UpdateRequired") return undefined;
+    if (resolution._tag === "Denied") throw opaqueOperationDenial();
+    return Object.freeze({ ...invocation, input: resolution.input });
+  }
+
+  async invoke(
+    invocation: AuthoritativeOperationInvocation,
+  ): Promise<OperationAck> {
+    if (this.dead !== undefined) throw new TransactorDeadError(this.dead);
+    const runtime = this.operationRuntime;
+    if (runtime === undefined) throw opaqueOperationDenial();
+    let sealing: ServerSealingKey | undefined;
+    if (this.needsSealingKey(invocation)) {
+      if (runtime.sealing === undefined || invocation.entityIdScope === undefined) {
+        throw opaqueOperationDenial();
+      }
+      try {
+        sealing = await runtime.sealing();
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        this.log.error("operation.sealing-root-unavailable", { error: message });
+        throw new Unavailable({
+          message: "the server sealing root is momentarily unavailable",
+          retryAfterMs: 1_000,
+        });
+      }
+    }
+    return new Promise<OperationAck>((resolve, reject) => {
+      this.queue.push({
+        tx: [],
+        operation: invocation,
+        ...(sealing === undefined ? {} : { sealing }),
+        resolve: resolve as (result: TxAck | OperationAck) => void,
+        reject,
+      });
+      if (!this.committing) {
+        this.committing = true;
+        void this.commitLoop();
+      }
+    });
+  }
+
+  async provisionCatalog(definition: InstalledCatalogDefinition): Promise<number> {
+    await this.init();
+    this.bindComposition(definition.unitHash, definition.composition);
+    const attributes = catalogProvisioningAttributes(definition);
+    let missing = false;
+    for (const expected of attributes) {
+      const existing = this.conn!.db().attr(expected[":db/ident"]);
+      if (existing === undefined) {
+        missing = true;
+        continue;
+      }
+      const expectedValueType = VALUE_TYPE_IDENTS[expected[":db/valueType"]];
+      const expectedUnique = expected[":db/unique"] === undefined
+        ? undefined
+        : expected[":db/unique"] === ":db.unique/identity"
+          ? "identity"
+          : "value";
+      const expectedCardinality = expected[":db/cardinality"] ===
+          ":db.cardinality/many"
+        ? "many"
+        : "one";
+      if (
+        existing.valueType !== expectedValueType ||
+        existing.cardinality !== expectedCardinality ||
+        existing.unique !== expectedUnique ||
+        existing.index !== (expected[":db/index"] === true) ||
+        existing.isComponent !== (expected[":db/isComponent"] === true) ||
+        (existing.optional === true) !== (expected[":db/optional"] === true)
+      ) {
+        throw new TxError(
+          `cannot provision incompatible deployed field ${expected[":db/ident"]}`,
+          "tx/system",
+        );
+      }
+    }
+    if (!missing) return this.conn!.t;
+    const ack = await this.transact(
+      [...attributes] as TxData,
+      undefined,
+      undefined,
+      { system: true },
+    );
+    return ack.t;
+  }
+
+  async provision(principal?: Principal): Promise<{ eid: number | null; class: string }> {
+    await this.init();
+    if (!principal) return { eid: null, class: "" };
+    return { eid: principal.eid ?? null, class: principal.class };
+  }
+
+  private rememberAck(id: string, ack: TxAck): void {
     this.recentAcks.set(id, ack);
     while (this.recentAcks.size > RECENT_CLIENT_TX_LIMIT) {
       const first = this.recentAcks.keys().next().value;
       if (first === undefined) break;
       this.recentAcks.delete(first);
     }
-    if (persist) {
-      this.recentOpAcks.set(id, ack);
-      const list = [...this.recentOpAcks.entries()].map(([k, a]) => ({ k, ack: a }));
-      const trimmed = list.length > RECENT_CLIENT_TX_LIMIT ? list.slice(-RECENT_CLIENT_TX_LIMIT) : list;
-      if (trimmed.length < list.length) {
-        this.recentOpAcks.clear();
-        for (const row of trimmed) this.recentOpAcks.set(row.k, row.ack);
-      }
-      this.setMeta("op_acks", trimmed);
-    }
   }
 
-  lookupOpAck(principal: Principal | undefined, clientOpId: string): TxAck | undefined {
-    const key = clientTxReplayKey(principal, clientOpId);
-    return this.recentOpAcks.get(key) ?? this.recentAcks.get(key);
+  private invocationFailureEvent(
+    error: unknown,
+  ): InvocationReceiptEvent {
+    let rejection: SealedInvocationRejection | undefined;
+    if (error instanceof Unauthorized) {
+      rejection = { kind: "unauthorized" };
+    } else if (error instanceof InvalidRequest) {
+      rejection = { kind: "invalid_request" };
+    } else if (error instanceof OperationRejected) {
+      rejection = {
+        kind: "operation_rejected",
+        message: error.message,
+        operation: error.operation,
+        ...(error.step === undefined ? {} : { step: error.step }),
+        ...(error.reason === undefined ? {} : { reason: error.reason }),
+      };
+    } else if (error instanceof TxRejected || error instanceof TxError) {
+      rejection = { kind: "request_rejected" };
+    }
+    return rejection === undefined
+      ? { _tag: "Fail" }
+      : { _tag: "Reject", rejection };
   }
 
   private takeBatch(): Pending[] {
     const max = this.host.config.maxBatch;
-    if (max > 0 && this.queue.length > max) return this.queue.splice(0, max);
-    const b = this.queue;
-    this.queue = [];
-    return b;
+    if (this.queue[0]?.operation !== undefined) return this.queue.splice(0, 1);
+    const operationAt = this.queue.findIndex((pending) => pending.operation !== undefined);
+    const available = operationAt < 0 ? this.queue.length : operationAt;
+    const count = max > 0 ? Math.min(available, max) : available;
+    return this.queue.splice(0, count);
   }
 
   private async commitLoop(): Promise<void> {
@@ -411,14 +723,7 @@ export class Transactor {
       await this.init();
       const fences = this.host.config.timingYields;
       while (this.queue.length > 0 && this.dead === undefined) {
-        // Open the batching window: yield to the event loop once so requests
-        // that are already in flight (separate events in a Durable Object)
-        // land in the queue and share the coming storage write.
         await yieldToEventLoop();
-        // Diagnostics (config.timingYields): one calibration fence per batch.
-        // On Cloudflare the clock does not advance inside a synchronous turn,
-        // so every timing below is really "clock advance across a fence"; this
-        // measures what one fence costs on its own, i.e. the bias of the rest.
         let fenceMs = 0;
         if (fences) {
           const tFence = performance.now();
@@ -427,15 +732,292 @@ export class Transactor {
           this.stats.fenceMs += fenceMs;
           this.fenceLatency.observe(fenceMs);
         }
-        // Everything queued while the previous batch was in flight forms the next batch.
-        const queueDepth = this.queue.length; // pending txs at dequeue (includes this batch)
+        const queueDepth = this.queue.length;
         const tLoop = performance.now();
         const batch = this.takeBatch();
         const entries: LogEntry[] = [];
-        const acks: { p: Pending; ack: TxAck }[] = [];
+        const acks: {
+          p: Pending;
+          ack: TxAck | OperationAck;
+          assertFresh?: () => void;
+          receiptCompletion?: {
+            readonly claim: ClaimedInvocationReceipt;
+            readonly event: InvocationReceiptEvent & {
+              readonly _tag: "Complete";
+            };
+          };
+        }[] = [];
         const batchAcks = new Map<string, TxAck>();
         const tResolve = performance.now();
         for (const p of batch) {
+          if (p.operation !== undefined) {
+            let claim: ClaimedInvocationReceipt | undefined;
+            try {
+              if (this.operationRuntime === undefined) {
+                throw opaqueOperationDenial();
+              }
+              const supplied = requireSuppliedOperationVersion(
+                p.operation.operationVersion,
+              );
+              const resolved = await Effect.runPromise(
+                resolveOperationCatalog(this.operationRuntime, p.operation),
+              );
+              this.bindComposition(
+                resolved.deployed.definition.unitHash,
+                resolved.deployed.definition.composition,
+              );
+              const operationVersion = deployedOperationVersion(
+                resolved,
+                p.operation.owner,
+                p.operation.localName,
+              );
+              if (operationVersion === undefined) throw opaqueOperationDenial();
+              const inputWireShape = deployedOperationInputWireShape(
+                resolved,
+                p.operation.owner,
+                p.operation.localName,
+              );
+              if (inputWireShape === undefined) throw opaqueOperationDenial();
+              const inputHandles = inputEntityRefHandles(
+                inputWireShape,
+                p.operation.input,
+              );
+              const outputShape = deployedOperationOutputShape(
+                resolved,
+                p.operation.owner,
+                p.operation.localName,
+              );
+              const outcomeOf = (
+                receipt: TerminalInvocationReceipt,
+              ): InvocationReceiptOutcome => {
+                const outcome = invocationReceiptOutcome(receipt);
+                if (outcome._tag !== "Completed" || outputShape === undefined) {
+                  return outcome;
+                }
+                const outputRefPaths = outputEntityRefPaths(
+                  outputShape,
+                  outcome.output,
+                );
+                return outputRefPaths.length === 0
+                  ? outcome
+                  : { ...outcome, outputRefPaths };
+              };
+              const operationRuntime = this.operationRuntime;
+              const resolveCompatibility = async (
+                tag: "OperationChanged" | "UpdateRequired",
+              ) => {
+                await authorizeCatalogOperationGrant(
+                  this.conn,
+                  operationRuntime,
+                  p.operation!,
+                  resolved,
+                );
+                this.stats.rejected++;
+                p.resolve({ _tag: tag });
+              };
+              if (supplied !== undefined && supplied !== operationVersion) {
+                await resolveCompatibility("OperationChanged");
+                continue;
+              }
+              const epoch = this.decideInvocationEpoch(p, inputHandles);
+              if (epoch._tag === "UpdateRequired") {
+                await resolveCompatibility("UpdateRequired");
+                continue;
+              }
+              const sealingContext = epoch.context;
+              const targeted = await this.resolveInvocationTarget(
+                p,
+                sealingContext,
+              );
+              if (targeted === undefined) {
+                await resolveCompatibility("UpdateRequired");
+                continue;
+              }
+              const operation = await this.resolveInvocationInput(
+                targeted,
+                sealingContext,
+                inputHandles,
+              );
+              if (operation === undefined) {
+                await resolveCompatibility("UpdateRequired");
+                continue;
+              }
+              const prepared = await Effect.runPromise(
+                prepareInvocationReceipt(operation, operationVersion),
+              );
+              const inspected = this.inspectInvocationReceipt(prepared);
+              if (
+                inspected._tag === "OperationChanged" ||
+                inspected._tag === "UpdateRequired"
+              ) {
+                await resolveCompatibility(inspected._tag);
+                continue;
+              }
+              if (inspected._tag === "Conflict") {
+                this.stats.rejected++;
+                p.resolve({ _tag: "Conflict" });
+                continue;
+              }
+              if (inspected._tag === "Recover") {
+                const recovered = this.recoverInvocationReceipt(prepared);
+                if (
+                  recovered._tag === "OperationChanged" ||
+                  recovered._tag === "UpdateRequired"
+                ) {
+                  await resolveCompatibility(recovered._tag);
+                  continue;
+                }
+                if (recovered._tag === "Conflict") {
+                  this.stats.rejected++;
+                  p.resolve({ _tag: "Conflict" });
+                  continue;
+                }
+                if (recovered._tag === "Replay" || recovered._tag === "Recover") {
+                  if (!this.replayableMappings(recovered.receipt, sealingContext)) {
+                    await resolveCompatibility("UpdateRequired");
+                    continue;
+                  }
+                  p.resolve(outcomeOf(recovered.receipt));
+                  continue;
+                }
+              }
+              if (inspected._tag === "Replay") {
+                if (!this.replayableMappings(inspected.receipt, sealingContext)) {
+                  await resolveCompatibility("UpdateRequired");
+                  continue;
+                }
+                if (inspected.receipt.status === "completed") {
+                  await authorizeCatalogOperationReplay(
+                    this.conn,
+                    this.operationRuntime,
+                    operation,
+                    inspected.receipt.replayFence,
+                    resolved,
+                  );
+                } else {
+                  await authorizeCatalogOperation(
+                    this.conn,
+                    this.operationRuntime,
+                    operation,
+                    resolved,
+                  );
+                }
+                p.resolve(outcomeOf(inspected.receipt));
+                continue;
+              }
+
+              const admission: CatalogOperationAdmission =
+                await authorizeCatalogOperation(
+                  this.conn,
+                  this.operationRuntime,
+                  operation,
+                  resolved,
+                );
+
+              const decision = this.claimInvocationReceipt(prepared);
+              if (
+                decision._tag === "Conflict" ||
+                decision._tag === "OperationChanged" ||
+                decision._tag === "UpdateRequired"
+              ) {
+                this.stats.rejected++;
+                p.resolve({ _tag: decision._tag });
+                continue;
+              }
+              if (decision._tag === "Replay" || decision._tag === "Recover") {
+                if (!this.replayableMappings(decision.receipt, sealingContext)) {
+                  await resolveCompatibility("UpdateRequired");
+                  continue;
+                }
+                if (decision.receipt.status === "completed") {
+                  await authorizeCatalogOperationReplay(
+                    this.conn,
+                    this.operationRuntime,
+                    operation,
+                    decision.receipt.replayFence,
+                    resolved,
+                  );
+                }
+                p.resolve(outcomeOf(decision.receipt));
+                continue;
+              }
+              claim = decision.receipt;
+              await this.boundaries.checkpoint("operation.claimed");
+              const executed = await executeCatalogOperation(
+                this.conn,
+                this.operationRuntime,
+                operation,
+                resolved,
+                admission,
+                sealingContext?.sealing,
+              );
+              const rep = executed.report;
+              const event = {
+                _tag: "Complete" as const,
+                committedT: rep.t,
+                output: executed.output,
+                replayFence: executed.replayFence,
+                ...(sealingContext === undefined ||
+                    executed.allocations.length === 0
+                  ? {}
+                  : {
+                    allocations: {
+                      version: 1 as const,
+                      keyId: sealingContext.sealing.keyId,
+                      scope: { ...sealingContext.scope },
+                      entries: executed.allocations,
+                    },
+                  }),
+              };
+              const terminal = transitionInvocationReceipt(claim, event);
+              const txInstant = rep.txData[0]?.v as number;
+              entries.push({ t: rep.t, txInstant, datoms: rep.txData });
+              acks.push({
+                p,
+                ack: outcomeOf(terminal),
+                assertFresh: executed.assertFresh,
+                receiptCompletion: { claim, event },
+              });
+            } catch (err) {
+              if (err instanceof OperationRuntimeFault) {
+                this.log.error("operation.failed", {
+                  stage: err.stage,
+                  error: err.detail instanceof Error
+                    ? err.detail.message
+                    : String(err.detail),
+                });
+              }
+              if (claim !== undefined) {
+                try {
+                  const terminal = this.finishInvocationReceipt(
+                    claim,
+                    this.invocationFailureEvent(err),
+                  );
+                  this.stats.rejected++;
+                  this.log.warn("operation.rejected", {
+                    status: terminal.status,
+                  });
+                  p.resolve(invocationReceiptOutcome(terminal));
+                } catch (storageError) {
+                  this.die(
+                    `receipt write failed: ${storageError instanceof Error ? storageError.message : String(storageError)}`,
+                    storageError,
+                    [p],
+                  );
+                  return;
+                }
+              } else {
+                const e = this.scrub(err, p);
+                this.stats.rejected++;
+                this.log.warn("tx.rejected", {
+                  code: (e as { readonly code?: unknown })?.code,
+                  error: e instanceof Error ? e.message : String(e),
+                });
+                p.reject(e);
+              }
+            }
+            continue;
+          }
           if (p.clientTxId !== undefined) {
             const key = clientTxReplayKey(p.principal, p.clientTxId);
             const hit = this.recentAcks.get(key) ?? batchAcks.get(key);
@@ -448,55 +1030,58 @@ export class Transactor {
             if (!p.system) await this.applyProvision(p, entries);
             const tx = await this.authorize(p);
             const rep = await this.conn.transact(tx);
-            const txInstant = rep.txData[0]?.v as number; // :db/txInstant is first
-            entries.push({ t: rep.t, txInstant, datoms: rep.txData });
             const ack: TxAck = {
               t: rep.t,
               txEid: rep.txEid,
               tempids: rep.tempids,
               datoms: await this.ackDatoms(rep.txData, p.principal),
               ...(p.clientTxId !== undefined ? { clientTxId: p.clientTxId } : {}),
-              ...(p.opOutput !== undefined ? { output: p.opOutput } : {}),
             };
-            if (p.clientTxId !== undefined) batchAcks.set(clientTxReplayKey(p.principal, p.clientTxId), ack);
+            const txInstant = rep.txData[0]?.v as number;
+            entries.push({ t: rep.t, txInstant, datoms: rep.txData });
+            if (p.clientTxId !== undefined) {
+              batchAcks.set(clientTxReplayKey(p.principal, p.clientTxId), ack as TxAck);
+            }
             acks.push({ p, ack });
           } catch (err) {
+            if (err instanceof OperationRuntimeFault) {
+              this.log.error("operation.failed", {
+                stage: err.stage,
+                error: err.detail instanceof Error ? err.detail.message : String(err.detail),
+              });
+            }
             const e = this.scrub(err, p);
             this.stats.rejected++;
             this.log.warn("tx.rejected", { code: (e as any)?.code, error: e instanceof Error ? e.message : String(e) });
             p.reject(e);
           }
         }
-        // fence after the resolve section so the clock advances past it (diagnostics only)
         if (fences) await yieldToEventLoop();
         const resolveMs = performance.now() - tResolve;
         this.stats.resolveMs += resolveMs;
         if (entries.length === 0) continue;
         const tWrite = performance.now();
         try {
-          // ONE storage write for the whole batch (group commit).
+          await this.boundaries.checkpoint("transactor.commit");
+          for (const pending of acks) pending.assertFresh?.();
           this.host.transactionSync(() => {
+            this.boundaries.checkpointSync("transactor.commit.write");
             for (const e of entries) this.appendLogRow(e);
             this.setMeta("next_eid", this.conn.nextEntityId);
-            const persist = [...batchAcks].filter(([, a]) => a.output !== undefined);
-            if (persist.length > 0) {
-              for (const [id, ack] of persist) this.recentOpAcks.set(id, ack);
-              this.setMeta(
-                "op_acks",
-                [...this.recentOpAcks.entries()]
-                  .map(([k, a]) => ({ k, ack: a }))
-                  .slice(-RECENT_CLIENT_TX_LIMIT),
-              );
+            for (const pending of acks) {
+              if (pending.receiptCompletion !== undefined) {
+                this.finishInvocationReceipt(
+                  pending.receiptCompletion.claim,
+                  pending.receiptCompletion.event,
+                  true,
+                );
+              }
             }
           });
         } catch (err) {
-          // Memory and durable state diverged (t was assigned, nothing landed):
-          // fail this batch and everything behind it, then discard the instance.
           this.die(`log write failed: ${err instanceof Error ? err.message : String(err)}`, err, acks.map((a) => a.p));
           return;
         }
-        // fence after the storage write, before the acks: persist-before-ack is
-        // unaffected (the write already returned) (diagnostics only)
         if (fences) await yieldToEventLoop();
         const writeMs = performance.now() - tWrite;
         this.stats.commitMs += writeMs;
@@ -509,13 +1094,19 @@ export class Transactor {
         this.commitLatency.observe(writeMs);
         this.resolveLatency.observe(resolveMs);
         this.log.debug("tx.commit", { t: this.conn.t, batch: entries.length, datoms: entries.reduce((n, e) => n + e.datoms.length, 0), writeMs: round(writeMs), queued: this.queue.length, txsSinceIndex: this.txSinceIndex });
-        for (const [id, ack] of batchAcks) this.rememberAck(id, ack, ack.output !== undefined);
-        for (const a of acks) a.p.resolve(a.ack);
-        // dequeue → ack wall clock; "other" = loopMs - resolveMs - commitMs
+        for (const [id, ack] of batchAcks) this.rememberAck(id, ack);
+        for (const a of acks) {
+          try {
+            a.assertFresh?.();
+            a.p.resolve(a.ack);
+          } catch (err) {
+            this.stats.rejected++;
+            a.p.reject(err);
+          }
+        }
         const loopMs = performance.now() - tLoop;
         this.stats.loopMs += loopMs;
         this.loopLatency.observe(loopMs);
-        // ONE Analytics Engine data point per batch, after the acks and outside every timed region.
         this.metrics.batch({
           db: safeName(this.host) ?? "unknown",
           resolveMs,
@@ -541,65 +1132,19 @@ export class Transactor {
     }
   }
 
-  /**
-   * Peer-owned upsert of the caller's row, committed on this writer *before*
-   * the client tx is authorized. Same group-commit batch; earlier `t`.
-   */
-  private async applyProvision(p: Pending, entries: LogEntry[]): Promise<void> {
-    const policy = this.host.policy;
-    const who = p.principal;
-    if (!policy || !who || !shouldProvision(who)) return;
-    const ops = await provisionTx(policy, who, this.conn.db());
-    if (ops !== undefined) {
-      const rep = await this.conn.transact(ops);
-      entries.push({ t: rep.t, txInstant: rep.txData[0]?.v as number, datoms: rep.txData });
-    }
-    const eid = await resolveProvisionedEid(policy, who, this.conn.db());
-    if (eid !== undefined) p.principal = { ...who, eid };
+  private async applyProvision(_p: Pending, _entries: LogEntry[]): Promise<void> {
+    return;
   }
 
-  /** The authoritative write check: runs against `this.conn.db()` and returns the ops to transact. */
   private async authorize(p: Pending): Promise<TxData> {
-    const policy = this.host.policy;
-    if (!policy) return p.tx;
-    if (p.system) return p.tx;
-    if (!p.principal) throw new TxRejected({ message: "no principal", code: "policy" });
-    if (isSuperuser(p.principal, policy)) return p.tx;
-    if (p.fromOperation) return p.tx;
-    if (isSchemaTx(p.tx) && canChangeSchema(p.principal, policy)) return p.tx;
-    const db = this.conn.db();
-    // the Worker usually resolved it already; when its pre-check was skipped, do it here
-    let who = p.principal;
-    if (who.eid === undefined && who.sub !== undefined) {
-      const eid = await db.entid([policy.principal, who.sub] as never);
-      if (eid !== undefined) who = { ...who, eid };
-    }
-    const res = await checkTx(p.tx, db, policy, who);
-    if (!res.ok) throw new TxRejected({ message: `${publicPolicyOp(res.op)} denied on ${res.attr}`, code: res.code, attr: res.attr });
-    return res.ops as TxData;
+    return p.tx;
   }
 
-  /** Ack facts the writer may read, judged against the post-commit unfiltered db. */
-  private async ackDatoms(datoms: Datom[], principal?: Principal): Promise<WireDatom[]> {
-    const policy = this.host.policy;
-    if (!policy || !principal || isSuperuser(principal, policy)) return datoms.map(toWireDatom);
-    const db = this.conn.db();
-    let who = principal;
-    if (who.eid === undefined && who.sub !== undefined) {
-      const eid = await db.entid([policy.principal, who.sub] as never);
-      if (eid !== undefined) who = { ...who, eid };
-    }
-    const view = filterDb(db, db, policy, who);
-    if (!(view instanceof FilteredDb)) return datoms.map(toWireDatom);
-    const kept: WireDatom[] = [];
-    for (const d of datoms) if (await view.visible(d)) kept.push(toWireDatom(d));
-    return kept;
+  private async ackDatoms(datoms: Datom[], _principal?: Principal): Promise<WireDatom[]> {
+    return datoms.map(toWireDatom);
   }
 
-  /** A unique conflict names the entity and value it collided with — a read leak under a policy. */
-  private scrub(err: unknown, p: Pending): unknown {
-    if (!this.host.policy || !p.principal || isSuperuser(p.principal, this.host.policy)) return err;
-    if (err instanceof TxError && err.code === "tx/unique-conflict") return new TxRejected({ message: "unique conflict", code: err.code });
+  private scrub(err: unknown, _p: Pending): unknown {
     return err;
   }
 
@@ -614,10 +1159,6 @@ export class Transactor {
     this.host.abort(reason);
   }
 
-  // ---------------------------------------------------------------------------
-  // Novelty subscribers
-  // ---------------------------------------------------------------------------
-
   private broadcast(frame: unknown): void {
     const msg = JSON.stringify(frame);
     this.stats.broadcasts++;
@@ -625,19 +1166,16 @@ export class Transactor {
       try {
         ws.send(msg);
       } catch {
-        // closed socket; the host cleans up
       }
     }
   }
 
-  /** New subscriber: hello + catch-up from `from` (exclusive). */
   onSubscribe(ws: SocketLike, from: number): void {
     ws.send(JSON.stringify({ v: 1, kind: "hello", t: this.conn.t, root: this.rootRecord }));
     this.sendCatchUp(ws, Number.isFinite(from) ? from : 0);
     this.log.info("subscriber.connect", { from, t: this.conn.t, subscribers: this.host.sockets().length });
   }
 
-  /** Subscriber control message (resume / ping). */
   onSocketMessage(ws: SocketLike, message: string | ArrayBuffer): void {
     if (typeof message !== "string") return;
     let msg: any;
@@ -655,7 +1193,6 @@ export class Transactor {
     if (from >= t) return;
     const earliest = this.earliestLogT();
     if (earliest === 0 || earliest > from + 1) {
-      // The SQL log no longer holds (from, earliest): subscriber must read log/ chunks from R2.
       ws.send(JSON.stringify({ v: 1, kind: "gap", from: Math.max(from, earliest - 1) }));
       this.log.warn("subscriber.gap", { from, earliestLogT: earliest, t });
       from = Math.max(from, earliest - 1);
@@ -663,18 +1200,10 @@ export class Transactor {
     for (const e of this.readLogEntries(from, t)) ws.send(JSON.stringify(txFrame(e)));
   }
 
-  // ---------------------------------------------------------------------------
-  // Alarm → indexer
-  // ---------------------------------------------------------------------------
-
   async onAlarm(): Promise<void> {
     await this.init();
     await this.indexer.onAlarm();
   }
-
-  // ---------------------------------------------------------------------------
-  // HTTP
-  // ---------------------------------------------------------------------------
 
   info() {
     return {
@@ -693,14 +1222,11 @@ export class Transactor {
         batchSize: this.batchSizes.snapshot(),
         commitMs: this.commitLatency.snapshot(),
         avgBatch: this.stats.batches ? round(this.stats.txs / this.stats.batches) : 0,
-        // cumulative counters (same numbers as stats.*, kept here for one-stop reading)
         resolveMs: round(this.stats.resolveMs),
         loopMs: round(this.stats.loopMs),
-        // per-batch distributions: "other" per batch = batchLoopMs - batchResolveMs - batchCommitMs
         batchResolveMs: this.resolveLatency.snapshot(),
         batchCommitMs: this.commitLatency.snapshot(),
         batchLoopMs: this.loopLatency.snapshot(),
-        // fence cost per batch (config.timingYields; all zero when off) — the bias to subtract
         fenceMs: this.fenceLatency.snapshot(),
         noveltyDatoms: this.conn.noveltyCount,
         queueDepth: this.queue.length,
@@ -711,25 +1237,25 @@ export class Transactor {
     };
   }
 
-  /**
-   * Route dispatch as an Effect program: every route runs inside
-   * `Effect.tryPromise`, whatever it throws is classified into a tagged error
-   * (errors.ts) and `Effect.catchTags` maps each tag to the same status/body
-   * the pre-Effect handler produced. Only the boundary is effectful — the
-   * resolve/commit loop above stays plain async/await.
-   *
-   * The WebSocket `/subscribe` upgrade never reaches here (the DO shell owns it).
-   */
+  operationReceiptCount(): number {
+    const row = this.host.sql.exec(
+      `SELECT COUNT(*) AS count FROM operation_receipts`,
+    ).toArray()[0];
+    return Number(row?.count ?? 0);
+  }
+
   async handleRequest(request: Request): Promise<Response> {
     await this.init();
-    // Worker→DO subrequests have no `request.cf`; the Worker forwards its own colo as a header.
     this.metrics.observeColo((request as { cf?: { colo?: string } }).cf?.colo ?? request.headers.get("x-ramose-colo") ?? undefined);
     const url = new URL(request.url);
     return Effect.runPromise(
       Effect.tryPromise({ try: () => this.route(request, url), catch: toHttpError }).pipe(
         Effect.catchTags({
           TxRejected: (e) => Effect.sync(() => errorResponse(e)),
+          Unauthorized: (e) => Effect.sync(() => errorResponse(e)),
+          OperationRejected: (e) => Effect.sync(() => errorResponse(e)),
           TransactorDead: (e) => Effect.sync(() => errorResponse(e)),
+          Unavailable: (e) => Effect.sync(() => errorResponse(e)),
           BadRequest: (e) => Effect.sync(() => errorResponse(e)),
           NotFound: (e) => Effect.sync(() => errorResponse(e)),
           Internal: (e) => Effect.sync(() => errorResponse(e)),
@@ -740,37 +1266,58 @@ export class Transactor {
 
   private async route(request: Request, url: URL): Promise<Response> {
     const path = url.pathname;
-    if (path === "/op-ack" && request.method === "POST") {
-      const body = fromJson(await request.json()) as {
-        clientOpId?: unknown;
-        principal?: unknown;
-        ack?: TxAck;
+    if (path === "/invoke" && request.method === "POST") {
+      const body = await request.json() as { invocation?: unknown };
+      const raw = body?.invocation;
+      const invocation = typeof raw === "object" && raw !== null && !Array.isArray(raw)
+        ? {
+          ...raw,
+          ...(Object.hasOwn(raw, "target")
+            ? { target: fromJson((raw as { readonly target?: unknown }).target) }
+            : {}),
+        } as AuthoritativeOperationInvocation
+        : undefined;
+      if (
+        invocation === undefined || invocation.database !== safeName(this.host)
+      ) {
+        throw new BadRequest({ message: "invalid deployed operation invocation" });
+      }
+      const entityIdScope = parseEntityIdScope(invocation.entityIdScope);
+      const allocations = parseInvocationAllocations(invocation.allocations);
+      if (
+        allocations === undefined ||
+        (invocation.sealedTarget !== undefined &&
+          (typeof invocation.sealedTarget !== "string" ||
+            entityIdScope === undefined)) ||
+        (allocations.length > 0 && entityIdScope === undefined)
+      ) {
+        throw new BadRequest({ message: "invalid deployed operation invocation" });
+      }
+      if (
+        entityIdScope !== undefined &&
+        (typeof invocation.entityIdKeyId !== "string" ||
+          invocation.entityIdKeyId.length === 0)
+      ) {
+        throw new BadRequest({ message: "invalid deployed operation invocation" });
+      }
+      const resolved: AuthoritativeOperationInvocation = {
+        ...invocation,
+        ...(entityIdScope === undefined ? {} : { entityIdScope }),
+        ...(allocations.length === 0 ? {} : { allocations }),
       };
-      if (typeof body.clientOpId !== "string" || body.clientOpId.length === 0) {
-        throw new BadRequest({ message: "body must be { clientOpId }" });
-      }
-      const principal = asPrincipal(body.principal);
-      if (body.ack !== undefined && body.ack !== null) {
-        const key = clientTxReplayKey(principal, body.clientOpId);
-        this.rememberAck(key, { ...body.ack, clientTxId: body.clientOpId }, true);
-        return json({ ack: body.ack });
-      }
-      return json({ ack: this.lookupOpAck(principal, body.clientOpId) ?? null });
+      return new Response(JSON.stringify(await this.invoke(resolved)), {
+        headers: { "content-type": "application/json" },
+      });
     }
     if (path === "/transact" && request.method === "POST") {
       const body = fromJson(await request.json()) as {
         tx?: TxData;
         principal?: unknown;
         clientTxId?: unknown;
-        opOutput?: unknown;
-        fromOperation?: unknown;
       };
       if (!body || !Array.isArray(body.tx)) throw new BadRequest({ message: "body must be { tx: [...] }" });
       const clientTxId = typeof body.clientTxId === "string" && body.clientTxId.length > 0 ? body.clientTxId : undefined;
-      const ack = await this.transact(body.tx, asPrincipal(body.principal), clientTxId, {
-        opOutput: body.opOutput,
-        fromOperation: body.fromOperation === true,
-      });
+      const ack = await this.transact(body.tx, asPrincipal(body.principal), clientTxId);
       return json(ack);
     }
     if (path === "/provision" && request.method === "POST") {

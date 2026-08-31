@@ -1,44 +1,26 @@
-/**
- * The `ramose` barrel, exactly.
- *
- * Everything on `ramose/db` (asserted name-by-name in
- * `db-portable.test.ts`) plus the deploy-time half: two resources, one
- * capability, one transport layer, the provider collection, typed policy
- * and the peer constants. Nothing else is public.
- */
-
 import { describe, expect, test } from "bun:test";
 
 const ADDS = [
-  // resources
   "Server",
   "Database",
-  // one capability, one transport
-  "Databases",
-  "layer",
-  "asRead",
-  // peer
+
   "PEER_COMPAT",
-  "PEER_BINDINGS",
-  "PEER_DO_CLASSES",
-  // the stack
+
   "providers",
   "Providers",
-  // deploy-time policy
-  "Policy",
-  "policy",
   "DEFAULT_JWT_MAX_TTL",
-  // the verifier/minter contract
+
   "claims",
-  // app-Worker HTTP mapping (not on `ramose/db`)
+
   "errorToHttp",
   "errorResponse",
   "statusOf",
   "toDbError",
 ];
 
-/** Names the kill-list retired: internal, deleted, or renamed. */
 const KILLED = [
+  "Catalog",
+  "Policy",
   "System",
   "SystemProps",
   "SystemPeer",
@@ -57,8 +39,14 @@ const KILLED = [
   "ReadDatabases",
   "ServerBinding",
   "ServerHttp",
+  "policy",
+  "PolicyError",
+  "filterDb",
+  "parsePolicy",
   "authEnv",
   "internalSecret",
+  "PEER_BINDINGS",
+  "PEER_DO_CLASSES",
   "AUTH_ENV_KEYS",
   "applyLocalDev",
   "LOCAL_DEV",
@@ -70,6 +58,10 @@ const KILLED = [
   "SystemSource",
   "SystemEndpoint",
   "Client",
+  "Databases",
+  "connect",
+  "layer",
+  "asRead",
   "Session",
   "openSession",
   "transact",
@@ -81,6 +73,42 @@ const KILLED = [
   "TxSpec",
   "seedWrite",
   "submitRaw",
+  "InstalledCatalogUnit",
+  "InstalledCatalogUnitV2",
+  "sealInstalledCatalogUnit",
+  "assembleInstalledCatalogUnit",
+  "verifyInstalledCatalogUnit",
+  "normalizeAndValidateCatalogUnit",
+  "CatalogUnitCorrupt",
+  "CatalogUnitHash",
+  "hashInstalledCatalogUnit",
+  "hashCatalogSchemaFingerprint",
+  "catalogUnitCanonicalBytes",
+  "assembleDeployedCatalogs",
+  "executeAuthorizedRequest",
+  "executeAuthorizedRead",
+  "executeAuthorizedLive",
+  "runOneShotRead",
+  "OneShotReadError",
+  "diffAuthorizedResults",
+  "liveDiffFromPrevious",
+  "liveResultRows",
+  "isSilentLiveDiff",
+  "callerFromVerified",
+  "AuthenticatedCaller",
+  "AuthorizedRequestInput",
+  "AuthorizedRequestView",
+  "DeployedCatalogs",
+  "CatalogVersionMismatch",
+  "requireCatalogKey",
+  "requireDatabase",
+  "requireUnitHash",
+  "opaqueCatalogDenial",
+  "compareAndSwapCatalogUnit",
+  "loadCatalogUnitAtBasis",
+  "CatalogCasConflict",
+  "publishCatalog",
+  "schemaTxFromCatalog",
 ];
 
 describe("the `ramose` barrel", () => {
@@ -97,5 +125,19 @@ describe("the `ramose` barrel", () => {
   test("the kill-list is gone", async () => {
     const alchemy = await import("../src/index.ts");
     expect(KILLED.filter((name) => name in alchemy)).toEqual([]);
+  });
+
+  test("authors policy through a named schema", async () => {
+    const Ramose = await import("../src/index.ts");
+    const Task = Ramose.Entity("surfaceTask", { title: Ramose.string() });
+    const App = Ramose.Schema("surface-app", { surfaceTask: Task });
+
+    expect(App.key).toBe("surface-app");
+    expect(App.schema).toBe(App);
+    expect(
+      App.applyPolicy(({ policy }) => {
+        policy.surfaceTask.read.always();
+      }),
+    ).toBeUndefined();
   });
 });

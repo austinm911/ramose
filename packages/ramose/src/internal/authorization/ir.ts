@@ -1,0 +1,249 @@
+import type * as Brand from "effect/Brand";
+import * as Schema from "effect/Schema";
+import { CatalogDescriptor, RuleAccessPlan } from "./catalog.ts";
+import { CanonicalAuthorizationExpr, RelativeAuthorizationExpr } from "./expr.ts";
+import {
+  CanonicalIdentitySchemas,
+  CatalogId,
+  CatalogVersion,
+  DatabaseId,
+  PolicyHash,
+  RelativeIdentitySchemas,
+  RuleId,
+  SchemaFingerprint,
+  type AnyIdentitySchemaSpace,
+  type CanonicalIdentities,
+  type IdentitySpace,
+  type RelativeIdentities,
+} from "./identities.ts";
+import {
+  ClaimVocabulary,
+  ClassVocabulary,
+  InstalledPrincipalResolution,
+  PrincipalResolutionConfig,
+} from "./principal.ts";
+import { AuthorizationLanguageVersion } from "./version.ts";
+
+export const POLICY_TEMPLATE_IR_VERSION = 2 as const;
+export const BOUND_AUTHORIZATION_IR_VERSION = 2 as const;
+export const VALIDATED_AUTHORIZATION_IR_VERSION = 2 as const;
+export const INSTALLED_AUTHORIZATION_IR_VERSION = 2 as const;
+
+export const PolicyTemplateIRVersion = Schema.Literal(POLICY_TEMPLATE_IR_VERSION);
+export type PolicyTemplateIRVersion = typeof PolicyTemplateIRVersion.Type;
+
+export const BoundAuthorizationIRVersion = Schema.Literal(BOUND_AUTHORIZATION_IR_VERSION);
+export type BoundAuthorizationIRVersion = typeof BoundAuthorizationIRVersion.Type;
+
+export const ValidatedAuthorizationIRVersion = Schema.Literal(VALIDATED_AUTHORIZATION_IR_VERSION);
+export type ValidatedAuthorizationIRVersion = typeof ValidatedAuthorizationIRVersion.Type;
+
+export const InstalledAuthorizationIRVersion = Schema.Literal(INSTALLED_AUTHORIZATION_IR_VERSION);
+export type InstalledAuthorizationIRVersion = typeof InstalledAuthorizationIRVersion.Type;
+
+export const RuleFocus = <
+  Entity extends Schema.Top,
+  Trait extends Schema.Top,
+  Field extends Schema.Top,
+  Operation extends Schema.Top,
+>(
+  ids: AnyIdentitySchemaSpace<Entity, Trait, Field, Operation>,
+) =>
+  Schema.Union([
+    Schema.TaggedStruct("entity", { entity: ids.entity }),
+    Schema.TaggedStruct("trait", { trait: ids.trait }),
+    Schema.TaggedStruct("field", { field: ids.field }),
+    Schema.TaggedStruct("operation", { operation: ids.operation }),
+  ]);
+
+export const AuthorizationRule = <
+  Entity extends Schema.Top,
+  Trait extends Schema.Top,
+  Field extends Schema.Top,
+  Operation extends Schema.Top,
+  Expr extends Schema.Top,
+>(
+  ids: AnyIdentitySchemaSpace<Entity, Trait, Field, Operation>,
+  expr: Expr,
+) =>
+  Schema.Struct({
+    id: RuleId,
+    focus: RuleFocus(ids),
+    expr,
+    usesResource: Schema.Boolean,
+    usesMe: Schema.Boolean,
+    usesSubject: Schema.Boolean,
+    traversalDepth: Schema.Natural,
+  });
+
+export const Decision = Schema.Struct({
+  allow: Schema.Array(RuleId),
+  deny: Schema.Array(RuleId),
+});
+export type Decision = typeof Decision.Type;
+
+export const DecisionEntry = <Target extends Schema.Top>(target: Target) =>
+  Schema.Struct({
+    target,
+    decision: Decision,
+  });
+
+export const AuthorizationDecisions = <
+  Entity extends Schema.Top,
+  Trait extends Schema.Top,
+  Field extends Schema.Top,
+  Operation extends Schema.Top,
+>(
+  ids: AnyIdentitySchemaSpace<Entity, Trait, Field, Operation>,
+) =>
+  Schema.Struct({
+    entities: Schema.Array(DecisionEntry(ids.entity)),
+    traits: Schema.Array(DecisionEntry(ids.trait)),
+    fields: Schema.Array(DecisionEntry(ids.field)),
+    operations: Schema.Array(DecisionEntry(ids.operation)),
+  });
+
+export const PolicyTemplateIR = Schema.TaggedStruct("PolicyTemplateIR", {
+  version: PolicyTemplateIRVersion,
+  languageVersion: AuthorizationLanguageVersion,
+  classes: ClassVocabulary,
+  claims: ClaimVocabulary,
+  principal: PrincipalResolutionConfig,
+  rules: Schema.Array(AuthorizationRule(RelativeIdentitySchemas, RelativeAuthorizationExpr)),
+  decisions: AuthorizationDecisions(RelativeIdentitySchemas),
+});
+export type PolicyTemplateIR = typeof PolicyTemplateIR.Type;
+
+export const BoundAuthorizationIR = Schema.TaggedStruct("BoundAuthorizationIR", {
+  version: BoundAuthorizationIRVersion,
+  languageVersion: AuthorizationLanguageVersion,
+  database: DatabaseId,
+  catalog: CatalogId,
+  catalogVersion: CatalogVersion,
+  schemaFingerprint: SchemaFingerprint,
+  classes: ClassVocabulary,
+  claims: ClaimVocabulary,
+  principal: InstalledPrincipalResolution,
+  rules: Schema.Array(AuthorizationRule(CanonicalIdentitySchemas, CanonicalAuthorizationExpr)),
+  decisions: AuthorizationDecisions(CanonicalIdentitySchemas),
+});
+export type BoundAuthorizationIR = typeof BoundAuthorizationIR.Type;
+
+export const ValidatedAuthorizationIR = Schema.TaggedStruct("ValidatedAuthorizationIR", {
+  version: ValidatedAuthorizationIRVersion,
+  languageVersion: AuthorizationLanguageVersion,
+  database: DatabaseId,
+  catalog: CatalogId,
+  catalogVersion: CatalogVersion,
+  schemaFingerprint: SchemaFingerprint,
+  classes: ClassVocabulary,
+  claims: ClaimVocabulary,
+  principal: InstalledPrincipalResolution,
+  rules: Schema.Array(AuthorizationRule(CanonicalIdentitySchemas, CanonicalAuthorizationExpr)),
+  decisions: AuthorizationDecisions(CanonicalIdentitySchemas),
+});
+export type ValidatedAuthorizationIR = typeof ValidatedAuthorizationIR.Type;
+
+export const AuthorizationValidationInput = Schema.Struct({
+  bound: BoundAuthorizationIR,
+  descriptor: CatalogDescriptor,
+});
+export type AuthorizationValidationInput = typeof AuthorizationValidationInput.Type;
+
+export const InstalledAuthorizationIR = Schema.TaggedStruct("InstalledAuthorizationIR", {
+  version: InstalledAuthorizationIRVersion,
+  languageVersion: AuthorizationLanguageVersion,
+  policyHash: PolicyHash,
+  classes: ClassVocabulary,
+  claims: ClaimVocabulary,
+  principal: InstalledPrincipalResolution,
+  rules: Schema.Array(AuthorizationRule(CanonicalIdentitySchemas, CanonicalAuthorizationExpr)),
+  decisions: AuthorizationDecisions(CanonicalIdentitySchemas),
+  accessPlans: Schema.Array(RuleAccessPlan),
+});
+export type InstalledAuthorizationIR = typeof InstalledAuthorizationIR.Type;
+
+const LegacyCanonicalIdentitySchemasV1 = {
+  ...CanonicalIdentitySchemas,
+  operation: Schema.Never,
+};
+
+const LegacyAuthorizationDecisionsV1 = Schema.Struct({
+  entities: Schema.Array(DecisionEntry(CanonicalIdentitySchemas.entity)),
+  traits: Schema.Array(DecisionEntry(CanonicalIdentitySchemas.trait)),
+  fields: Schema.Array(DecisionEntry(CanonicalIdentitySchemas.field)),
+});
+
+export const LegacyInstalledAuthorizationIRV1 = Schema.TaggedStruct(
+  "InstalledAuthorizationIR",
+  {
+    version: Schema.Literal(1),
+    languageVersion: AuthorizationLanguageVersion,
+    policyHash: PolicyHash,
+    classes: ClassVocabulary,
+    claims: ClaimVocabulary,
+    principal: InstalledPrincipalResolution,
+    rules: Schema.Array(
+      AuthorizationRule(LegacyCanonicalIdentitySchemasV1, CanonicalAuthorizationExpr),
+    ),
+    decisions: LegacyAuthorizationDecisionsV1,
+    accessPlans: Schema.Array(RuleAccessPlan),
+  },
+);
+export type LegacyInstalledAuthorizationIRV1 =
+  typeof LegacyInstalledAuthorizationIRV1.Type;
+
+export type InstalledAuthorizationIRV2 = InstalledAuthorizationIR &
+  Brand.Brand<"InstalledAuthorizationIRV2">;
+
+export const CatalogBindingTarget = Schema.Struct({
+  database: DatabaseId,
+  catalog: CatalogId,
+  catalogVersion: CatalogVersion,
+  schemaFingerprint: SchemaFingerprint,
+});
+export type CatalogBindingTarget = typeof CatalogBindingTarget.Type;
+
+export const CatalogBindingInput = Schema.Struct({
+  target: CatalogBindingTarget,
+  descriptor: CatalogDescriptor,
+  template: PolicyTemplateIR,
+});
+export type CatalogBindingInput = typeof CatalogBindingInput.Type;
+
+export const RelativeRuleFocus = RuleFocus(RelativeIdentitySchemas);
+export type RelativeRuleFocus = typeof RelativeRuleFocus.Type;
+export const CanonicalRuleFocus = RuleFocus(CanonicalIdentitySchemas);
+export type CanonicalRuleFocus = typeof CanonicalRuleFocus.Type;
+
+export const RelativeAuthorizationRule = AuthorizationRule(
+  RelativeIdentitySchemas,
+  RelativeAuthorizationExpr,
+);
+export type RelativeAuthorizationRule = typeof RelativeAuthorizationRule.Type;
+export const CanonicalAuthorizationRule = AuthorizationRule(
+  CanonicalIdentitySchemas,
+  CanonicalAuthorizationExpr,
+);
+export type CanonicalAuthorizationRule = typeof CanonicalAuthorizationRule.Type;
+
+export const RelativeAuthorizationDecisions = AuthorizationDecisions(RelativeIdentitySchemas);
+export type RelativeAuthorizationDecisions = typeof RelativeAuthorizationDecisions.Type;
+export const CanonicalAuthorizationDecisions = AuthorizationDecisions(CanonicalIdentitySchemas);
+export type CanonicalAuthorizationDecisions = typeof CanonicalAuthorizationDecisions.Type;
+
+export type RuleFocus<I extends IdentitySpace = RelativeIdentities> = I extends CanonicalIdentities
+  ? CanonicalRuleFocus
+  : RelativeRuleFocus;
+
+export type AuthorizationRule<I extends IdentitySpace = RelativeIdentities> = I extends CanonicalIdentities
+  ? CanonicalAuthorizationRule
+  : RelativeAuthorizationRule;
+
+export type AuthorizationDecisions<I extends IdentitySpace = RelativeIdentities> = I extends CanonicalIdentities
+  ? CanonicalAuthorizationDecisions
+  : RelativeAuthorizationDecisions;
+
+export type DecisionEntry<Target extends Schema.Top> = ReturnType<
+  typeof DecisionEntry<Target>
+>["Type"];

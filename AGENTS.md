@@ -1,14 +1,58 @@
 # Ramose
 
-Bun workspace. The published package is `packages/ramose` (npm: `ramose`).
-Consumer demos live in `examples/*`.
+Ramose is a Bun workspace. The published `ramose` package is in
+`packages/ramose`; consumer examples are in `examples`.
 
-See `README.md` for the product overview and `CONTRIBUTING.md` for local
-commands, tests and CI. Documentation lives at [ramose.ai](https://ramose.ai)
-(source in `website/`). There is no in-repo `docs/` folder.
+Use `README.md` for the product overview and `CONTRIBUTING.md` for development
+commands. Public documentation is published at [ramose.ai](https://ramose.ai)
+from `website/src/content/docs`.
 
-## Cursor Cloud specific instructions
+## Code Review Rules
 
-Cursor Cloud Agent environment and runtime caveats live in
-[`.cursor/CLOUD.md`](.cursor/CLOUD.md). Read that file when working as a
-Cursor Cloud Agent.
+Before reviewing, examine linked issues for the intended scope and expected
+behavior. Apply the rule below and any more specific rules in the closest
+nested `AGENTS.md`. Other guidance is not an additional review checklist.
+
+### One-way doors
+
+Prioritize issues that would become unsafe or materially more expensive to
+correct after merge. If a small follow-up can safely revisit the decision,
+favor shipping and iterating.
+
+## Checks
+
+```sh
+bun install
+bun run typecheck
+bun run test:unit
+bun run test:browser
+bun run test:local
+bun run build
+```
+
+Use pure unit tests for deterministic logic, browser tests for browser APIs,
+local integration tests for infrastructure boundaries, and Cloudflare e2e for
+edge behavior. Do not replace Worker, Durable Object, R2, Cache API, WebSocket,
+authentication, IndexedDB, DOM, or browser behavior with test doubles. Recorded
+browser frames must come from `bun run record:frames` and retain their
+`PROVENANCE.md`.
+
+## Repository prose
+
+Keep repository prose limited to public documentation, public API TSDoc,
+concise contributor instructions, legal notices, tool-required directives and
+markers, and fixture provenance. Do not add implementation comments, internal
+design or status Markdown, explanatory fields in config or data files, issue
+history, migration phases, temporary status, or language declaring contracts
+frozen, locked, or gated. Express behavior through names, types, tests, and
+public documentation.
+
+## Effect
+
+Before writing Effect code, run `effect-solutions list`, read the relevant
+guides with `effect-solutions show <topic>...`, and consult the Effect v4 source
+in `~/.local/share/effect-solutions/effect` when needed.
+
+This repository uses TypeScript 7 with `@effect/tsgo`. Effect diagnostics are
+reported by `bun run typecheck` as `TS377xxx`. If a diagnostic must be
+suppressed, prefer a scoped `@effect-diagnostics-next-line` directive.

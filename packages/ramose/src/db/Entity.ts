@@ -1,13 +1,20 @@
-/** Named group of fields. `User.name` is the stamped field ref (`:user/name`). */
-
+import {
+  flattenTraitFields,
+  mergeComposerFields,
+  walkTraits,
+  type ComposerLike,
+} from "./compose.ts";
+import { COMPOSED_TRAITS } from "./Composer.ts";
 import type { AnyField, Cardinality } from "./Field.ts";
 import {
   invalidIdentName,
   isIdentName,
   isReservedFieldKey,
   reservedFieldName,
+  type FlattenedTraitFields,
   type ValidFieldMap,
   type ValidIdentName,
+  type ValidTraitCompose,
 } from "./IdentName.ts";
 import {
   attachAttrNav,
@@ -17,14 +24,20 @@ import {
   type AttrNav,
   type PathCarrier,
 } from "./shapes.ts";
+import type { AnyTrait } from "./Trait.ts";
+import {
+  bindOwnedOperations,
+  OwnedOperations,
+  ownedOperationAuthor,
+  type AnyUnboundOperation,
+  type BoundOwnerOperations,
+  type OwnedOperationAuthor,
+  type ValidOwnedOperationMap,
+} from "./Operation.ts";
+import { DOCUMENTATION, normalizeDoc } from "./documentation.ts";
 
 export type FieldMap = Record<string, AnyField>;
 
-/**
- * Stamp a field with `name` / `ident` and the pull-shaping methods
- * (`.optional`, `.orDefault`, `.select`). Constraints live in the query
- * language (`Q`, the pipeable stdlib) — a field ref is data, not a builder.
- */
 export type StampedField<
   Ns extends string,
   Name extends string,
@@ -36,14 +49,6 @@ export type StampedField<
   } & PathCarrier
 >;
 
-/**
- * The backlink `field.reverse` denotes: from the ref's **target**, the entities
- * of the ref's *owning* entity type that point at you. It is a shape node, not
- * a datom: select a shape through it (`Issue.creator.reverse.select({ … })`).
- *
- * `Card` is the backlink's own cardinality — see {@link ReverseNav} and
- * {@link OwnedReverseNav}.
- */
 type BacklinkNav<
   Ns extends string,
   A extends AnyField,
@@ -55,48 +60,28 @@ type BacklinkNav<
     readonly ident: `:${Ns}/${Name}`;
     readonly cardinality: Card;
     readonly valueType: "ref";
-    /** Distinguishes a backlink from a forward field of the same ident. */
     readonly __reverse: true;
   } & PathCarrier
 >;
 
-/**
- * The ordinary backlink: cardinality-many, because any number of entities may
- * point at one. Its shape is an array.
- */
 export type ReverseNav<
   Ns extends string,
   A extends AnyField,
   Name extends string,
 > = BacklinkNav<Ns, A, Name, "many">;
 
-/**
- * The backlink of an owned ref: cardinality-**one**. An owned record is
- * owned by the entity that refers to it, so at most one entity points at it,
- * and the server answers such a backlink with a single value rather than a
- * collection (`cardMany = !field.owned` in the pull engine). Its
- * `.reverse.select({ … })` reads as one nested object — `.optional` when the
- * owned record may have no owner.
- */
 export type OwnedReverseNav<
   Ns extends string,
   A extends AnyField,
   Name extends string,
 > = BacklinkNav<Ns, A, Name, "one">;
 
-/** One stamped field: a ref also exposes its backlink. */
 export type NavStamp<
   Ns extends string,
   A extends AnyField,
   Name extends string,
 > = A["valueType"] extends "ref"
   ? StampedField<Ns, Name, A> & {
-      /**
-       * An owned ref's backlink is single-valued; every other one is a
-       * collection. A field whose ownership is not known statically
-       * (a plain `boolean`, as {@link AnyField} carries) takes the
-       * many-valued reading — the one that holds for any ref.
-       */
       readonly reverse: [A["owned"]] extends [true]
         ? OwnedReverseNav<Ns, A, Name>
         : ReverseNav<Ns, A, Name>;
@@ -110,27 +95,24 @@ export type StampedMap<Ns extends string, Fields extends FieldMap> = {
 /**
  * Stamped fields plus metadata. Address a field as `User.name`.
  * `fields` is the iteration map (`schemaTx`, `pick`, policy) — not a
- * second public handle. `id`, `ns`, `fields`, and `_tag` cannot be field
- * names, so spreading cannot overwrite metadata.
+ * second public handle. `id`, `ns`, `fields`, `_tag`, and `traits` cannot
+ * be field names, so spreading cannot overwrite metadata. Entity documentation
+ * uses a collision-free internal slot, leaving `doc` available as an
+ * application field.
+ *
+ * Composed trait fields are intersected onto the instance (`Issue.tag`)
+ * and keep the trait ident (`Issue.tag.ident === ":taggable/tag"`).
  */
 export type Entity<
   Name extends string = string,
   Fields extends FieldMap = FieldMap,
+  Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
 > = {
   readonly _tag: "Entity";
   readonly ns: Name;
-  /**
-   * Iteration map. Use `User.name` at call sites; this property exists
-   * so schema / policy / pull can walk keys without listing them.
-   */
   readonly fields: StampedMap<Name, Fields>;
-  /**
-   * Pseudo-field `:db/id`, usable in `select` shapes. Typed as a stamped
-   * field so it is a valid shape field, and
-   * as a number so comparisons over it take the id they compare against.
-   * The `_ns` phantom is the entity itself: it is what brands the
-   * `select({ id: N.id })` row cell as `Eid<N>` (see `IdCell` in Pull.ts).
-   */
+  readonly traits: readonly { readonly ns: string }[];
+  readonly [OwnedOperations]: BoundOwnerOperations<Entity<Name, Fields, Ops>, Ops>;
   readonly id: AttrNav<
     AnyField & {
       readonly schema: { readonly Type: number };
@@ -138,31 +120,63 @@ export type Entity<
       readonly ident: ":db/id";
       readonly valueType: "ref";
       readonly cardinality: "one";
-      /** Phantom: the entity whose `:db/id` this is. Never at runtime. */
       readonly _ns?: Entity<Name, Fields>;
     } & PathCarrier
   >;
 } & StampedMap<Name, Fields>;
 
+/**
+ * Bound for entity-generic helpers. `fields` is a wide record so a
+ * composer with flattened trait fields stays assignable — `StampedMap`
+ * would demand `orDefault(unknown)` and reject specific field refs.
+ */
 export type AnyEntity = {
   readonly _tag: "Entity";
   readonly ns: string;
-  readonly fields: StampedMap<string, FieldMap>;
+  readonly fields: {
+    readonly [key: string]: AnyField & { readonly ident: string };
+  };
+  readonly [COMPOSED_TRAITS]?: Readonly<Record<string, true>>;
+  readonly id: AttrNav<
+    AnyField & {
+      readonly schema: { readonly Type: number };
+      readonly attrName: "id";
+      readonly ident: ":db/id";
+      readonly valueType: "ref";
+      readonly cardinality: "one";
+    } & PathCarrier
+  >;
+  readonly [OwnedOperations]?: Readonly<Record<string, unknown>>;
+};
+
+type TraitClosure<T> = T extends AnyTrait
+  ? T | TraitClosure<T["traits"][number]>
+  : never;
+
+type ComposedTraitMap<T extends AnyTrait> = {
+  readonly [Trait in T as Trait["ns"]]: true;
+};
+
+export type EntityOptions<
+  Traits extends readonly AnyTrait[] = readonly AnyTrait[],
+> = {
+  readonly traits?: Traits;
+  readonly doc?: string;
+};
+
+type EntityImplementationOptions<
+  Traits extends readonly AnyTrait[],
+  Ops extends Readonly<Record<string, AnyUnboundOperation>>,
+> = EntityOptions<Traits> & {
+  readonly operations?:
+    | Ops
+    | ((Operation: OwnedOperationAuthor<any>) => Ops);
 };
 
 export declare namespace Entity {
-  /** Any entity — the bound for entity-generic helpers. */
   export type Any = AnyEntity;
 }
 
-/**
- * `field.reverse` — the same ref hop, read backwards: a shape node for
- * backlink selects. The hop's cardinality is the backlink's: many for an
- * ordinary ref (any number of entities may point at one), **one** for an
- * owned ref — the owned record is owned by its referrer, so at most
- * one entity points at it, and the server answers that backlink with a single
- * value.
- */
 const reverseNode = (from: PathCarrier): unknown => {
   const card: Cardinality =
     (from as { owned?: boolean }).owned === true ? "one" : "many";
@@ -207,7 +221,7 @@ const stampOne = (
   }) as StampedField<string, string, AnyField>;
 };
 
-const stamp = <Name extends string, Fields extends FieldMap>(
+export const stamp = <Name extends string, Fields extends FieldMap>(
   name: Name,
   fields: Fields,
 ): StampedMap<Name, Fields> => {
@@ -229,17 +243,118 @@ const assertFieldKeys = (fields: FieldMap): void => {
   }
 };
 
+type EntityWithTraits<
+  Name extends string,
+  Fields extends FieldMap,
+  Traits extends readonly AnyTrait[],
+  Ops extends Readonly<Record<string, AnyUnboundOperation>>,
+> = Entity<Name, Fields, Ops> &
+  FlattenedTraitFields<Traits> & {
+    readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
+    readonly traits: Traits;
+    readonly [OwnedOperations]: BoundOwnerOperations<
+      Entity<Name, Fields, Ops> & {
+        readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
+        readonly traits: Traits;
+        readonly [COMPOSED_TRAITS]: ComposedTraitMap<
+          TraitClosure<Traits[number]>
+        >;
+      },
+      Ops
+    >;
+    readonly [COMPOSED_TRAITS]: ComposedTraitMap<TraitClosure<Traits[number]>>;
+  };
+
+type EntityOperationContext<
+  Name extends string,
+  Fields extends FieldMap,
+  Traits extends readonly AnyTrait[],
+> = {
+  readonly _tag: "Entity";
+  readonly ns: Name;
+  readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
+  readonly traits: Traits;
+  readonly [COMPOSED_TRAITS]: ComposedTraitMap<TraitClosure<Traits[number]>>;
+};
+
 /** Group fields under one ident prefix. */
-export const Entity = <
+export function Entity<const Name extends string, Fields extends FieldMap>(
+  name: ValidIdentName<Name>,
+  fields: Fields & ValidFieldMap<Fields>,
+): Entity<Name, Fields>;
+export function Entity<
   const Name extends string,
   Fields extends FieldMap,
+  const Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
 >(
   name: ValidIdentName<Name>,
   fields: Fields & ValidFieldMap<Fields>,
-): Entity<Name, Fields> => {
+  options: {
+    readonly traits?: never;
+    readonly doc?: string;
+    readonly operations: (
+      Operation: OwnedOperationAuthor<
+        EntityOperationContext<Name, Fields, readonly []>
+      >,
+    ) => ValidOwnedOperationMap<
+      Ops,
+      EntityOperationContext<Name, Fields, readonly []>
+    > & Ops;
+  },
+): EntityWithTraits<Name, Fields, readonly [], Ops>;
+export function Entity<
+  const Name extends string,
+  Fields extends FieldMap,
+  const Traits extends readonly AnyTrait[] = [],
+  const Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
+>(
+  name: ValidIdentName<Name>,
+  fields: Fields & ValidFieldMap<Fields>,
+  options: {
+    readonly traits: Traits;
+    readonly doc?: string;
+    readonly operations: (
+      Operation: OwnedOperationAuthor<EntityOperationContext<Name, Fields, Traits>>,
+    ) => ValidOwnedOperationMap<
+      Ops,
+      EntityOperationContext<Name, Fields, Traits>
+    > & Ops;
+  } & ValidTraitCompose<Fields, Traits>,
+): EntityWithTraits<Name, Fields, Traits, Ops>;
+export function Entity<
+  const Name extends string,
+  Fields extends FieldMap,
+  const Traits extends readonly AnyTrait[] = [],
+>(
+  name: ValidIdentName<Name>,
+  fields: Fields & ValidFieldMap<Fields>,
+  options: {
+    readonly traits?: Traits;
+    readonly doc?: string;
+    readonly operations?: never;
+  } & ValidTraitCompose<Fields, Traits>,
+): EntityWithTraits<Name, Fields, Traits, {}>;
+export function Entity<
+  const Name extends string,
+  Fields extends FieldMap,
+  const Traits extends readonly AnyTrait[] = [],
+  const Ops extends Readonly<Record<string, AnyUnboundOperation>> = {},
+>(
+  name: ValidIdentName<Name>,
+  fields: Fields & ValidFieldMap<Fields>,
+  options?: EntityImplementationOptions<Traits, Ops> &
+    ValidTraitCompose<Fields, Traits>,
+): Entity<Name, Fields, Ops> | EntityWithTraits<Name, Fields, Traits, Ops> {
   assertEntityName(name);
   assertFieldKeys(fields);
+  const direct = (options?.traits ?? []) as readonly ComposerLike[];
+  const traitClosure = walkTraits(direct).all;
   const stamped = stamp(name, fields);
+  const flattened = flattenTraitFields(direct);
+  const merged = mergeComposerFields(
+    stamped as Record<string, unknown>,
+    flattened,
+  );
   const idField = attachAttrNav({
     _tag: "Field" as const,
     schema: null as never,
@@ -250,17 +365,44 @@ export const Entity = <
     doc: undefined,
     valueType: "ref" as const,
     isOptional: false,
+    default: undefined,
     attrName: "id" as const,
     ident: ":db/id" as const,
   });
-  return {
+  const doc = normalizeDoc(options?.doc);
+  const entity = {
     _tag: "Entity" as const,
     ns: name,
-    fields: stamped,
+    [DOCUMENTATION]: doc,
+    fields: merged,
+    traits: direct,
+    [COMPOSED_TRAITS]: Object.fromEntries(
+      traitClosure.map((trait) => [trait.ns, true]),
+    ),
+    [OwnedOperations]: {},
     id: idField,
-    ...stamped,
-  } as Entity<Name, Fields>;
-};
+    ...merged,
+  };
+  const operationAuthor =
+    typeof options?.operations === "function"
+      ? ownedOperationAuthor<EntityOperationContext<Name, Fields, Traits>>()
+      : undefined;
+  const operationSpecs =
+    typeof options?.operations === "function"
+      ? options.operations(operationAuthor!)
+      : options?.operations;
+  (entity as { [OwnedOperations]: unknown })[OwnedOperations] = bindOwnedOperations(
+    entity as unknown as Entity<Name, Fields, Ops> & {
+      readonly fields: StampedMap<Name, Fields> & FlattenedTraitFields<Traits>;
+      readonly traits: Traits;
+    },
+    operationSpecs,
+    operationAuthor,
+  );
+  return entity as unknown as
+    | Entity<Name, Fields, Ops>
+    | EntityWithTraits<Name, Fields, Traits, Ops>;
+}
 
 export type FieldOf<
   N extends AnyEntity,
@@ -270,4 +412,6 @@ export type FieldOf<
 export type IdentOf<
   N extends AnyEntity,
   K extends keyof N["fields"] & string,
-> = `:${N["ns"]}/${K}`;
+> = N["fields"][K] extends { readonly ident: infer I extends string }
+  ? I
+  : `:${N["ns"]}/${K}`;

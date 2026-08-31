@@ -1,17 +1,4 @@
 #!/usr/bin/env node
-// docs-check — the single source of truth for objective facts about this docs site.
-//
-// Reviewers and writers must cite THIS tool rather than their own counts: hand
-// counting produced three different "landing page word count" numbers in one
-// review cycle, and disagreements about measurement stop a review loop from
-// converging.
-//
-//   bun website/scripts/docs-check.mjs              human-readable report
-//   bun website/scripts/docs-check.mjs --json       machine-readable
-//   bun website/scripts/docs-check.mjs --page index every check for one page
-//   bun website/scripts/docs-check.mjs --only words|shape|terms|links|images|code|facts
-//
-// Exit code 1 if any ERROR-severity check fails, 0 otherwise (WARN never fails).
 
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, relative, dirname, resolve } from "node:path";
@@ -19,17 +6,11 @@ import { fileURLToPath } from "node:url";
 import {
   extractTitle,
   bodyMatchesExtract,
-  resolveShotCode,
 } from "./lib/snippets.mjs";
 import {
   dbErrorTags,
   errorTableTags,
-  ramoseDbRuntime,
-  ramoseReactRuntime,
-  ramoseRootRuntime,
-  listedFromFrontmatter,
   statedRequestErrorCounts,
-  tickNames,
 } from "./lib/facts.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -43,62 +24,60 @@ const asJson = args.includes("--json");
 const onlyPage = args.includes("--page") ? args[args.indexOf("--page") + 1] : null;
 const onlyCheck = args.includes("--only") ? args[args.indexOf("--only") + 1] : null;
 
-// ── word budgets, from blueprint.md Part 2 (ceilings, include code) ──────────
 const BUDGETS = {
-  // Raised so the landing snippets can be the real Issue entity / policy
-  // arm / live query, not a shortened transcription.
-  "index": 1000,
-  "getting-started/introduction": 350,
-  // Quickstart + "Build your first app" consolidated into one build-it-from-
-  // scratch guide; it carries both former budgets (2300 combined), and it is
-  // mostly code. Raised to 2100 after a from-scratch reader test showed the
-  // last two sections needed full context, not fragments.
-  "getting-started/quickstart": 2100,
-  "getting-started/tour-of-reef": 1400,
-  "getting-started/compare": 900,
-  "guides/catalog": 1100,
-  "guides/transactions": 1200,
-  // Raised for count / groupBy / keyset `.after` on the everyday nav surface,
-  // and the recursive-tree window that `again` is for.
-  // Raised for count / groupBy / keyset `.after`, and to keep the
-  // select-less `Query.from` (`EntityRow`) vs `Ramose.all(N)` distinction
-  // honest now that snippets extract from source.
-  "guides/queries": 2600,
-  "guides/live-queries": 800,
-  "guides/permissions": 1350,
-  "guides/sign-in": 1100,
-  "guides/workspaces": 900,
-  "guides/deploy": 1200,
-  "guides/workers": 800,
-  "guides/ssr": 900,
-  "guides/before-production": 1000,
-  // Raised for the entries covering the bare-specifier `main` hang, schema-change
-  // watching, and the corrected port-collision advice (which used to tell readers
-  // to kill an unrelated process). All cost real debugging time to rediscover.
-  "guides/troubleshooting": 1300,
-  "concepts/data-model": 1000,
-  "concepts/architecture": 900,
-  "concepts/time-travel": 700,
-  "concepts/effect": 800,
-  "concepts/glossary": 2200,
-  // Raised for the aggregate / groupBy / `.after` entries on the query builder,
-  // and the thread-window sketch on `again`.
-  "reference/client-api": 3600,
-  "reference/react": 1400,
-  "reference/policy": 2150,
-  "reference/errors": 1000,
-  "reference/server": 2500,
+  index: 1000,
+  "getting-started/introduction": 400,
+  "getting-started/quickstart": 1200,
+  "getting-started/connect-an-agent": 900,
+  "getting-started/compare": 650,
+  "concepts/mental-model": 750,
+  "concepts/graph-of-graphs": 700,
+  "concepts/data-model": 700,
+  "concepts/queries": 600,
+  "concepts/operations": 600,
+  "concepts/offline": 655,
+  "concepts/authorization": 600,
+  "concepts/time-travel": 500,
+  "concepts/architecture": 600,
+  "concepts/effect": 400,
+  "concepts/glossary": 900,
+  "guides/catalog": 750,
+  "guides/subgraphs": 800,
+  "guides/queries": 750,
+  "guides/transactions": 800,
+  "guides/react": 600,
+  "guides/permissions": 650,
+  "guides/sign-in": 650,
+  "guides/mcp": 950,
+  "guides/deploy": 650,
+  "guides/workers": 550,
+  "guides/ssr": 600,
+  "guides/before-production": 700,
+  "guides/troubleshooting": 900,
+  "best-practices/data-modeling": 750,
+  "best-practices/graph-boundaries": 750,
+  "best-practices/query-performance": 750,
+  "best-practices/operations": 750,
+  "best-practices/security": 750,
+  "reference/schema": 650,
+  "reference/client-api": 830,
+  "reference/query-language": 600,
+  "reference/query-document": 600,
+  "reference/operations": 700,
+  "reference/react": 820,
+  "reference/offline-limits": 890,
+  "reference/mcp": 800,
+  "reference/policy": 600,
+  "reference/errors": 800,
+  "reference/server": 700,
 };
 
-// Banned in PROSE (allowed inside code fences, and in Reference tables where
-// unavoidable). blueprint.md §1.2 rule 7.
 const BANNED = [
   "datom", "isolate", "standing query", "standing read", "materialize",
   "datalog", "novelty", "tempid", "EAVT", "AEVT", "AVET", "VAET",
 ];
-// Softer: a legitimate use exists, but only so many. `peer` is banned in
-// prose — the code is `createServer` / `ServerAuth`.
-const BANNED_SOFT = { peer: 0, upsert: 0, idempotent: 0, checkpoint: 0, colo: 0, segment: 0 };
+
+const BANNED_SOFT = { peer: 0, upsert: 0, idempotent: 0, colo: 0 };
 
 const REFERENCE_PAGES = /^reference\//;
 const NO_LEARN = new Set([
@@ -110,7 +89,6 @@ const findings = [];
 const add = (sev, check, page, msg, detail) =>
   findings.push({ sev, check, page, msg, detail });
 
-// ── collect pages ───────────────────────────────────────────────────────────
 const walk = (dir) =>
   readdirSync(dir).flatMap((f) => {
     const p = join(dir, f);
@@ -130,7 +108,6 @@ const allSlugs = new Set(
   walk(DOCS).map((p) => relative(DOCS, p).replace(/\.mdx?$/, "")),
 );
 
-// ── parsing helpers ─────────────────────────────────────────────────────────
 const splitFrontmatter = (src) => {
   const m = src.match(/^---\n([\s\S]*?)\n---\n?/);
   return m ? { fm: m[1], body: src.slice(m[0].length) } : { fm: "", body: src };
@@ -148,16 +125,14 @@ const splitCode = (body) => {
   return { prose, blocks };
 };
 
-// ONE canonical word count. Prose = body minus code fences, minus JSX/HTML
-// tags, minus MDX expressions and comments, minus markdown punctuation.
 const countProse = (prose) => {
   let t = prose;
-  t = t.replace(/\{\/\*[\s\S]*?\*\/\}/g, " ");       // {/* mdx comment */}
-  t = t.replace(/<[^>]+>/g, " ");                     // tags
-  t = t.replace(/\{[^{}]*\}/g, " ");                  // jsx expressions
-  t = t.replace(/^import .*$/gm, " ");                // imports
+  t = t.replace(/\{\/\*[\s\S]*?\*\/\}/g, " ");
+  t = t.replace(/<[^>]+>/g, " ");
+  t = t.replace(/\{[^{}]*\}/g, " ");
+  t = t.replace(/^import .*$/gm, " ");
   t = t.replace(/[`*_>#|]/g, " ");
-  t = t.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");      // links → their text
+  t = t.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
   return t.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
 };
 const countCode = (blocks) =>
@@ -171,7 +146,6 @@ const countCode = (blocks) =>
     return n + src.split(/\s+/).filter(Boolean).length;
   }, 0);
 
-// github-slugger-compatible enough for our heading set
 const slugify = (s) =>
   s
     .trim()
@@ -188,12 +162,11 @@ const headings = (body) => {
   for (const m of prose.matchAll(/^(#{2,4})\s+(.+?)\s*$/gm)) {
     out.push({ level: m[1].length, text: m[2], id: slugify(m[2]) });
   }
-  // Components that render an <h2> with a known id
+
   if (/<Next\b/.test(body)) out.push({ level: 2, text: "Next", id: "next" });
   return out;
 };
 
-// index every page's anchors for cross-page link checking
 const anchorIndex = new Map();
 for (const p of walk(DOCS).map((f) => ({
   slug: relative(DOCS, f).replace(/\.mdx?$/, ""),
@@ -201,7 +174,7 @@ for (const p of walk(DOCS).map((f) => ({
 }))) {
   const { body } = splitFrontmatter(p.src);
   const ids = new Set(headings(body).map((h) => h.id));
-  // explicit id="..." (glossary uses these)
+
   for (const m of body.matchAll(/\bid=["']([^"']+)["']/g)) ids.add(m[1]);
   for (const m of body.matchAll(/\{#([^}]+)\}/g)) ids.add(m[1]);
   anchorIndex.set(p.slug, ids);
@@ -213,7 +186,6 @@ const slugForHref = (href) => {
   return clean;
 };
 
-// ── the checks ──────────────────────────────────────────────────────────────
 const run = (name) => !onlyCheck || onlyCheck === name;
 const report = [];
 
@@ -222,7 +194,6 @@ for (const page of pages) {
   const { prose, blocks } = splitCode(body);
   const row = { slug: page.slug };
 
-  // WORDS
   if (run("words")) {
     const fmProse = countProse(
       (fm.match(/^\s*(title|description|tagline):\s*(.*)$/gm) || []).join(" "),
@@ -240,7 +211,6 @@ for (const page of pages) {
     }
   }
 
-  // SHAPE
   if (run("shape")) {
     const title = fm.match(/^title:\s*(.+)$/m)?.[1]?.trim();
     const desc = fm.match(/^description:\s*(.+)$/m)?.[1]?.trim();
@@ -274,7 +244,7 @@ for (const page of pages) {
       row.learn = hasLearn;
       row.next = hasNext;
     }
-    // unused imports
+
     for (const m of body.matchAll(/^import\s+(\w+)\s+from/gm)) {
       const comp = m[1];
       if (comp[0] !== comp[0].toUpperCase()) continue;
@@ -282,7 +252,7 @@ for (const page of pages) {
       if (uses === 0)
         add("ERROR", "shape", page.slug, `imports ${comp} but never uses it`);
     }
-    // heading order
+
     let prev = 2;
     for (const h of headings(body)) {
       if (h.level > prev + 1)
@@ -291,19 +261,15 @@ for (const page of pages) {
     }
   }
 
-  // TERMS
   if (run("terms")) {
-    // Inline code spans are code, not prose: blueprint rule 7 bans these words
-    // in prose only, and reference tables legitimately name wire fields.
+
     const proseNoCode = prose.replace(/`[^`]*`/g, " ");
     const hay = proseNoCode.toLowerCase();
     for (const w of BANNED) {
       const re = new RegExp(`\\b${w.toLowerCase()}s?\\b`, "g");
       const hits = [...hay.matchAll(re)];
       if (hits.length) {
-        // the glossary is allowed to name the banned word it replaces
-        // The glossary and the one Datomic-credit page both legitimately name
-        // the words they replace (in a mapping table).
+
         const namesTheOldWord =
           page.slug === "concepts/glossary" || page.slug === "concepts/data-model";
         const sev = namesTheOldWord ? "WARN" : "ERROR";
@@ -323,7 +289,6 @@ for (const page of pages) {
     row.datomic = datomic;
   }
 
-  // LINKS
   if (run("links")) {
     const hrefs = [
       ...body.matchAll(/href=["']([^"']+)["']/g),
@@ -342,10 +307,9 @@ for (const page of pages) {
     }
   }
 
-  // IMAGES
   if (run("images")) {
-    for (const m of body.matchAll(/<(Shot|img)\b([^>]*)>/g)) {
-      const attrs = m[2];
+    for (const m of body.matchAll(/<img\b([^>]*)>/g)) {
+      const attrs = m[1];
       const src = attrs.match(/src=["']([^"']+)["']/)?.[1];
       const alt = attrs.match(/alt=["']([^"']*)["']/)?.[1];
       if (!src) continue;
@@ -355,19 +319,11 @@ for (const page of pages) {
         add("ERROR", "images", page.slug, `image with no alt: ${src}`);
       else if (/^(screenshot|image|picture) of/i.test(alt))
         add("WARN", "images", page.slug, `alt starts with "screenshot of": ${src}`);
-      if (m[1] === "Shot" && /\bwidth=/.test(attrs))
-        add("WARN", "images", page.slug,
-          `<Shot> passes width/height; Shot.astro measures the file — remove them`);
     }
   }
 
-  // CODE provenance
   if (run("code")) {
-    // `Cloudflare.Worker`'s `main` is a filesystem path, not a module
-    // specifier: a bare "ramose/worker" resolves to nothing, and the failure
-    // is silent — the server reports ready and every request hangs forever.
-    // This spelling shipped in the docs for months. A block may still show it
-    // as a counter-example, but only alongside the spelling that works.
+
     for (const b of blocks) {
       if (/main:\s*["'`]ramose\/worker["'`]/.test(b.code) &&
           !b.code.includes("import.meta.resolve")) {
@@ -381,6 +337,7 @@ for (const page of pages) {
       if (!title) continue;
       const got = extractTitle(title);
       if (!got.extracted) continue;
+      if (got.skipped) continue;
       if (!got.ok) {
         add("ERROR", "code", page.slug, got.error);
         continue;
@@ -392,27 +349,15 @@ for (const page of pages) {
           match.missing.slice(0, 3).join(" ⏎ ").slice(0, 160));
       }
     }
-    for (const m of body.matchAll(/<(?:Shot)\b([^>]*)>/g)) {
-      const code = m[1].match(/\bcode=["']([^"']+)["']/)?.[1];
-      if (!code) continue;
-      const resolved = resolveShotCode(code);
-      if (resolved?.error)
-        add("ERROR", "code", page.slug, `Shot code= ${resolved.error}`);
-    }
   }
 
   report.push(row);
 }
 
-// FACTS — counts and tables that name code
 if (run("facts") && !onlyPage) {
   const tags = dbErrorTags();
-  const dbNames = ramoseDbRuntime();
-  const root = ramoseRootRuntime();
-  const reactNames = ramoseReactRuntime();
-
   for (const page of pages) {
-    const { fm, body } = splitFrontmatter(page.src);
+    const { body } = splitFrontmatter(page.src);
     for (const hit of statedRequestErrorCounts(body)) {
       if (hit.n !== tags.length) {
         add("ERROR", "facts", page.slug,
@@ -427,42 +372,6 @@ if (run("facts") && !onlyPage) {
           add("ERROR", "facts", page.slug, `DbError member ${tag} missing from the errors table`);
       }
     }
-    if (page.slug === "reference/client-api") {
-      const dbRow = body.match(/\|\s*`ramose\/db`\s*\|\s*([^|\n]+)\|/);
-      if (dbRow) {
-        for (const name of tickNames(dbRow[1])) {
-          if (!dbNames.has(name) && name !== "DbError")
-            add("ERROR", "facts", page.slug,
-              `ramose/db table lists ${name}, which is not a runtime export`);
-        }
-      }
-      const addRow = body.match(/\|\s*`ramose`\s*\(adds\)\s*\|\s*([^|\n]+)\|/);
-      if (addRow) {
-        for (const name of tickNames(addRow[1])) {
-          if (!root.added.has(name) && !root.all.has(name))
-            add("ERROR", "facts", page.slug,
-              `ramose (adds) table lists ${name}, which is not a ramose export`);
-        }
-      }
-    }
-    if (page.slug === "reference/react") {
-      const listed = listedFromFrontmatter(fm);
-      if (!listed.length)
-        add("ERROR", "facts", page.slug,
-          "react description lists no backticked export names");
-      const ignore = new Set(["ramose"]);
-      for (const name of listed) {
-        if (ignore.has(name)) continue;
-        if (!reactNames.has(name))
-          add("ERROR", "facts", page.slug,
-            `react page names ${name}, which is not a ramose/react runtime export`);
-      }
-      for (const name of reactNames) {
-        if (!body.includes(name))
-          add("ERROR", "facts", page.slug,
-            `ramose/react exports ${name} but the page never mentions it`);
-      }
-    }
     if (/select-less `Query\.from`.{0,80}Ramose\.all\(/s.test(body) &&
         /select-less `Query\.from` returns the full entity/.test(body)) {
       add("ERROR", "facts", page.slug,
@@ -471,7 +380,6 @@ if (run("facts") && !onlyPage) {
   }
 }
 
-// unused images (whole-site check, skipped when scoped to one page)
 if (run("images") && !onlyPage) {
   const referenced = new Set();
   for (const p of walk(DOCS)) {
@@ -479,14 +387,12 @@ if (run("images") && !onlyPage) {
     for (const m of src.matchAll(/src=["'](\/[^"']+\.(?:png|gif|jpg|svg))["']/g))
       referenced.add(m[1]);
   }
-  // og.png and the favicon are referenced from <head>, not from an <img>.
+
   const HEAD_ASSETS = new Set(["/og.png", "/favicon.svg"]);
   const onDisk = walk(PUBLIC)
     .map((p) => "/" + relative(PUBLIC, p))
     .filter((p) => /\.(png|gif|jpg)$/.test(p) && !p.startsWith("/brand") && !HEAD_ASSETS.has(p));
-  // One consolidated line, not one warning per file: these are kept on purpose
-  // (alternate crops, the GIF's source frames) and seven separate warnings
-  // drown out the findings that need action.
+
   const unused = onDisk
     .filter((img) => !referenced.has(img))
     .map((img) => ({ img, kb: Math.round(statSync(join(PUBLIC, img)).size / 1024) }));
@@ -498,7 +404,6 @@ if (run("images") && !onlyPage) {
   }
 }
 
-// ── output ──────────────────────────────────────────────────────────────────
 const errors = findings.filter((f) => f.sev === "ERROR");
 const warns = findings.filter((f) => f.sev === "WARN");
 

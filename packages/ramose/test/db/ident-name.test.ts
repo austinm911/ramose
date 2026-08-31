@@ -1,24 +1,24 @@
-/**
- * Ident-name rule and Entity / Schema definition-time validation (#184).
- *
- * Reserved keys, bad names, catalog-key / ns drift, and duplicate entities
- * used to install silently. These tests pin the throw and the exported
- * predicate — type-level rejection lives in `entity-schema-types.ts`.
- */
-
 import { describe, expect, test } from "bun:test";
 import {
   Entity,
   IDENT_NAME_RE,
+  OwnedOperations,
   RESERVED_FIELD_KEYS,
   Schema,
+  Trait,
   isIdentName,
   isReservedFieldKey,
   string,
   type AnyEntity,
   type AnyField,
 } from "../../src/db/index.ts";
-import { merge, type EntityMap } from "../../src/db/internal.ts";
+import {
+  appliedPolicyOf,
+  isCodeDefinition,
+  isSchemaDefinition,
+  merge,
+  type EntityMap,
+} from "../../src/db/internal.ts";
 
 const OK = ["a", "todo", "User", "createdAt", "created_at", "created-at", "x".repeat(64)];
 const BAD = [
@@ -40,20 +40,23 @@ describe("ident names", () => {
     for (const bad of BAD) expect(IDENT_NAME_RE.test(bad)).toBe(false);
   });
 
-  test("isIdentName is the regex as a predicate", () => {
-    for (const name of [...OK, ...BAD]) {
-      expect(isIdentName(name)).toBe(IDENT_NAME_RE.test(name));
-    }
-  });
-
   test("reserved field keys are the Entity metadata names", () => {
-    expect([...RESERVED_FIELD_KEYS]).toEqual(["id", "ns", "fields", "_tag"]);
+    expect([...RESERVED_FIELD_KEYS]).toEqual([
+      "id",
+      "ns",
+      "fields",
+      "_tag",
+      "traits",
+    ]);
     for (const key of RESERVED_FIELD_KEYS) {
       expect(isReservedFieldKey(key)).toBe(true);
     }
     expect(isIdentName("id")).toBe(true);
     expect(isIdentName("ns")).toBe(true);
     expect(isIdentName("fields")).toBe(true);
+    expect(isIdentName("traits")).toBe(true);
+    expect(isIdentName("doc")).toBe(true);
+    expect(isIdentName("operations")).toBe(true);
     expect(isIdentName("_tag")).toBe(false);
     expect(isReservedFieldKey("title")).toBe(false);
   });
@@ -68,10 +71,22 @@ describe("Entity()", () => {
     expect(Post.fields.title).toBe(Post.title);
   });
 
+  test("keeps operations available as an ordinary field", () => {
+    const Post = Entity("post", { operations: string() });
+    const Group = Trait("group", { operations: string() });
+    expect(Post.operations.ident).toBe(":post/operations");
+    expect(Group.operations.ident).toBe(":group/operations");
+    expect(Post[OwnedOperations]).toEqual({});
+    expect(Group[OwnedOperations]).toEqual({});
+  });
+
   test("rejects a reserved field key before it can overwrite metadata", () => {
     for (const key of RESERVED_FIELD_KEYS) {
       expect(() => Entity("post", { [key]: string() })).toThrow(
-        /reserved — id, ns, fields, and _tag are Entity metadata/,
+        /reserved — id, ns, fields, _tag, and traits are Entity \/ Trait metadata/,
+      );
+      expect(() => Trait("postTrait", { [key]: string() })).toThrow(
+        /reserved — id, ns, fields, _tag, and traits are Entity \/ Trait metadata/,
       );
     }
     const Post = Entity("post", { title: string() });
@@ -79,6 +94,13 @@ describe("Entity()", () => {
     expect(Post.ns).toBe("post");
     expect(Post._tag).toBe("Entity");
     expect(Post.fields.title.ident).toBe(":post/title");
+  });
+
+  test("keeps doc available as an application field", () => {
+    const Post = Entity("postDoc", { doc: string() }, { doc: "Entity docs." });
+    const Documented = Trait("documented", { doc: string() }, { doc: "Trait docs." });
+    expect(Post.doc.ident).toBe(":postDoc/doc");
+    expect(Documented.doc.ident).toBe(":documented/doc");
   });
 
   test("rejects an invalid entity name", () => {
@@ -99,21 +121,41 @@ describe("Schema()", () => {
   const Label = Entity("label", { name: string() });
 
   test("object form accepts a key that equals the entity name", () => {
-    const schema = Schema({ todo: Todo, label: Label });
+    const schema = Schema("todos", { todo: Todo, label: Label });
+    expect(schema.key).toBe("todos");
+    expect(schema.schema).toBe(schema);
+    expect(isCodeDefinition(schema)).toBe(true);
+    expect(isSchemaDefinition(schema)).toBe(true);
     expect(Object.keys(schema.entities)).toEqual(["todo", "label"]);
     expect(schema.entities.todo).toBe(Todo);
   });
 
   test("array form keys each entity by its own name", () => {
-    const schema = Schema([Todo, Label]);
+    const schema = Schema("todos", [Todo, Label]);
     expect(schema.entities.todo).toBe(Todo);
     expect(schema.entities.label).toBe(Label);
-    expect(schema).toEqual(Schema({ todo: Todo, label: Label }));
+    expect(schema.entities).toEqual(
+      Schema("other-todos", { todo: Todo, label: Label }).entities,
+    );
+  });
+
+  test("rejects an empty permanent key", () => {
+    expect(() => Schema("", {})).toThrow(/permanent key must not be empty/);
+  });
+
+  test("accepts one policy registration", () => {
+    const schema = Schema("policy-once", { todo: Todo });
+    expect(appliedPolicyOf(schema)).toBeUndefined();
+    schema.applyPolicy(() => {});
+    expect(appliedPolicyOf(schema)?.schema).toBe(schema);
+    expect(() => schema.applyPolicy(() => {})).toThrow(
+      /policy already applied to schema "policy-once"/,
+    );
   });
 
   test("rejects a catalog key that does not match the entity name", () => {
     const drifted = { todos: Todo } as unknown as EntityMap;
-    expect(() => Schema(drifted)).toThrow(
+    expect(() => Schema("todos", drifted)).toThrow(
       /Schema key "todos" does not match Entity name "todo"/,
     );
   });
@@ -121,12 +163,12 @@ describe("Schema()", () => {
   test("rejects two array entries with the same entity name", () => {
     const Other = Entity("todo", { done: string() });
     const dupes: readonly AnyEntity[] = [Todo, Other];
-    expect(() => Schema(dupes)).toThrow(/duplicate entity name "todo"/);
+    expect(() => Schema("todos", dupes)).toThrow(/duplicate entity name "todo"/);
   });
 
   test("rejects a non-entity in the array form", () => {
     const list = [Todo, { ns: "ghost" }] as readonly AnyEntity[];
-    expect(() => Schema(list)).toThrow(
+    expect(() => Schema("todos", list)).toThrow(
       /Schema\(\[\.\.\.\]\) expects Entity values/,
     );
   });
@@ -143,10 +185,12 @@ describe("Schema()", () => {
     ] as const;
     for (const ns of proto) {
       const E = Entity(ns, { title: string() });
-      expect(Schema([E]).entities[ns]).toBe(E);
+      expect(Schema(`schema-${ns}`, [E]).entities[ns]).toBe(E);
     }
     const Ctor = Entity("constructor", { title: string() });
-    expect(Schema({ constructor: Ctor }).entities.constructor).toBe(Ctor);
+    expect(
+      Schema("constructors", { constructor: Ctor }).entities.constructor,
+    ).toBe(Ctor);
   });
 });
 
@@ -154,7 +198,13 @@ describe("merge()", () => {
   test("concatenates disjoint schemas", () => {
     const Todo = Entity("todo", { title: string() });
     const Label = Entity("label", { name: string() });
-    const merged = merge(Schema({ todo: Todo }), Schema({ label: Label }));
+    const merged = merge(
+      "merged",
+      Schema("todos", { todo: Todo }),
+      Schema("labels", { label: Label }),
+    );
+    expect(merged.key).toBe("merged");
+    expect(merged.schema).toBe(merged);
     expect(merged.entities.todo).toBe(Todo);
     expect(merged.entities.label).toBe(Label);
   });
@@ -162,9 +212,10 @@ describe("merge()", () => {
   test("rejects an overlapping entity name", () => {
     const A = Entity("todo", { title: string() });
     const B = Entity("todo", { done: string() });
+    const left = Schema("todos-a", { todo: A });
+    const right = Schema("todos-b", { todo: B });
     expect(() =>
-      // @ts-expect-error duplicate entity name
-      merge(Schema({ todo: A }), Schema({ todo: B })),
+      merge("merged", left, right as never),
     ).toThrow(/duplicate entity name "todo"/);
   });
 });

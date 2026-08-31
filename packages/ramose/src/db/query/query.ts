@@ -1,25 +1,9 @@
-/**
- * `Query.q(body)` — one constructor, one kind of object.
- *
- * A query is a rule: a body of kernel clauses plus a projection. The body
- * is a generator that returns the projection, or a function returning a
- * closed pipeline — two spellings of the same value, so escalating from
- * pipe to generator is un-sugaring, never rewriting.
- *
- * Output is inferred: the type of one return expression. Queries compose
- * one way — generator delegation — at three altitudes: `yield* frag(handle)`
- * (build-inlined fragment), `yield* q.open()` (a whole closed query as a
- * subquery), and `Query.rule` (engine-expanded, which is what makes
- * recursion work). Effect appears nowhere here: a built query is inert
- * data — hashable for live identity, stable as a hook dependency — and
- * computation starts at `db.query`.
- */
-
 import { PREDICATES, vkey } from "../../internal/core/query/builtins.ts";
-import { TX_BASE } from "../../internal/core/schema.ts";
+import { RAMOSE_TYPE_IDENT, TX_BASE } from "../../internal/core/schema.ts";
 import { makeEid, type Eid } from "../Eid.ts";
 import { InvalidRequest, NotOne } from "../Errors.ts";
-import type { AnyEntity } from "../Entity.ts";
+import { isMutationRef } from "../refs.ts";
+import type { AnyComposer } from "../Composer.ts";
 import {
   lowerOrderPath,
   requiredClauses,
@@ -38,6 +22,8 @@ import {
   isAgain,
   isAllShape,
   lowerPullPattern,
+  mapPullEntityIds,
+  pullReshapeIdentity,
   reshapePullResult,
 } from "../Pull.ts";
 import {
@@ -75,8 +61,6 @@ import {
   type Var,
 } from "./kernel.ts";
 
-// ── keyset paging ───────────────────────────────────────────────────────────
-
 /**
  * Where a page ended — feed it to `q.after` to get the next one. Opaque: the
  * `keys` are the last row's sort-key values (the entity-id tie-breaker
@@ -87,7 +71,6 @@ import {
  */
 export interface Cursor {
   readonly _tag: "Cursor";
-  /** @internal One value per lowered `:order` key, the tie-breaker last. */
   readonly keys: readonly unknown[];
 }
 
@@ -108,13 +91,12 @@ export interface Page<Row = unknown> {
   readonly cursor: Cursor | null;
 }
 
-// ── the pipeline value (built by `entities` + the pipe stages in lib.ts) ────
-
 export type BuiltOrder =
   | {
       readonly kind: "path";
       readonly path: readonly string[];
       readonly revs: readonly boolean[];
+      readonly ref: boolean;
       readonly dir: OrderDir;
       readonly empty: OrderEmpty;
     }
@@ -125,12 +107,15 @@ export type BuiltOrder =
       readonly empty: OrderEmpty;
     };
 
-/** Extra aggregate cells on a `select` — a record, or a callback of the focus. */
 export type SelectExtra = CellRecord | ((focus: AnyVar) => CellRecord);
 
 export type PipeStage =
   | { readonly kind: "frag"; readonly frag: Fragment<AnyVar, unknown> }
-  | { readonly kind: "select"; readonly shape: Shape; readonly extra?: SelectExtra }
+  | {
+      readonly kind: "select";
+      readonly shape: Shape;
+      readonly extra?: SelectExtra | undefined;
+    }
   | {
       readonly kind: "orderBy";
       readonly key: string | PathCarrier;
@@ -141,11 +126,6 @@ export type PipeStage =
   | { readonly kind: "offset"; readonly n: number }
   | { readonly kind: "ids" };
 
-/**
- * What {@link QueryObject.orderBy} accepts: a selected column name, an
- * attribute path, a bound var / aggregate cell, or a picker of a projected
- * cell (`r => r.n`).
- */
 export type QueryOrderKey<Row = unknown> =
   | (string & keyof Row)
   | AnyVar
@@ -169,7 +149,7 @@ export interface QueryOrder {
  * body the same value is a clause source: `yield* entities(Issue)`
  * mints the branded focus var and contributes membership.
  */
-export interface Pipeline<Row = unknown, N extends AnyEntity = AnyEntity> {
+export interface Pipeline<Row = unknown, N extends AnyComposer = AnyComposer> {
   readonly _tag: "Pipeline";
   readonly ns: N;
   readonly stages: readonly PipeStage[];
@@ -180,15 +160,12 @@ export interface Pipeline<Row = unknown, N extends AnyEntity = AnyEntity> {
 export const isPipeline = (x: unknown): x is Pipeline =>
   typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "Pipeline";
 
-/** A projection of bare ids: the pipe surface with no `select`. */
 interface IdsSpec {
   readonly _tag: "idsSpec";
   readonly v: AnyVar;
 }
 const isIdsSpec = (x: unknown): x is IdsSpec =>
   typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "idsSpec";
-
-// ── the query value ─────────────────────────────────────────────────────────
 
 /** What `yield* q.open(p)` answers: the focus to keep constraining, and the
  * opened query's projected columns to keep (or extend). `cols` is typed as
@@ -205,19 +182,6 @@ interface OpenCommand<Row> extends SpliceCommand {
   [Symbol.iterator](): Iterator<never, OpenResult<Row>, any>;
 }
 
-/**
- * A closed query value: a body, runnable by `db.query` / `db.live` and
- * delegable into other builds via {@link QueryObject.open}. `Row` is the
- * inferred row; `Out` is what a terminal resolves to — the rows array by
- * default, one row (or `null`) after {@link QueryObject.one} /
- * {@link QueryObject.oneOrFail}, a {@link Page} after
- * {@link QueryObject.after}, a scalar after {@link Q.value}.
- *
- * `Term` distinguishes a body-derived scalar (`Q.value`) from cursor
- * terminals that also set `Out` (`one` / `oneOrFail` / `after`), so
- * {@link QueryObject.logic} can reset the latter to the rows array
- * without lying about the former.
- */
 type QueryTerm = "rows" | "value" | "one" | "oneOrFail" | "after";
 
 export interface QueryObject<
@@ -226,85 +190,38 @@ export interface QueryObject<
   Term extends QueryTerm = "rows",
 > {
   readonly _tag: "Query";
-  /** @internal provenance: re-run per inclusion, so vars stay hygienic */
   readonly body: () => unknown;
-  /** @internal `logic()` strips cursor stages instead of failing `open` */
   readonly stripCursor: boolean;
-  /** @internal `one()` / `oneOrFail()` — forced `limit 1`/`2`, unwrapped. */
   readonly take: "one" | "oneOrFail" | undefined;
-  /** @internal the keyset cursor `after(...)` seeks past; `null` is page one. */
   readonly seek: Cursor | null | undefined;
-  /** @internal `orderBy` keys stored on the query value (both spellings). */
   readonly orders: readonly QueryOrder[];
-  /** @internal `limit(n)` stored on the query value. */
   readonly limitN: number | undefined;
-  /** @internal `offset(n)` stored on the query value. */
   readonly offsetN: number | undefined;
 
-  /**
-   * Delegate this whole query into an enclosing build: its clauses inline,
-   * and it answers `{ focus, cols }` to keep constraining. Cursor terminals
-   * don't delegate: extend then order, or strip with {@link QueryObject.logic}.
-   */
   open(): OpenCommand<Row>;
 
-  /** This query without its cursor (orderBy/limit/offset/one/after) — the
-   * logic composes; the cursor was post-processing for the outermost query.
-   * Body-derived `Q.value` scalars stay scalars; `one` / `oneOrFail` /
-   * `after` reset to the rows array. */
   logic(): QueryObject<
     Row,
     Term extends "value" ? Out : readonly Row[],
     Term extends "value" ? "value" : "rows"
   >;
 
-  /**
-   * Sort by a selected column, an attribute path, a bound var / projected
-   * cell, or a picker of one (`r => r.n`). Reaches both the fluent chain
-   * and `Query.q` generator values. The fluent override keeps row-typed
-   * string keys (`keyof Row`) and focus-typed attributes.
-   */
   orderBy(key: (row: Row) => unknown, dir?: OrderDir, opts?: { readonly empty?: OrderEmpty }): QueryObject<Row, Out, Term>;
   orderBy(
-    // `any` so FluentQuery's row-typed override stays assignable to
-    // `QueryObject<any>` (`AnyQueryObject`); the fluent chain keeps
-    // `keyof Row` / `FocusAttr<N>` checking.
     key: any,
     dir?: OrderDir,
     opts?: { readonly empty?: OrderEmpty },
   ): QueryObject<Row, Out, Term>;
 
-  /** Keep at most `n` rows. */
   limit(n: number): QueryObject<Row, Out, Term>;
 
-  /** Drop `n` rows from the front of the (ordered) result. */
   offset(n: number): QueryObject<Row, Out, Term>;
 
-  /**
-   * At most one row. Lowering forces `limit 1`; the result is that row or
-   * `null`, the same absence `db.pull` uses. Extra matches are not fetched.
-   */
   one(): QueryObject<Row, Row | null, "one">;
-  /**
-   * Exactly one row. Lowering forces `limit 2` so a second match is
-   * witnessed without pulling a whole page, and `db.query` fails with `NotOne`
-   * when the peer answers zero or two.
-   */
   oneOrFail(): QueryObject<Row, Row, "oneOrFail">;
-  /**
-   * Keyset-page a sorted query: the result becomes a {@link Page}, whose
-   * `cursor` is where it ended — pass `null` for the first page and the
-   * previous page's cursor after that. Needs an `orderBy` (the cursor is a
-   * position in the sort); the entity id rides as a final tie-breaker, so
-   * rows that tie on every key still land on exactly one page. The seek is
-   * the peer's: `limit(n)` is n rows *past* the cursor, and unlike `offset`
-   * the walk does not shift when rows are inserted before it.
-   */
   after(cursor: Cursor | null): QueryObject<Row, Page<Row>, "after">;
 
-  /** Phantom — the inferred row. Never present at runtime. */
   readonly _row?: Row;
-  /** Phantom — what a terminal resolves to. Never present at runtime. */
   readonly _out?: Out;
 }
 
@@ -329,30 +246,20 @@ export type Rows<Q> = readonly Row<Q>[];
 export const isQueryObject = (x: unknown): x is AnyQueryObject =>
   typeof x === "object" && x !== null && (x as { _tag?: unknown })._tag === "Query";
 
-/** What one build pass of a query value produced. */
 interface Built {
   readonly clauses: BClause[];
   readonly proj: Exclude<Projection, DistinctSpec<any>> | IdsSpec;
-  /** The select/pipeline focus — what `open` hands back, and what the
-   * cursor's sort paths walk from. */
   readonly focus: AnyVar | undefined;
   readonly order: readonly BuiltOrder[];
   readonly limit: number | undefined;
   readonly offset: number | undefined;
-  /** Ident-path → group-key var from `expandShapeToCells` (nested hops
-   * included). Empty when the projection is not `select(shape, extras)`. */
   readonly groupKeys: ReadonlyMap<string, AnyVar>;
-  /** `Q.distinct(...)` — unique projected tuples, no row-provenance `:with`. */
   readonly distinct: boolean;
 }
 
-/** Fingerprint a sort path so an attribute-key `orderBy` can reuse the
- * group-key var `expandShapeToCells` already bound into `:find`. */
 const groupKeyId = (path: readonly string[], revs: readonly boolean[]): string =>
   path.map((ident, i) => `${revs[i] ? "~" : ""}${ident}`).join("\0");
 
-/** A pipe `orderBy("col")` that names a group key — resolved to a cell
- * after `expandShapeToCells` binds the var. */
 type ShapeKeyOrder = {
   readonly kind: "shapeKey";
   readonly key: string;
@@ -365,7 +272,6 @@ type PendingOrder = BuiltOrder | ShapeKeyOrder;
 const isGen = (x: unknown): x is QueryGen<unknown> =>
   typeof x === "object" && x !== null && typeof (x as Iterator<unknown>).next === "function";
 
-/** Run the body once, collecting into `ctx`. */
 const runInto = (
   qv: AnyQueryObject,
   ctx: BuildCtx,
@@ -495,9 +401,6 @@ const assemblePipeline = (pipe: Pipeline, ctx: BuildCtx, stripCursor: boolean): 
   };
 };
 
-/** Turn leftover `shapeKey` placeholders into real `BuiltOrder`s — or a
- * curated error. `ids()` / a later `select` can flip the projection after
- * `resolveOrderKey` already queued a placeholder. */
 const finalizePendingOrders = (
   order: readonly PendingOrder[],
   select: Shape | undefined,
@@ -560,10 +463,9 @@ const orderKeyFromSelectColumn = (
       `ramose/query: orderBy(${path.join(" → ")}) crosses a cardinality-many attribute — the sort key would be a set, not a value`,
     );
   }
-  return { kind: "path", path, revs: revsOf(carrier), dir, empty };
+  return { kind: "path", path, revs: revsOf(carrier), ref: isRefCarrier(carrier), dir, empty };
 };
 
-/** A sort key: a selected column's name, or an attr path directly. */
 const resolveOrderKey = (
   st: Extract<PipeStage, { kind: "orderBy" }>,
   select: Shape | undefined,
@@ -579,9 +481,6 @@ const resolveOrderKey = (
     if ((select as Record<string, unknown>)[st.key] === undefined) {
       throw new Error(`ramose/query: orderBy("${st.key}") — the select shape has no column "${st.key}"`);
     }
-    // `select(shape, extras)` already bound this group key — reuse that
-    // var after expand. A later `ids()` / `select` can drop extras; leftover
-    // placeholders are resolved or rejected in `finalizePendingOrders`.
     if (extra !== undefined) {
       return { kind: "shapeKey", key: st.key, dir: st.dir, empty: st.empty };
     }
@@ -594,13 +493,22 @@ const resolveOrderKey = (
       `ramose/query: orderBy(${path.join(" → ")}) crosses a cardinality-many attribute — the sort key would be a set, not a value`,
     );
   }
-  return { kind: "path", path, revs: revsOf(carrier), dir: st.dir, empty: st.empty };
+  return {
+    kind: "path",
+    path,
+    revs: revsOf(carrier),
+    ref: isRefCarrier(carrier),
+    dir: st.dir,
+    empty: st.empty,
+  };
 };
 
 const isPathCarrier = (x: unknown): x is PathCarrier =>
   typeof x === "object" && x !== null && typeof (x as { ident?: unknown }).ident === "string";
 
-/** Bind a select shape as group-key cells (aggregates cannot group by a pull). */
+const isRefCarrier = (carrier: PathCarrier): boolean =>
+  (carrier as { readonly valueType?: unknown }).valueType === "ref";
+
 const expandShapeToCells = (
   focus: AnyVar,
   shape: Shape,
@@ -652,10 +560,6 @@ const expandShapeToCells = (
   return cells;
 };
 
-/** A group-key var for one shape leaf. `:db/id` is a distinct value var
- * (not the entity var — that would wrap `{ id }` and collide with
- * `Q.count` of the same focus in the find spec). Optional / defaulted
- * fields or-join so a missing datom is still a group. */
 const bindGroupKey = (
   focus: AnyVar,
   attr: PathCarrier,
@@ -663,7 +567,7 @@ const bindGroupKey = (
   ctx: BuildCtx,
 ): AnyVar => {
   if (attr.ident === ":db/id") {
-    const id = mkVar("value");
+    const id = mkVar("id");
     ctx.clauses.push(Q.fact(focus, attr, id));
     return id;
   }
@@ -698,8 +602,6 @@ const bindGroupKey = (
     return v;
   }
   if (info.reverse) {
-    // Bind the referring entity — `Q.fact(Q._, attr, focus)` would reuse
-    // `focus` as the value var and group by the select root.
     ctx.clauses.push(Q.fact(v, attr, focus));
     return v;
   }
@@ -708,8 +610,6 @@ const bindGroupKey = (
   return cmd.handle.v;
 };
 
-/** Prefix parent hops onto a nested leaf so `orderBy(r => r.owner.name)`
- * walks from the select focus, not the leaf's own entity. */
 const extendPath = (parent: PathCarrier, leaf: PathCarrier): PathCarrier => ({
   ident: leaf.ident,
   cardinality: leaf.cardinality,
@@ -741,9 +641,6 @@ const pullShapeCells = (shape: Shape, parent?: PathCarrier): Record<string, unkn
   for (const [key, field] of Object.entries(shape)) {
     const info = inspectPullField(field);
     const attr = info.attr as PathCarrier | undefined;
-    // Nested `.select({...})` leaves start at the child entity. Prefix the
-    // parent hops so `orderBy(r => r.owner.name)` walks from the focus
-    // (`:issue/owner` then `:user/name`), not `:user/name` off the Issue.
     const fromFocus =
       parent !== undefined && attr !== undefined && typeof attr.ident === "string"
         ? extendPath(parent, attr)
@@ -771,9 +668,6 @@ const projectionCells = (proj: Projection | IdsSpec): unknown => {
   return isRowsSpec(proj) ? proj.cells : proj;
 };
 
-// ── Query.q ─────────────────────────────────────────────────────────────────
-
-/** What a body may produce. */
 export type QueryBody<P, Prj> = (p: P) => QueryGen<Prj> | Pipeline<any>;
 
 type RowFromBody<B> = B extends () => infer Out
@@ -878,8 +772,6 @@ export function q<B extends () => QueryGen<any> | Pipeline<any>>(
   >(body, false);
 }
 
-// ── named rules ─────────────────────────────────────────────────────────────
-
 interface RuleBuilt {
   readonly headVars: readonly AnyVar[];
   readonly retVar: AnyVar | undefined;
@@ -896,7 +788,6 @@ export interface RuleValue {
   (...args: readonly Position[]): SpliceCommand;
   readonly _tag: "QueryRule";
   readonly ruleName: string;
-  /** @internal memoized head/body build */
   ensureBuilt(): RuleBuilt;
 }
 
@@ -963,8 +854,6 @@ export function rule(name: string, body: (...vars: never[]) => QueryGen<unknown>
   return self as RuleValue;
 }
 
-// ── open (whole-query delegation) ───────────────────────────────────────────
-
 const openCommand = <Row>(qv: AnyQueryObject): OpenCommand<Row> => {
   const cmd: OpenCommand<Row> = {
     _tag: "splice",
@@ -1006,8 +895,6 @@ const openCommand = <Row>(qv: AnyQueryObject): OpenCommand<Row> => {
   return cmd;
 };
 
-// ── derived transformers ────────────────────────────────────────────────────
-
 /**
  * Lift an enricher generator into a query transformer: the query-level
  * generics live here, never in user code. The enricher sees the opened
@@ -1038,27 +925,39 @@ export const refine =
       false,
     );
 
-// ── lowering ────────────────────────────────────────────────────────────────
+export type QueryLowering = {
+  readonly entity?: ((eid: number) => unknown) | undefined;
+  readonly resolveEntity?: ((id: unknown) => number | undefined) | undefined;
+};
+
+export const symbolicIdentityLowering = (): {
+  readonly lowering: QueryLowering;
+  readonly identities: readonly unknown[];
+} => {
+  const identities: unknown[] = [];
+  return {
+    lowering: { resolveEntity: (id) => -identities.push(id) },
+    identities,
+  };
+};
 
 export interface LoweredKernelQuery {
-  /** The JS-form wire query (`find`/`where`/`rules`/`order`/`limit`/`offset`). */
   readonly query: Record<string, unknown>;
-  /** Reshape the peer's raw result rows into the query's rows. */
+  readonly shape: string;
+  readonly rowShape: string;
   readonly finalize: (result: unknown) => unknown;
+  readonly result: "page" | "row" | "rows";
+  readonly bindsEntities: boolean;
 }
 
-/** One projected column, flattened: where it lives in the row, how it
- * lowers into `:find`, and how its cell reads back. `agg` names the
- * aggregate fn when the cell is one — an all-agg projection synthesizes
- * the empty-set row from it. */
 interface FlatCell {
   readonly path: readonly string[];
   readonly elem: unknown;
   readonly read: (cell: unknown) => unknown;
   readonly agg?: AggSpec["fn"];
+  readonly plan?: unknown;
 }
 
-/** Each aggregate's answer over no rows at all: the fn over the empty set. */
 const EMPTY_AGG: Record<AggSpec["fn"], unknown> = {
   count: 0,
   "count-distinct": 0,
@@ -1076,6 +975,17 @@ const unwrapEidLike = (v: unknown): unknown =>
     ? (v as { id: number }).id
     : v;
 
+const namedEntity = (v: unknown): unknown => {
+  if (typeof v !== "object" || v === null) return v;
+  const id = (v as { id?: unknown }).id;
+  return typeof id === "string" || typeof id === "number" ? id : v;
+};
+
+const isRefAttr = (attr: { readonly ident: string } | undefined): boolean =>
+  attr !== undefined && (attr as { valueType?: unknown }).valueType === "ref";
+
+const UNRESOLVED: unique symbol = Symbol("ramose/query/unplaceable-entity");
+
 const regexSource = (re: RegExp | string): string => {
   if (typeof re === "string") return re;
   if (re.flags !== "") {
@@ -1086,18 +996,15 @@ const regexSource = (re: RegExp | string): string => {
   return re.source;
 };
 
-/** The lowered wire AST — the same JSON `db.query` sends. */
 export const lowerQueryAst = (qv: AnyQueryObject): Record<string, unknown> =>
   lowerQueryObject(qv).query;
 
-/**
- * Lower, or throw {@link InvalidRequest}. `db.query` / `db.live` / an
- * operation's `q` handle share this so a query that cannot lower is a
- * 400 everywhere, not a 500 on the op path.
- */
-export const tryLowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
+export const tryLowerQueryObject = (
+  qv: AnyQueryObject,
+  lowering?: QueryLowering,
+): LoweredKernelQuery => {
   try {
-    return lowerQueryObject(qv);
+    return lowerQueryObject(qv, lowering);
   } catch (e) {
     if (e instanceof InvalidRequest) throw e;
     throw new InvalidRequest({
@@ -1106,31 +1013,37 @@ export const tryLowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   }
 };
 
-export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
+export const lowerQueryObject = (
+  qv: AnyQueryObject,
+  lowering?: QueryLowering,
+): LoweredKernelQuery => {
+  const entityId = lowering?.entity ?? ((eid: number) => makeEid(eid));
+  let bindsEntities = false;
   resetGensym();
   const ctx: BuildCtx = { clauses: [] };
   const built = runInto(qv, ctx, qv.stripCursor);
 
   const names = new Map<number, string>();
+  const kinds = new Map<string, AnyVar["kind"]>();
   let seq = 0;
   const nameOf = (v: AnyVar): string => {
     let n = names.get(v.id);
     if (n === undefined) {
       n = `?q${seq++}`;
       names.set(v.id, n);
+      kinds.set(n, v.kind);
     }
     return n;
   };
   let blanks = 0;
   const freshName = (prefix: string): string => `?q${prefix}${blanks++}`;
 
-  // ── rules registry ───────────────────────────────────────────────────────
   interface RuleEntry {
     readonly wireName: string;
     readonly hasRet: boolean;
   }
   const byRule = new Map<RuleValue, RuleEntry>();
-  const byNs = new Map<AnyEntity, RuleEntry>();
+  const byNs = new Map<AnyComposer, RuleEntry>();
   const takenNames = new Map<string, unknown>();
   const ruleDefs: unknown[] = [];
 
@@ -1148,7 +1061,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     const b = r.ensureBuilt();
     const entry: RuleEntry = { wireName: r.ruleName, hasRet: b.retVar !== undefined };
     claimName(r.ruleName, r);
-    byRule.set(r, entry); // before the body lowers: self-reference lands here
+    byRule.set(r, entry);
     const headVars = b.retVar === undefined ? b.headVars : [...b.headVars, b.retVar];
     const head = [r.ruleName, ...headVars.map(nameOf)];
     const clauses = lowerClauses(b.clauses, varSet(headVars));
@@ -1156,7 +1069,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     return entry;
   };
 
-  const registerMembership = (ns: AnyEntity): RuleEntry => {
+  const registerMembership = (ns: AnyComposer): RuleEntry => {
     const seen = byNs.get(ns);
     if (seen) return seen;
     const wireName = `is${ns.ns.charAt(0).toUpperCase()}${ns.ns.slice(1)}`.replace(/[^A-Za-z0-9_]/g, "_");
@@ -1164,12 +1077,19 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     const entry: RuleEntry = { wireName, hasRet: false };
     byNs.set(ns, entry);
     const e = freshName("m");
-    const idents = Object.values(ns.fields).map((a) => (a as { ident: string }).ident);
-    ruleDefs.push([[wireName, e], ["or", ...idents.map((ident) => [e, ident, "_"])]]);
+    if (ns._tag === "Trait") {
+      const type = freshName("type");
+      ruleDefs.push([
+        [wireName, e],
+        [e, RAMOSE_TYPE_IDENT, type],
+        [["ramose-trait?", e, type, `:${ns.ns}`]],
+      ]);
+    } else {
+      ruleDefs.push([[wireName, e], [e, RAMOSE_TYPE_IDENT, `:${ns.ns}`]]);
+    }
     return entry;
   };
 
-  // ── var usage (for join lists and ret-var checks) ────────────────────────
   const varSet = (vs: readonly AnyVar[]): Set<number> => new Set(vs.map((v) => v.id));
 
   const factVars = (c: FactCommand<any>, into: Set<number>): void => {
@@ -1212,11 +1132,45 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     return into;
   };
 
-  // ── positions ────────────────────────────────────────────────────────────
-  const lowerConst = (v: unknown, _use: string): unknown => unwrapEidLike(v);
+  const resolveIdentity = lowering?.resolveEntity;
 
-  /** e/v/tx/op position of a fact: a var name, a constant, or "_". */
-  const lowerPos = (v: unknown, use: string): unknown => {
+  const lowerEntityConst = (v: unknown, use: string): unknown => {
+    const named = namedEntity(v);
+    if (typeof named !== "string") {
+      if (typeof named === "object" && named !== null && !Array.isArray(named)) {
+        throw new InvalidRequest({
+          message:
+            `ramose/query: ${use} takes an entity — an entity id, or the row cell that carries one`,
+        });
+      }
+      return unwrapEidLike(named);
+    }
+    bindsEntities = true;
+    if (resolveIdentity === undefined) {
+      throw new InvalidRequest({
+        message:
+          `ramose/query: ${use} names an entity by its opaque identity, and an identity is only meaningful against the replica it was issued to — ask this question through a client's own query`,
+      });
+    }
+    const eid = resolveIdentity(named);
+    return eid === undefined ? UNRESOLVED : eid;
+  };
+
+  const refuseIdentity = (v: unknown, use: string): void => {
+    if (!isMutationRef(v)) return;
+    throw new InvalidRequest({
+      message:
+        `ramose/query: an entity identity is not a value for ${use} — only a reference holds an entity; compare the reference itself`,
+    });
+  };
+
+  const lowerConst = (v: unknown, use: string, entity = false): unknown => {
+    if (entity) return lowerEntityConst(v, use);
+    refuseIdentity(v, use);
+    return unwrapEidLike(v);
+  };
+
+  const lowerPos = (v: unknown, use: string, entity = false): unknown => {
     if (v === undefined || isBlank(v)) return "_";
     if (isVar(v)) return nameOf(v);
     if (isAggSpec(v)) {
@@ -1224,19 +1178,20 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
         `ramose/query: an aggregate cell is not a value for ${use} — an aggregate exists only after grouping, as a projected cell or a top-level comparison operand`,
       );
     }
-    return lowerConst(v, use);
+    return lowerConst(v, use, entity);
   };
 
-  const neverClause = (): unknown[] => [["ground", []], [freshName("n"), "..."]];
+  const groundNothing = (name: string): unknown[] => [["ground", []], [name, "..."]];
 
-  // ── clauses ──────────────────────────────────────────────────────────────
+  const neverClause = (): unknown[] => groundNothing(freshName("n"));
+
   const lowerClauses = (list: readonly BClause[], outer: Set<number>): unknown[] => {
     const out: unknown[] = [];
     for (const c of list) {
       switch (c._tag) {
         case "fact": {
-          const clause = lowerFact(c);
-          if (clause !== undefined) out.push(clause);
+          const clauses = lowerFact(c);
+          if (clauses !== undefined) out.push(...clauses);
           break;
         }
         case "cmp":
@@ -1249,8 +1204,6 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
           ]);
           break;
         case "memberOf": {
-          // entailment skip: a sibling fact already constrains this var
-          // through one of the namespace's attrs, so membership is implied
           const prefix = `:${c.ns.ns}/`;
           const entailed = list.some(
             (s) =>
@@ -1319,7 +1272,6 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     return out;
   };
 
-  /** Recover the var object for a join id (it is inside the group). */
   const findVar = (group: BClause, id: number): AnyVar => {
     let found: AnyVar | undefined;
     const scan = (list: readonly BClause[]): void => {
@@ -1365,14 +1317,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
 
   const isWireVar = (x: unknown): x is string => typeof x === "string" && x.startsWith("?");
 
-  /**
-   * `:db/id` is not an attribute — the engine's `requireAttr` / `resolveAttrConst`
-   * throw `unknown attribute :db/id` if we emit `[e, ":db/id", v]`. The id *is*
-   * the entity, so this unifies the e-position with the value: a constant
-   * binds the var via `ground` (the same primitive `Q.in` uses); two vars
-   * share a name; blanks are a no-op (every entity has an id).
-   */
-  const lowerIdFact = (c: FactCommand<any>): unknown[] | undefined => {
+  const lowerIdFact = (c: FactCommand<any>): readonly unknown[][] | undefined => {
     if (c.txVar !== undefined || c.opVar !== undefined) {
       throw new Error(
         "ramose/query: :db/id is the entity's identity, not a datom — it has no tx or op position",
@@ -1384,45 +1329,56 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       const eName = names.get(ePos.id);
       const vName = names.get(vPos.id);
       if (eName !== undefined && vName !== undefined) {
-        // identity binds the value var to the eid; `=` would require both
-        // already bound and leave a projected id cell unbound.
-        return eName === vName ? undefined : [["identity", eName], vName];
+        return eName === vName ? undefined : [[["identity", eName], vName]];
       }
       const n = eName ?? vName ?? nameOf(ePos);
       names.set(ePos.id, n);
       names.set(vPos.id, n);
       return undefined;
     }
-    const e = lowerPos(ePos, "an entity position");
-    const v = lowerPos(vPos, ":db/id's value");
+    const e = lowerPos(ePos, "an entity position", true);
+    const v = lowerPos(vPos, ":db/id's value", true);
+    if (e === UNRESOLVED || v === UNRESOLVED) {
+      const bound = [e, v].find(isWireVar);
+      return [bound === undefined ? neverClause() : groundNothing(bound)];
+    }
     if (e === v || e === "_" || v === "_") return undefined;
-    if (isWireVar(e) && !isWireVar(v)) return [["ground", v], e];
-    if (isWireVar(v) && !isWireVar(e)) return [["ground", e], v];
-    return neverClause();
+    if (isWireVar(e) && !isWireVar(v)) return [[["ground", v], e]];
+    if (isWireVar(v) && !isWireVar(e)) return [[["ground", e], v]];
+    return [neverClause()];
   };
 
-  const lowerFact = (c: FactCommand<any>): unknown[] | undefined => {
+  const lowerFact = (c: FactCommand<any>): readonly unknown[][] | undefined => {
     if (c.attr?.ident === ":db/id") return lowerIdFact(c);
-    const e = lowerPos(c.eVar ?? c.e0, "an entity position");
+    const e = lowerPos(c.eVar ?? c.e0, "an entity position", true);
     const attr = c.attr?.ident ?? "_";
-    const v = lowerPos(c.vVar ?? c.v0, attr === "_" ? "a value position" : `${attr}'s value`);
-    const clause: unknown[] = [e, attr, v];
+    const v = lowerPos(
+      c.vVar ?? c.v0,
+      attr === "_" ? "a value position" : `${attr}'s value`,
+      isRefAttr(c.attr),
+    );
+    const unplaced = e === UNRESOLVED || v === UNRESOLVED;
+    const clause: unknown[] = [
+      e === UNRESOLVED ? freshName("u") : e,
+      attr,
+      v === UNRESOLVED ? freshName("u") : v,
+    ];
     if (c.txVar !== undefined || c.opVar !== undefined) {
       clause.push(c.txVar !== undefined ? nameOf(c.txVar) : "_");
     }
     if (c.opVar !== undefined) clause.push(nameOf(c.opVar));
-    return clause;
+    return unplaced ? [clause, neverClause()] : [clause];
   };
 
   const lowerCmp = (c: CmpCommand): unknown[][] => {
     const { op, args, ignoreCase } = c;
-    // f.t compares as a basis t: the wire slot binds the tx *eid*, so a
-    // numeric operand converts by the stable tx partition base
     const tSided = args.some((a) => isVar(a) && a.kind === "t");
+    const entitySided = args.some(
+      (a) => isVar(a) && (a.kind === "entity" || a.kind === "id"),
+    );
+    const use = `the comparison "${op}"`;
     const operand = (a: Position): unknown => {
       if (isAggSpec(a)) {
-        // top-level aggregate comparisons were routed to :having before this
-        // walk; one that reaches here sits inside Q.or / Q.not or a rule body
         throw new Error(
           "ramose/query: a comparison over an aggregate cell cannot appear inside Q.or / Q.not or a rule body — :having filters whole groups, and there is no group where those lower; write it at the query's top level",
         );
@@ -1432,21 +1388,20 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       if (op === "re-find?") return regexSource(v as RegExp | string);
       if (op === "in") {
         if (!Array.isArray(v)) throw new Error(`ramose/query: Q.in takes an array of values, got ${String(v)}`);
-        return v.map(unwrapEidLike);
+        return v.map((member) => lowerConst(member, use, entitySided));
       }
-      v = unwrapEidLike(v);
+      v = lowerConst(v, use, entitySided);
       if (tSided && typeof v === "number") return TX_BASE + v;
       return v;
     };
     if (op === "in") {
       const [subject, list] = args;
-      const values = operand(list) as unknown[];
-      if (Array.isArray(values) && values.length === 0) return [neverClause()];
       if (!isVar(subject)) {
         throw new Error("ramose/query: Q.in's first argument is a bound var");
       }
-      // the var is bound, so the collection binding filters it — one row
-      // per match, not one per value
+      const values = (operand(list) as unknown[]).filter(
+        (value) => value !== UNRESOLVED,
+      );
       return [[["ground", values], [nameOf(subject), "..."]]];
     }
     if (ignoreCase) {
@@ -1465,7 +1420,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
         if (isBlank(a) || a === undefined) {
           throw new Error("ramose/query: ignoreCase needs a bound var or a string on each side");
         }
-        const v = unwrapEidLike(a);
+        const v = lowerConst(a, use);
         if (typeof v !== "string") {
           throw new Error("ramose/query: ignoreCase applies to strings");
         }
@@ -1473,17 +1428,11 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       });
       return [...extras, [[op, ...folded]]];
     }
-    return [[[op, ...args.map(operand)]]];
+    const operands = args.map(operand);
+    if (operands.includes(UNRESOLVED)) return [neverClause()];
+    return [[[op, ...operands]]];
   };
 
-  // ── :having partition ────────────────────────────────────────────────────
-  // A comparison that mentions an aggregate cell is a post-group filter: it
-  // routes into the wire's `:having` section, never `:where` — the aggregate
-  // is not bound until after grouping, so the placement is the semantics.
-  // Everything else (group-*key* filters included: filtering groups by a key
-  // equals filtering rows by that value) stays an ordinary clause. Resolved
-  // before the projection lowers, because a referenced aggregate cell needs
-  // an `(as … ?alias)` name in `:find`.
   const clauses = built.clauses;
   const havingCmps: CmpCommand[] = [];
   const rowClauses: BClause[] = [];
@@ -1498,24 +1447,14 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     } else rowClauses.push(c);
   }
   const nameCells = havingCmps.length > 0;
-  /** Two `AggSpec` values with one fn over one var are the same cell —
-   * `Q.gt(Q.count(e), 5)` names the projected `Q.count(e)` without having
-   * to be the same object. */
   const aggKey = (a: AggSpec): string => {
     const id = isFocusSentinel(a.v) && built.focus !== undefined ? built.focus.id : a.v.id;
     return `${a.fn}:${id}`;
   };
-  /** The `:find` alias of each projected aggregate cell (set while the
-   * projection flattens; every aggregate is aliased when `:having` names
-   * any, so summarized-var name collisions cannot arise). */
   const aggAlias = new Map<string, string>();
-  /** What each aliased cell answers over the empty set — for re-checking
-   * `:having` on the client-synthesized all-aggregate row. */
   const emptyCells = new Map<string, unknown>();
-  /** Vars projected as their own plain cell — the ones `:having` may name. */
   const plainCellVars = new Set<number>();
 
-  // ── projection ───────────────────────────────────────────────────────────
   const where: unknown[] = [];
   const flats: FlatCell[] = [];
   const find: unknown[] = [];
@@ -1524,11 +1463,28 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     switch (v.kind) {
       case "entity":
       case "tx":
-        // Projected entity/tx vars stay `{ id }` rows; the cell is the
-        // branded number. `select({ id: N.id })` is a different path and
-        // yields the number directly.
         return (cell) =>
-          typeof cell === "number" ? { id: makeEid(cell) } : cell;
+          typeof cell === "number"
+            ? { id: v.kind === "entity" ? entityId(cell) : makeEid(cell) }
+            : cell;
+      case "id":
+        return (cell) => (typeof cell === "number" ? entityId(cell) : cell);
+      case "t":
+        return (cell) => (typeof cell === "number" ? cell - TX_BASE : cell);
+      default:
+        return (cell) => cell;
+    }
+  };
+
+  const readAgg = (
+    fn: AggSpec["fn"],
+    v: AnyVar,
+  ): ((cell: unknown) => unknown) => {
+    if (fn !== "min" && fn !== "max") return (cell) => cell;
+    switch (v.kind) {
+      case "entity":
+      case "id":
+        return (cell) => (typeof cell === "number" ? entityId(cell) : cell);
       case "t":
         return (cell) => (typeof cell === "number" ? cell - TX_BASE : cell);
       default:
@@ -1551,13 +1507,8 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
             );
           })()
         : cell.v;
-      const read =
-        v.kind === "t" && (cell.fn === "min" || cell.fn === "max")
-          ? (x: unknown) => (typeof x === "number" ? x - TX_BASE : x)
-          : (x: unknown) => x;
+      const read = readAgg(cell.fn, v);
       let elem: unknown = [cell.fn, nameOf(v)];
-      // `:having` names an aggregate by its `(as … ?alias)` name; aliasing
-      // every aggregate keeps summarized-var names from colliding
       if (nameCells) {
         const alias = aggAlias.get(aggKey(cell)) ?? freshName("h");
         aggAlias.set(aggKey(cell), alias);
@@ -1579,7 +1530,8 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       flats.push({
         path,
         elem: ["pull", focus, lowerPullPattern(map)],
-        read: (c) => reshapePullResult(map, c),
+        read: (c) => mapPullEntityIds(map, reshapePullResult(map, c), entityId),
+        plan: pullReshapeIdentity(map),
       });
       return;
     }
@@ -1599,9 +1551,12 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
 
   let finalizeRows: (tuples: unknown[][]) => unknown;
   let scalar = false;
+  let projection: "value" | "ids" | "pull" | "rows" = "rows";
+  let rootPlan: unknown = null;
 
   const proj = built.proj;
   if (isValueSpec(proj)) {
+    projection = "value";
     flattenCell(["$"], proj.cell as Cell);
     find.push(flats[0]!.elem, ".");
     scalar = true;
@@ -1612,26 +1567,27 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       return raw;
     };
   } else if (isIdsSpec(proj)) {
+    projection = "ids";
     find.push(nameOf(proj.v));
     finalizeRows = (tuples) =>
       tuples.map((t) =>
-        typeof t[0] === "number" ? { id: makeEid(t[0]) } : t[0],
+        typeof t[0] === "number" ? { id: entityId(t[0]) } : t[0],
       );
   } else if (isPullSpec(proj)) {
+    projection = "pull";
     const map = shapeToPullMap(proj.shape);
+    rootPlan = pullReshapeIdentity(map);
     const focus = nameOf(proj.focus);
     where.push(...requiredClauses(focus, map));
     find.push(["pull", focus, lowerPullPattern(map)]);
-    finalizeRows = (tuples) => tuples.map((t) => reshapePullResult(map, t[0]));
+    finalizeRows = (tuples) =>
+      tuples.map((t) =>
+        mapPullEntityIds(map, reshapePullResult(map, t[0]), entityId)
+      );
   } else {
     const cells = isRowsSpec(proj) ? proj.cells : proj;
     for (const [k, cell] of Object.entries(cells)) flattenCell([k], cell as Cell);
     find.push(...flats.map((f) => f.elem));
-    // an ungrouped aggregate always answers one row: with no non-aggregate
-    // cell there is nothing to group by, so the whole (possibly empty) match
-    // set is the one group, and each fn answers for the empty set — the same
-    // rule SQL's aggregate-without-GROUP-BY follows. A projection with a
-    // group key correctly stays []: no rows, no groups.
     const aggOnly = flats.length > 0 && flats.every((f) => f.agg !== undefined);
     finalizeRows = (raw) =>
       (raw.length === 0 && aggOnly && emptyRowPasses() ? [flats.map((f) => EMPTY_AGG[f.agg!])] : raw).map((t) => {
@@ -1654,14 +1610,9 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       });
   }
 
-  // ── clauses + cursor ─────────────────────────────────────────────────────
   const projVars = new Set<number>();
-  /** Value vars whose rows must not collapse — see `withVars`. Aggregates
-   * always join; a plain projected value joins unless `Q.distinct`. */
   const provenanceVars = new Set<number>();
   const addProvenance = (v: AnyVar): void => {
-    // an entity (or tx) var is an identity — its bindings are already
-    // distinct rows; a value var is not, so it needs row provenance
     if (v.kind !== "entity" && v.kind !== "tx") provenanceVars.add(v.id);
   };
   const collectProjVars = (cell: Cell): void => {
@@ -1671,8 +1622,6 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     } else if (isAggSpec(cell)) {
       const v = isFocusSentinel(cell.v) ? (built.focus ?? cell.v) : cell.v;
       projVars.add(v.id);
-      // aggregates always keep row provenance — set semantics would
-      // collapse the rows they summarize
       addProvenance(v);
     } else if (isPullSpec(cell)) projVars.add(cell.focus.id);
     else if (isDistinctSpec(cell)) {
@@ -1690,7 +1639,6 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
 
   where.unshift(...lowerClauses(rowClauses, projVars));
 
-  // ── :having lowering ─────────────────────────────────────────────────────
   const havingCellName = (a: AggSpec): string => {
     const alias = aggAlias.get(aggKey(a));
     if (alias === undefined) {
@@ -1701,8 +1649,6 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     return alias;
   };
   const lowerHavingCmp = (c: CmpCommand): unknown => {
-    // same t-conversion rule as lowerCmp: a min/max over `f.t` cells binds
-    // the tx eid, so a numeric operand converts by the tx partition base
     const tSided = c.args.some(
       (a) =>
         (isVar(a) && a.kind === "t") ||
@@ -1719,12 +1665,13 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
         return nameOf(a);
       }
       let v: unknown = a;
+      const use = `the post-group comparison "${c.op}"`;
       if (c.op === "re-find?") return regexSource(v as RegExp | string);
       if (c.op === "in") {
         if (!Array.isArray(v)) throw new Error(`ramose/query: Q.in takes an array of values, got ${String(v)}`);
-        return v.map(unwrapEidLike);
+        return v.map((member) => lowerConst(member, use));
       }
-      v = unwrapEidLike(v);
+      v = lowerConst(v, use);
       if (tSided && typeof v === "number") return TX_BASE + v;
       return v;
     };
@@ -1732,13 +1679,6 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   };
   const having = havingCmps.map(lowerHavingCmp);
 
-  /**
-   * The synthesized empty-set row of an all-aggregate projection must still
-   * pass `:having` — the peer never saw a group to filter. Same predicate
-   * semantics as the engine's `evalHaving`, over the aliased cells' empty
-   * values (every non-cell arg is already a resolved constant here: a var
-   * beside an aggregate would make the projection not all-aggregate).
-   */
   const emptyRowPasses = (): boolean =>
     having.every((clause) => {
       const [op, ...args] = (clause as unknown[][])[0]!;
@@ -1751,19 +1691,6 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       return f !== undefined && Boolean(f(...vals));
     });
 
-  // A projected *value* var must not collapse rows that agree on the value:
-  // two entities with the same title are two rows (and two entities with
-  // the same rank are two rows to a sum). The entity position of each fact
-  // that binds the value rides in `:with` — distinctness includes it
-  // without projecting it (the nav lowering carried its root the same
-  // way). A value bound by `Q.call` traces each var argument back to the
-  // fact that bound it (or rides an entity/tx argument itself). Facts
-  // inside an or-join count when the e-position is already bound at the
-  // top level — a join var, or a handle the branches close over. `not`
-  // does not bind, so it contributes no provenance. An e-var already in
-  // the projection is grouping, not multiplicity, and stays out.
-  // `Q.distinct` skips this for plain projected cells; aggregates still
-  // join so a sum sees every row.
   const withVars: string[] = [];
   if (provenanceVars.size > 0) {
     const walkGroups = (list: readonly BClause[], visit: (c: BClause) => void): void => {
@@ -1773,8 +1700,6 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       }
     };
 
-    // `Q.call` results are not fact-bound. Follow ret → args until every
-    // projected (or aggregated) cell names the vars a fact can ride.
     const fnBindArgs = new Map<number, readonly Position[]>();
     walkGroups(clauses, (c) => {
       if (c._tag === "fnBind") fnBindArgs.set(c.ret.id, c.args);
@@ -1797,9 +1722,6 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       }
     }
 
-    // An e-var minted only inside a branch is not bound after the or-join
-    // unless it is a join var. Riding one that is not available is a
-    // query error, so nested facts only contribute already-visible e's.
     const topLevelBound = new Set<number>();
     for (const c of clauses) {
       switch (c._tag) {
@@ -1865,6 +1787,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   const bindOrderPath = (
     path: readonly string[],
     revs: readonly boolean[],
+    ref: boolean,
     dir: OrderDir,
     empty: OrderEmpty,
   ): void => {
@@ -1884,13 +1807,11 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       );
     }
     const bound = lowerOrderPath(nameOf(built.focus), path, revs);
+    if (!kinds.has(bound.var)) kinds.set(bound.var, ref ? "entity" : "value");
     where.push(...bound.clauses);
     order.push({ var: bound.var, dir, empty });
   };
 
-  // Bound vars / aggregates do not need a select focus. Keyset paging still
-  // does: `after()` appends the root eid as tie-breaker and raises if a
-  // multi-root projection has none.
   const orderFromPicked = (picked: unknown, label: string, dir: OrderDir, empty: OrderEmpty): void => {
     if (isVar(picked)) {
       const v = isFocusSentinel(picked)
@@ -1909,7 +1830,6 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
             throw new Error("ramose/query: Q.focus needs a select focus — order a projected cell instead");
           })()
         : picked.v;
-      // the engine orders an aggregate by the summarized variable
       order.push({ var: nameOf(v), dir, empty });
       return;
     }
@@ -1919,7 +1839,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
           `ramose/query: orderBy(${pathOf(picked).join(" → ")}) crosses a cardinality-many attribute — the sort key would be a set, not a value`,
         );
       }
-      bindOrderPath(pathOf(picked), revsOf(picked), dir, empty);
+      bindOrderPath(pathOf(picked), revsOf(picked), isRefCarrier(picked), dir, empty);
       return;
     }
     throw new Error(
@@ -1939,7 +1859,7 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       if (o.kind === "cell") {
         orderFromPicked(o.cell, "orderBy", o.dir, o.empty);
       } else if (o.kind === "path") {
-        bindOrderPath(o.path, o.revs, o.dir, o.empty);
+        bindOrderPath(o.path, o.revs, o.ref, o.dir, o.empty);
       } else {
         throw new Error("ramose/query: orderBy leftover is not a projected cell or attribute path");
       }
@@ -1979,8 +1899,6 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   };
   const take = qv.stripCursor ? undefined : qv.take;
   const seek = qv.stripCursor ? undefined : qv.seek;
-  // `one()` asks for one row; `oneOrFail()` asks for two so a second match
-  // is witnessed. A `limit(n)` on the query value wins over a pipeline stage.
   const limit =
     take === "one"
       ? 1
@@ -1989,11 +1907,8 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
         : boundCount(qv.stripCursor ? undefined : (qv.limitN ?? built.limit), "limit");
   const offset = boundCount(qv.stripCursor ? undefined : (qv.offsetN ?? built.offset), "offset");
 
-  // Keyset paging: a cursor is a position in a *total* order, so the entity
-  // id rides as the final tie-breaker (unless a sort key already is it), and
-  // every sort-key variable rides in `find` after the row cells — that is
-  // what the client mints the next cursor from.
   const pagedVars: string[] = [];
+  const pagedEntities: boolean[] = [];
   if (seek !== undefined) {
     if (offset !== undefined) {
       throw new Error(
@@ -2015,6 +1930,9 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       order.push({ var: root, dir: "asc", empty: "last" });
     }
     pagedVars.push(...order.map((o) => o.var));
+    pagedEntities.push(
+      ...order.map((o) => kinds.get(o.var) === "entity" || kinds.get(o.var) === "id"),
+    );
     if (seek !== null && seek.keys.length !== order.length) {
       throw new Error(
         `ramose/query: this cursor does not fit — it carries ${seek.keys.length} sort-key values and the query orders by ${order.length}; a cursor only continues the query that minted it`,
@@ -2024,6 +1942,21 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
   }
   const baseLen = find.length - pagedVars.length;
 
+  const resolveCursorCell = (key: unknown, index: number): unknown => {
+    if (pagedEntities[index] !== true) return key;
+    const resolve = lowering?.resolveEntity;
+    if (resolve === undefined) return key;
+    bindsEntities = true;
+    const eid = resolve(key);
+    if (eid === undefined) {
+      throw new InvalidRequest({
+        message:
+          "ramose/query: this cursor names an entity this client cannot resolve — a cursor only continues the page that minted it, on the replica that minted it",
+      });
+    }
+    return eid;
+  };
+
   const query: Record<string, unknown> = {
     find,
     where,
@@ -2031,13 +1964,30 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
     ...(having.length > 0 ? { having } : {}),
     ...(ruleDefs.length > 0 ? { rules: ruleDefs } : {}),
     ...(order.length > 0 ? { order } : {}),
-    ...(seek !== undefined && seek !== null ? { after: [...seek.keys] } : {}),
+    ...(seek !== undefined && seek !== null
+      ? { after: seek.keys.map((key, index) => resolveCursorCell(key, index)) }
+      : {}),
     ...(limit !== undefined ? { limit } : {}),
     ...(offset !== undefined ? { offset } : {}),
   };
 
+  const rowShape = JSON.stringify({
+    projection,
+    root: rootPlan,
+    cells: flats.map((cell) => [cell.path, cell.agg ?? null, cell.plan ?? null]),
+    scalar,
+  });
+
   return {
     query,
+    bindsEntities,
+    result: seek !== undefined ? "page" : take !== undefined ? "row" : "rows",
+    rowShape,
+    shape: JSON.stringify({
+      row: rowShape,
+      take: take ?? null,
+      paged: seek !== undefined,
+    }),
     finalize: (result) => {
       if (scalar) {
         const cell = flats[0]!;
@@ -2057,9 +2007,6 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
       }
       const tuples = Array.isArray(result) ? (result as unknown[][]) : [];
       const rows = finalizeRows(tuples) as readonly unknown[];
-      // the cursor is the last raw row's sort-key cells (everything past the
-      // projection); `null` when the page is over — it came back empty, or
-      // shorter than its limit, so there is nothing past it to ask for
       if (seek !== undefined) {
         const last = tuples[tuples.length - 1];
         return {
@@ -2068,11 +2015,16 @@ export const lowerQueryObject = (qv: AnyQueryObject): LoweredKernelQuery => {
             !Array.isArray(last) ||
             (typeof limit === "number" && tuples.length < limit)
               ? null
-              : { _tag: "Cursor", keys: last.slice(baseLen) },
+              : {
+                _tag: "Cursor",
+                keys: last.slice(baseLen).map((key, index) =>
+                  pagedEntities[index] === true && typeof key === "number"
+                    ? entityId(key)
+                    : key
+                ),
+              },
         } satisfies Page;
       }
-      // `one()` picks the cell; `oneOrFail()` names the miss. The NotOne is
-      // returned (not thrown) so `db.query` fails its Effect with it.
       if (take !== undefined) {
         if (take === "one") return rows[0] ?? null;
         if (rows.length === 1) return rows[0];

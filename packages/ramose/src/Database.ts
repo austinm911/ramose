@@ -1,79 +1,30 @@
-/**
- * `Ramose.Database` — install this catalog on this name, at deploy.
- *
- * It is **not** a cloud object. A Ramose database is a *name*: the server
- * Worker routes `/db/:name/*` to `idFromName(name)` and the first transaction
- * materializes it, so there is nothing to create and nothing to delete. What
- * this resource owns is the one thing a name does need done once — the
- * catalog. `reconcile` runs `db.install()`, the same idempotent transaction
- * `ramose.db(name, catalog).install()` runs at tenant-creation time; `delete`
- * does nothing at all, because forgetting the resource must not erase a log.
- *
- * It replaces the `Alchemy.Action` + local-transport idiom: the provider talks
- * plain HTTPS to the server's resolved `url` with its `token`, which under
- * `alchemy dev` is the local dev server's URL for free.
- *
- * @resource
- * @product Ramose
- * @category Storage & Databases
- * @section Installing a catalog
- * @example The one place a catalog lands
- * ```typescript
- * export const Server = Ramose.Server("Ramose", { databases: { todos: Todos } });
- * // Standalone Database is for runtime-provisioned names (Reef); known
- * // catalogs belong on Server({ databases }).
- * export const Extra = Ramose.Database("extra", { server: Server, schema: Extra });
- * ```
- *
- * One resource is not one tenant: db-per-tenant is `ramose.db(tenant, Todos)`
- * plus `db.install()` when the tenant is created. Declare a `Database` for the
- * names you know at deploy time.
- */
-
 import type { InputProps } from "alchemy/Input";
 import * as Provider from "alchemy/Provider";
 import { isResourceOfType, Resource } from "alchemy/Resource";
 import * as Effect from "effect/Effect";
-import * as Redacted from "effect/Redacted";
 import type { Schema } from "./db/index.ts";
-import { InvalidRequest, NetworkError } from "./db/Errors.ts";
-import { globalFetch, makeDatabases } from "./db/internal.ts";
-import { trimSlashes } from "./db/http.ts";
+import { InvalidRequest } from "./db/Errors.ts";
 import type { Providers } from "./Providers.ts";
 import type { Server } from "./Server.ts";
 
-/** @internal */
 export const isDatabase = (value: unknown): value is Database =>
   isResourceOfType(value, "Ramose.Database");
 
-/** @internal The public spelling is the argument of {@link Database}. */
 export type DatabaseProps = {
-  /** The server that serves this name. */
   server: Server;
-  /** The catalog to install. `Ramose.Schema({ … })`, shared with the app. */
   schema: Schema.Any;
-  /** The database name. @default the resource's logical id */
   name?: string;
-  /**
-   * Cap on the install transaction, in ms. A catalog is a handful of datoms,
-   * so this is not a budget — it is the line between "slow" and "never", which
-   * `fetch` cannot draw on its own. @default 60000
-   */
   timeoutMs?: number;
 };
 
-/** @internal The install's cap when {@link DatabaseProps.timeoutMs} is unset. */
 export const DEFAULT_INSTALL_TIMEOUT_MS = 60_000;
 
 export type Database = Resource<
   "Ramose.Database",
   DatabaseProps,
   {
-    /** The name the catalog was installed on. */
     name: string;
-    /** The server URL it was installed against. */
     server: string;
-    /** The `t` of the install transaction — the catalog's basis. */
     t: number;
   },
   never,
@@ -108,115 +59,54 @@ export const Database = Object.assign(
   DatabaseResource,
 ) as typeof DatabaseResource;
 
-/**
- * @internal `{ url, token }` off the server's attributes.
- *
- * At reconcile the engine has replaced the Outputs with their values, which
- * the `Server` type still spells as Outputs (the same cast `resolveWorker`
- * makes on the other side of the resource).
- */
 const resolveServer = (
   server: Server,
-): { url: string | undefined; token: Redacted.Redacted<string> | undefined } => {
+): { url: string | undefined } => {
   const resolved = server as unknown as {
     url?: string | undefined;
-    token?: Redacted.Redacted<string> | string | undefined;
   };
-  const token = resolved?.token;
   return {
     url: resolved?.url,
-    token:
-      token === undefined || token === ""
-        ? undefined
-        : typeof token === "string"
-          ? Redacted.make(token)
-          : token,
   };
 };
 
-/**
- * The install itself: one idempotent transaction over plain HTTPS.
- *
- * An illegal name never reaches the server — `ramose.db(name, catalog)` fails
- * the operation with `InvalidRequest` — and a server with no URL is the same
- * kind of mistake, so it fails the deploy rather than the first request.
- *
- * A server that has a URL and never answers on it is the third: `fetch` has no
- * deadline, so an unresolvable request parks the deploy indefinitely and the
- * run ends with a bare `fail` and nothing to read. `Ramose.Server` probes
- * `/health` for exactly this reason, but the probe cannot speak for `/db/:name`
- * — a bounded install is what makes the failure printable either way.
- */
-/** @internal One idempotent catalog install over HTTPS. Shared with Server's `databases:` seeder. */
 export const installCatalog = Effect.fn(function* (args: {
   readonly name: string;
   readonly url: string;
-  readonly token: Redacted.Redacted<string> | undefined;
   readonly schema: Schema.Any;
-  readonly timeoutMs?: number;
+  readonly timeoutMs?: number | undefined;
 }) {
-  const { name, url, token, schema } = args;
+  const { name, url } = args;
   if (url === undefined || url === "") {
-    return yield* Effect.fail(
-      new InvalidRequest({
-        message: `ramose: the server for database ${JSON.stringify(name)} has no URL — deploy it before installing a schema on it`,
-      }),
-    );
+    return yield* new InvalidRequest({
+      message: `ramose: the server for database ${JSON.stringify(name)} has no URL — deploy it before installing a schema on it`,
+    });
   }
-  const timeoutMs = Math.max(1, args.timeoutMs ?? DEFAULT_INSTALL_TIMEOUT_MS);
-  const { databases, close } = makeDatabases({
-    url: Effect.succeed(trimSlashes(url)),
-    token: token === undefined ? undefined : Effect.succeed(token),
-    fetch: globalFetch,
+  return yield* new InvalidRequest({
+    message: `ramose: catalog install on ${JSON.stringify(name)} is closed until authorized catalog publication is wired`,
   });
-  const report = yield* Effect.ensuring(
-    databases.db(name, schema).effect.install(),
-    Effect.sync(close),
-  ).pipe(
-    Effect.timeoutOrElse({
-      duration: `${timeoutMs} millis`,
-      orElse: () =>
-        Effect.fail(
-          new NetworkError({
-            message: `ramose: installing the schema on ${JSON.stringify(name)} at ${url} did not finish within ${timeoutMs}ms — the server accepted the connection but never answered. Check that the Worker serving it is actually running (under \`alchemy dev\`, a Worker whose bundle failed still binds its port and answers nothing).`,
-          }),
-        ),
-    }),
-  );
-  return { name, server: url, t: report.t };
 });
 
 const install = Effect.fn(function* (id: string, props: DatabaseProps) {
   const name = props.name ?? id;
-  const { url, token } = resolveServer(props.server);
+  const { url } = resolveServer(props.server);
   return yield* installCatalog({
     name,
     url: url ?? "",
-    token,
     schema: props.schema,
     timeoutMs: props.timeoutMs,
   });
 });
 
-/**
- * @internal Registered by `providers()`. One provider, both modes: an install
- * is the same HTTPS transaction against a deployed server and against the
- * `alchemy dev` one.
- */
+// @effect-diagnostics-next-line lazyEffect:off
 export const DatabaseProvider = () =>
   Provider.succeed(Database, {
     reconcile: Effect.fn(function* ({ id, news }) {
-      // Create and update are the same act: `install()` upserts the catalog.
       return yield* install(id, news);
     }),
     read: Effect.fn(function* ({ output }) {
-      // Virtual: the persisted state row is the source of truth. There is no
-      // "does this database exist" question to ask — a name always exists.
       return output ?? undefined;
     }),
     delete: Effect.fn(function* () {
-      // A database is a name, and the log under it is append-only. Forgetting
-      // the resource must not erase data: dropping it is a separate,
-      // deliberate act (empty the bucket, delete the DO namespaces).
     }),
   });

@@ -1,23 +1,23 @@
-/**
- * Transactor Durable Object — exactly one per logical database.
- *
- * Thin shell: adapts the DO runtime (SQLite storage, hibernating WebSockets,
- * alarms, R2 binding) to `TransactorHost` and forwards everything to the
- * runtime-agnostic `Transactor` (transactor.ts). All logic lives there and is
- * tested under Bun; this file only maps APIs.
- *
- *   GET /subscribe?from=<t>  (WebSocket upgrade) → hello / tx / root / gap frames
- *   everything else → Transactor.handleRequest
- */
-
 import { DurableObject } from "cloudflare:workers";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import {
+  CatalogId,
+  DatabaseId,
+  deriveResolvedDatabaseRoute,
+  resolveBoundCatalogDefinition,
+  type DatabaseCatalogBindings,
+  type DatabaseRouteDerivation,
+  type DeployedCatalogDefinitions,
+} from "../authorization/index.ts";
 import { toJson } from "../core/index.ts";
+import { serverSealingKey } from "../replication/identity-root.ts";
 import { dbPrefix, prefixedBucket } from "../storage/index.ts";
 import { type RamoseEnv, envInt } from "./env.ts";
 import { DEFAULT_CONFIG, type SocketLike, type TransactorConfig, type TransactorHost } from "./host.ts";
 import { internalGate } from "./internal.ts";
-import { enforcedPolicy } from "./policy.ts";
 import { Transactor, type TxAck } from "./transactor.ts";
+import type { RuntimeBoundaries } from "../runtime-boundaries.ts";
 
 export type { TxAck };
 
@@ -35,15 +35,38 @@ export function configFromEnv(env: RamoseEnv): TransactorConfig {
   };
 }
 
-export class TransactorDO extends DurableObject<RamoseEnv> {
+export interface TransactorTesting {
+  readonly boundaries: RuntimeBoundaries;
+  readonly enabled: (env: RamoseEnv) => boolean;
+  readonly reset: () => void;
+  readonly handleAdmin: (
+    request: Request,
+    path: string,
+    abort: (reason: string) => void,
+    inspect: {
+      readonly operationReceiptCount: () => number;
+    },
+  ) => Promise<Response | undefined>;
+}
+
+class TransactorDOBase extends DurableObject<RamoseEnv> {
   private readonly core: Transactor;
+  private readonly databaseCatalogBindings: DatabaseCatalogBindings | undefined;
   private dbName: string | undefined;
 
-  constructor(ctx: DurableObjectState, env: RamoseEnv) {
+  constructor(
+    ctx: DurableObjectState,
+    env: RamoseEnv,
+    operationCatalogs?: DeployedCatalogDefinitions,
+    databaseCatalogBindings?: DatabaseCatalogBindings,
+    private readonly testing?: TransactorTesting,
+  ) {
     super(ctx, env);
+    if (testing?.enabled(env) === true) testing.reset();
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)`);
     const row = ctx.storage.sql.exec(`SELECT v FROM meta WHERE k = 'db'`).toArray()[0];
     if (row) this.dbName = JSON.parse(row.v as string) as string;
+    this.databaseCatalogBindings = databaseCatalogBindings;
     const self = this;
     const host: TransactorHost = {
       get dbName() {
@@ -61,30 +84,30 @@ export class TransactorDO extends DurableObject<RamoseEnv> {
       abort: (reason) => ctx.abort(reason),
       now: () => Date.now(),
       config: configFromEnv(env),
-      // bound in alchemy.run.ts as ANALYTICS; undefined = metrics disabled
-      analytics: env.ANALYTICS,
-      // parsed once per isolate; present = the commit loop enforces it
-      policy: enforcedPolicy(env),
+      ...(env.ANALYTICS !== undefined && { analytics: env.ANALYTICS }),
     };
-    this.core = new Transactor(host);
+    this.core = new Transactor(
+      host,
+      operationCatalogs === undefined
+        ? undefined
+        : {
+          catalogs: operationCatalogs,
+          ...(databaseCatalogBindings === undefined
+            ? {}
+            : { bindings: databaseCatalogBindings }),
+          environment: env,
+          now: () => host.now(),
+          sealing: () => serverSealingKey(env),
+        },
+      testing?.boundaries,
+    );
   }
 
-  /** In-process access for other code running in the same isolate (tests, worker). */
-  get transactor(): Transactor {
-    return this.core;
-  }
-
-  /** Bind this object to a database name (idempotent; persisted). */
-  assign(db: string): void {
+  private assign(db: string): void {
     if (this.dbName === db) return;
     if (this.dbName !== undefined) throw new Error(`transactor already bound to database ${this.dbName}`);
     this.dbName = db;
     this.ctx.storage.sql.exec(`INSERT OR REPLACE INTO meta (k, v) VALUES ('db', ?)`, JSON.stringify(db));
-  }
-
-  transact(db: string, tx: unknown[]): Promise<TxAck> {
-    this.assign(db);
-    return this.core.init().then(() => this.core.transact(tx));
   }
 
   override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -103,7 +126,6 @@ export class TransactorDO extends DurableObject<RamoseEnv> {
   }
 
   override async fetch(request: Request): Promise<Response> {
-    // reachable only from the peer Worker (and the replicas), /subscribe included
     const gate = internalGate(this.env, request);
     if (gate) return gate;
     const url = new URL(request.url);
@@ -117,6 +139,7 @@ export class TransactorDO extends DurableObject<RamoseEnv> {
     }
     if (!this.dbName) return new Response(JSON.stringify({ error: "missing ?db=" }), { status: 400, headers: { "content-type": "application/json" } });
     await this.core.init();
+    const testingEnabled = this.testing?.enabled(this.env) === true;
     if (url.pathname === "/subscribe") {
       if (request.headers.get("Upgrade") !== "websocket") return new Response("expected websocket", { status: 426 });
       const from = Number(url.searchParams.get("from") ?? "0");
@@ -127,8 +150,133 @@ export class TransactorDO extends DurableObject<RamoseEnv> {
       return new Response(null, { status: 101, webSocket: client });
     }
     if (url.pathname === "/health") {
+      if (!testingEnabled) {
+        return new Response(JSON.stringify({ error: "not found" }), {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        });
+      }
       return new Response(JSON.stringify(toJson({ ok: true, t: this.core.t })), { headers: { "content-type": "application/json" } });
     }
+    if (url.pathname === "/provision-catalog" && request.method === "POST") {
+      if (this.databaseCatalogBindings === undefined) {
+        return new Response(JSON.stringify({ error: "catalog provisioning unavailable" }), {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      try {
+        const body = await request.json() as { readonly derivation?: unknown };
+        const raw = body?.derivation;
+        if (
+          typeof raw !== "object" || raw === null || Array.isArray(raw) ||
+          typeof (raw as { readonly rootDatabase?: unknown }).rootDatabase !== "string" ||
+          !Array.isArray((raw as { readonly graphs?: unknown }).graphs)
+        ) {
+          throw new Error("invalid database route derivation");
+        }
+        const graphs = (raw as { readonly graphs: readonly unknown[] }).graphs.map(
+          (entry) => {
+            if (
+              typeof entry !== "object" || entry === null || Array.isArray(entry) ||
+              !Number.isSafeInteger((entry as { readonly graphEntity?: unknown }).graphEntity) ||
+              typeof (entry as { readonly catalogKey?: unknown }).catalogKey !== "string"
+            ) {
+              throw new Error("invalid dynamic Graph binding");
+            }
+            return Object.freeze({
+              graphEntity: (entry as { readonly graphEntity: number }).graphEntity,
+              catalogKey: CatalogId.make(
+                (entry as { readonly catalogKey: string }).catalogKey,
+              ),
+            });
+          },
+        );
+        const derivation: DatabaseRouteDerivation = Object.freeze({
+          rootDatabase: DatabaseId.make(
+            (raw as { readonly rootDatabase: string }).rootDatabase,
+          ),
+          graphs: Object.freeze(graphs),
+        });
+        const route = await Effect.runPromise(deriveResolvedDatabaseRoute(
+          this.databaseCatalogBindings,
+          derivation,
+        ));
+        if (route.database !== DatabaseId.make(this.dbName)) {
+          throw new Error("database route derivation does not match this transactor");
+        }
+        const deployed = Result.getOrThrow(resolveBoundCatalogDefinition(
+          this.databaseCatalogBindings,
+          route,
+        ));
+        const t = await this.core.provisionCatalog(deployed.definition);
+        return new Response(JSON.stringify({ t }), {
+          headers: { "content-type": "application/json" },
+        });
+      } catch (cause) {
+        return new Response(JSON.stringify({
+          error: cause instanceof Error ? cause.message : "catalog provisioning failed",
+        }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      }
+    }
+    if (testingEnabled) {
+      const testAdmin = await this.testing.handleAdmin(
+        request,
+        url.pathname,
+        (reason) => this.ctx.abort(reason),
+        {
+          operationReceiptCount: () => this.core.operationReceiptCount(),
+        },
+      );
+      if (testAdmin !== undefined) return testAdmin;
+    }
+    if (
+      !testingEnabled &&
+      (
+        url.pathname === "/transact" ||
+        url.pathname === "/provision" ||
+        url.pathname.startsWith("/admin/")
+      )
+    ) {
+      return new Response(JSON.stringify({ error: "not found" }), {
+        status: 404,
+        headers: { "content-type": "application/json" },
+      });
+    }
     return this.core.handleRequest(request);
+  }
+}
+
+export const createTransactorDO = (
+  operationCatalogs: DeployedCatalogDefinitions,
+  databaseCatalogBindings?: DatabaseCatalogBindings,
+): (new (
+  ctx: DurableObjectState,
+  env: RamoseEnv,
+) => DurableObject<RamoseEnv>) => class TransactorDO extends TransactorDOBase {
+  constructor(ctx: DurableObjectState, env: RamoseEnv) {
+    super(ctx, env, operationCatalogs, databaseCatalogBindings);
+  }
+};
+
+export const createTestingTransactorDO = (
+  testing: TransactorTesting,
+  operationCatalogs?: DeployedCatalogDefinitions,
+  databaseCatalogBindings?: DatabaseCatalogBindings,
+): (new (
+  ctx: DurableObjectState,
+  env: RamoseEnv,
+) => DurableObject<RamoseEnv>) => class TransactorDO extends TransactorDOBase {
+  constructor(ctx: DurableObjectState, env: RamoseEnv) {
+    super(ctx, env, operationCatalogs, databaseCatalogBindings, testing);
+  }
+};
+
+export class TransactorDO extends TransactorDOBase {
+  constructor(ctx: DurableObjectState, env: RamoseEnv) {
+    super(ctx, env);
   }
 }

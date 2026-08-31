@@ -1,0 +1,548 @@
+---
+interface Props {
+  variant: "instant" | "agents" | "history";
+  title: string;
+  cycleMs: number;
+  initialTitle: string;
+  initialMeta: string;
+}
+
+const { variant, title, cycleMs, initialTitle, initialMeta } = Astro.props;
+---
+
+<figure
+  class:list={["not-content", "rg-animation-demo", `rg-animation-demo--${variant}`]}
+  data-animation-demo
+  data-animation-variant={variant}
+  data-animation-duration={cycleMs}
+  data-animation-phase="ready"
+  aria-label={title}
+>
+  <div class="rg-animation-demo__surface" aria-hidden="true">
+    <slot />
+  </div>
+  <figcaption class="rg-animation-narrative">
+    <span class="rg-animation-narrative__bar"></span>
+    <span class="rg-animation-narrative__step" data-animation-narrative-step>01</span>
+    <span class="rg-animation-narrative__copy">
+      <strong data-animation-narrative-title>{initialTitle}</strong>
+      <small data-animation-narrative-meta>{initialMeta}</small>
+    </span>
+  </figcaption>
+</figure>
+
+<script>
+  type Demo = HTMLElement & {
+    dataset: {
+      animationDemoBound?: string;
+      animationDuration?: string;
+      animationPhase?: string;
+      animationVariant?: "instant" | "agents" | "history";
+    };
+  };
+
+  type StepState = { active: boolean; done: boolean };
+
+  const text = (demo: Demo, selector: string, value: string) => {
+    const element = demo.querySelector<HTMLElement>(selector);
+    if (element && element.textContent !== value) element.textContent = value;
+  };
+
+  const state = (demo: Demo, selector: string, name: string, on: boolean) => {
+    demo.querySelectorAll<HTMLElement>(selector).forEach((element) => {
+      element.classList.toggle(name, on);
+    });
+  };
+
+  const stepStates = (demo: Demo, states: StepState[]) => {
+    const steps = [...demo.querySelectorAll<HTMLElement>("[data-demo-step]")];
+    let narrative = 0;
+    steps.forEach((step, index) => {
+      const current = states[index] ?? { active: false, done: false };
+      step.classList.toggle("is-active", current.active);
+      step.classList.toggle("is-done", current.done);
+      if (current.active || current.done) narrative = index;
+    });
+    const selected = steps[narrative];
+    if (!selected) return;
+    text(demo, "[data-animation-narrative-step]", String(narrative + 1).padStart(2, "0"));
+    text(demo, "[data-animation-narrative-title]", selected.dataset.title ?? "");
+    text(demo, "[data-animation-narrative-meta]", selected.dataset.meta ?? "");
+  };
+
+  const cue = (progress: number, cues: Array<[number, string]>) => {
+    let index = 0;
+    for (let current = 0; current < cues.length; current++) {
+      if (progress >= cues[current][0]) index = current;
+    }
+    return { index, phase: cues[index][1] };
+  };
+
+  const alignInstantDrop = (demo: Demo) => {
+    const source = demo.querySelector<HTMLElement>(".instant-slot--source");
+    const target = demo.querySelector<HTMLElement>(".instant-slot--target");
+    if (!source || !target) return;
+    const sourceBounds = source.getBoundingClientRect();
+    const targetBounds = target.getBoundingClientRect();
+    demo.style.setProperty("--instant-drop-x", `${targetBounds.left - sourceBounds.left}px`);
+    demo.style.setProperty("--instant-drop-y", `${targetBounds.top - sourceBounds.top}px`);
+  };
+
+  const updateInstant = (demo: Demo, progress: number) => {
+    const { index, phase } = cue(progress, [
+      [0, "ready"],
+      [0.09, "drag"],
+      [0.26, "commit"],
+      [0.44, "sync"],
+      [0.6, "converge"],
+      [0.78, "settle"],
+      [0.94, "reset"],
+    ]);
+    demo.dataset.animationPhase = phase;
+    const atTarget = index >= 2;
+    const converged = index >= 4 && index <= 6;
+    text(demo, "[data-instant-doing-count]", atTarget ? "0" : "1");
+    text(demo, "[data-instant-done-count]", atTarget ? "2" : "1");
+    text(demo, "[data-instant-phone-check]", converged ? "✓" : "");
+    text(demo, "[data-instant-phone-state]", converged ? "Done" : "In progress");
+    text(demo, "[data-instant-phone-status]", converged ? "Synced just now" : "Up to date");
+    stepStates(demo, [
+      { active: phase === "drag", done: index > 1 },
+      { active: phase === "commit", done: index > 2 },
+      { active: phase === "sync", done: index > 3 },
+      { active: phase === "converge" || phase === "settle", done: index > 5 },
+    ]);
+  };
+
+  const updateAgents = (demo: Demo, progress: number) => {
+    const { phase } = cue(progress, [
+      [0, "prompt"],
+      [0.15, "thinking"],
+      [0.22, "describe"],
+      [0.31, "catalog"],
+      [0.42, "query"],
+      [0.49, "result"],
+      [0.56, "mutate"],
+      [0.78, "receipts"],
+      [0.87, "complete"],
+      [0.96, "reset"],
+    ]);
+    demo.dataset.animationPhase = phase;
+    const live = phase !== "reset";
+    const command = "Complete every launch task assigned to me";
+    const typed = Math.max(0, Math.min(1, (progress - 0.015) / 0.12));
+    text(demo, "[data-agent-command]", live ? command.slice(0, Math.round(typed * command.length)) : "");
+    state(demo, "[data-agent-command]", "is-submitted", !live || progress >= 0.15);
+    demo.querySelectorAll<HTMLElement>("[data-agent-log]").forEach((line) => {
+      const threshold = Number(line.dataset.agentLog);
+      line.classList.toggle("is-visible", live && progress >= threshold);
+    });
+    const ticks = [0.6, 0.66, 0.72];
+    let completed = 0;
+    demo.querySelectorAll<HTMLElement>("[data-agent-task]").forEach((task, index) => {
+      const done = live && progress >= ticks[index];
+      const flashing = done && progress < ticks[index] + 0.05;
+      const targeted = live && phase === "mutate" && !done;
+      task.classList.toggle("is-done", done);
+      task.classList.toggle("is-flashing", flashing);
+      task.classList.toggle("is-targeted", targeted);
+      if (done) completed++;
+    });
+    text(demo, "[data-agent-open-count]", String(3 - completed));
+    text(demo, "[data-agent-done-count]", String(1 + completed));
+    const mutating = phase === "mutate" || phase === "receipts";
+    text(
+      demo,
+      "[data-agent-board-status]",
+      completed === 3 ? "Updated by agent · just now" : mutating ? "Applying agent writes…" : "Up to date",
+    );
+    const describing = phase === "thinking" || phase === "describe" || phase === "catalog";
+    const querying = phase === "query" || phase === "result";
+    stepStates(demo, [
+      { active: describing, done: live && progress >= 0.31 },
+      { active: querying, done: live && progress >= 0.49 },
+      { active: mutating, done: live && progress >= 0.78 },
+    ]);
+  };
+
+  const updateHistory = (demo: Demo, progress: number) => {
+    const scrubIn = 0.1;
+    const scrubOut = 0.46;
+    const reset = 0.9;
+    const rest = 18;
+    const now = 100;
+    const clamp = (value: number) => Math.max(0, Math.min(1, value));
+    const ease = (value: number) => value < 0.5
+      ? 2 * value * value
+      : 1 - Math.pow(-2 * value + 2, 2) / 2;
+    let position = now;
+    if (progress >= scrubIn && progress < scrubOut) {
+      position = now - (now - rest) * ease(clamp((progress - scrubIn) / (scrubOut - scrubIn)));
+    } else if (progress >= scrubOut && progress < reset) {
+      position = rest;
+    }
+    const scrubbing = progress >= scrubIn && progress < scrubOut;
+    const inPast = position < now - 0.5;
+    const looping = progress >= reset;
+    demo.dataset.animationPhase = looping ? "reset" : inPast ? "history" : "ready";
+    demo.style.setProperty("--history-position", `${position.toFixed(2)}%`);
+    const timeAt = (point: number) => {
+      const seconds = 52 + Math.round((16 * (point - rest)) / (now - rest));
+      return `12:${seconds >= 60 ? `41:${String(seconds - 60).padStart(2, "0")}` : `40:${String(seconds).padStart(2, "0")}`}`;
+    };
+    const clock = timeAt(position);
+    const cards = [68, 73, 78];
+    const revealed = (at: number) => !looping && position <= at;
+    let visible = 0;
+    demo.querySelectorAll<HTMLElement>("[data-history-card]").forEach((card, index) => {
+      const shown = revealed(cards[index]);
+      const fresh = shown && !looping && position > cards[index] - 4;
+      card.classList.toggle("is-visible", shown);
+      card.classList.toggle("is-fresh", fresh);
+      if (shown) visible++;
+    });
+    const showBadges = visible > 0 && !looping;
+    state(demo, "[data-history-card]", "show-badge", showBadges);
+    state(demo, "[data-history-empty]", "is-visible", !(looping ? visible > 0 : position <= 84));
+    text(demo, "[data-history-count]", String(visible));
+    text(demo, "[data-history-clock]", clock);
+    text(demo, "[data-history-window-start]", timeAt(0));
+    text(demo, "[data-history-live]", inPast ? `History · ${clock}` : "Live");
+    text(demo, "[data-history-view]", inPast ? `Viewing ${clock}` : "Viewing now");
+    const status = looping
+      ? "Now · after deletion"
+      : visible === 3
+        ? "Before deletion · 3 issues restored"
+        : visible > 0
+          ? `Restoring · ${visible} of 3 issues back at ${clock}`
+          : inPast
+            ? `Rewinding · ${clock}`
+            : "Now · after deletion";
+    text(demo, "[data-history-status]", status);
+    demo.querySelectorAll<HTMLElement>("[data-history-event]").forEach((event, index) => {
+      const firing = looping && progress < reset + 0.05;
+      event.classList.toggle("is-passed", firing || (!looping && position <= cards[index]));
+    });
+    stepStates(demo, [
+      { active: !inPast || looping, done: !looping && inPast },
+      { active: scrubbing && visible < 3, done: !looping && visible > 0 },
+      { active: visible === 3 && !looping, done: false },
+    ]);
+  };
+
+  const updates = {
+    instant: updateInstant,
+    agents: updateAgents,
+    history: updateHistory,
+  };
+
+  const instantResize = new ResizeObserver((entries) => {
+    entries.forEach(({ target }) => alignInstantDrop(target as Demo));
+  });
+
+  document.querySelectorAll<Demo>("[data-animation-demo]").forEach((demo) => {
+    if (demo.dataset.animationDemoBound === "true") return;
+    const variant = demo.dataset.animationVariant;
+    if (!variant) return;
+    demo.dataset.animationDemoBound = "true";
+    const duration = Number(demo.dataset.animationDuration) || 10000;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+    if (variant === "instant") {
+      alignInstantDrop(demo);
+      instantResize.observe(demo);
+    }
+    let elapsed = 0;
+    let previous = performance.now();
+    let frame = 0;
+    let visible = false;
+    const render = () => updates[variant](demo, reduced.matches ? 0.82 : elapsed / duration);
+    const tick = (now: number) => {
+      frame = 0;
+      if (!visible || document.hidden || reduced.matches) return;
+      elapsed = (elapsed + Math.min(now - previous, 100)) % duration;
+      previous = now;
+      render();
+      frame = window.requestAnimationFrame(tick);
+    };
+    const start = () => {
+      if (frame || !visible || document.hidden || reduced.matches) return;
+      previous = performance.now();
+      frame = window.requestAnimationFrame(tick);
+    };
+    const stop = () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      frame = 0;
+    };
+    const observer = new IntersectionObserver(([entry]) => {
+      visible = entry.isIntersecting && entry.intersectionRatio >= 0.15;
+      if (visible) start(); else stop();
+    }, { rootMargin: "0px", threshold: [0, 0.15] });
+    observer.observe(demo);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) stop(); else start();
+    });
+    reduced.addEventListener("change", () => {
+      stop();
+      render();
+      start();
+    });
+    render();
+  });
+</script>
+
+<style>
+  .rg-animation-demo {
+    container-type: inline-size;
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    border: 1px solid rgba(255, 101, 0, 0.26);
+    border-radius: 0.9rem;
+    background: #090807;
+    box-shadow: inset 0 1px rgba(255, 255, 255, 0.03),
+      0 2.5rem 6rem -4rem rgba(255, 76, 0, 0.65);
+  }
+
+  .rg-animation-demo--instant {
+    margin-top: 2.5rem;
+  }
+
+  .rg-animation-demo__surface {
+    min-width: 0;
+    background: radial-gradient(circle at 78% 22%, rgba(255, 101, 0, 0.075), transparent 26rem), #090807;
+  }
+
+  .rg-animation-demo--history .rg-animation-demo__surface {
+    background: radial-gradient(circle at 18% 12%, rgba(255, 101, 0, 0.07), transparent 24rem), #090807;
+  }
+
+  .rg-animation-narrative {
+    position: relative;
+    display: none;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    column-gap: 0.65rem;
+    box-sizing: border-box;
+    min-height: 2.75rem;
+    margin: 0;
+    padding: 0.4rem 0.7rem;
+    border-top: 1px solid #2a211d;
+    background: #0b0a09;
+  }
+
+  .rg-animation-narrative__bar {
+    position: absolute;
+    top: -1px;
+    right: 0;
+    left: 0;
+    height: 2px;
+    background: #ff6500;
+  }
+
+  .rg-animation-narrative__step {
+    color: #ffb080;
+    font-family: var(--sl-font-mono);
+    font-size: 0.65rem;
+    letter-spacing: 0.1em;
+  }
+
+  .rg-animation-narrative__copy {
+    display: grid;
+    min-width: 0;
+    gap: 0.1rem;
+  }
+
+  .rg-animation-narrative__copy :is(strong, small) {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .rg-animation-narrative__copy strong {
+    color: #f8f6f3;
+    font-size: 0.8rem;
+    font-weight: 500;
+    line-height: 1.1;
+  }
+
+  .rg-animation-narrative__copy small {
+    color: #ffb080;
+    font-family: var(--sl-font-mono);
+    font-size: 0.58rem;
+    line-height: 1.2;
+  }
+
+  :global(.rg-demo-window) {
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid #302825;
+    border-radius: 0.75rem;
+    background: #0e0c0b;
+    box-shadow: 0 1.5rem 4rem -2.2rem #000;
+  }
+
+  :global(.rg-demo-titlebar) {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.75rem;
+    height: 2.4rem;
+    padding: 0 0.85rem;
+    color: #6f645d;
+    border-bottom: 1px solid #241f1c;
+    background: #131110;
+    font-family: var(--sl-font-mono);
+    font-size: 0.625rem;
+  }
+
+  :global(.rg-demo-titlebar > span:nth-child(2)) {
+    overflow: hidden;
+    text-align: center;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  :global(.rg-demo-dots) {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+
+  :global(.rg-demo-dots i) {
+    width: 0.4rem;
+    height: 0.4rem;
+    border-radius: 50%;
+    background: #3f3733;
+  }
+
+  :global(.rg-demo-dots i:first-child) {
+    background: #a3411c;
+  }
+
+  :global(.rg-demo-live) {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    white-space: nowrap;
+  }
+
+  :global(.rg-demo-live i) {
+    width: 0.38rem;
+    height: 0.38rem;
+    border-radius: 50%;
+    background: #ff5b0a;
+    box-shadow: 0 0 0.7rem #ff4a00;
+    animation: rg-demo-live 2.4s ease-in-out infinite;
+  }
+
+  :global(.rg-demo-steps) {
+    display: grid;
+    grid-template-columns: repeat(var(--demo-step-count, 4), minmax(0, 1fr));
+    gap: 1px;
+    border-top: 1px solid #241f1c;
+    background: #241f1c;
+  }
+
+  :global(.rg-demo-step) {
+    display: grid;
+    align-content: start;
+    gap: 0.5rem;
+    min-width: 0;
+    padding: clamp(0.9rem, 3vw, 1.2rem) clamp(0.85rem, 3vw, 1.3rem);
+    background: #0b0a09;
+    transition: background-color 320ms ease;
+  }
+
+  :global(.rg-demo-step::before) {
+    content: "";
+    display: block;
+    height: 2px;
+    border-radius: 999px;
+    background: #1f1a18;
+    transition: background-color 320ms ease;
+  }
+
+  :global(.rg-demo-step__number) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: #4e4641;
+    font-family: var(--sl-font-mono);
+    font-size: 0.5625rem;
+    letter-spacing: 0.12em;
+  }
+
+  :global(.rg-demo-step__number::after) {
+    content: "✓";
+    opacity: 0;
+    transition: opacity 320ms ease;
+  }
+
+  :global(.rg-demo-step strong) {
+    color: #605851;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+  }
+
+  :global(.rg-demo-step small) {
+    color: #4e4641;
+    font-family: var(--sl-font-mono);
+    font-size: 0.625rem;
+    line-height: 1.4;
+  }
+
+  :global(.rg-demo-step.is-active) {
+    background: #100d0b;
+  }
+
+  :global(.rg-demo-step.is-active::before) {
+    background: #ff6500;
+  }
+
+  :global(.rg-demo-step.is-active .rg-demo-step__number),
+  :global(.rg-demo-step.is-active small) {
+    color: #ffb080;
+  }
+
+  :global(.rg-demo-step.is-active strong) {
+    color: #f8f6f3;
+  }
+
+  :global(.rg-demo-step.is-done:not(.is-active)::before) {
+    background: #4a3529;
+  }
+
+  :global(.rg-demo-step.is-done:not(.is-active) :is(.rg-demo-step__number, small)) {
+    color: #7c6f67;
+  }
+
+  :global(.rg-demo-step.is-done:not(.is-active) strong) {
+    color: #a49a93;
+  }
+
+  :global(.rg-demo-step.is-done:not(.is-active) .rg-demo-step__number::after) {
+    opacity: 0.65;
+  }
+
+  @container (max-width: 34rem) {
+    .rg-animation-narrative {
+      display: grid;
+    }
+
+    :global(.rg-demo-steps) {
+      display: none;
+    }
+  }
+
+  @keyframes rg-demo-live {
+    0%, 100% { opacity: 0.35; }
+    50% { opacity: 1; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.rg-demo-live i) {
+      animation: none;
+    }
+  }
+</style>

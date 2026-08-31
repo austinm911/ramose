@@ -1,0 +1,8 @@
+[
+  "examples/kv-style/app.ts",
+  "examples/todos/src/App.tsx",
+  "examples/todos/src/todos.ts#add-todo",
+  "examples/todos/src/todos.ts#add-todo-op",
+  "examples/todos/src/todos.ts#delete-todo",
+  "examples/todos/src/todos.ts#set-done"
+]

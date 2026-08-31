@@ -1,12 +1,3 @@
-/**
- * `Db` — an immutable database value: index roots (segment trees) + novelty
- * + basis-t + schema. Reads merge tree segments with novelty and collapse
- * history into the current view (or an as-of view, or raw history).
- *
- * Snapshot isolation is by `t`: a Db never sees datoms with t > basisT, so a
- * shared, append-only novelty structure is safe to hand to many Db values.
- */
-
 import {
   type Datom,
   type DatomValue,
@@ -19,12 +10,12 @@ import {
   normalizeValue,
 } from "./datom.ts";
 import { Novelty, collapseCurrent, currentView, filterAsOf, mergeChunks, rawView } from "./novelty.ts";
-import { type Attribute, Schema, isTxEid } from "./schema.ts";
+import { type Attribute, DB_IDENT, Schema, isTxEid } from "./schema.ts";
 import { type NodeRef, type NodeSource, estimateCount, scan, scanMany, sortedUnion } from "./tree.ts";
 import { COMPARATORS } from "./datom.ts";
+import type { CompositionIndex } from "./composition.ts";
 
 export interface Roots {
-  /** the tree contains every datom with t <= this */
   readonly t: number;
   readonly eavt: NodeRef;
   readonly aevt: NodeRef;
@@ -45,8 +36,12 @@ export function rootFor(roots: Roots, index: IndexId): NodeRef {
   }
 }
 
-/** Anything that names an entity: eid, ident, or lookup ref [attr, value]. */
 export type EntityRef = number | string | [string, unknown];
+
+export type DatomPredicate = (
+  unfiltered: Db,
+  datom: Datom,
+) => boolean | Promise<boolean>;
 
 export interface DbOptions {
   store: NodeSource;
@@ -55,8 +50,10 @@ export interface DbOptions {
   basisT: number;
   schema: Schema;
   nextEid: number;
-  asOfT?: number;
+  asOfT?: number | undefined;
   history?: boolean;
+  filters?: readonly DatomPredicate[];
+  composition?: CompositionIndex | undefined;
 }
 
 export class Db {
@@ -68,6 +65,8 @@ export class Db {
   readonly nextEid: number;
   readonly asOfT: number | undefined;
   readonly isHistory: boolean;
+  readonly filters: readonly DatomPredicate[];
+  readonly composition: CompositionIndex | undefined;
 
   constructor(o: DbOptions) {
     this.store = o.store;
@@ -78,9 +77,10 @@ export class Db {
     this.nextEid = o.nextEid;
     this.asOfT = o.asOfT;
     this.isHistory = !!o.history;
+    this.filters = Object.freeze([...(o.filters ?? [])]);
+    this.composition = o.composition;
   }
 
-  /** Effective upper bound on visible t. */
   get effectiveT(): number {
     return this.asOfT !== undefined && this.asOfT < this.basisT ? this.asOfT : this.basisT;
   }
@@ -90,6 +90,13 @@ export class Db {
   }
   history(): Db {
     return new Db({ ...this.opts(), history: true });
+  }
+  filter(predicate: DatomPredicate): Db {
+    return new Db({ ...this.opts(), filters: Object.freeze([...this.filters, predicate]) });
+  }
+  withComposition(composition: CompositionIndex): Db {
+    if (this.composition === composition) return this;
+    return new Db({ ...this.opts(), composition });
   }
   private opts(): DbOptions {
     return {
@@ -101,36 +108,54 @@ export class Db {
       nextEid: this.nextEid,
       asOfT: this.asOfT,
       history: this.isHistory,
+      filters: this.filters,
+      composition: this.composition,
     };
   }
 
-  // -------------------------------------------------------------------------
-  // Raw access
-  // -------------------------------------------------------------------------
+  private unfilteredView(): Db {
+    return new Db({ ...this.opts(), filters: [] });
+  }
 
-  /**
-   * Ordered datoms matching `prefix` in `index`, as arrays. Current view by
-   * default (asserted facts only, latest per (e,a,v)); full history when
-   * `isHistory`. Always bounded by `effectiveT`.
-   */
+  private async applyFilters(arr: Datom[]): Promise<Datom[]> {
+    if (this.filters.length === 0) return arr;
+    const unfiltered = this.unfilteredView();
+    const kept: Datom[] = [];
+    for (const d of arr) {
+      let ok = true;
+      for (const pred of this.filters) {
+        if (!(await pred(unfiltered, d))) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) kept.push(d);
+    }
+    return kept;
+  }
+
+  private async *filterChunks(
+    chunks: AsyncIterable<Datom[]>,
+  ): AsyncGenerator<Datom[], void, undefined> {
+    for await (const arr of chunks) {
+      const kept = await this.applyFilters(arr);
+      if (kept.length > 0) yield kept;
+    }
+  }
+
   datoms(index: IndexId, prefix: Prefix): AsyncGenerator<Datom[], void, undefined> {
     const tree = scan(this.store, index, rootFor(this.roots, index), prefix);
     const nov = this.novelty.byIndex[index].range(prefix);
     const merged = mergeChunks(COMPARATORS[index], tree, nov);
-    if (this.isHistory) {
-      return this.effectiveT >= this.novelty.maxT && this.effectiveT >= this.roots.t && this.asOfT === undefined
+    const collapsed = this.isHistory
+      ? this.effectiveT >= this.novelty.maxT && this.effectiveT >= this.roots.t && this.asOfT === undefined
         ? rawView(merged)
-        : filterAsOf(merged, this.effectiveT);
-    }
-    return currentView(merged, this.effectiveT);
+        : filterAsOf(merged, this.effectiveT)
+      : currentView(merged, this.effectiveT);
+    if (this.filters.length === 0) return collapsed;
+    return this.filterChunks(collapsed);
   }
 
-  /**
-   * Batched seek: `results[i]` = datoms matching `prefixes[i]` (which must
-   * all bind the same components). Same visibility rules as `datoms`, but one
-   * tree cursor serves the whole batch and the novelty merge / current-view
-   * collapse run synchronously per prefix.
-   */
   async seekMany(index: IndexId, prefixes: readonly Prefix[]): Promise<Datom[][]> {
     const nov = this.novelty.byIndex[index];
     const cmp = COMPARATORS[index];
@@ -152,7 +177,7 @@ export class Db {
       } else if (ds.length > 0) {
         ds = collapseCurrent(ds, asOf);
       }
-      results[i] = ds;
+      results[i] = this.filters.length === 0 ? ds : await this.applyFilters(ds);
     }
     return results;
   }
@@ -163,22 +188,17 @@ export class Db {
     return out;
   }
 
-  /** First datom matching prefix in current view, or undefined. */
   async first(index: IndexId, prefix: Prefix): Promise<Datom | undefined> {
     for await (const arr of this.datoms(index, prefix)) return arr[0];
     return undefined;
   }
 
-  /** Cheap cardinality estimate (history datoms, tree + novelty). */
   async estimate(index: IndexId, prefix: Prefix): Promise<number> {
+    if (this.filters.length > 0) return (await this.datomsArray(index, prefix)).length;
     const t = await estimateCount(this.store, index, rootFor(this.roots, index), prefix);
     const n = this.novelty.byIndex[index].range(prefix);
     return t + (n ? n.end - n.start : 0);
   }
-
-  // -------------------------------------------------------------------------
-  // Schema helpers
-  // -------------------------------------------------------------------------
 
   attr(x: number | string): Attribute | undefined {
     return this.schema.attr(x);
@@ -187,15 +207,20 @@ export class Db {
     return this.schema.requireAttr(x);
   }
 
-  /** Coerce a JS value into a tagged value for attribute `attr`. */
   coerce(attr: Attribute, value: unknown): TaggedValue {
     return coerceValue(attr.valueType, value);
   }
 
-  /** Resolve an entity reference to an eid (undefined if it does not exist). */
   async entid(ref: EntityRef): Promise<number | undefined> {
     if (typeof ref === "number") return ref;
-    if (typeof ref === "string") return this.schema.entid(ref);
+    if (typeof ref === "string") {
+      const d = await this.first(Index.AVET, {
+        a: DB_IDENT,
+        vt: ValueTag.Str,
+        v: ref,
+      });
+      return d?.e;
+    }
     if (Array.isArray(ref) && ref.length === 2) {
       const attr = this.attr(ref[0]);
       if (!attr) throw new Error(`lookup ref: unknown attribute ${ref[0]}`);
@@ -207,12 +232,10 @@ export class Db {
     throw new Error(`bad entity reference ${String(ref)}`);
   }
 
-  /** Does the entity have any datoms in the current view? */
   async exists(e: number): Promise<boolean> {
     return (await this.first(Index.EAVT, { e })) !== undefined;
   }
 
-  /** Entity map (attribute ident → value | values). Refs stay as eids. */
   async entity(e: number): Promise<Record<string, unknown> | undefined> {
     const ds = await this.datomsArray(Index.EAVT, { e });
     if (ds.length === 0) return undefined;
@@ -229,9 +252,9 @@ export class Db {
     return out;
   }
 
-  /** ident of an entity, if it has one */
-  identOf(e: number): string | undefined {
-    return this.schema.ident(e);
+  async identOf(e: number): Promise<string | undefined> {
+    const d = await this.first(Index.EAVT, { e, a: DB_IDENT });
+    return d === undefined ? undefined : (d.v as string);
   }
 
   isTx(e: number): boolean {
@@ -239,12 +262,10 @@ export class Db {
   }
 }
 
-/** Coerce a JS value to a tagged value of the given type (throws on mismatch). */
 export function coerceValue(vt: ValueTag, value: unknown): TaggedValue {
   if (value !== null && typeof value === "object" && "vt" in (value as any) && "v" in (value as any)) {
     const tv = value as TaggedValue;
     if (tv.vt !== vt) {
-      // allow long/double and ref/long cross-coercion of numbers
       if (typeof tv.v === "number" && (vt === ValueTag.Long || vt === ValueTag.Double || vt === ValueTag.Ref || vt === ValueTag.Inst)) {
         return { vt, v: normalizeValue(vt, tv.v) };
       }
@@ -277,7 +298,6 @@ export function coerceValue(vt: ValueTag, value: unknown): TaggedValue {
   }
 }
 
-/** Convert a datom's value to a JS value (Date for instants). */
 export function datomJsValue(d: Datom): unknown {
   return d.vt === ValueTag.Inst ? new Date(d.v as number) : d.v;
 }
