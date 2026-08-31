@@ -53,6 +53,8 @@ export const OPERATION_DATABASES = Object.freeze([
   "operations-sealed-input",
   "operations-sealed-input-taxonomy",
   "operations-sealed-input-consumed",
+  "operations-sealed-input-pinned",
+  "operations-sealed-input-renamed",
   "operations-client-input-refs",
   "operations-client-storm",
   "operations-seal-order",
@@ -186,6 +188,30 @@ export const Item = Entity("nativeItem", {
       run(op, input) {
         op.set(Item, input.item, Item.title, input.title);
         return { item: input.item, title: input.title, note: input.note };
+      },
+    }),
+    retitleByRenamedRef: Operation({
+      self: false,
+      input: EffectSchema.Struct({
+        item: OperationEntityId,
+        also: OperationEntityId,
+        title: EffectSchema.String,
+        note: EffectSchema.String,
+      }).pipe(EffectSchema.encodeKeys({ item: "item_id", note: "wire_note" })),
+      output: EffectSchema.Struct({
+        item: OperationEntityId,
+        also: OperationEntityId,
+        title: EffectSchema.String,
+        note: EffectSchema.String,
+      }),
+      run(op, input) {
+        op.set(Item, input.item, Item.title, input.title);
+        return {
+          item: input.item,
+          also: input.also,
+          title: input.title,
+          note: input.note,
+        };
       },
     }),
     deleteAndEchoTitle: Operation({
@@ -373,6 +399,7 @@ const policy = await Effect.runPromise(Policy.compileReadAuthorization({
       Policy.hasClass("operator"),
     )),
     Policy.invoke(Item[OwnedOperations].retitleByRef).when(Policy.hasClass("member")),
+    Policy.invoke(Item[OwnedOperations].retitleByRenamedRef).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].deleteAndEchoTitle).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].deleteHiddenOther).when(Policy.hasClass("member")),
     Policy.invoke(Item[OwnedOperations].crash).when(Policy.hasClass("member")),

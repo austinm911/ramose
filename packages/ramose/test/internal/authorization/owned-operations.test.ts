@@ -16,6 +16,7 @@ import {
 import { Ref as RefSchema } from "../../../src/db/valueTypes.ts";
 import {
   lowerOperationSchema,
+  lowerOperationWireShape,
   lowerOwnedOperations,
   pairDeployedOperations,
 } from "../../../src/internal/authorization/authoring/index.ts";
@@ -24,6 +25,7 @@ import {
   DigestHex,
   EntityId,
 } from "../../../src/internal/authorization/identities.ts";
+import { inputEntityRefHandles } from "../../../src/internal/authorization/entity-targets.ts";
 import { formatNativeOperation } from "./native-operation-helper.ts";
 
 const catalog = CatalogId.make("app");
@@ -522,6 +524,91 @@ describe("owned operation lowering", () => {
         },
       ],
     });
+  });
+
+  test("lowers the wire shape at the keys a renaming codec puts on the wire", () => {
+    const { User } = fixture();
+    const declared = Schema.Struct({
+      assignee: RefSchema(User),
+      labels: Schema.Array(RefSchema(User)),
+      note: Schema.String,
+    });
+    expect(lowerOperationWireShape(catalog, declared)).toEqual({
+      _tag: "struct",
+      fields: [
+        { key: "assignee", shape: { _tag: "ref" } },
+        { key: "labels", shape: { _tag: "array", items: { _tag: "ref" } } },
+        { key: "note", shape: { _tag: "scalar" } },
+      ],
+    });
+
+    const renamed = declared.pipe(
+      Schema.encodeKeys({ assignee: "assignee_id", note: "wire_note" }),
+    );
+    expect(lowerOperationWireShape(catalog, renamed)).toEqual({
+      _tag: "struct",
+      fields: [
+        { key: "assignee_id", shape: { _tag: "ref" } },
+        { key: "labels", shape: { _tag: "array", items: { _tag: "ref" } } },
+        { key: "wire_note", shape: { _tag: "scalar" } },
+      ],
+    });
+    expect(
+      (lowerOperationSchema(catalog, renamed) as unknown as {
+        fields: { key: string }[];
+      }).fields.map((field) => field.key),
+    ).toEqual(["assignee", "labels", "note"]);
+  });
+
+  test("keeps every declared reference position a transformation leaves in place", () => {
+    const { User } = fixture();
+    const nested = Schema.Struct({ item: RefSchema(User) });
+    const renamed = Schema.Struct({
+      tags: Schema.Array(RefSchema(User)),
+      outer: nested,
+      note: Schema.String,
+    }).pipe(Schema.encodeKeys({ note: "wire_note" }));
+    const wire = lowerOperationWireShape(catalog, renamed);
+    expect(wire).toEqual({
+      _tag: "struct",
+      fields: [
+        { key: "outer", shape: { _tag: "struct", fields: [{ key: "item", shape: { _tag: "ref" } }] } },
+        { key: "tags", shape: { _tag: "array", items: { _tag: "ref" } } },
+        { key: "wire_note", shape: { _tag: "scalar" } },
+      ],
+    });
+    expect(
+      inputEntityRefHandles(wire, {
+        outer: { item: "handle-a" },
+        tags: ["handle-b", "handle-c"],
+        wire_note: "not a reference",
+      }),
+    ).toEqual([["outer", "item"], ["tags", 0], ["tags", 1]]);
+  });
+
+  test("falls back to the declared shape when a transformation loses a reference", () => {
+    const { User } = fixture();
+    const restated = Schema.Struct({ assignee: RefSchema(User) }).pipe(
+      Schema.decodeTo(
+        Schema.Struct({ assignee: Schema.String }),
+        {
+          decode: SchemaGetter.transform((value: { assignee: number }) => ({
+            assignee: String(value.assignee),
+          })),
+          encode: SchemaGetter.transform((value: { assignee: string }) => ({
+            assignee: Number(value.assignee),
+          })),
+        },
+      ),
+    );
+    const declared = lowerOperationSchema(catalog, restated);
+    expect(declared).toEqual({
+      _tag: "struct",
+      fields: [
+        { key: "assignee", optional: false, shape: { _tag: "scalar", valueType: "string" } },
+      ],
+    });
+    expect(lowerOperationWireShape(catalog, restated)).toEqual(declared);
   });
 
   test("rejects refs hidden in unsupported union, tuple, and refinement schemas", () => {
