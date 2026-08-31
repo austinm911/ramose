@@ -322,6 +322,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private readonly observers = new Map<string, QueryObserver>();
   private readonly retired = new Map<string, RetiredObservation>();
   private activation: Promise<void> | undefined;
+  private opening: Promise<void> | undefined;
   private readonly settling = new Set<Promise<void>>();
   private catalog: ClientCatalog | undefined;
   private session: ReplicationSession | undefined;
@@ -345,6 +346,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private queueUpdateRequired = false;
   private closed = false;
   private refused = false;
+  private wakePending = false;
   private awaitedRoute = false;
   private generation = 0;
 
@@ -510,7 +512,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
 
   activate(): Promise<void> {
     if (this.activation !== undefined) return this.activation;
-    this.activation = this.open().catch((cause: unknown) => {
+    const opening = this.open().catch((cause: unknown) => {
       // A scope withdrawn while this activation was opening leaves no session
       // to publish the fence, so this is where that activation is put back to
       // nothing: the next wake-up starts a new one, admitted where the scope
@@ -533,7 +535,33 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       this.refused = true;
       this.publishStatus(terminal);
     });
+    this.activation = opening;
+    // What "in flight" means for this handle, and the only thing that means
+    // it. An activation that failed leaves its memo behind — settled, holding
+    // nothing, and indistinguishable from one still opening by the memo alone
+    // — so the retry paths ask this instead and never start a second open
+    // beside a first.
+    this.opening = opening;
+    void opening.then(() => {
+      if (this.opening !== opening) return;
+      this.opening = undefined;
+      this.answerWake();
+    });
     return this.activation;
+  }
+
+  /**
+   * Start one activation in place of a settled one.
+   *
+   * Every path that reopens a handle goes through here, so "one activation in
+   * flight per handle" is one condition in one place: an open already running
+   * is returned rather than joined by a second, which is what keeps a retry
+   * from leaving the first holding a session nothing closes.
+   */
+  private restart(): Promise<void> {
+    if (this.opening !== undefined) return this.opening;
+    this.activation = undefined;
+    return this.activate();
   }
 
   /**
@@ -566,8 +594,116 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     void this.activate();
   }
 
+  /**
+   * What this handle's own read stream says, rather than what the handle
+   * publishes.
+   *
+   * The published status is an aggregate: a queue this build cannot replay
+   * reports `update-required` over a committed replica that is readable and a
+   * read stream that was perfectly compatible, and deciding a retry on that
+   * aggregate would leave exactly that database never reading again after a
+   * cut. Every disposition that must stay fenced — a rotated view, a refused
+   * credential, a fence — still says so here, now decided by the session that
+   * produced it.
+   */
+  private disposition(): SyncStatus {
+    const snapshot = this.session?.snapshot();
+    return snapshot === undefined
+      ? this.syncStatus()
+      : readSessionSnapshot(snapshot).status;
+  }
+
+  /**
+   * Activate again after an activation that could not reach the server.
+   *
+   * A connection that dies is not a refusal and not a fence. It publishes
+   * `offline`, leaves whatever was already confirmed readable, and leaves the
+   * memoized activation settled behind it — and nothing else starts another
+   * one. `reactivateRefused()` answers a credential this client or the server
+   * refused; `reactivateUnconfirmed()` answers a route another tab confirmed,
+   * for a child that has none of its own. Neither describes a device that just
+   * came back, so this is the path it comes back on.
+   *
+   * A wake this handle cannot answer yet is remembered rather than dropped.
+   * `online` fires on a transition and a foreground tab that never loses focus
+   * regains it never, so a wake that lands while an activation is still opening
+   * — or while a stream that is already dead has not published its failure yet
+   * — is the only one this device is going to send. `answerWake()` asks it
+   * again the moment the disposition is known.
+   *
+   * The session this was holding is closed before another opens: a transport
+   * failure has already ended its stream, and leaving it attached would leave
+   * two observers publishing into one handle.
+   */
+  reactivateOffline(): void {
+    if (!this.live() || this.refused) return;
+    if (this.opening !== undefined || this.disposition() !== "offline") {
+      this.wakePending = true;
+      return;
+    }
+    this.wakePending = false;
+    const session = this.session;
+    this.releaseSession?.();
+    this.releaseSession = undefined;
+    this.session = undefined;
+    if (session !== undefined) this.spawn(session.close());
+    void this.restart();
+  }
+
+  /**
+   * Ask a remembered wake again now that this handle's disposition has moved.
+   *
+   * Called where a disposition becomes known: when an activation settles, and
+   * when the session publishes.
+   *
+   * A wake is *not* answered by a value: a stream that is already dying can
+   * publish a buffered frame, or a keep-alive, before it publishes the failure
+   * that ended it, and treating that as an answer would drop the one wake this
+   * device was going to send. So a remembered wake is only ever spent — by the
+   * retry it asks for — or dropped where no later activation could change the
+   * answer: a refused credential, a build that is behind, a closed handle.
+   * Held otherwise, which costs at most one reconnection attempt the first time
+   * a stream fails after the tab was last activated.
+   */
+  private answerWake(): void {
+    if (!this.wakePending) return;
+    if (!this.live()) {
+      this.wakePending = false;
+      return;
+    }
+    if (this.opening !== undefined) return;
+    const disposition = this.disposition();
+    if (disposition === "offline" && !this.refused) {
+      this.reactivateOffline();
+      return;
+    }
+    if (
+      this.refused || disposition === "authentication-required" ||
+      disposition === "update-required" || disposition === "closed"
+    ) this.wakePending = false;
+  }
+
   private async open(): Promise<void> {
-    this.publishStatus("connecting");
+    // `connecting` says nothing is readable and `stale` says something is,
+    // unconfirmed — so a reactivation over a value this handle is still
+    // publishing is `stale`, and a build that is behind keeps saying so rather
+    // than being talked over by an activation that cannot change it.
+    this.publishStatus(
+      this.updateRequired || this.queueUpdateRequired
+        ? "update-required"
+        : this.committed === undefined
+        ? "connecting"
+        : "stale",
+    );
+    // And every observer says the same thing. A retained value stops being
+    // confirmed when this activation begins, not when it answers — the two
+    // `stale` signals an application renders from are one fact, and a
+    // reconnect that can take a storage read and a credential is exactly the
+    // window where they would otherwise disagree.
+    if (this.committed !== undefined && !this.stale) {
+      this.stale = true;
+      this.spawn(this.recompute());
+    }
     const [catalog, storage] = await activationStep(
       "closed",
       () => Promise.all([this.context.catalog(), this.context.storage()]),
@@ -680,7 +816,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
         },
       },
     );
-    if (this.session === undefined && this.live()) await this.open();
+    if (this.session === undefined && this.live()) await this.restart();
   }
 
   private live(): boolean {
@@ -730,6 +866,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.publishStatus(this.statusOf(snapshot));
     this.spawn(this.recompute());
     this.retryAwaitedRoute();
+    this.answerWake();
   }
 
   /**
