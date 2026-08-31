@@ -1,0 +1,189 @@
+import * as Schema from "effect/Schema";
+import {
+  CanonicalIdentitySchemas,
+  RelativeIdentitySchemas,
+  type AnyIdentitySchemaSpace,
+  type CanonicalIdentities,
+  type IdentitySpace,
+  type RelativeIdentities,
+} from "./identities.ts";
+import { JsonScalar } from "./json.ts";
+
+export const PathRoot = Schema.Union([
+  Schema.TaggedStruct("resource", {}),
+  Schema.TaggedStruct("me", {}),
+]);
+export type PathRoot = typeof PathRoot.Type;
+
+export const PathStep = <F extends Schema.Top>(field: F) => Schema.Struct({ field });
+
+export const RefTerm = <F extends Schema.Top>(field: F) =>
+  Schema.TaggedStruct("ref", {
+    root: PathRoot,
+    steps: Schema.Array(PathStep(field)),
+  });
+
+export const LitTerm = Schema.TaggedStruct("lit", {
+  value: JsonScalar,
+});
+export type LitTerm = typeof LitTerm.Type;
+
+export const SubjectTerm = Schema.TaggedStruct("subject", {});
+export type SubjectTerm = typeof SubjectTerm.Type;
+
+export const MeTerm = Schema.TaggedStruct("me", {});
+export type MeTerm = typeof MeTerm.Type;
+
+export const ClaimTerm = Schema.TaggedStruct("claim", {
+  key: Schema.String,
+});
+export type ClaimTerm = typeof ClaimTerm.Type;
+
+export const ValueTerm = <F extends Schema.Top>(field: F) =>
+  Schema.Union([LitTerm, SubjectTerm, MeTerm, ClaimTerm, RefTerm(field)]);
+
+export const ConstExpr = Schema.TaggedStruct("const", {
+  value: Schema.Boolean,
+});
+export type ConstExpr = typeof ConstExpr.Type;
+
+export const HasClassExpr = Schema.TaggedStruct("hasClass", {
+  class: Schema.String,
+});
+export type HasClassExpr = typeof HasClassExpr.Type;
+
+export const AndExpr = <E extends Schema.Top>(expr: E) =>
+  Schema.TaggedStruct("and", { exprs: Schema.Array(expr) });
+
+export const OrExpr = <E extends Schema.Top>(expr: E) =>
+  Schema.TaggedStruct("or", { exprs: Schema.Array(expr) });
+
+export const NotExpr = <E extends Schema.Top>(expr: E) =>
+  Schema.TaggedStruct("not", { expr });
+
+export const EqExpr = <V extends Schema.Top>(value: V) =>
+  Schema.TaggedStruct("eq", { left: value, right: value });
+
+export const HasExpr = <V extends Schema.Top>(value: V) =>
+  Schema.TaggedStruct("has", { term: value });
+
+export const InExpr = <V extends Schema.Top>(value: V) =>
+  Schema.TaggedStruct("in", { value, collection: value });
+
+export const RelativePathStep = PathStep(RelativeIdentitySchemas.field);
+export type RelativePathStep = typeof RelativePathStep.Type;
+export const CanonicalPathStep = PathStep(CanonicalIdentitySchemas.field);
+export type CanonicalPathStep = typeof CanonicalPathStep.Type;
+
+export const RelativeRefTerm = RefTerm(RelativeIdentitySchemas.field);
+export type RelativeRefTerm = typeof RelativeRefTerm.Type;
+export const CanonicalRefTerm = RefTerm(CanonicalIdentitySchemas.field);
+export type CanonicalRefTerm = typeof CanonicalRefTerm.Type;
+
+export const RelativeValueTerm = ValueTerm(RelativeIdentitySchemas.field);
+export type RelativeValueTerm = typeof RelativeValueTerm.Type;
+export const CanonicalValueTerm = ValueTerm(CanonicalIdentitySchemas.field);
+export type CanonicalValueTerm = typeof CanonicalValueTerm.Type;
+
+export type RelativeValueTermEncoded = typeof RelativeValueTerm.Encoded;
+export type CanonicalValueTermEncoded = typeof CanonicalValueTerm.Encoded;
+export type RelativeRefTermEncoded = typeof RelativeRefTerm.Encoded;
+export type CanonicalRefTermEncoded = typeof CanonicalRefTerm.Encoded;
+
+export type RelativeAuthorizationExpr =
+  | ConstExpr
+  | HasClassExpr
+  | { readonly _tag: "and"; readonly exprs: ReadonlyArray<RelativeAuthorizationExpr> }
+  | { readonly _tag: "or"; readonly exprs: ReadonlyArray<RelativeAuthorizationExpr> }
+  | { readonly _tag: "not"; readonly expr: RelativeAuthorizationExpr }
+  | { readonly _tag: "eq"; readonly left: RelativeValueTerm; readonly right: RelativeValueTerm }
+  | { readonly _tag: "has"; readonly term: RelativeValueTerm }
+  | { readonly _tag: "in"; readonly value: RelativeValueTerm; readonly collection: RelativeValueTerm };
+
+export type CanonicalAuthorizationExpr =
+  | ConstExpr
+  | HasClassExpr
+  | { readonly _tag: "and"; readonly exprs: ReadonlyArray<CanonicalAuthorizationExpr> }
+  | { readonly _tag: "or"; readonly exprs: ReadonlyArray<CanonicalAuthorizationExpr> }
+  | { readonly _tag: "not"; readonly expr: CanonicalAuthorizationExpr }
+  | { readonly _tag: "eq"; readonly left: CanonicalValueTerm; readonly right: CanonicalValueTerm }
+  | { readonly _tag: "has"; readonly term: CanonicalValueTerm }
+  | { readonly _tag: "in"; readonly value: CanonicalValueTerm; readonly collection: CanonicalValueTerm };
+
+export type RelativeAuthorizationExprEncoded =
+  | ConstExpr
+  | HasClassExpr
+  | { readonly _tag: "and"; readonly exprs: ReadonlyArray<RelativeAuthorizationExprEncoded> }
+  | { readonly _tag: "or"; readonly exprs: ReadonlyArray<RelativeAuthorizationExprEncoded> }
+  | { readonly _tag: "not"; readonly expr: RelativeAuthorizationExprEncoded }
+  | { readonly _tag: "eq"; readonly left: RelativeValueTermEncoded; readonly right: RelativeValueTermEncoded }
+  | { readonly _tag: "has"; readonly term: RelativeValueTermEncoded }
+  | { readonly _tag: "in"; readonly value: RelativeValueTermEncoded; readonly collection: RelativeValueTermEncoded };
+
+export type CanonicalAuthorizationExprEncoded =
+  | ConstExpr
+  | HasClassExpr
+  | { readonly _tag: "and"; readonly exprs: ReadonlyArray<CanonicalAuthorizationExprEncoded> }
+  | { readonly _tag: "or"; readonly exprs: ReadonlyArray<CanonicalAuthorizationExprEncoded> }
+  | { readonly _tag: "not"; readonly expr: CanonicalAuthorizationExprEncoded }
+  | { readonly _tag: "eq"; readonly left: CanonicalValueTermEncoded; readonly right: CanonicalValueTermEncoded }
+  | { readonly _tag: "has"; readonly term: CanonicalValueTermEncoded }
+  | { readonly _tag: "in"; readonly value: CanonicalValueTermEncoded; readonly collection: CanonicalValueTermEncoded };
+
+const authorizationExprUnion = <
+  Entity extends Schema.Top,
+  Trait extends Schema.Top,
+  Field extends Schema.Top,
+  Operation extends Schema.Top,
+  E extends Schema.Top,
+>(
+  ids: AnyIdentitySchemaSpace<Entity, Trait, Field, Operation>,
+  expr: E,
+) => {
+  const value = ValueTerm(ids.field);
+  return Schema.Union([
+    ConstExpr,
+    AndExpr(expr),
+    OrExpr(expr),
+    NotExpr(expr),
+    EqExpr(value),
+    HasExpr(value),
+    InExpr(value),
+    HasClassExpr,
+  ]);
+};
+
+export const RelativeAuthorizationExpr: Schema.Codec<
+  RelativeAuthorizationExpr,
+  RelativeAuthorizationExprEncoded
+> = Schema.suspend(() => authorizationExprUnion(RelativeIdentitySchemas, RelativeAuthorizationExpr));
+
+export const CanonicalAuthorizationExpr: Schema.Codec<
+  CanonicalAuthorizationExpr,
+  CanonicalAuthorizationExprEncoded
+> = Schema.suspend(() => authorizationExprUnion(CanonicalIdentitySchemas, CanonicalAuthorizationExpr));
+
+export type PathStep<I extends IdentitySpace = RelativeIdentities> = I extends CanonicalIdentities
+  ? CanonicalPathStep
+  : RelativePathStep;
+
+export type RefTerm<I extends IdentitySpace = RelativeIdentities> = I extends CanonicalIdentities
+  ? CanonicalRefTerm
+  : RelativeRefTerm;
+
+export type ValueTerm<I extends IdentitySpace = RelativeIdentities> = I extends CanonicalIdentities
+  ? CanonicalValueTerm
+  : RelativeValueTerm;
+
+export type AndExpr = Extract<RelativeAuthorizationExpr | CanonicalAuthorizationExpr, { readonly _tag: "and" }>;
+export type OrExpr = Extract<RelativeAuthorizationExpr | CanonicalAuthorizationExpr, { readonly _tag: "or" }>;
+export type NotExpr = Extract<RelativeAuthorizationExpr | CanonicalAuthorizationExpr, { readonly _tag: "not" }>;
+export type EqExpr = Extract<RelativeAuthorizationExpr | CanonicalAuthorizationExpr, { readonly _tag: "eq" }>;
+export type HasExpr = Extract<RelativeAuthorizationExpr | CanonicalAuthorizationExpr, { readonly _tag: "has" }>;
+export type InExpr = Extract<RelativeAuthorizationExpr | CanonicalAuthorizationExpr, { readonly _tag: "in" }>;
+
+export type AuthorizationExpr<I extends IdentitySpace = RelativeIdentities> = I extends CanonicalIdentities
+  ? CanonicalAuthorizationExpr
+  : I extends RelativeIdentities
+    ? RelativeAuthorizationExpr
+    : RelativeAuthorizationExpr | CanonicalAuthorizationExpr;

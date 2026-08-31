@@ -1,0 +1,1 @@
+{"version":3,"file":"receipt-state.d.ts","sourceRoot":"","sources":["../../src/react/receipt-state.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,YAAY,EAAE,MAAM,sBAAsB,CAAC;AAEzD;;;;;;;;;;;;;;;;;;;;GAoBG;AACH,MAAM,MAAM,WAAW,GAAG,YAAY,GAAG;IAAE,QAAQ,CAAC,MAAM,EAAE,MAAM,CAAA;CAAE,CAAC;AAErE,eAAO,MAAM,IAAI,EAAE,WAAwD,CAAC"}

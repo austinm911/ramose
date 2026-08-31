@@ -1,0 +1,201 @@
+import { Connection, type LogEntry, type RootRecord, type TxData, Histogram, type WireDatom, RateMeter } from "../core/index.ts";
+import type { CompositionIndex } from "../core/composition.ts";
+import type { Principal } from "../../worker/auth.ts";
+import { R2NodeStore } from "../storage/index.ts";
+import { TransactorDeadError } from "./errors.ts";
+import { type SocketLike, type TransactorHost } from "./host.ts";
+import { TxMetrics } from "./observability.ts";
+import { type RuntimeBoundaries } from "../runtime-boundaries.ts";
+import { type AuthoritativeInvocationResult, type AuthoritativeOperationInvocation, type InstalledCatalogDefinition, type OperationRuntime } from "../authorization/index.ts";
+export { TransactorDeadError };
+export interface TxAck {
+    t: number;
+    txEid: number;
+    tempids: Record<string, number>;
+    datoms: WireDatom[];
+    clientTxId?: string;
+}
+export type OperationAck = AuthoritativeInvocationResult;
+export interface TransactorStats {
+    txs: number;
+    batches: number;
+    maxBatch: number;
+    rejected: number;
+    indexRuns: number;
+    broadcasts: number;
+    commitMs: number;
+    resolveMs: number;
+    loopMs: number;
+    fenceMs: number;
+}
+export declare function clientTxReplayKey(principal: Principal | undefined, id: string): string;
+export declare class Transactor {
+    readonly host: TransactorHost;
+    private readonly operationRuntime?;
+    private readonly boundaries;
+    private ready;
+    private conn;
+    private store;
+    private rootRecord;
+    private logWatermark;
+    private queue;
+    private committing;
+    private indexer;
+    private txSinceIndex;
+    private dead;
+    private readonly recentAcks;
+    readonly stats: TransactorStats;
+    readonly txRate: RateMeter;
+    readonly batchSizes: Histogram;
+    readonly commitLatency: Histogram;
+    readonly resolveLatency: Histogram;
+    readonly loopLatency: Histogram;
+    readonly fenceLatency: Histogram;
+    readonly metrics: TxMetrics;
+    private readonly log;
+    private deployedComposition;
+    constructor(host: TransactorHost, operationRuntime?: OperationRuntime | undefined, boundaries?: RuntimeBoundaries);
+    bindComposition(unitHash: string, index: CompositionIndex): void;
+    init(): Promise<void>;
+    private boot;
+    private getMeta;
+    private setMeta;
+    private appendLogRow;
+    private readInvocationReceipt;
+    private insertInvocationReceipt;
+    private replaceInvocationReceipt;
+    private claimInvocationReceipt;
+    private inspectInvocationReceipt;
+    private recoverInvocationReceipt;
+    private assertClaimIdentity;
+    private finishInvocationReceipt;
+    readLogEntries(from: number, to?: number, limit?: number): LogEntry[];
+    private readLogDatoms;
+    earliestLogT(): number;
+    pruneLog(throughT: number): number;
+    get connection(): Connection;
+    get nodeStore(): R2NodeStore;
+    get bucket(): import("../storage/index.ts").R2Like;
+    get currentRootRecord(): RootRecord;
+    get watermark(): number;
+    get t(): number;
+    get txsSinceIndex(): number;
+    get isDead(): boolean;
+    adoptRoot(rec: RootRecord): void;
+    transact(tx: TxData, principal?: Principal, clientTxId?: string, extras?: {
+        readonly system?: boolean;
+    }): Promise<TxAck>;
+    private replayableMappings;
+    private decideInvocationEpoch;
+    private usesOpaqueHandles;
+    private needsSealingKey;
+    private resolveInvocationTarget;
+    private resolveInvocationInput;
+    invoke(invocation: AuthoritativeOperationInvocation): Promise<OperationAck>;
+    provisionCatalog(definition: InstalledCatalogDefinition): Promise<number>;
+    provision(principal?: Principal): Promise<{
+        eid: number | null;
+        class: string;
+    }>;
+    private rememberAck;
+    private invocationFailureEvent;
+    private takeBatch;
+    private commitLoop;
+    private applyProvision;
+    private authorize;
+    private ackDatoms;
+    private scrub;
+    private die;
+    private broadcast;
+    onSubscribe(ws: SocketLike, from: number): void;
+    onSocketMessage(ws: SocketLike, message: string | ArrayBuffer): void;
+    private sendCatchUp;
+    onAlarm(): Promise<void>;
+    info(): {
+        t: number;
+        root: RootRecord;
+        novelty: number;
+        txsSinceIndex: number;
+        logWatermark: number;
+        earliestLogT: number;
+        nextEid: number;
+        subscribers: number;
+        opts: {
+            timingYields: boolean;
+            maxBatch: number;
+        };
+        stats: TransactorStats;
+        metrics: {
+            enabled: boolean;
+            colo: string;
+            aeWrites: number;
+            aeErrors: number;
+            txPerSec: number;
+            batchSize: {
+                count: number;
+                mean: number;
+                p50: number;
+                p95: number;
+                p99: number;
+                max: number;
+            };
+            commitMs: {
+                count: number;
+                mean: number;
+                p50: number;
+                p95: number;
+                p99: number;
+                max: number;
+            };
+            avgBatch: number;
+            resolveMs: number;
+            loopMs: number;
+            batchResolveMs: {
+                count: number;
+                mean: number;
+                p50: number;
+                p95: number;
+                p99: number;
+                max: number;
+            };
+            batchCommitMs: {
+                count: number;
+                mean: number;
+                p50: number;
+                p95: number;
+                p99: number;
+                max: number;
+            };
+            batchLoopMs: {
+                count: number;
+                mean: number;
+                p50: number;
+                p95: number;
+                p99: number;
+                max: number;
+            };
+            fenceMs: {
+                count: number;
+                mean: number;
+                p50: number;
+                p95: number;
+                p99: number;
+                max: number;
+            };
+            noveltyDatoms: number;
+            queueDepth: number;
+        };
+        store: import("../storage/index.ts").R2StoreStats;
+        indexer: {
+            running: boolean;
+            runs: number;
+            lastRun: import("./indexer.ts").IndexRunResult | undefined;
+            lastGc: unknown;
+            opts: import("./indexer.ts").IndexerOptions;
+        };
+    };
+    operationReceiptCount(): number;
+    handleRequest(request: Request): Promise<Response>;
+    private route;
+}
+//# sourceMappingURL=transactor.d.ts.map

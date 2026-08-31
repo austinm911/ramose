@@ -1,0 +1,1 @@
+{"version":3,"file":"implementations.d.ts","sourceRoot":"","sources":["../../../../src/db/query/stdlib/implementations.ts"],"names":[],"mappings":"AAAA,OAAO,EAAoB,KAAK,oBAAoB,EAAoB,MAAM,YAAY,CAAC;AA6C3F,eAAO,MAAM,gCAAgC,EAAE;IAC7C,QAAQ,EAAE,IAAI,EAAE,MAAM,GAAG,oBAAoB,CAAC;CAwK/C,CAAC"}

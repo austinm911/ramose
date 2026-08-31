@@ -1,0 +1,219 @@
+import { MAX_INVOCATION_ID_LENGTH } from "../internal/authorization/invocation-receipts.js";
+import { OperationVersion } from "../internal/authorization/identities.js";
+export const ERROR_CODES = Object.freeze([
+    "invalid_query",
+    "invalid_input",
+    "inaccessible",
+    "operation_changed",
+    "invocation_conflict",
+    "invocation_update_required",
+    "invocation_indeterminate",
+    "operation_rejected",
+    "query_budget_exceeded",
+    "internal_error",
+]);
+const RETRYABLE = Object.freeze({
+    invalid_query: false,
+    invalid_input: false,
+    inaccessible: false,
+    operation_changed: true,
+    invocation_conflict: false,
+    invocation_update_required: true,
+    invocation_indeterminate: true,
+    operation_rejected: false,
+    query_budget_exceeded: true,
+    internal_error: true,
+});
+const MAX_MESSAGE_LENGTH = 512;
+export const errorEnvelope = (code, message) => Object.freeze({
+    code,
+    message: message.slice(0, MAX_MESSAGE_LENGTH),
+    retryable: RETRYABLE[code],
+});
+export class McpToolFailure extends Error {
+    envelope;
+    constructor(envelope) {
+        super(envelope.message);
+        this.name = "McpToolFailure";
+        this.envelope = envelope;
+    }
+}
+export const toolFailure = (code, message) => new McpToolFailure(errorEnvelope(code, message));
+const PREFIX = "ov_";
+const HEX_DIGEST = /^[0-9a-f]{64}$/;
+const TOKEN = /^ov_[A-Za-z0-9_-]{43}$/;
+export const encodeOperationVersionToken = (version) => {
+    if (!HEX_DIGEST.test(version)) {
+        throw new TypeError("ramose/mcp: not a canonical operation version");
+    }
+    let binary = "";
+    for (let index = 0; index < 32; index++) {
+        binary += String.fromCharCode(Number.parseInt(version.slice(index * 2, index * 2 + 2), 16));
+    }
+    const base64 = btoa(binary)
+        .replaceAll("+", "-")
+        .replaceAll("/", "_")
+        .replace(/=+$/, "");
+    return `${PREFIX}${base64}`;
+};
+export const decodeOperationVersionToken = (token) => {
+    if (!TOKEN.test(token))
+        return undefined;
+    let binary;
+    try {
+        binary = atob(`${token.slice(PREFIX.length).replaceAll("-", "+").replaceAll("_", "/")}=`);
+    }
+    catch {
+        return undefined;
+    }
+    if (binary.length !== 32)
+        return undefined;
+    let hex = "";
+    for (let index = 0; index < 32; index++) {
+        hex += binary.charCodeAt(index).toString(16).padStart(2, "0");
+    }
+    return encodeOperationVersionToken(hex) === token
+        ? OperationVersion.make(hex)
+        : undefined;
+};
+export const MAX_AT_SEGMENTS = 16;
+export const MAX_SEGMENT_LENGTH = 256;
+export const MAX_WHERE_KEYS = 16;
+export const MAX_SELECT_FIELDS = 64;
+export const MAX_QUERY_LIMIT = 200;
+export const DEFAULT_QUERY_LIMIT = 50;
+export const MAX_DESCRIBE_ITEMS = 200;
+const isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+const invalidInput = (message) => {
+    throw toolFailure("invalid_input", message);
+};
+const invalidQuery = (message) => {
+    throw toolFailure("invalid_query", message);
+};
+export const requireArgs = (value) => isRecord(value) ? value : invalidInput("arguments must be an object");
+export const parseAt = (value) => {
+    if (value === undefined)
+        return Object.freeze([]);
+    if (!Array.isArray(value) || value.length > MAX_AT_SEGMENTS) {
+        return invalidInput("at must be an array of at most 16 graph names");
+    }
+    const segments = [];
+    for (const segment of value) {
+        if (typeof segment !== "string" ||
+            segment.length === 0 ||
+            segment.length > MAX_SEGMENT_LENGTH) {
+            return invalidInput("at segments must be bounded, non-empty strings");
+        }
+        segments.push(segment);
+    }
+    return Object.freeze(segments);
+};
+const parseScalar = (value, key) => {
+    if (typeof value === "string") {
+        if (value.length > MAX_SEGMENT_LENGTH) {
+            return invalidQuery(`where.${key} exceeds the string bound`);
+        }
+        return value;
+    }
+    if (typeof value === "number" && Number.isFinite(value))
+        return value;
+    if (typeof value === "boolean")
+        return value;
+    return invalidQuery(`where.${key} must be a string, number, or boolean`);
+};
+export const parseQueryDocument = (value) => {
+    if (!isRecord(value))
+        return invalidQuery("query must be an object");
+    if (value.version !== 1)
+        return invalidQuery("query.version must be 1");
+    const from = value.from;
+    if (!isRecord(from) ||
+        typeof from.entity !== "string" ||
+        from.entity.length === 0 ||
+        from.entity.length > MAX_SEGMENT_LENGTH) {
+        return invalidQuery("query.from must be { entity: <name> }");
+    }
+    let where;
+    if (value.where !== undefined) {
+        if (!isRecord(value.where))
+            return invalidQuery("query.where must be an object");
+        const entries = Object.entries(value.where);
+        if (entries.length > MAX_WHERE_KEYS) {
+            return invalidQuery("query.where exceeds the clause bound");
+        }
+        where = Object.fromEntries(entries.map(([key, entry]) => [key, parseScalar(entry, key)]));
+    }
+    let select;
+    if (value.select !== undefined) {
+        if (!Array.isArray(value.select) || value.select.length > MAX_SELECT_FIELDS) {
+            return invalidQuery("query.select must be an array of at most 64 names");
+        }
+        for (const field of value.select) {
+            if (typeof field !== "string" || field.length === 0) {
+                return invalidQuery("query.select entries must be non-empty strings");
+            }
+        }
+        select = Object.freeze([...value.select]);
+    }
+    let limit;
+    if (value.limit !== undefined) {
+        if (typeof value.limit !== "number" ||
+            !Number.isSafeInteger(value.limit) ||
+            value.limit < 1 ||
+            value.limit > MAX_QUERY_LIMIT) {
+            return invalidQuery(`query.limit must be an integer in 1..${MAX_QUERY_LIMIT}`);
+        }
+        limit = value.limit;
+    }
+    return Object.freeze({
+        version: 1,
+        from: Object.freeze({ entity: from.entity }),
+        ...(where === undefined ? {} : { where: Object.freeze(where) }),
+        ...(select === undefined ? {} : { select }),
+        ...(limit === undefined ? {} : { limit }),
+    });
+};
+export const parseMutateArgs = (value) => {
+    const args = requireArgs(value);
+    const at = parseAt(args.at);
+    const operation = args.operation;
+    if (!isRecord(operation)) {
+        return invalidInput("operation must be { owner, name, version }");
+    }
+    const owner = operation.owner;
+    if (!isRecord(owner) ||
+        (owner.kind !== "entity" && owner.kind !== "trait") ||
+        typeof owner.name !== "string" ||
+        owner.name.length === 0 ||
+        owner.name.length > MAX_SEGMENT_LENGTH) {
+        return invalidInput("operation.owner must be { kind: entity|trait, name }");
+    }
+    if (typeof operation.name !== "string" ||
+        operation.name.length === 0 ||
+        operation.name.length > MAX_SEGMENT_LENGTH) {
+        return invalidInput("operation.name must be a bounded, non-empty string");
+    }
+    if (typeof operation.version !== "string" ||
+        decodeOperationVersionToken(operation.version) === undefined) {
+        return invalidInput("operation.version must be a version discovery returned");
+    }
+    if (typeof args.invocationId !== "string" ||
+        args.invocationId.length === 0 ||
+        args.invocationId.length > MAX_INVOCATION_ID_LENGTH) {
+        return invalidInput("invocationId must be a bounded, non-empty string");
+    }
+    if (!isRecord(args.input)) {
+        return invalidInput("input must be an object");
+    }
+    return Object.freeze({
+        at,
+        operation: Object.freeze({
+            owner: Object.freeze({ kind: owner.kind, name: owner.name }),
+            name: operation.name,
+            version: operation.version,
+        }),
+        input: args.input,
+        invocationId: args.invocationId,
+    });
+};
+//# sourceMappingURL=contract.js.map

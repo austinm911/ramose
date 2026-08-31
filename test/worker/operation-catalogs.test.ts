@@ -1,0 +1,85 @@
+import { describe, expect, test } from "bun:test";
+import * as Effect from "effect/Effect";
+import { Entity } from "../../src/db/Entity.ts";
+import { Graph } from "../../src/db/Graph.ts";
+import { Schema } from "../../src/db/Schema.ts";
+import { CatalogId, DatabaseId } from "../../src/internal/authorization/identities.ts";
+import {
+  deployedDatabaseCatalogBindings,
+  deployOperationCatalogsForVersion,
+  OperationCatalogDeploymentError,
+} from "../../src/worker/operation-catalogs.ts";
+
+const Empty = Schema("public-operations", {});
+Empty.applyPolicy(() => {});
+const root = Empty;
+
+describe("public operation catalog startup", () => {
+  test("assembles an opaque registry and exposes only the request proof", async () => {
+    const deployed = await Effect.runPromise(deployOperationCatalogsForVersion({
+      root,
+      deployments: [{ database: "alpha" }],
+    }, { id: "deployment-alpha" }));
+
+    expect(deployed.proof("alpha")).toEqual({
+      catalog: "public-operations",
+      unitHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(deployed.proof("missing")).toBeUndefined();
+    expect(Object.keys(deployed)).toEqual(["proof"]);
+  });
+
+  test("binds proofs to deployment metadata and fails closed without it", async () => {
+    const alpha = await Effect.runPromise(deployOperationCatalogsForVersion({
+      root,
+      deployments: [{ database: "alpha" }],
+    }, { id: "deployment-alpha" }));
+    const beta = await Effect.runPromise(deployOperationCatalogsForVersion({
+      root,
+      deployments: [{ database: "alpha" }],
+    }, { id: "deployment-beta" }));
+
+    expect(alpha.proof("alpha")?.unitHash).not.toBe(
+      beta.proof("alpha")?.unitHash,
+    );
+    await expect(Effect.runPromise(deployOperationCatalogsForVersion({
+      root,
+      deployments: [{ database: "alpha" }],
+    }, undefined))).rejects.toBeInstanceOf(OperationCatalogDeploymentError);
+    await expect(Effect.runPromise(deployOperationCatalogsForVersion({
+      root,
+      deployments: [{ database: "alpha" }],
+    }, { id: "" }))).rejects.toBeInstanceOf(OperationCatalogDeploymentError);
+
+    await expect(Effect.runPromise(deployOperationCatalogsForVersion({
+      root,
+      deployments: [{ database: "alpha" }, { database: "alpha" }],
+    }, { id: "deployment-alpha" }))).rejects.toBeInstanceOf(
+      OperationCatalogDeploymentError,
+    );
+  });
+
+  test("retains reachable dynamic definitions without exposing child proofs", async () => {
+    const ChildSchema = Schema("public-child", {});
+    ChildSchema.applyPolicy(() => {});
+    const RootSchema = Schema("public-root", {
+      publicGraph: Entity("publicGraph", {}, { traits: [Graph(ChildSchema)] }),
+    });
+    RootSchema.applyPolicy(() => {});
+    const deployed = await Effect.runPromise(deployOperationCatalogsForVersion({
+      root: RootSchema,
+      deployments: [{ database: "root" }],
+    }, { id: "deployment-graph" }));
+    const bindings = deployedDatabaseCatalogBindings(deployed);
+    const rootRoute = bindings.root(DatabaseId.make("root"));
+    if (rootRoute._tag === "Failure") throw rootRoute.failure;
+    const childRoute = await Effect.runPromise(bindings.child(rootRoute.success, {
+      graphEntity: 1_000,
+      catalogKey: CatalogId.make("public-child"),
+    }));
+
+    expect(childRoute.deployed.catalogKey).toBe(CatalogId.make("public-child"));
+    expect(deployed.proof(childRoute.database)).toBeUndefined();
+    expect(Object.keys(deployed)).toEqual(["proof"]);
+  });
+});

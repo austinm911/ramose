@@ -1,0 +1,132 @@
+{
+  "name": "ramose",
+  "version": "0.3.0",
+  "type": "module",
+  "description": "Ramose — an immutable, Datomic-inspired graph database for Cloudflare (Workers + Durable Objects + R2), built on Effect. One package: portable authoring (`ramose/db`), Alchemy resources (`ramose`), the offline-first browser client (`ramose/client`), its React adapter (`ramose/react`), the peer Worker (`ramose/worker`) and the Better Auth plugin (`ramose/better-auth`).",
+  "license": "Apache-2.0",
+  "author": "Tyler van Hensbergen <tvanhens@gmail.com>",
+  "homepage": "https://ramose.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tvanhens/ramose.git",
+    "directory": "packages/ramose"
+  },
+  "bugs": {
+    "url": "https://github.com/tvanhens/ramose/issues"
+  },
+  "keywords": [
+    "ramose",
+    "database",
+    "datalog",
+    "datomic",
+    "immutable",
+    "graph-database",
+    "cloudflare",
+    "workers",
+    "durable-objects",
+    "effect",
+    "alchemy",
+    "realtime"
+  ],
+  "sideEffects": [
+    "./src/worker/**",
+    "./src/internal/transactor/**",
+    "./src/internal/replica/**",
+    "./dist/worker/**",
+    "./dist/internal/transactor/**",
+    "./dist/internal/replica/**"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./db": {
+      "types": "./dist/db/index.d.ts",
+      "default": "./dist/db/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "default": "./dist/react/index.js"
+    },
+    "./octane": {
+      "types": "./dist/octane/index.d.ts",
+      "default": "./dist/octane/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker/index.d.ts",
+      "default": "./dist/worker/index.js"
+    },
+    "./better-auth": {
+      "types": "./dist/better-auth/index.d.ts",
+      "default": "./dist/better-auth/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@cloudflare/workers-types": "^4.20250101.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "alchemy": ">=2.0.0-beta.74 <2.0.0-beta.75",
+    "jose": "^6.0.0"
+  },
+  "octane": {
+    "//": [
+      "`ramose/octane` is hand-written plain `.ts` — no `.tsrx`, no compiler",
+      "pass over this package — so its hooks carry their own call-site slots",
+      "(see src/octane/internal.ts). This field tells octane's compiler not to",
+      "inject slots there."
+    ],
+    "hookSlots": {
+      "manual": [
+        "src/octane"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "better-auth": ">=1.6.0",
+    "effect": ">=4.0.0-rc.110 <5.0.0",
+    "octane": ">=0.1.44",
+    "react": ">=18.0.0 <20.0.0",
+    "zod": "^4.3.6"
+  },
+  "peerDependenciesMeta": {
+    "better-auth": {
+      "optional": true
+    },
+    "octane": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "zod": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "better-auth": "^1.6.30",
+    "effect": ">=4.0.0-rc.110 <5.0.0",
+    "octane": "^0.1.44",
+    "react": "^19.2.0",
+    "zod": "^4.3.6"
+  }
+}
