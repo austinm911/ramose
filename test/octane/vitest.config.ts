@@ -28,9 +28,18 @@ const src = (path: string): string =>
  * The package's own subpaths, resolved to source: `exports` sends `types` to
  * `dist/*.d.ts`, so without these the suite would test the last build rather
  * than the working tree.
+ *
+ * `client` and `react` are here because the binding under test reaches into
+ * both: the client is what a provider now carries, and `src/react/` holds the
+ * framework-neutral observation cache, snapshot narrowing and suspension
+ * bookkeeping that `ramose/octane` shares with `ramose/react` rather than
+ * duplicating. A test that imported either through the package name would be
+ * asserting against the last build.
  */
 export const ramoseAliases = [
   { find: /^ramose\/octane$/, replacement: src("octane/index.ts") },
+  { find: /^ramose\/client$/, replacement: src("client/index.ts") },
+  { find: /^ramose\/react$/, replacement: src("react/index.ts") },
   { find: /^ramose\/db$/, replacement: src("db/index.ts") },
 ];
 

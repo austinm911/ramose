@@ -24,7 +24,13 @@ cp -R "$root/packages/ramose" "$tmp/pkg"
 cd "$tmp/pkg"
 rm -rf node_modules .git
 
+# `package.json`'s exports map is authoritative and `check-pkg-artifact.ts`
+# checks every declared default. Keep these explicit files as branch-level
+# smoke checks for the public runtime entrypoints.
 test -f dist/db/index.js
+test -f dist/client/index.js
+test -f dist/react/index.js
+test -f dist/octane/index.js
 test -f dist/worker/index.js
 
 git init -q -b "$branch" .

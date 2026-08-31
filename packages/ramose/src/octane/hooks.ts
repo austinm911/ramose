@@ -1,19 +1,22 @@
 /** `useRamose` and `useDb` — the two hooks every other hook here builds on. */
 
-import type { Schema, Client, Db } from "../db/index.ts";
-import { createContext, useContext, useMemo } from "octane";
-import { splitSlot, subSlot } from "./internal.ts";
+import type {
+  Client,
+  ClientDatabase,
+  MutationNamespace,
+} from "../client/index.ts";
+import { createContext, useContext } from "octane";
 
 /**
  * @internal The one context this package carries: the `Client` the nearest
- * `RamoseProvider` owns. Deliberately not exported from the package — the
- * public way in is `useRamose()`, and the public way to put one in the tree
- * is `<RamoseProvider>`.
+ * `RamoseProvider` was handed. Deliberately not exported from the package —
+ * the public way in is `useRamose()`, and the public way to put one in the
+ * tree is `<RamoseProvider client={…}>`.
  */
 export const RamoseContext = createContext<Client | null>(null);
 
 /**
- * The `Client` the nearest `<RamoseProvider>` owns.
+ * The `Client` the nearest `<RamoseProvider>` carries.
  *
  * Throws outside a provider: a missing provider is a wiring mistake, not a
  * state to render around.
@@ -25,8 +28,8 @@ export const useRamose = (): Client => {
   const client = useContext(RamoseContext);
   if (client === null) {
     throw new Error(
-      "useRamose: no <RamoseProvider> above this component. " +
-        'Wrap your tree in <RamoseProvider url={…}> from "./index.ts" ' +
+      "useRamose: no <RamoseProvider client={…}> above this component. " +
+        'Wrap your tree in <RamoseProvider client={…}> from "./index.ts" ' +
         "and call the hook inside it.",
     );
   }
@@ -34,25 +37,23 @@ export const useRamose = (): Client => {
 };
 
 /**
- * `client.db(name, schema)`, memoised on `[client, name, schema]`.
+ * The configured root database of the nearest provider's client.
  *
- * The call itself is pure — no network, no ensure, no socket — so the memo is
- * purely about identity: a stable `Db` reference means effects and memos
- * keyed on it do not re-fire every render. Pass a module-scope schema (the
- * normal spelling) or the identity changes every render and the memo is
- * worthless.
+ * No memo and no slot, unlike the `useDb(name, schema)` this replaces: that
+ * one built a fresh `Db` per call and needed both to keep its identity from
+ * churning every render. `open()` is interned and inert — one map read,
+ * nothing activated — so there is no identity to stabilise.
+ *
+ * A terminal client (closed, cleared, or fenced) throws here as it does
+ * everywhere else. Recovery is a new client, not an empty render: swap the
+ * `client` prop on the provider or unmount the tree.
+ *
+ * One context carries one client for a whole tree and cannot thread that
+ * client's catalog into each consumer's types, so this answers the runtime
+ * namespace by default. To read `db.mutate` with the catalog's exact
+ * operations, name the namespace — `useDb<DatabaseMutations<typeof
+ * AppSchema>>()` — or hold the typed client's own `open()` at module scope.
  */
-export function useDb<C extends Schema.Any>(name: string, schema: C): Db<C>;
-export function useDb<C extends Schema.Any>(
-  name: string,
-  schema: C,
-  ...rest: [slot?: symbol]
-): Db<C> {
-  const [, slot] = splitSlot(rest);
-  const client = useRamose();
-  return useMemo(
-    () => client.db(name, schema),
-    [client, name, schema],
-    subSlot(slot, "db:memo"),
-  );
-}
+export const useDb = <Mutations = MutationNamespace>(): ClientDatabase<
+  Mutations
+> => useRamose().open() as ClientDatabase<Mutations>;
