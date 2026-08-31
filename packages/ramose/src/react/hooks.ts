@@ -6,12 +6,16 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
+import type { AnyComposer } from "../db/Composer.ts";
 import type { QueryObject } from "../db/query/index.ts";
 import { queryObservationKey } from "../client/database.ts";
 import type {
   Client,
   ClientDatabase,
   ClientValue,
+  EntityFocused,
+  EntityResult,
+  MutationNamespace,
   Receipt,
   Subscription,
   SyncState,
@@ -63,8 +67,17 @@ const useClient = (): Client => {
  * recovers by constructing a new client, and a tree that keeps rendering
  * against the old one is asking a question that no longer has an answer. Swap
  * the client on the provider (or unmount the tree) as part of closing it.
+ *
+ * A React context holds one client for a whole tree and cannot carry that
+ * client's catalog into each consumer's types, so this answers the runtime
+ * namespace by default. Name the catalog's namespace —
+ * `useDb<DatabaseMutations<typeof AppSchema>>()` — or hold the typed client's
+ * own `open()` at module scope, to read `db.mutate` with the catalog's exact
+ * operations.
  */
-export const useDb = (): ClientDatabase => useClient().open();
+export const useDb = <Mutations = MutationNamespace>(): ClientDatabase<
+  Mutations
+> => useClient().open() as ClientDatabase<Mutations>;
 
 const pendingOnServer = (): QueryState<never> => PENDING;
 
@@ -91,10 +104,18 @@ const pendingOnServer = (): QueryState<never> => PENDING;
  * local browser state, so there is nothing to serialize and nothing to hydrate;
  * the first client render after hydration reads the real one.
  */
-export const useQuery = <Row, Out>(
+export function useQuery<N extends AnyComposer, Row, Out>(
+  query: EntityFocused<N, Row, Out>,
+  database?: ClientDatabase,
+): QueryState<EntityResult<N, Row, Out>>;
+export function useQuery<Row, Out>(
   query: QueryObject<Row, Out>,
   database?: ClientDatabase,
-): QueryState<ClientValue<Out>> => {
+): QueryState<ClientValue<Out>>;
+export function useQuery<Row, Out>(
+  query: QueryObject<Row, Out>,
+  database?: ClientDatabase,
+): QueryState<ClientValue<Out>> {
   const provided = useContext(ClientContext);
   const db = database ?? provided?.open();
   if (db === undefined) {
@@ -105,7 +126,7 @@ export const useQuery = <Row, Out>(
   const key = queryObservationKey(query);
   const store = queryStore<ClientValue<Out>>(db, key, () => db.observe(query));
   return useSyncExternalStore(store.subscribe, store.getSnapshot, pendingOnServer);
-};
+}
 
 const stopNothing = (): void => undefined;
 const observeNothing = (): (() => void) => stopNothing;
