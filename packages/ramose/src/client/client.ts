@@ -41,7 +41,7 @@ import {
   type ClientDatabase,
   type DatabaseContext,
 } from "./database.ts";
-import { fencedReceiver, GraphRegistry } from "./graph.ts";
+import { fencedReceiver, GraphRegistry, receiverStableKey } from "./graph.ts";
 import { Store, type Subscription } from "./subscription.ts";
 import { aggregateSyncStatus, syncState, type SyncState, type SyncStatus } from "./sync.ts";
 
@@ -103,6 +103,7 @@ class RamoseClient implements Client {
   private releaseInvalidation: (() => void) | undefined;
   private releaseNotices: (() => void) | undefined;
   private releaseActivation: (() => void) | undefined;
+  private readonly receivers = new Map<string, ClientDatabaseHandle | undefined>();
   private terminal: "closed" | "cleared" | "fenced" | undefined;
   private termination: Promise<void> | undefined;
   private clearing = false;
@@ -139,7 +140,7 @@ class RamoseClient implements Client {
       live: () => this.terminal === undefined,
       onSyncChange: () => this.refreshSync(),
       onConfirmed: (identity) => {
-        this.confirmed = identity;
+        this.confirm(identity);
         this.elect(identity);
       },
       onFenced: () => {
@@ -179,9 +180,13 @@ class RamoseClient implements Client {
     if (replicaScopeKey(scope) !== notice.scope) return;
     switch (notice.kind) {
       case "replica":
-      case "reset":
         for (const handle of this.handleByKey(notice.database)) {
           void handle.refreshCommitted();
+        }
+        return;
+      case "reset":
+        for (const handle of this.handleByKey(notice.database)) {
+          void handle.revalidate().then(() => handle.refreshCommitted());
         }
         return;
       case "layer":
@@ -198,7 +203,10 @@ class RamoseClient implements Client {
         void this.submissions().settleFromDurable();
         return;
       case "selector":
-        for (const handle of this.handles()) handle.reactivateUnconfirmed();
+        for (const handle of this.handles()) {
+          handle.reactivateUnconfirmed();
+          handle.reactivateRefused();
+        }
         return;
     }
   }
@@ -206,17 +214,55 @@ class RamoseClient implements Client {
   /**
    * Read every durable record this tab renders or submits from, without
    * waiting for a notice about any of them.
+   *
+   * A tab that was suspended may have missed the clear or the principal
+   * replacement that withdrew the scope it is holding, so nothing submits
+   * until the generations every handle adopted have been read again: a pass
+   * begun before that answer arrives would still find this tab's handles
+   * confirmed and could submit the withdrawn principal's queued work.
    */
   private wake(): void {
     if (this.terminal !== undefined) return;
+    const revalidated = this.revalidate();
     for (const handle of this.handles()) {
-      void handle.refreshCommitted();
       void handle.refreshOptimistic();
       handle.reactivateUnconfirmed();
+      handle.reactivateRefused();
     }
-    void this.submissions().settleFromDurable();
-    const identity = this.confirmed;
-    if (identity !== undefined) this.submissions().request(replicaScopeOf(identity));
+    void revalidated.then(() => {
+      if (this.terminal !== undefined) return;
+      for (const handle of this.handles()) void handle.refreshCommitted();
+      void this.submissions().settleFromDurable();
+      const identity = this.confirmed;
+      if (identity !== undefined) this.submissions().request(replicaScopeOf(identity));
+    });
+  }
+
+  /** Re-read the durable generations every handle of this client adopted. */
+  private async revalidate(): Promise<void> {
+    await Promise.all(this.handles().map((handle) => handle.revalidate()));
+  }
+
+  /**
+   * Take the identity a handle of this client has confirmed.
+   *
+   * A confirmation that names another scope has replaced the one this client
+   * was holding, and the tabs that were holding it are told by the durable
+   * generation the replacement bumped. This tab is one of them: it does not
+   * receive its own broadcast, so a sibling handle still publishing the
+   * previous principal would keep publishing it — and keep answering as a
+   * submission endpoint — until some later wake-up. Reading the generations
+   * again here is what withdraws it.
+   */
+  private confirm(identity: ReplicationIdentity, held = true): void {
+    const previous = this.confirmed;
+    if (held || previous === undefined) this.confirmed = identity;
+    if (
+      previous === undefined ||
+      replicaScopeKey(replicaScopeOf(previous)) ===
+        replicaScopeKey(replicaScopeOf(identity))
+    ) return;
+    void this.revalidate();
   }
 
   private composition(): CompositionIndex {
@@ -294,12 +340,55 @@ class RamoseClient implements Client {
       leadership: () => this.leadership,
       credential: () => this.credential(),
       endpoint: (receiver, credential) => this.endpointFor(receiver, credential),
+      resolve: (receiver) => this.resolveReceiver(receiver),
+      retire: (receiver) => this.retireReceiver(receiver),
+      revalidate: () => this.revalidate(),
       reconcile: async (receiver, progress) => {
         await this.databaseFor(receiver)?.reconcileSubmissions(progress);
       },
       live: () => this.terminal === undefined,
     });
     return this.submissionLoop;
+  }
+
+  /**
+   * Open the database a queued invocation names but no handle in this tab has
+   * resolved.
+   *
+   * Another tab walked the path and durably recorded where the receiver was
+   * confirmed; this activates that path again. The names go back to the server,
+   * which re-authorizes them, and only a confirmation naming this same receiver
+   * becomes an endpoint — so a path renamed since it was recorded leaves the
+   * queue where it is instead of submitting it somewhere else.
+   */
+  private resolveReceiver(receiver: ReplicaDatabaseScope): void {
+    const key = replicaDatabaseKey(receiver);
+    if (this.terminal !== undefined || this.receivers.has(key)) return;
+    if (this.databaseFor(receiver) !== undefined) return;
+    this.receivers.set(key, undefined);
+    void this.storage().then(
+      async (storage) => {
+        const record = await storage.graphReceiver(receiver);
+        if (record === undefined || this.terminal !== undefined) {
+          this.receivers.delete(key);
+          return;
+        }
+        const handle = this.graphRegistry()
+          .acquire(receiverStableKey(receiver), record.graphPath, this);
+        this.receivers.set(key, handle);
+        handle.activateGraph();
+      },
+      () => {
+        this.receivers.delete(key);
+      },
+    );
+  }
+
+  /** Close a database this tab opened only to drain one receiver's queue. */
+  private retireReceiver(receiver: ReplicaDatabaseScope): void {
+    const key = replicaDatabaseKey(receiver);
+    if (!this.receivers.delete(key)) return;
+    this.graph?.retire(receiverStableKey(receiver), this);
   }
 
   private databaseFor(
@@ -342,7 +431,7 @@ class RamoseClient implements Client {
           graphLineage,
           onConfirmed: (identity) => {
             onConfirmed(identity);
-            this.confirmed ??= identity;
+            this.confirm(identity, false);
           },
         }),
       () => this.refreshSync(),
@@ -392,14 +481,28 @@ class RamoseClient implements Client {
     return { token: credential.token, cacheKey: credential.cacheKey };
   }
 
+  /**
+   * Report the synchronization state of the databases this application
+   * opened.
+   *
+   * A database opened only to drain a queue is not one of them: it is this
+   * client's own errand, and letting a receiver it cannot reach report
+   * `offline` — or a recorded path the server no longer authorizes report
+   * `authentication-required` — would answer for databases the application is
+   * reading perfectly well. What became of that queued work is its receipt's
+   * answer to give.
+   */
   private refreshSync(): void {
     if (this.terminal !== undefined) {
       this.syncStore.publish(syncState("closed"));
       return;
     }
+    const errands = new Set(this.receivers.values());
     const statuses = [
       ...(this.root === undefined ? [] : [this.root.syncStatus()]),
-      ...(this.graph?.statuses() ?? []),
+      ...(this.graph?.handles() ?? [])
+        .filter((handle) => !errands.has(handle))
+        .map((handle) => handle.syncStatus()),
     ];
     this.syncStore.publish(syncState(aggregateSyncStatus(statuses)));
   }

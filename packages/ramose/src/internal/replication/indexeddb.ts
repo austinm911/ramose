@@ -76,6 +76,7 @@ import {
 import {
   identityInDatabase,
   identityInScope,
+  REPLICA_CLEAR_BARRIER_KEY,
   REPLICA_COMMITTED_HEADS_STORE,
   REPLICA_GENERATIONS_STORE,
   replicaDatabaseKey,
@@ -128,8 +129,12 @@ const STORAGE_V2_DATABASE_VERSION = 5;
 const LIFECYCLE_DATABASE_VERSION = 6;
 const MUTATION_INDEX_DATABASE_VERSION = 9;
 const OPTIMISTIC_LAYER_DATABASE_VERSION = 10;
-const MANIFEST_V3_DATABASE_VERSION = OPTIMISTIC_LAYER_DATABASE_VERSION + 1;
-export const REPLICA_DATABASE_VERSION = MANIFEST_V3_DATABASE_VERSION;
+/** The layout below which stored replica values are not read again. */
+export const REPLICA_MANIFEST_STORAGE_VERSION =
+  OPTIMISTIC_LAYER_DATABASE_VERSION + 1;
+const MANIFEST_V3_DATABASE_VERSION = REPLICA_MANIFEST_STORAGE_VERSION;
+const GRAPH_RECEIVER_DATABASE_VERSION = MANIFEST_V3_DATABASE_VERSION + 1;
+export const REPLICA_DATABASE_VERSION = GRAPH_RECEIVER_DATABASE_VERSION;
 const DATABASE_VERSION = REPLICA_DATABASE_VERSION;
 const COMMITTED = "replica-committed-v1";
 const COMMITTED_HEADS = REPLICA_COMMITTED_HEADS_STORE;
@@ -139,6 +144,7 @@ const NODES = "replica-nodes-v1";
 const CREDENTIAL_BINDINGS = "replica-credential-bindings-v1";
 const CACHE_CANDIDATES = "replica-cache-candidates-v1";
 const ROUTE_SLOTS = "replica-route-slots-v1";
+const GRAPH_RECEIVERS = "replica-graph-receivers-v1";
 const GENERATIONS = REPLICA_GENERATIONS_STORE;
 const USER_T = 2;
 
@@ -151,6 +157,7 @@ const REPLICA_STORE_FAMILIES = [
   CREDENTIAL_BINDINGS,
   CACHE_CANDIDATES,
   ROUTE_SLOTS,
+  GRAPH_RECEIVERS,
   GENERATIONS,
 ] as const;
 
@@ -224,13 +231,44 @@ type RouteSlotRecord = {
   readonly replicaScopes?: readonly string[];
 };
 
+export const REPLICA_GRAPH_RECEIVER_VERSION = 1 as const;
+
+/**
+ * The graph path one receiver database was last confirmed at.
+ *
+ * A tab plans work for a receiver whichever tab resolved it, and a leader that
+ * never walked that path has no handle to submit through. This is what it
+ * activates from. The path is a hint and never an authority: the activation it
+ * feeds sends these names to the server, which re-authorizes them and answers
+ * with the identity they name now, and only a confirmed identity naming this
+ * same database becomes an endpoint. A path renamed since it was recorded
+ * therefore surfaces as that activation's own outcome — a database this
+ * receiver's queue is not submitted to — rather than as a misroute.
+ *
+ * Evicting a database keeps its record. Eviction frees a cached replica and
+ * never the durable work queued for it, and the path is what a leader needs to
+ * reach that database again once the replica is gone. Only clearing the scope
+ * removes it, with the queue it belongs to.
+ */
+export type ReplicaGraphReceiver = {
+  readonly key: string;
+  readonly version: typeof REPLICA_GRAPH_RECEIVER_VERSION;
+  readonly scope: string;
+  readonly route: string;
+  readonly graphPath: readonly string[];
+  readonly graphLineage: readonly string[];
+  readonly confirmedAt: number;
+};
+
 type GenerationRecord = {
   readonly key: string;
-  readonly kind: "scope" | "database" | "partition" | "leader";
+  readonly kind: "scope" | "database" | "partition" | "leader" | "barrier";
   readonly scope: string;
   readonly generation: number;
   readonly confirmedAt: number;
   readonly fencedAt: number | null;
+  /** The clear barrier the last clear of this scope advanced to. */
+  readonly clearedAt?: number;
 };
 
 export type ReplicaRouteObservation = {
@@ -312,6 +350,8 @@ export type ReplicaAuthenticatedBinding = {
   readonly candidateKey?: ReplicaCacheCandidateKey | undefined;
   readonly route?: (ReplicaRouteObservation & {
     readonly slot: ReplicaRouteSlot;
+    /** The path segments this activation sent, in order. */
+    readonly graphPath?: readonly string[];
   }) | undefined;
 };
 
@@ -463,6 +503,7 @@ const enforceFence = async (
   try {
     fence.lease.observe(fence.scopeKey, scope?.generation ?? 0);
     fence.lease.observe(fence.databaseKey, database?.generation ?? 0);
+    fence.lease.admit(fence.scopeKey, scope?.clearedAt ?? 0);
   } catch (error) {
     await abortTransaction(transaction);
     throw error;
@@ -879,6 +920,9 @@ export class IndexedDbReplicaStorage {
       if (!database.objectStoreNames.contains(ROUTE_SLOTS)) {
         database.createObjectStore(ROUTE_SLOTS, { keyPath: ["scope", "pathKey"] });
       }
+      if (!database.objectStoreNames.contains(GRAPH_RECEIVERS)) {
+        database.createObjectStore(GRAPH_RECEIVERS, { keyPath: "key" });
+      }
       if (!database.objectStoreNames.contains(GENERATIONS)) {
         database.createObjectStore(GENERATIONS, { keyPath: "key" });
       }
@@ -1019,16 +1063,38 @@ export class IndexedDbReplicaStorage {
     return generation;
   }
 
-  lease(): ReplicaLease {
-    return new ReplicaLease();
+  /**
+   * The clear barrier as it stands, which is what a holder about to activate
+   * records before it knows which scope it will install into.
+   */
+  async admission(): Promise<number> {
+    const transaction = this.database.transaction(GENERATIONS, "readonly");
+    const record = await requestResult<GenerationRecord | undefined>(
+      transaction.objectStore(GENERATIONS).get(REPLICA_CLEAR_BARRIER_KEY),
+    );
+    await transactionDone(transaction);
+    return record?.generation ?? 0;
   }
 
-  async leaseFor(identity: ReplicationIdentity): Promise<ReplicaLease> {
+  /** A lease admitted at the current clear barrier and holding no generation. */
+  async lease(): Promise<ReplicaLease> {
+    return new ReplicaLease(await this.admission());
+  }
+
+  /** Read the generations `lease` guards, and fail when they have moved. */
+  async confirmLease(
+    lease: ReplicaLease,
+    identity: ReplicationIdentity,
+  ): Promise<void> {
     this.assertScopeLive(replicaScopeOf(identity));
-    const lease = new ReplicaLease();
     const transaction = this.database.transaction(GENERATIONS, "readonly");
     await enforceFence(transaction, replicaFence(lease, identity));
     await transactionDone(transaction);
+  }
+
+  async leaseFor(identity: ReplicationIdentity): Promise<ReplicaLease> {
+    const lease = await this.lease();
+    await this.confirmLease(lease, identity);
     return lease;
   }
 
@@ -1162,6 +1228,14 @@ export class IndexedDbReplicaStorage {
       candidateStore.delete([candidate.selector, candidate.routeSlot]);
       candidates++;
     }
+    const receiverStore = transaction.objectStore(GRAPH_RECEIVERS);
+    for (
+      const receiver of await requestResult<ReplicaGraphReceiver[]>(
+        receiverStore.getAll(),
+      )
+    ) {
+      if (receiver.scope === scopeKey) receiverStore.delete(receiver.key);
+    }
     let routeObservations = 0;
     for (const observation of routeRecords) {
       if (!(observation.replicaScopes ?? []).includes(scopeKey)) continue;
@@ -1175,10 +1249,12 @@ export class IndexedDbReplicaStorage {
     }
     const mutations = await clearMutationScope(transaction, scope);
     const generation = confirmed.generation + 1;
+    const clearedAt = await this.advanceBarrier(generations);
     generations.put({
       ...confirmed,
       generation,
       fencedAt: Date.now(),
+      clearedAt,
     } satisfies GenerationRecord);
     await this.boundaries.checkpoint("replica.clear");
     return Object.freeze({
@@ -1660,6 +1736,18 @@ export class IndexedDbReplicaStorage {
     return (record?.generation ?? 0) === sweep;
   }
 
+  /** The identity this credential is bound to, which another tab may rebind. */
+  async boundIdentity(
+    fingerprint: string,
+  ): Promise<ReplicationIdentity | undefined> {
+    const transaction = this.database.transaction(CREDENTIAL_BINDINGS, "readonly");
+    const record = await requestResult<CredentialBindingRecord | undefined>(
+      transaction.objectStore(CREDENTIAL_BINDINGS).get(fingerprint),
+    );
+    await transactionDone(transaction);
+    return record?.identity;
+  }
+
   async unbindCredential(fingerprint: string): Promise<void> {
     const transaction = this.database.transaction(CREDENTIAL_BINDINGS, "readwrite");
     transaction.objectStore(CREDENTIAL_BINDINGS).delete(fingerprint);
@@ -1783,6 +1871,24 @@ export class IndexedDbReplicaStorage {
     );
   }
 
+  /**
+   * The graph path a receiver database was last confirmed at, which is what a
+   * tab that never resolved it activates from before it can submit to it.
+   */
+  async graphReceiver(
+    receiver: ReplicaDatabaseScope,
+  ): Promise<ReplicaGraphReceiver | undefined> {
+    const transaction = this.database.transaction(GRAPH_RECEIVERS, "readonly");
+    const record = await requestResult<ReplicaGraphReceiver | undefined>(
+      transaction.objectStore(GRAPH_RECEIVERS).get(replicaDatabaseKey(receiver)),
+    );
+    await transactionDone(transaction);
+    return record?.version === REPLICA_GRAPH_RECEIVER_VERSION &&
+        record.graphPath.length > 0
+      ? record
+      : undefined;
+  }
+
   async observedRouteSlot(
     observation: ReplicaRouteObservation,
   ): Promise<ReplicaRouteSlot | undefined> {
@@ -1801,12 +1907,13 @@ export class IndexedDbReplicaStorage {
     const scopeKey = this.assertScopeLive(replicaScopeOf(binding.identity));
     const databaseKey = replicaDatabaseKey(replicaDatabaseScopeOf(binding.identity));
     const transaction = this.database.transaction(
-      [CREDENTIAL_BINDINGS, CACHE_CANDIDATES, ROUTE_SLOTS, GENERATIONS],
+      [CREDENTIAL_BINDINGS, CACHE_CANDIDATES, ROUTE_SLOTS, GRAPH_RECEIVERS, GENERATIONS],
       "readwrite",
     );
     const removeAbort = abortWithSignal(transaction, options.signal);
     try {
       const generations = transaction.objectStore(GENERATIONS);
+      const candidates = transaction.objectStore(CACHE_CANDIDATES);
       const [scopeRecord, databaseRecord, existingRoute] = await Promise.all([
         requestResult<GenerationRecord | undefined>(generations.get(scopeKey)),
         requestResult<GenerationRecord | undefined>(generations.get(databaseKey)),
@@ -1824,17 +1931,23 @@ export class IndexedDbReplicaStorage {
         try {
           options.lease.observe(scopeKey, scopeRecord?.generation ?? 1);
           options.lease.observe(databaseKey, databaseRecord?.generation ?? 1);
+          options.lease.admit(scopeKey, scopeRecord?.clearedAt ?? 0);
         } catch (error) {
           await abortTransaction(transaction);
           throw error;
         }
       }
+      const replaced = await this.stageReplacedPrincipals(
+        transaction,
+        binding.identity,
+        binding.candidateKey?.selector,
+      );
       transaction.objectStore(CREDENTIAL_BINDINGS).put({
         fingerprint: binding.fingerprint,
         identity: binding.identity,
       } satisfies CredentialBindingRecord);
       if (binding.candidateKey !== undefined) {
-        transaction.objectStore(CACHE_CANDIDATES).put({
+        candidates.put({
           selector: binding.candidateKey.selector,
           routeSlot: binding.candidateKey.routeSlot,
           identity: binding.identity,
@@ -1852,12 +1965,103 @@ export class IndexedDbReplicaStorage {
             scopeKey,
           ),
         } satisfies RouteSlotRecord);
+        const graphPath = binding.route.graphPath ?? [];
+        if (
+          graphPath.length > 0 &&
+          graphPath.length === binding.identity.graphLineage.length
+        ) {
+          transaction.objectStore(GRAPH_RECEIVERS).put({
+            key: databaseKey,
+            version: REPLICA_GRAPH_RECEIVER_VERSION,
+            scope: scopeKey,
+            route: binding.route.scope,
+            graphPath: [...graphPath],
+            graphLineage: [...binding.identity.graphLineage],
+            confirmedAt: Date.now(),
+          } satisfies ReplicaGraphReceiver);
+        }
       }
       await commitTransaction(transaction);
+      for (const scope of replaced) this.announce(replicaNotice("reset", scope));
       this.announce(identityNotice("selector", binding.identity));
     } finally {
       removeAbort();
     }
+  }
+
+  /**
+   * Fence the principals an account selector used to name.
+   *
+   * One selector names one account on one server and root, so a confirmation
+   * that answers it with another principal has replaced the one before it.
+   * Every route slot recorded under the selector is read, not only the one
+   * being confirmed: the selector carries no path, so the principal being
+   * replaced is recorded under whatever slots its own lineages named, and a
+   * successor first confirmed on a graph path shares none of them.
+   *
+   * Bumping each replaced scope's generation inside this transaction is what
+   * stops a tab still holding that principal from publishing or submitting it:
+   * the tab re-reads the generation its lease adopted and finds it moved,
+   * whether or not the notice announced below ever reaches it.
+   */
+  private async stageReplacedPrincipals(
+    transaction: IDBTransaction,
+    confirmed: ReplicationIdentity,
+    selector: string | undefined,
+  ): Promise<readonly ReplicaScope[]> {
+    if (selector === undefined) return [];
+    const held = await requestResult<CacheCandidateRecord[]>(
+      transaction.objectStore(CACHE_CANDIDATES).getAll(
+        compoundPrefixRange(selector),
+      ),
+    );
+    const replaced = new Map<string, ReplicaScope>();
+    for (const candidate of held) {
+      const previous = replicaScopeOf(candidate.identity);
+      if (identityInScope(confirmed, previous)) continue;
+      replaced.set(replicaScopeKey(previous), previous);
+    }
+    if (replaced.size === 0) return [];
+    const generations = transaction.objectStore(GENERATIONS);
+    const clearedAt = await this.advanceBarrier(generations);
+    for (const key of replaced.keys()) {
+      const record = await requestResult<GenerationRecord | undefined>(
+        generations.get(key),
+      );
+      generations.put({
+        key,
+        kind: "scope",
+        scope: key,
+        generation: (record?.generation ?? 0) + 1,
+        confirmedAt: record?.confirmedAt ?? Date.now(),
+        fencedAt: Date.now(),
+        clearedAt,
+      } satisfies GenerationRecord);
+    }
+    return Object.freeze([...replaced.values()]);
+  }
+
+  /**
+   * Advance the barrier that tells an activation begun before a scope was
+   * withdrawn from one begun after it, and answer the value it advanced to.
+   */
+  private async advanceBarrier(
+    generations: IDBObjectStore,
+    held?: GenerationRecord | undefined,
+  ): Promise<number> {
+    const barrier = held ?? await requestResult<GenerationRecord | undefined>(
+      generations.get(REPLICA_CLEAR_BARRIER_KEY),
+    );
+    const generation = (barrier?.generation ?? 0) + 1;
+    generations.put({
+      key: REPLICA_CLEAR_BARRIER_KEY,
+      kind: "barrier",
+      scope: REPLICA_CLEAR_BARRIER_KEY,
+      generation,
+      confirmedAt: barrier?.confirmedAt ?? Date.now(),
+      fencedAt: Date.now(),
+    } satisfies GenerationRecord);
+    return generation;
   }
 
   async bindCredential(

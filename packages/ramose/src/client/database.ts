@@ -107,9 +107,14 @@ export const readSessionSnapshot = (
         ? { status: "update-required", publishes: false }
         : { status: "offline", publishes: true };
     case "failed":
-      return snapshot.failure === "unauthorized"
-        ? { status: "authentication-required", publishes: false }
-        : { status: "offline", publishes: true };
+      switch (snapshot.failure) {
+        case "unauthorized":
+          return { status: "authentication-required", publishes: false };
+        case "fenced":
+          return { status: "connecting", publishes: false };
+        default:
+          return { status: "offline", publishes: true };
+      }
     case "closed":
       return { status: "closed", publishes: false };
   }
@@ -334,6 +339,8 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
   private updateRequired = false;
   private queueUpdateRequired = false;
   private closed = false;
+  private refused = false;
+  private awaitedRoute = false;
   private generation = 0;
 
   constructor(private readonly context: DatabaseContext) {}
@@ -508,9 +515,39 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       // recoverable the moment the application signs in again, and the waiters
       // are already settled by the fenced status published below.
       this.activation = undefined;
+      this.refused = true;
       this.publishStatus(terminal);
     });
     return this.activation;
+  }
+
+  /**
+   * Activate again after a credential this client or the server refused.
+   *
+   * `auth()` runs once per activation, so a refreshed bearer is presented by
+   * the next one. This is what makes a refused client recoverable without
+   * constructing another: the application signs in again and the next
+   * activation wake-up — a focused tab, a page shown from bfcache, a broadcast
+   * selector notice — carries the new credential. The refusal may have come
+   * from `auth()` itself, which leaves no session behind, or from the server
+   * answering the activation, which leaves one holding the refusal; either way
+   * the next activation starts from nothing.
+   *
+   * An activation already opening is that next activation: it will present
+   * whatever `auth()` answers now, and starting a second one beside it would
+   * leave the first holding a session nothing closes.
+   */
+  reactivateRefused(): void {
+    if (!this.live() || !this.refused) return;
+    if (this.session === undefined && this.activation !== undefined) return;
+    this.refused = false;
+    this.releaseSession?.();
+    this.releaseSession = undefined;
+    const session = this.session;
+    this.session = undefined;
+    this.activation = undefined;
+    if (session !== undefined) this.spawn(session.close());
+    void this.activate();
   }
 
   private async open(): Promise<void> {
@@ -584,7 +621,10 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     if (!this.live() || this.identity !== undefined) return;
     if (this.activation === undefined || this.context.graphPath.length === 0) return;
     const session = this.session;
-    if (session === undefined) return;
+    if (session === undefined) {
+      this.awaitedRoute = true;
+      return;
+    }
     const status = session.snapshot().status;
     if (status !== "failed" && status !== "terminal" && status !== "closed") return;
     this.releaseSession?.();
@@ -638,6 +678,10 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
       this.context.onFenced();
       return;
     }
+    if (snapshot.status === "failed" && snapshot.failure === "fenced") {
+      this.refence();
+      return;
+    }
     const value = snapshot.value;
     const identity = value?.identity;
     if (identity !== undefined) {
@@ -654,6 +698,9 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     }
     this.lastSession = snapshot;
     const disposition = readSessionSnapshot(snapshot);
+    // The server answering the activation with a refusal is the other way a
+    // credential is refused, and the one a refreshed bearer recovers from.
+    if (disposition.status === "authentication-required") this.refused = true;
     this.stale = value === undefined ? true : value.stale;
     const catalog = this.catalog;
     if (!disposition.publishes || value === undefined || catalog === undefined) {
@@ -666,6 +713,23 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     }
     this.publishStatus(this.statusOf(snapshot));
     this.spawn(this.recompute());
+    this.retryAwaitedRoute();
+  }
+
+  /**
+   * Read the route again for a selector notice that arrived while this
+   * handle's own activation was still opening.
+   *
+   * That open read the route slot before the other tab wrote it, so the notice
+   * it would have answered was dropped. Answering it once the session settles
+   * is what keeps the recovery from waiting for the next notice.
+   */
+  private retryAwaitedRoute(): void {
+    if (!this.awaitedRoute || this.identity !== undefined) return;
+    const status = this.session?.snapshot().status;
+    if (status !== "failed" && status !== "terminal" && status !== "closed") return;
+    this.awaitedRoute = false;
+    this.reactivateUnconfirmed();
   }
 
   private fence(): void {
@@ -696,7 +760,7 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.graphChildren.clear();
   }
 
-  private transition(): void {
+  private transition(status: SyncStatus = "authentication-required"): void {
     this.generation++;
     this.committed = undefined;
     this.forgetHandles();
@@ -711,10 +775,41 @@ export class ClientDatabaseHandle implements ClientDatabase, GraphAncestor {
     this.releaseOverlay = undefined;
     this.updateRequired = false;
     this.retired.clear();
-    this.publishStatus("authentication-required");
+    this.publishStatus(status);
     for (const observer of this.observers.values()) {
       this.spawn(observer.run(this.generation, undefined, true));
     }
+  }
+
+  /**
+   * Withdraw what a fenced session was holding and activate again.
+   *
+   * The scope this handle was reading was cleared or given to another
+   * principal, so the value it holds is one no tab may publish. Activating
+   * again is what reaches the state the scope is in now: the credential this
+   * client presents decides which principal answers, and nothing from the
+   * fenced one survives the transition.
+   */
+  private refence(): void {
+    this.releaseSession?.();
+    this.releaseSession = undefined;
+    const session = this.session;
+    this.session = undefined;
+    this.identity = undefined;
+    this.lastSession = undefined;
+    this.activation = undefined;
+    this.transition("connecting");
+    if (session !== undefined) this.spawn(session.close());
+    if (this.live()) void this.activate();
+  }
+
+  /**
+   * Re-read the durable generations this handle's session adopted, so a clear
+   * or principal replacement another tab committed withdraws this value.
+   */
+  async revalidate(): Promise<void> {
+    if (!this.live()) return;
+    await this.session?.revalidate().catch(() => false);
   }
 
   private statusOf(snapshot: ReplicationSessionSnapshot): SyncStatus {
